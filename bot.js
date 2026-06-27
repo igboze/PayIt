@@ -1385,14 +1385,19 @@ bot.action("action_new_invoice", (ctx) => {
 bot.on("photo", async (ctx) => {
   const state = convState.getState(ctx.from.id);
 
-  // If we're waiting for a logo upload specifically
+  // ── Logo upload helper ────────────────────────────────────────────────────
+  async function handleLogoSave() {
+    const photo  = ctx.message.photo[ctx.message.photo.length - 1];
+    const buffer = await downloadTelegramFile(ctx, photo.file_id);
+    return await bizProfile.saveLogo(ctx.from.id, buffer);
+  }
+
+  // ── Logo upload from Settings ─────────────────────────────────────────────
   if (state?.type === "await_logo_upload") {
     convState.clearState(ctx.from.id);
     await ctx.reply("⏳ Saving your logo...");
     try {
-      const photo    = ctx.message.photo[ctx.message.photo.length - 1];
-      const buffer   = await downloadTelegramFile(ctx, photo.file_id);
-      const logoPath = await bizProfile.saveLogo(ctx.from.id, buffer);
+      const logoPath = await handleLogoSave();
       bizProfile.updateBizProfileField(ctx.from.id, "logo_path", logoPath);
       await ctx.reply(
         "✅ Logo saved! It will appear on all future invoices.",
@@ -1403,6 +1408,44 @@ bot.on("photo", async (ctx) => {
       await ctx.reply("Couldn't save the logo. Please try again.");
     }
     return;
+  }
+
+  // ── Logo upload during business onboarding ────────────────────────────────
+  if (state?.type === "onboard_biz_logo") {
+    await ctx.reply("⏳ Saving your logo...");
+    try {
+      const logoPath = await handleLogoSave();
+      const d = state.data;
+      const personalWallet = walletLib.generateUserWallet();
+      const businessWallet = walletLib.generateUserWallet();
+      convState.setState(ctx.from.id, "onboarding_pin", {
+        accountType:        "business",
+        address:            personalWallet.address,
+        privateKey:         personalWallet.privateKey,
+        businessAddress:    businessWallet.address,
+        businessPrivateKey: businessWallet.privateKey,
+        username:           ctx.from.username,
+        logoPath,
+        bizProfile: {
+          businessName:   d.businessName,
+          businessEmail:  d.businessEmail,
+          phone:          d.businessPhone,
+          address:        d.businessAddress,
+          defaultDueDays: d.defaultDueDays,
+        },
+      }, "business");
+      return ctx.reply(
+        "✅ Logo saved!\n\n" +
+        "Now let's secure your wallet.\n\n" +
+        "Choose a 4-digit PIN — write it down somewhere safe. " +
+        "If you forget it and haven't saved your security phrase, " +
+        "your money cannot be recovered.\n\n" +
+        "Type your PIN:"
+      );
+    } catch (err) {
+      console.error("[logo_upload_onboarding]", err);
+      return ctx.reply('Couldn't save the logo — please try again, or type "skip" to continue without one.');
+    }
   }
 
   // Otherwise: treat as a payment document
@@ -1816,7 +1859,10 @@ bot.on("text", async (ctx) => {
 
       // Save business profile if collected
       if (isBusiness && state.data.bizProfile) {
-        bizProfile.upsertBizProfile(userId, state.data.bizProfile);
+        bizProfile.upsertBizProfile(userId, {
+          ...state.data.bizProfile,
+          logoPath: state.data.logoPath || null,
+        });
       }
 
       convState.clearState(userId);
