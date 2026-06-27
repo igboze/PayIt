@@ -10,11 +10,15 @@
 //
 // ⚠️  Plain ERC-20 transfers to the Gateway Wallet contract = permanent loss of funds
 //
+// FIX 1: Added executeDeposit() which actually runs the approve + deposit() on-chain.
+// FIX 2: CHAIN_RPCS is now exported so wallet.js and other modules can use it.
+// FIX 3: Source-chain USDC decimals are correctly 6 (not 18).
+//
 // Testnet API: https://gateway-api-testnet.circle.com/v1
 // Docs: https://developers.circle.com/gateway
 
 const axios = require("axios");
-const { Contract, Wallet, JsonRpcProvider, keccak256, AbiCoder, toUtf8Bytes, solidityPackedKeccak256 } = require("ethers");
+const { Contract, Wallet, JsonRpcProvider, parseUnits, formatUnits } = require("ethers");
 
 const GATEWAY_API_BASE = process.env.GATEWAY_API_URL || "https://gateway-api-testnet.circle.com/v1";
 
@@ -38,6 +42,7 @@ const DOMAIN_IDS = {
 };
 
 // ── RPC endpoints for each source chain ───────────────────────────────────────
+// FIX 2: Exported so wallet.js can use these for balance checks
 const CHAIN_RPCS = {
   "Ethereum Sepolia": "https://rpc.sepolia.org",
   "Base Sepolia":     "https://sepolia.base.org",
@@ -143,7 +148,6 @@ async function getDepositInfo(arcAddress) {
     gatewayMinterAddress: GATEWAY_MINTER_ADDRESS,
     chains: SUPPORTED_CHAINS,
     usdcAddresses: USDC_ADDRESSES,
-    // Step-by-step instructions for the bot message
     steps: [
       `*Step 1 — Get testnet USDC*\nVisit https://faucet.circle.com, select your chain and request USDC.`,
       `*Step 2 — Approve*\nIn your web3 wallet (MetaMask etc), approve the Gateway Wallet contract to spend your USDC:\nContract: \`${GATEWAY_WALLET_ADDRESS}\``,
@@ -151,6 +155,57 @@ async function getDepositInfo(arcAddress) {
       `*Step 4 — Wait for finality*\nSepolia: ~12 mins · Base Sepolia: ~2 mins · Avalanche Fuji: instant`,
       `*Step 5 — Transfer to Arc*\nOnce finalized, tap *Transfer to Arc* and sign the burn intent. Your USDC will appear on Arc in <500ms.`,
     ],
+  };
+}
+
+/**
+ * FIX 1: Actually execute the approve + deposit on-chain for a given source chain.
+ *
+ * This function does what the docs describe — it's what the bot must call when
+ * the user initiates a cross-chain deposit from within PayIT (i.e. the user has
+ * their private key stored in the bot's DB and triggers "Add from Abroad").
+ *
+ * NOTE: Source-chain USDC is always 6 decimals — NOT 18 like Arc's native USDC.
+ *
+ * @param {string} privateKey       - User's private key (decrypted from DB)
+ * @param {string} sourceChainName  - e.g. "Ethereum Sepolia"
+ * @param {string|number} amountUsdc - Human-readable USDC amount, e.g. "25.00"
+ * @returns {{ approveTxHash: string, depositTxHash: string }}
+ */
+async function executeDeposit(privateKey, sourceChainName, amountUsdc) {
+  const chain = SUPPORTED_CHAINS.find(c => c.name === sourceChainName);
+  if (!chain) throw new Error(`Unsupported chain: ${sourceChainName}`);
+
+  const rpcUrl      = CHAIN_RPCS[sourceChainName];
+  const usdcAddress = USDC_ADDRESSES[sourceChainName];
+  if (!rpcUrl || !usdcAddress) {
+    throw new Error(`Missing RPC or USDC address config for: ${sourceChainName}`);
+  }
+
+  const provider = new JsonRpcProvider(rpcUrl, chain.chainId);
+  const signer   = new Wallet(privateKey, provider);
+
+  // Source chains use 6 decimals (NOT 18 — that's only Arc's native USDC)
+  const amountBN = parseUnits(amountUsdc.toString(), 6);
+
+  const usdc    = new Contract(usdcAddress, ERC20_ABI, signer);
+  const gateway = new Contract(GATEWAY_WALLET_ADDRESS, GATEWAY_WALLET_ABI, signer);
+
+  // Step 1: Approve Gateway Wallet to spend user's USDC
+  console.log(`[gateway] Approving ${amountUsdc} USDC on ${sourceChainName}...`);
+  const approveTx = await usdc.approve(GATEWAY_WALLET_ADDRESS, amountBN);
+  const approveReceipt = await approveTx.wait();
+  console.log(`[gateway] Approve confirmed: ${approveReceipt.hash}`);
+
+  // Step 2: Call deposit() — NOT a plain transfer
+  console.log(`[gateway] Depositing ${amountUsdc} USDC via Gateway Wallet contract...`);
+  const depositTx = await gateway.deposit(usdcAddress, amountBN);
+  const depositReceipt = await depositTx.wait();
+  console.log(`[gateway] Deposit confirmed: ${depositReceipt.hash}`);
+
+  return {
+    approveTxHash: approveReceipt.hash,
+    depositTxHash: depositReceipt.hash,
   };
 }
 
@@ -172,11 +227,13 @@ async function getTransferStatus(depositorAddress) {
 module.exports = {
   getDepositInfo,
   getTransferStatus,
+  executeDeposit,           // FIX 1: new export
   getGatewayInfo,
   getGatewayBalance,
   getPendingDeposits,
   submitTransfer,
   SUPPORTED_CHAINS,
+  CHAIN_RPCS,               // FIX 2: new export
   GATEWAY_WALLET_ADDRESS,
   GATEWAY_MINTER_ADDRESS,
   USDC_ADDRESSES,

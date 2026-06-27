@@ -1,11 +1,15 @@
 // src/wallet.js
 // Wallet generation, AES-256-GCM encryption/decryption (scrypt KDF), Arc RPC helpers
 // Arc testnet: native USDC at 18 decimals (confirmed from live chain behaviour)
+//
+// FIX: Added getUsdcBalance() which reads ERC-20 balanceOf() for source chains
+//      (Sepolia, Base Sepolia, Fuji) using 6 decimals — NOT provider.getBalance()
+//      which only returns the native gas token (ETH/AVAX), not USDC.
 
-const { Wallet, JsonRpcProvider, parseUnits, formatUnits } = require("ethers");
+const { Wallet, JsonRpcProvider, Contract, parseUnits, formatUnits } = require("ethers");
 const crypto = require("crypto");
 
-const ARC_RPC = process.env.ARC_RPC_URL || "https://rpc.testnet.arc.network";
+const ARC_RPC  = process.env.ARC_RPC_URL || "https://rpc.testnet.arc.network";
 const CHAIN_ID = 5042002;
 
 let _provider = null;
@@ -31,24 +35,12 @@ function isValidAddress(address) {
 
 // ─── AES-256-GCM encryption (scrypt KDF) ─────────────────────────────────────
 // scrypt params: N=2^15, r=8, p=1 — tuned for ~200ms on a modest server.
-//
-// Node's crypto.scryptSync() defaults to a 32MB maxmem cap. The actual
-// memory scrypt needs scales as 128 * N * r * p bytes — with N=2^15, r=8,
-// p=1, that's exactly 32MB (128 * 32768 * 8 * 1 = 33,554,432 bytes), right
-// at the default ceiling. Depending on Node version/platform, that
-// boundary case can throw "Invalid scrypt params: ... memory limit
-// exceeded". We explicitly set maxmem with headroom so this never
-// depends on hitting Node's default cap exactly. This does not change
-// security: N/r/p (the actual KDF cost) are untouched, we're only telling
-// Node it's allowed to use the memory the chosen N/r/p already require.
-//
-// Each wallet's key is encrypted independently with a fresh salt+IV per call.
 
 const SCRYPT_N = 32768; // 2^15
 const SCRYPT_R = 8;
 const SCRYPT_P = 1;
 const KEY_LEN  = 32;
-const SCRYPT_MAXMEM = 128 * SCRYPT_N * SCRYPT_R * SCRYPT_P * 2; // 2x headroom above the exact requirement
+const SCRYPT_MAXMEM = 128 * SCRYPT_N * SCRYPT_R * SCRYPT_P * 2; // 2x headroom
 
 function deriveKey(pin, saltHex) {
   const salt = Buffer.from(saltHex, "hex");
@@ -97,7 +89,6 @@ function decryptPrivateKey(pin, { encryptedKey, salt, iv, tag }) {
 // Arc testnet native USDC: 18 decimals (confirmed from live RPC, despite 6-decimal docs)
 
 function parseToMicro(amountStr) {
-  // "micro" here means the raw 18-decimal bigint representation
   return parseUnits(amountStr.toString(), 18);
 }
 
@@ -105,12 +96,48 @@ function formatMicro(microAmount) {
   return formatUnits(microAmount.toString(), 18);
 }
 
-// ─── Arc RPC: native USDC balance ────────────────────────────────────────────
+// ─── Arc RPC: native USDC balance (18 decimals) ───────────────────────────────
 
 async function getNativeBalanceMicro(address) {
   const provider = getProvider();
   const balance = await provider.getBalance(address);
-  return balance; // BigInt
+  return balance; // BigInt — use formatMicro() to display
+}
+
+// ─── Source-chain ERC-20 USDC balance (6 decimals) ───────────────────────────
+//
+// FIX: The original code used provider.getBalance() which returns the native
+// gas token (ETH on Sepolia, AVAX on Fuji) — NOT the USDC ERC-20 token.
+// USDC on all source chains is an ERC-20 contract with 6 decimals. This
+// function reads balanceOf() from the USDC contract directly.
+//
+// @param {string} walletAddress   - The user's wallet address
+// @param {string} chainName       - e.g. "Ethereum Sepolia" (must be in SUPPORTED_CHAINS)
+// @returns {string}               - Human-readable USDC amount, e.g. "25.000000"
+
+const ERC20_BALANCE_ABI = [
+  "function balanceOf(address owner) view returns (uint256)",
+];
+
+async function getUsdcBalance(walletAddress, chainName) {
+  // Import lazily to avoid circular dependency (gateway imports wallet too)
+  const { CHAIN_RPCS, USDC_ADDRESSES, SUPPORTED_CHAINS } = require("./gateway");
+
+  const chain = SUPPORTED_CHAINS.find(c => c.name === chainName);
+  if (!chain) throw new Error(`Unsupported chain: ${chainName}`);
+
+  const rpcUrl      = CHAIN_RPCS[chainName];
+  const usdcAddress = USDC_ADDRESSES[chainName];
+  if (!rpcUrl || !usdcAddress) {
+    throw new Error(`Missing RPC or USDC address config for: ${chainName}`);
+  }
+
+  const provider = new JsonRpcProvider(rpcUrl, chain.chainId);
+  const usdc     = new Contract(usdcAddress, ERC20_BALANCE_ABI, provider);
+
+  const raw = await usdc.balanceOf(walletAddress);
+  // Source chains: USDC = 6 decimals (NOT 18 — that is only Arc's native USDC)
+  return formatUnits(raw, 6);
 }
 
 // ─── Arc RPC: native USDC send ────────────────────────────────────────────────
@@ -134,5 +161,6 @@ module.exports = {
   parseToMicro,
   formatMicro,
   getNativeBalanceMicro,
+  getUsdcBalance,           // FIX: new export — use this for source-chain balances
   sendFromWallet,
 };

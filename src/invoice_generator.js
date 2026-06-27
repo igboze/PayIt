@@ -1,6 +1,9 @@
 // src/invoice_generator.js
 // Renders a professional USDC invoice as a PNG using sharp (SVG pipeline)
 // All user text is XML-escaped before embedding to prevent SVG injection.
+//
+// FIX: Item row Y coordinates are now captured inline during map() so the
+//      {Y} placeholder is never left un-replaced in the SVG output.
 
 const sharp = require("sharp");
 const path  = require("path");
@@ -19,34 +22,35 @@ function escape(str) {
 
 function buildSvg({ invoiceNumber, clientName, clientEmail, items, dueDate, notes, businessName, walletAddress, issueDate }) {
   const total = items.reduce((s, i) => s + Number(i.quantity || 1) * Number(i.unitPrice || 0), 0);
-  const itemRows = items.map(item => {
-    const qty      = Number(item.quantity || 1);
-    const price    = Number(item.unitPrice || 0);
-    const lineTotal = qty * price;
-    return `
-      <text x="40" y="{Y}" font-size="13" fill="#334155">${escape(item.description)}</text>
-      <text x="440" y="{Y}" font-size="13" fill="#334155" text-anchor="middle">${qty}</text>
-      <text x="520" y="{Y}" font-size="13" fill="#334155" text-anchor="end">${price.toFixed(2)}</text>
-      <text x="620" y="{Y}" font-size="13" fill="#0f766e" text-anchor="end" font-weight="600">${lineTotal.toFixed(2)}</text>
-    `;
-  });
 
+  // FIX: Capture y per item at map() time — no {Y} placeholder needed.
   let y = 290;
   const rowSpacing = 30;
-  const itemsSvg = itemRows.map((row) => {
-    const rendered = row.replace(/{Y}/g, String(y));
+
+  const itemsSvg = items.map(item => {
+    const qty       = Number(item.quantity || 1);
+    const price     = Number(item.unitPrice || 0);
+    const lineTotal = qty * price;
+    const currentY  = y;
     y += rowSpacing;
-    return rendered;
+
+    return `
+      <text x="40"  y="${currentY}" font-size="13" fill="#334155">${escape(item.description)}</text>
+      <text x="440" y="${currentY}" font-size="13" fill="#334155" text-anchor="middle">${qty}</text>
+      <text x="520" y="${currentY}" font-size="13" fill="#334155" text-anchor="end">${price.toFixed(2)}</text>
+      <text x="620" y="${currentY}" font-size="13" fill="#0f766e" text-anchor="end" font-weight="600">${lineTotal.toFixed(2)}</text>
+    `;
   }).join("");
 
+  // y is now correctly advanced past all items
   const totalY   = y + 20;
   const notesY   = totalY + 60;
   const walletY  = notesY + (notes ? 50 : 20);
   const footerY  = walletY + 50;
   const svgHeight = footerY + 60;
 
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<svg width="680" height="${svgHeight}" viewBox="0 0 680 ${svgHeight}" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif">
+  // No <?xml?> prolog — sharp handles raw SVG buffers more reliably without it.
+  return `<svg width="680" height="${svgHeight}" viewBox="0 0 680 ${svgHeight}" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif">
   <!-- Background -->
   <rect width="680" height="${svgHeight}" fill="#f8fafc" rx="12"/>
   <!-- Header stripe -->
@@ -95,7 +99,9 @@ async function generateInvoicePNG(data) {
   const svg     = buildSvg(data);
   const tmpDir  = os.tmpdir();
   const outPath = path.join(tmpDir, `invoice-${data.invoiceNumber}-${Date.now()}.png`);
-  await sharp(Buffer.from(svg)).png().toFile(outPath);
+
+  // Pass SVG as a Buffer — more reliable across sharp versions than a string
+  await sharp(Buffer.from(svg, "utf8")).png().toFile(outPath);
   return outPath;
 }
 
