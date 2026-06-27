@@ -1,56 +1,72 @@
 // agent/orchestrator.js
-// Uses Groq (llama-3.3-70b-versatile) to parse plain-English payment instructions.
-// Hard rule: never invents a recipient address — must be a real 0x address in the instruction.
+// Parses natural language payment instructions into a structured payment
+// plan that executor.js can act on.
+//
+// Updated to handle:
+//   - Standard single transfers
+//   - Bulk / multi-recipient transfers
+//   - Scheduled payments (recurring)
+//   - Off-ramp (Naira cashout) with bank details
+//   - Scheduled off-ramp
+//
+// Routes through ai_provider.js — works with Groq, OpenAI, or Gemini.
+// No code change needed to switch provider; set the key in .env.
 
-const Groq = require("groq-sdk");
+const { getJSONCompletion } = require("./ai_provider");
 
-const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+async function parsePaymentIntent(userMessage, userContext) {
+  const systemPrompt = `You are a payment orchestration agent for PayIT — a non-custodial USDC wallet inside Telegram, used primarily by Nigerians.
 
-const SYSTEM_PROMPT = `You are a payment parser for PayIT, a crypto wallet bot on Arc testnet.
+Users may write in English, Pidgin English, or a mix.
 
-Parse the user's instruction into a structured payment plan. Respond ONLY with valid JSON — no markdown, no explanation, no code fences.
+Parse the instruction and respond with ONLY a valid JSON object — no markdown, no explanation.
 
-JSON schema:
 {
+  "type": "one_time" | "scheduled" | "split" | "bulk" | "offramp" | "scheduled_offramp",
   "payments": [
-    { "to": "0x...", "amount": "5.00", "label": "description" }
+    {
+      "to": "<0x wallet address, or '__offramp__' for Naira cashout>",
+      "amount": <number in USDC>,
+      "label": "<short description>",
+      "bank_name": "<bank name for offramp, or null>",
+      "account_number": "<account number for offramp, or null>",
+      "account_name": "<account holder name for offramp, or null>",
+      "currency": "<USDC | EURC — default USDC>"
+    }
   ],
   "schedule": {
-    "frequency": "weekly" | "monthly" | "daily" | null,
-    "day": "Friday" | "1st" | null,
-    "time": "09:00" | null
+    "frequency": "daily" | "weekly" | "monthly" | null,
+    "day": "<day name or day-of-month number, or null>",
+    "time": "<HH:MM 24h, or null>"
   },
-  "summary": "one-line human-readable summary"
+  "summary": "<one plain-English sentence describing the full plan>"
 }
 
-Critical rules:
-- "to" must be a valid 0x Ethereum address copied exactly from the user's message. NEVER invent one.
-- If no valid 0x address is present, return: {"error": "No valid wallet address found. Please include a 0x address."}
-- "amount" must be a positive number string. If unclear, return: {"error": "Could not determine the amount to send."}
-- For one-time payments set schedule to null.
-- Output ONLY the JSON object. No other text.`;
+Rules:
+- For standard wallet-to-wallet sends, use the 0x address in "to".
+- For Naira cash-outs, set "to" to the string "__offramp__" and populate bank_name, account_number, account_name.
+- For bulk payments (multiple people), type is "bulk" and payments has multiple entries.
+- For recurring payments, type is "scheduled" or "scheduled_offramp" and schedule.frequency is set.
+- If no schedule, set frequency/day/time to null and type to "one_time" or "offramp".
+- Only accept 0x Ethereum-style wallet addresses for on-chain payments.
+- If recipient is a name without an address, set to to "__name__:<name>" so the caller can resolve it.
+- Amounts must be positive numbers.
+- Do not invent recipients or amounts.
+- If something critical is missing (no amount, no recipient), return {"error": "<what is missing>"}.
 
-async function parsePaymentIntent(instruction, { balance, address }) {
-  if (!process.env.GROQ_API_KEY) {
-    return { error: "GROQ_API_KEY not set in .env — get a free key at console.groq.com" };
-  }
+Pidgin English:
+  "send am" → transfer
+  "cash am out" / "convert am naira" → offramp
+  "every week" / "every Friday" / "everi munt" → scheduled
+  "abeg" → politeness prefix, ignore
+
+User context: ${JSON.stringify(userContext)}`;
+
   try {
-    const client = new Groq({ apiKey: process.env.GROQ_API_KEY });
-    const res = await client.chat.completions.create({
-      model: GROQ_MODEL,
-      temperature: 0.1,
-      max_tokens: 1024,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user",   content: `User wallet: ${address}\nBalance: ${balance} USDC\n\nInstruction: ${instruction}` },
-      ],
-    });
-    const raw   = res.choices[0]?.message?.content || "";
-    const clean = raw.replace(/```json|```/g, "").trim();
-    return JSON.parse(clean);
+    return await getJSONCompletion(systemPrompt, userMessage);
   } catch (err) {
-    console.error("[orchestrator] Parse error:", err.message);
-    return { error: "Couldn't parse your instruction. Try: 'Send 5 USDC to 0x... now' or 'Pay 0x... 10 USDC every Friday'." };
+    console.error("[orchestrator] Error:", err.message);
+    return { error: "Could not understand the payment instruction. Please try again." };
   }
 }
 
