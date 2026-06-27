@@ -1,0 +1,334 @@
+// src/business.js
+// SME Financial Hub — invoice, expense, payroll, savings, reports
+
+const db = require("./db");
+const walletLib = require("./wallet");
+const config = require("./config");
+
+// ─── Invoice Management ─────────────────────────────────────────────────────────
+
+async function createSmartInvoice(telegramId, instruction, businessInfo) {
+  const { parseInvoiceIntent } = require("../agent/invoice_parser");
+  
+  const parsed = await parseInvoiceIntent(instruction, businessInfo);
+  if (parsed.error) return { error: parsed.error };
+
+  const total = parsed.items.reduce((sum, item) => {
+    return sum + (Number(item.quantity || 1) * Number(item.unitPrice || 0));
+  }, 0);
+
+  return { parsed, total };
+}
+
+async function generateInvoiceImage(telegramId, parsed, total, businessInfo) {
+  const { generateInvoicePNG } = require("./invoice_generator");
+  
+  const invoiceNumber = db.getNextInvoiceNumber(telegramId);
+  const issueDate = new Date().toISOString().split("T")[0];
+  
+  const pngPath = await generateInvoicePNG({
+    invoiceNumber,
+    clientName: parsed.clientName,
+    clientEmail: parsed.clientEmail,
+    items: parsed.items,
+    dueDate: parsed.dueDate,
+    notes: parsed.notes,
+    businessName: businessInfo.businessName,
+    walletAddress: businessInfo.walletAddress,
+    issueDate,
+  });
+
+  const invoiceId = db.createInvoice(telegramId, {
+    context: "business",
+    invoiceNumber,
+    clientName: parsed.clientName,
+    clientEmail: parsed.clientEmail || null,
+    items: parsed.items,
+    totalUsdc: total,
+    dueDate: parsed.dueDate || null,
+    notes: parsed.notes || null,
+    walletAddress: businessInfo.walletAddress,
+    pngPath,
+  });
+
+  return { invoiceId, invoiceNumber, pngPath, total };
+}
+
+// ─── Expense Tracking ─────────────────────────────────────────────────────────
+
+async function logExpense(telegramId, text, receiptUrl = null) {
+  // Parse natural language expense
+  // "Spent 8000 naira on transport to Lekki for client meeting"
+  
+  const amountMatch = text.match(/(\d[\d,]*)\s*(naira|usd|usdc|eur|eurc)/i);
+  const amount = amountMatch ? parseFloat(amountMatch[1].replace(/,/g, "")) : null;
+  const currency = amountMatch ? amountMatch[2].toUpperCase() : "NGN";
+  
+  // Simple category extraction
+  const categories = ["transport", "food", "utilities", "rent", "salaries", "marketing", "equipment", "misc"];
+  const category = categories.find(c => text.toLowerCase().includes(c)) || "misc";
+  
+  // Description is the full text minus amount
+  const description = text.replace(/spent\s+/i, "").replace(/paid\s+/i, "");
+
+  if (!amount) return { error: "Couldn't find amount. Try: 'Spent 5000 naira on lunch'" };
+
+  const expenseId = await db.addExpense(telegramId, "business", amount, currency, category, description, receiptUrl);
+  
+  return {
+    expenseId,
+    amount,
+    currency,
+    category,
+    description,
+  };
+}
+
+function formatExpenseSummary(expenses) {
+  if (!expenses.length) return "No expenses logged yet.";
+  
+  const totalByCategory = {};
+  let grandTotal = 0;
+  
+  for (const e of expenses) {
+    totalByCategory[e.category] = (totalByCategory[e.category] || 0) + e.amount;
+    grandTotal += e.amount;
+  }
+  
+  const lines = Object.entries(totalByCategory)
+    .sort((a, b) => b[1] - a[1])
+    .map(([cat, total]) => `  ${cat}: ${total.toLocaleString()} NGN`);
+  
+  return (
+    `📊 Expense Summary (Last 30 days)\n` +
+    `──────────────────────────\n` +
+    lines.join("\n") + `\n` +
+    `──────────────────────────\n` +
+    `Total: ${grandTotal.toLocaleString()} NGN\n\n` +
+    `Top category: ${Object.entries(totalByCategory).sort((a,b) => b[1]-a[1])[0][0]}`
+  );
+}
+
+// ─── Cash Flow Dashboard ────────────────────────────────────────────────────────
+
+async function generateCashFlowBriefing(telegramId, businessWallet) {
+  const now = new Date();
+  const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
+  
+  // Get all business transactions
+  const txs = await db.getTransactions(telegramId, "business", 100);
+  const invoices = await db.getUserInvoices(telegramId, "business");
+  const expenses = await db.getExpenses(telegramId, "business", 50);
+  
+  // Calculate metrics
+  const paidInvoices = invoices.filter(i => i.status === "paid");
+  const unpaidInvoices = invoices.filter(i => i.status === "unpaid");
+  const overdueInvoices = unpaidInvoices.filter(i => i.due_date && new Date(i.due_date) < now);
+  
+  const revenue = paidInvoices.reduce((sum, i) => sum + i.total_usdc, 0);
+  const outstanding = unpaidInvoices.reduce((sum, i) => sum + i.total_usdc, 0);
+  
+  const expenseTotal = expenses.reduce((sum, e) => {
+    // Rough conversion for mixed currencies
+    const rate = e.currency === "USDC" ? 1500 : 1; // Approximate
+    return sum + (e.amount * rate);
+  }, 0);
+  
+  // Wallet balance
+  let balanceUsdc = 0;
+  try {
+    const balanceMicro = await walletLib.getNativeBalanceMicro(businessWallet.deposit_address);
+    balanceUsdc = parseFloat(walletLib.formatMicro(balanceMicro));
+  } catch {}
+  
+  // Burn rate (expenses per day)
+  const daysActive = Math.max(1, (now - new Date(businessWallet.created_at || now)) / (1000 * 60 * 60 * 24));
+  const dailyBurn = expenseTotal / daysActive;
+  const runway = dailyBurn > 0 ? Math.round((balanceUsdc * 1500) / dailyBurn) : 999;
+  
+  return {
+    balanceUsdc,
+    revenue,
+    outstanding,
+    expenseTotal,
+    paidCount: paidInvoices.length,
+    unpaidCount: unpaidInvoices.length,
+    overdueCount: overdueInvoices.length,
+    dailyBurn,
+    runway,
+  };
+}
+
+function formatCashFlowBriefing(data) {
+  const rate = 1500; // Approximate NGN/USD rate — use live rate in production
+  
+  return (
+    `📈 Good morning. Here's your business snapshot:\n` +
+    `──────────────────────────\n` +
+    `💰 Wallet: $${data.balanceUsdc.toFixed(2)} USDC (≈ ₦${(data.balanceUsdc * rate).toLocaleString()})\n` +
+    `📥 Revenue (30d): $${data.revenue.toFixed(2)} USDC\n` +
+    `⏳ Outstanding: $${data.outstanding.toFixed(2)} USDC (${data.unpaidCount} invoices)\n` +
+    `📤 Expenses (30d): ≈ ₦${data.expenseTotal.toLocaleString()}\n` +
+    `🔥 Daily burn: ≈ ₦${Math.round(data.dailyBurn).toLocaleString()}\n` +
+    `⏱️ Runway: ~${data.runway} days at current burn\n\n` +
+    `${data.overdueCount > 0 ? `⚠️ ${data.overdueCount} invoice(s) overdue — tap to follow up` : "✅ No overdue invoices"}`
+  );
+}
+
+// ─── Payroll ────────────────────────────────────────────────────────────────────
+
+async function runPayroll(telegramId, pin, userWallet) {
+  const recipients = await db.getPayrollRecipients(telegramId);
+  if (!recipients.length) return { error: "No payroll recipients set up. Add team members first." };
+  
+  const results = [];
+  let totalSent = 0;
+  
+  for (const recipient of recipients) {
+    try {
+      const amountMicro = walletLib.parseToMicro(recipient.amount_usdc.toString());
+      const txHash = await walletLib.sendFromWallet(userWallet, recipient.wallet_address, amountMicro);
+      
+      await db.recordTransaction(telegramId, "business", "payroll", amountMicro, "USDC", "confirmed", txHash, recipient.wallet_address, {
+        recipientName: recipient.name,
+        payrollId: recipient.id,
+      });
+      
+      results.push({ name: recipient.name, amount: recipient.amount_usdc, status: "sent", txHash });
+      totalSent += recipient.amount_usdc;
+    } catch (err) {
+      results.push({ name: recipient.name, amount: recipient.amount_usdc, status: "failed", error: err.message });
+    }
+  }
+  
+  return { results, totalSent, recipientCount: recipients.length };
+}
+
+// ─── Savings Goals ──────────────────────────────────────────────────────────────
+
+async function autoSaveFromInvoice(telegramId, invoiceAmount) {
+  const profile = await db.getBusinessProfile(telegramId);
+  const percent = profile?.savings_goal_percent || config.business.defaultSavingsPercent;
+  
+  const goals = await db.getSavingsGoals(telegramId, "business");
+  if (!goals.length) return null;
+  
+  const saveAmount = (invoiceAmount * percent) / 100;
+  const perGoal = saveAmount / goals.length;
+  
+  for (const goal of goals) {
+    await db.updateSavingsGoalAmount(goal.id, perGoal);
+  }
+  
+  return {
+    saved: saveAmount,
+    percent,
+    goalsUpdated: goals.length,
+  };
+}
+
+// ─── AI Reports ───────────────────────────────────────────────────────────────
+
+async function generateMonthlyReport(telegramId, month, year) {
+  const txs = await db.getTransactions(telegramId, "business", 200);
+  const expenses = await db.getExpenses(telegramId, "business", 100);
+  const invoices = await db.getUserInvoices(telegramId, "business");
+  
+  // Filter by month
+  const monthStr = `${year}-${String(month).padStart(2, "0")}`;
+  const monthTxs = txs.filter(t => t.created_at?.startsWith(monthStr));
+  const monthExpenses = expenses.filter(e => e.created_at?.startsWith(monthStr));
+  const monthInvoices = invoices.filter(i => i.created_at?.startsWith(monthStr));
+  
+  const revenue = monthInvoices.filter(i => i.status === "paid").reduce((s, i) => s + i.total_usdc, 0);
+  const pending = monthInvoices.filter(i => i.status === "unpaid").reduce((s, i) => s + i.total_usdc, 0);
+  const expenseTotal = monthExpenses.reduce((s, e) => s + e.amount, 0);
+  
+  // Category breakdown
+  const byCategory = {};
+  for (const e of monthExpenses) {
+    byCategory[e.category] = (byCategory[e.category] || 0) + e.amount;
+  }
+  const topCategory = Object.entries(byCategory).sort((a, b) => b[1] - a[1])[0];
+  
+  return {
+    month,
+    year,
+    revenue,
+    pending,
+    expenses: expenseTotal,
+    net: revenue - (expenseTotal / 1500), // rough USD equivalent
+    invoiceCount: monthInvoices.length,
+    expenseCount: monthExpenses.length,
+    topCategory: topCategory ? topCategory[0] : null,
+    topCategoryAmount: topCategory ? topCategory[1] : 0,
+  };
+}
+
+function formatMonthlyReport(report) {
+  const rate = 1500;
+  
+  return (
+    `📊 ${report.month}/${report.year} Business Report\n` +
+    `──────────────────────────\n` +
+    `Revenue: $${report.revenue.toFixed(2)} USDC\n` +
+    `Pending: $${report.pending.toFixed(2)} USDC\n` +
+    `Expenses: ≈ ₦${report.expenses.toLocaleString()}\n` +
+    `Net: $${report.net.toFixed(2)} USDC (approx)\n\n` +
+    `${report.topCategory ? `Top expense: ${report.topCategory} (₦${report.topCategoryAmount.toLocaleString()})` : "No expenses this month"}\n\n` +
+    `${report.invoiceCount} invoices · ${report.expenseCount} expenses logged`
+  );
+}
+
+// ─── Natural Language Queries ─────────────────────────────────────────────────
+
+async function answerBusinessQuery(telegramId, query) {
+  const lower = query.toLowerCase();
+  
+  // Simple pattern matching for common queries
+  if (lower.includes("most") || lower.includes("top client") || lower.includes("highest")) {
+    const invoices = await db.getUserInvoices(telegramId, "business");
+    const byClient = {};
+    for (const inv of invoices.filter(i => i.status === "paid")) {
+      byClient[inv.client_name] = (byClient[inv.client_name] || 0) + inv.total_usdc;
+    }
+    const top = Object.entries(byClient).sort((a, b) => b[1] - a[1])[0];
+    return top 
+      ? `🏆 ${top[0]} is your top client with $${top[1].toFixed(2)} USDC in paid invoices.`
+      : "No paid invoices yet to determine top client.";
+  }
+  
+  if (lower.includes("runway") || lower.includes("burn")) {
+    const user = await db.getUser(telegramId);
+    if (!user?.business_wallet) return "Set up your business wallet first.";
+    const data = await generateCashFlowBriefing(telegramId, user.business_wallet);
+    return `Your runway is approximately ${data.runway} days at current burn rate.`;
+  }
+  
+  if (lower.includes("this month") || lower.includes("last month")) {
+    const now = new Date();
+    const report = await generateMonthlyReport(telegramId, now.getMonth() + 1, now.getFullYear());
+    return formatMonthlyReport(report);
+  }
+  
+  if (lower.includes("expense") || lower.includes("spending")) {
+    const expenses = await db.getExpenses(telegramId, "business", 30);
+    return formatExpenseSummary(expenses);
+  }
+  
+  return "I can answer questions about your top clients, runway, monthly reports, and expenses. Try: 'Who paid me the most?' or 'What's my runway?'";
+}
+
+module.exports = {
+  createSmartInvoice,
+  generateInvoiceImage,
+  logExpense,
+  formatExpenseSummary,
+  generateCashFlowBriefing,
+  formatCashFlowBriefing,
+  runPayroll,
+  autoSaveFromInvoice,
+  generateMonthlyReport,
+  formatMonthlyReport,
+  answerBusinessQuery,
+};

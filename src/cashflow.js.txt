@@ -1,0 +1,57 @@
+// src/cashflow.js
+// Morning briefing scheduler for business users
+
+const cron = require("node-cron");
+const { Telegraf } = require("telegraf");
+const business = require("./business");
+const db = require("./db");
+
+let botInstance = null;
+
+function initCashFlowScheduler(bot) {
+  botInstance = bot;
+  
+  // Run at 8 AM every day
+  cron.schedule("0 8 * * *", async () => {
+    console.log("[cashflow] Running morning briefings...");
+    await sendAllBriefings();
+  });
+  
+  console.log("[cashflow] Morning briefing scheduled for 8:00 AM");
+}
+
+async function sendAllBriefings() {
+  // In production, query all users with business wallets and briefing enabled
+  // For now, this is a placeholder — iterate through active business users
+  console.log("[cashflow] Briefings sent (implement user iteration)");
+}
+
+async function sendBriefingToUser(telegramId) {
+  if (!botInstance) return;
+  
+  const user = await db.getUser(telegramId);
+  if (!user || !user.business_wallet) return;
+  
+  try {
+    const data = await business.generateCashFlowBriefing(telegramId, user.business_wallet);
+    const message = business.formatCashFlowBriefing(data);
+    
+    const { Markup } = require("telegraf");
+    await botInstance.telegram.sendMessage(telegramId, message, {
+      parse_mode: "Markdown",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("📋 View Invoices", "action_list_invoices")],
+        [Markup.button.callback("➕ Log Expense", "action_log_expense")],
+        [Markup.button.callback("💰 Check Balance", "action_balance")],
+      ]),
+    });
+  } catch (err) {
+    console.error(`[cashflow] Briefing failed for ${telegramId}:`, err.message);
+  }
+}
+
+module.exports = {
+  initCashFlowScheduler,
+  sendBriefingToUser,
+  sendAllBriefings,
+};

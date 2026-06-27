@@ -1,0 +1,23 @@
+// scripts/migrate-db.js
+// Database migration for v1 → v2 schema
+
+const fs = require("fs");
+const path = require("path");
+
+console.log("PayIT v2 Database Migration");
+console.log("==========================\n");
+
+console.log("New tables in v2:");
+console.log("  - wallets (dual wallet support)");
+console.log("  - business_profiles");
+console.log("  - expenses");
+console.log("  - savings_goals");
+console.log("  - payroll_recipients");
+console.log("\nRun this after backing up your payit.db");
+console.log("The bot will auto-create tables on first start.\n");
+
+console.log("Manual migration steps:");
+console.log("1. Backup: cp payit.db payit.db.backup");
+console.log("2. Run: npm start");
+console.log("3. Existing users will need to create a Business wallet on first toggle.");
+console.log("4. Personal wallets remain untouched.\n");

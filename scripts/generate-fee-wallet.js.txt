@@ -1,0 +1,20 @@
+// scripts/generate-fee-wallet.js
+// Generates the protocol fee wallet for App Kit swap fees
+// Run: npm run generate-fee-wallet
+
+const { Wallet } = require("ethers");
+
+const wallet = Wallet.createRandom();
+
+console.log("\n=================================================");
+console.log(" PROTOCOL FEE WALLET");
+console.log("=================================================\n");
+console.log("Address:", wallet.address);
+console.log("Private Key:", wallet.privateKey);
+console.log("\n=================================================");
+console.log("Add to your .env:");
+console.log(`APP_FEE_RECIPIENT=${wallet.address}`);
+console.log(`APP_FEE_WALLET_PRIVATE_KEY=${wallet.privateKey}`);
+console.log("\nThis wallet receives the protocol fee on every swap.");
+console.log("Keep the private key secure — fund with a small amount for gas if needed.");
+console.log("=================================================\n");
