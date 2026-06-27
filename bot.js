@@ -1,48 +1,16 @@
 // bot.js
-// PayIT — non-custodial dollar wallet inside Telegram
-// Personal + Business accounts · dollar + euro wallets · Arc Testnet
-//
-// Architecture:
-//   Every text message → intent_router → handler
-//   Every photo        → vision_parser → confirmation flow
-//   Every document     → file_parser   → bulk payment flow
-//   Buttons are shortcuts to common intents, not the primary interface
-//
-// Run: node bot.js
+// PayIT - non-custodial Telegram USDC wallet bot on Arc (testnet)
+// Run with: node bot.js   (after npm install and setting up .env)
 
 require("dotenv").config();
-
 const { Telegraf, Markup } = require("telegraf");
-const https = require("https");
-
-// ── Src modules ───────────────────────────────────────────────────────────────
-const db            = require("./src/db");
-const walletLib     = require("./src/wallet");
-const offrampLib    = require("./src/offramp");
-const fx            = require("./src/fx");
-const otp           = require("./src/otp");
-const savings       = require("./src/savings");
-const tokens        = require("./src/tokens");
-const gateway       = require("./src/gateway");
-const invoiceDb     = require("./src/invoice_db");
-const bizDb         = require("./src/biz_db");
-const bizProfile    = require("./src/biz_profile");
-const payeeBook     = require("./src/payee_book");
-const convState     = require("./src/conversation_state");
-const { generateInvoicePNG }   = require("./src/invoice_generator");
-const { generateReceiptPNG }   = require("./src/receipt_generator");
-
-// ── Agent modules ─────────────────────────────────────────────────────────────
-const { parsePaymentIntent }      = require("./agent/orchestrator");
-const { executePlan, executeOfframp, formatResults } = require("./agent/executor");
-const { startJob, cancelJob, reloadAll, describeSchedule } = require("./agent/scheduler");
-const { saveSchedule, removeSchedule, getUserSchedules }   = require("./agent/store");
-const { parseInvoiceIntent }      = require("./agent/invoice_parser");
-const { classifyIntent, getMissingQuestion, buildConfirmationText } = require("./agent/intent_router");
-const { parseImagePayment, formatExtractionPreview } = require("./agent/vision_parser");
-const { parsePdf, parseSpreadsheetFile, formatFilePreview } = require("./agent/file_parser");
-
-// ─── Startup checks ───────────────────────────────────────────────────────────
+const db = require("./src/db");
+const walletLib = require("./src/wallet");
+const offramp = require("./src/offramp");
+const fx = require("./src/fx");
+const otp = require("./src/otp");
+const swap = require("./src/swap");
+const savings = require("./src/savings");
 
 if (!process.env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN.includes("PASTE_YOUR")) {
   console.error("ERROR: TELEGRAM_BOT_TOKEN is not set in .env");
@@ -51,2734 +19,643 @@ if (!process.env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN.includes("
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-const ADMIN_IDS = (process.env.ADMIN_TELEGRAM_IDS || "")
-  .split(",").map(s => s.trim()).filter(Boolean);
+// In-memory "what is this user in the middle of doing" state.
+// Fine for a single-process testnet bot; a real deployment running multiple
+// instances would need this in a shared store (e.g. Redis) instead.
+// NOTE: during onboarding this briefly holds a freshly generated, not-yet-
+// encrypted private key in memory - never logged, cleared the moment the
+// PIN is set and the encrypted version is written to disk.
+const pendingAction = new Map();
 
-// ─── Init all tables ──────────────────────────────────────────────────────────
+const mainMenu = Markup.keyboard([
+  ["\u{1F4B0} Balance", "\u{1F4E4} Send", "\u{1F501} Swap"],
+  ["\u{1F4E5} Receive", "\u{1F4B0} Yields", "\u{1F4CB} History"],
+  ["\u2699\uFE0F Settings", "\u{1F4D6} How to Use", "\u2728 Features"],
+]).resize();
 
-invoiceDb.initInvoiceTables();
-bizDb.initBizTables();
-bizProfile.initBizProfileTable();
-payeeBook.initPayeeTable();
-convState.initStateTable();
-
-// Purge stale conversation states on startup and every hour
-convState.purgeExpired();
-setInterval(convState.purgeExpired, 60 * 60 * 1000);
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function getContext(userId) {
-  return db.getUser(userId)?.active_context || "personal";
-}
-
-function getActiveWallet(user) {
-  if ((user.active_context || "personal") === "business") {
-    return user.business_deposit_address || user.deposit_address;
-  }
-  return user.deposit_address;
+function fmt(microAmount) {
+  return `${walletLib.formatMicro(microAmount)} USDC`;
 }
 
 function requireUser(ctx) {
-  const user = db.getUser(ctx.from?.id);
+  const user = db.getUser(ctx.from.id);
   if (!user) {
-    ctx.reply(
-      "Welcome to PayIT!\n\nSend /start to set up your wallet in under a minute."
-    );
+    ctx.reply("Send /start first to set up your wallet.");
     return null;
   }
   return user;
 }
 
-// Delete a message after a delay (used for PIN and key exports)
-function scheduleDelete(ctx, messageId, ms = 60000) {
+// Deletes a message after a delay - used for anything that briefly displays
+// a private key. Best-effort: Telegram message deletion can fail (e.g. if
+// the user already deleted it, or after 48h), so errors are swallowed.
+function scheduleDelete(ctx, messageId, ms) {
   setTimeout(() => {
     ctx.telegram.deleteMessage(ctx.chat.id, messageId).catch(() => {});
   }, ms);
 }
 
-// Delete the user's own message immediately (used after PIN entry)
-async function deleteSensitiveMessage(ctx) {
-  try {
-    await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id);
-  } catch { /* message may already be gone */ }
-}
-
-async function safeGetBalance(address) {
-  try {
-    const usdcMicro = await walletLib.getNativeBalanceMicro(address);
-    const usdc      = parseFloat(walletLib.formatMicro(usdcMicro));
-    const eurcMicro = await tokens.getEurcBalance(address);
-    const eurc      = parseFloat(walletLib.formatMicro(eurcMicro));
-    let line = `$${usdc.toFixed(2)}`;
-    if (eurc > 0) line += ` · €${eurc.toFixed(2)}`;
-    return { usdc, eurc, display: line };
-  } catch {
-    return { usdc: 0, eurc: 0, display: "(unavailable)" };
-  }
-}
-
-// Download a Telegram file as a Buffer
-async function downloadTelegramFile(ctx, fileId) {
-  const fileLink = await ctx.telegram.getFileLink(fileId);
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    https.get(fileLink.href, res => {
-      res.on("data", chunk => chunks.push(chunk));
-      res.on("end",  ()    => resolve(Buffer.concat(chunks)));
-      res.on("error", reject);
-    }).on("error", reject);
-  });
-}
-
-// ─── Keyboards ────────────────────────────────────────────────────────────────
-
-function mainMenu(context) {
-  if (context === "business") {
-    return Markup.keyboard([
-      ["💼 Business Balance", "🧾 New Invoice", "💸 Log Expense"],
-      ["📋 My Invoices",      "👥 Pay Team",    "📊 This Month"],
-      ["💰 Business Savings", "📈 Reports",     "📤 Send Payment"],
-      ["💵 Cash Out",         "🔄 Swap",        "⚙️ Settings"],
-      ["📖 Help",             "✨ What's New"],
-    ]).resize();
-  }
-  return Markup.keyboard([
-    ["💰 My Money",    "📤 Send Money",  "🔄 Swap"],
-    ["📥 Add Money",   "📈 Save & Earn", "📋 History"],
-    ["🤖 Auto-Pay",   "🧾 Invoice",     "👥 Contacts"],
-    ["⚙️ Settings",   "📖 Help"],
-  ]).resize();
-}
-
-function accountToggle(context) {
-  const personal = context === "personal"
-    ? Markup.button.callback("● Personal", "noop")
-    : Markup.button.callback("  Personal", "switch_personal");
-  const business = context === "business"
-    ? Markup.button.callback("● Business", "noop")
-    : Markup.button.callback("  Business", "switch_business");
-  return Markup.inlineKeyboard([[personal, business]]);
-}
-
-const backToMenu = Markup.inlineKeyboard([
-  [Markup.button.callback("🏠 Main Menu", "main_menu")],
-]);
-
-const afterPaymentButtons = Markup.inlineKeyboard([
-  [Markup.button.callback("💰 Check Balance", "action_balance"),
-   Markup.button.callback("📋 History",       "action_history")],
-  [Markup.button.callback("🏠 Main Menu", "main_menu")],
-]);
-
-// ─── /start — onboarding ──────────────────────────────────────────────────────
+// ---------- Onboarding ----------
 
 bot.start(async (ctx) => {
   const existing = db.getUser(ctx.from.id);
   if (existing) {
-    const context = existing.active_context || "personal";
-    const addr    = getActiveWallet(existing);
-    const bal     = await safeGetBalance(addr);
-    return ctx.reply(
-      `👋 Welcome back, ${ctx.from.first_name || "there"}!\n\n` +
-      `Your balance: ${bal.display}\n` +
-      `Account: ${context === "business" ? "Business 💼" : "Personal 👤"}\n\n` +
-      `What would you like to do?`,
-      { ...mainMenu(context), ...accountToggle(context) }
-    );
+    return ctx.reply(`Welcome back. Your wallet:\n${existing.deposit_address}`, mainMenu);
   }
 
-  return ctx.reply(
-    `👋 Welcome to PayIT.\n\n` +
-    `Save in dollars. Spend in Naira.\n` +
-    `Everything right here in Telegram.\n\n` +
-    `Your money stays yours — PayIT never holds it for you.\n\n` +
-    `How will you use PayIT?`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("👤 Personal",  "onboard_personal")],
-      [Markup.button.callback("💼 Business",  "onboard_business")],
-    ])
-  );
-});
-
-// ── Personal onboarding path ──────────────────────────────────────────────────
-
-bot.action("onboard_personal", async (ctx) => {
-  ctx.answerCbQuery();
   const wallet = walletLib.generateUserWallet();
-  convState.setState(ctx.from.id, "onboarding_pin", {
-    accountType: "personal",
-    address:     wallet.address,
-    privateKey:  wallet.privateKey,
-    username:    ctx.from.username,
-  }, "personal");
-  await ctx.reply(
-    `👤 Personal account — great.\n\n` +
-    `We'll create your wallet now.\n\n` +
-    `First, choose a 4-digit PIN. This is the only thing protecting your money — ` +
-    `write it down somewhere safe.\n\n` +
-    `⚠️ If you forget your PIN and haven't saved your security phrase, ` +
-    `your money cannot be recovered by anyone, including us.\n\n` +
-    `Type your 4-digit PIN:`
-  );
-});
-
-// ── Business onboarding path — collects full profile before PIN ───────────────
-
-bot.action("onboard_business", async (ctx) => {
-  ctx.answerCbQuery();
-  convState.setState(ctx.from.id, "onboard_biz_name", {
+  pendingAction.set(ctx.from.id, {
+    type: "onboarding_set_pin",
+    address: wallet.address,
+    privateKey: wallet.privateKey,
     username: ctx.from.username,
-  }, "business");
+  });
+
   await ctx.reply(
-    `💼 Business account — let's set up your profile.\n\n` +
-    `This appears on every invoice you create.\n\n` +
-    `What's your business name?`
+    `Welcome to PayIT.\n\n` +
+      `PayIT is non-custodial: you hold your own wallet, and we never have access to your funds without you.\n\n` +
+      `First, set a 4-digit PIN. This encrypts your private key on our server and is required to confirm any ` +
+      `withdrawal, send, or swap.\n\n` +
+      `IMPORTANT: if you forget this PIN and haven't separately backed up your private key, your funds become ` +
+      `permanently unrecoverable - there is no "forgot password" option for a non-custodial wallet. This is by ` +
+      `design, not a bug.\n\n` +
+      `Send me a 4-digit PIN now to continue.`
   );
 });
 
-// ─── Account switching ────────────────────────────────────────────────────────
+bot.command("menu", (ctx) => ctx.reply("Menu:", mainMenu));
 
-bot.action("switch_personal", async (ctx) => {
-  ctx.answerCbQuery();
-  const user = requireUser(ctx);
-  if (!user) return;
-  db.setActiveContext(ctx.from.id, "personal");
-  const bal = await safeGetBalance(user.deposit_address);
-  await ctx.reply(
-    `👤 Switched to Personal\n\nYour balance: ${bal.display}`,
-    { ...mainMenu("personal"), ...accountToggle("personal") }
-  );
-});
-
-bot.action("switch_business", async (ctx) => {
-  ctx.answerCbQuery();
-  const user = requireUser(ctx);
-  if (!user) return;
-
-  if (!user.business_deposit_address) {
-    convState.setState(ctx.from.id, "create_biz_wallet_pin", {}, "personal");
-    return ctx.reply(
-      `💼 Setting up your Business wallet.\n\nEnter your PIN to create it:`,
-      Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-    );
-  }
-
-  db.setActiveContext(ctx.from.id, "business");
-  const bal     = await safeGetBalance(user.business_deposit_address);
-  const pending = bizDb.getPendingInvoiceCount(ctx.from.id);
-  const pendingLine = pending > 0
-    ? `\n📬 ${pending} unpaid invoice${pending > 1 ? "s" : ""} waiting.`
-    : "";
-
-  await ctx.reply(
-    `💼 Switched to Business\n\nBalance: ${bal.display}${pendingLine}`,
-    { ...mainMenu("business"), ...accountToggle("business") }
-  );
-});
-
-bot.action("noop",      (ctx) => ctx.answerCbQuery());
-bot.action("main_menu", (ctx) => {
-  ctx.answerCbQuery();
-  const context = getContext(ctx.from?.id);
-  return ctx.reply("What would you like to do?", mainMenu(context));
-});
-
-// ─── Balance ──────────────────────────────────────────────────────────────────
+// ---------- Core actions ----------
 
 async function showBalance(ctx) {
   const user = requireUser(ctx);
   if (!user) return;
-  const context = user.active_context || "personal";
-  const address = getActiveWallet(user);
-  const label   = context === "business" ? "💼 Business" : "👤 Personal";
 
   try {
-    const usdcMicro = await walletLib.getNativeBalanceMicro(address);
-    const usdc      = parseFloat(walletLib.formatMicro(usdcMicro));
-    const eurcMicro = await tokens.getEurcBalance(address);
-    const eurc      = parseFloat(walletLib.formatMicro(eurcMicro));
-    const rate      = await fx.getUsdToNgnRate();
+    const balanceMicro = await walletLib.getNativeBalanceMicro(user.deposit_address);
+    const usdcAmount = parseFloat(walletLib.formatMicro(balanceMicro));
 
+    const rate = await fx.getUsdToNgnRate();
     const nairaLine = rate
-      ? `≈ ${fx.formatNaira(usdc * rate)} at ₦${Math.round(rate).toLocaleString()}/$`
-      : "";
-    const eurcLine  = eurc > 0 ? `\n€${eurc.toFixed(2)} euros` : "";
+      ? `\u2248 ${fx.formatNaira(usdcAmount * rate)} at today's rate (~\u20A6${Math.round(rate)}/USD)\n` +
+        `Note: estimate only - actual Naira pay-out is set by Paj Cash at the time you off-ramp.`
+      : "(Naira estimate unavailable right now)";
 
     await ctx.reply(
-      `💰 ${label} Balance\n──────────────────────────\n` +
-      `$${usdc.toFixed(2)} dollars${eurcLine}\n${nairaLine}\n\n` +
-      `Your PayIT account number (tap to copy):\n${address}`,
-      Markup.inlineKeyboard([
-        [Markup.button.callback("📥 Add Money",       "action_receive"),
-         Markup.button.callback("📤 Send Money",      "action_send_menu")],
-        [Markup.button.callback("💵 Cash Out to Naira", "action_withdraw_menu"),
-         Markup.button.callback("📈 Earn Interest",   "action_yields")],
-        [Markup.button.callback("🌍 Add from Abroad", "action_gateway")],
-        [Markup.button.callback("📋 History",         "action_history")],
-      ])
+      `Wallet: ${user.deposit_address}\nBalance: ${usdcAmount.toFixed(4)} USDC\n${nairaLine}`
     );
   } catch (err) {
-    console.error("[balance]", err);
-    await ctx.reply("Couldn't check your balance right now — please try again shortly.");
+    console.error(err);
+    await ctx.reply("Couldn't check your balance right now - please try again shortly.");
   }
 }
 
-async function showBizBalance(ctx) {
+async function showDeposit(ctx) {
   const user = requireUser(ctx);
   if (!user) return;
-  if (!user.business_deposit_address) {
-    return ctx.reply(
-      "No Business wallet found.",
-      Markup.inlineKeyboard([[Markup.button.callback("💼 Set up Business", "switch_business")]])
-    );
-  }
-  try {
-    const addr      = user.business_deposit_address;
-    const usdcMicro = await walletLib.getNativeBalanceMicro(addr);
-    const usdc      = parseFloat(walletLib.formatMicro(usdcMicro));
-    const eurcMicro = await tokens.getEurcBalance(addr);
-    const eurc      = parseFloat(walletLib.formatMicro(eurcMicro));
-    const rate      = await fx.getUsdToNgnRate();
-    const nairaLine = rate ? `≈ ${fx.formatNaira(usdc * rate)}` : "";
-    const eurcLine  = eurc > 0 ? `\n€${eurc.toFixed(2)} euros` : "";
-    const pending   = bizDb.getPendingInvoiceCount(ctx.from.id);
-    const expenses  = bizDb.getMonthExpenses(ctx.from.id);
-
-    await ctx.reply(
-      `💼 Business Balance\n──────────────────────────\n` +
-      `$${usdc.toFixed(2)} dollars${eurcLine}\n${nairaLine}\n\n` +
-      `📬 Unpaid invoices: ${pending}\n` +
-      `📉 Expenses this month: $${expenses.toFixed(2)}\n\n` +
-      `Account number:\n${addr}`,
-      Markup.inlineKeyboard([
-        [Markup.button.callback("🧾 New Invoice",   "action_new_biz_invoice"),
-         Markup.button.callback("💸 Log Expense",   "action_log_expense")],
-        [Markup.button.callback("📋 Invoices",      "action_list_biz_invoices"),
-         Markup.button.callback("📊 This Month",    "action_cash_flow")],
-        [Markup.button.callback("🌍 Add from Abroad", "action_gateway")],
-      ])
-    );
-  } catch (err) {
-    console.error("[biz_balance]", err);
-    await ctx.reply("Couldn't check your balance right now — please try again.");
-  }
-}
-
-// ─── Receive / Add Money ──────────────────────────────────────────────────────
-
-async function showReceive(ctx) {
-  const user    = requireUser(ctx);
-  if (!user) return;
-  const context = user.active_context || "personal";
-  const address = getActiveWallet(user);
-  const label   = context === "business" ? "Business" : "Personal";
-
   await ctx.reply(
-    `📥 Add Money — ${label}\n──────────────────────────\n` +
-    `Your PayIT account number (tap to copy):\n\n` +
-    `${address}\n\n` +
-    `Anyone can send you dollars or euros to this address from any compatible wallet.\n\n` +
-    `Or use 🌍 Add from Abroad to bring money in from Binance, Coinbase, MetaMask, and others.`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("🌍 Add from Abroad", "action_gateway")],
-      [Markup.button.callback("💰 Check Balance", "action_balance")],
-      [Markup.button.callback("🏠 Main Menu",     "main_menu")],
-    ])
+    `Your wallet address (Arc Testnet):\n${user.deposit_address}\n\n` +
+      `This is genuinely your own wallet. Get free testnet USDC from https://faucet.circle.com ` +
+      `(select "Arc Testnet") and send it here - no sweeping, no delay, it's yours on arrival.`
   );
 }
-
-// ─── History ──────────────────────────────────────────────────────────────────
 
 async function showHistory(ctx) {
   const user = requireUser(ctx);
   if (!user) return;
-  const address = getActiveWallet(user);
-  const txs     = db.getTransactions(ctx.from.id, 10);
-
-  if (!txs.length) {
+  const txs = db.getTransactions(ctx.from.id, 10);
+  if (txs.length === 0) {
     return ctx.reply(
-      `📋 No transactions yet.\n\nOnce you send or receive money, everything will appear here.`,
-      backToMenu
+      "No PayIT-initiated transactions yet.\n\n" +
+        `For full on-chain history (including deposits), check your address on ` +
+        `https://testnet.arcscan.app/address/${user.deposit_address}`
     );
   }
-
-  const typeLabel = {
-    send_usdc:                  "Sent dollars",
-    send_eurc:                  "Sent euros",
-    offramp:                    "Cashed out",
-    offramp_request:            "Cashed out",
-    autopay:                    "Auto-payment",
-    yield_deposit:              "Saved to interest pool",
-    yield_withdraw:             "Withdrew from interest pool",
-  };
-
-  const lines = txs.map(t => {
-    const label  = typeLabel[t.type] || t.type;
-    const amount = walletLib.formatMicro(t.amount_micro);
-    const status = t.status === "confirmed" ? "✅" : t.status === "failed" ? "❌" : "⏳";
-    return `${status} ${label}  $${parseFloat(amount).toFixed(2)}\n   ${t.created_at}`;
-  });
-
-  await ctx.reply(
-    `📋 Recent Activity\n──────────────────────────\n` +
-    lines.join("\n\n") +
-    `\n\nFull history: https://testnet.arcscan.app/address/${address}`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("💰 Balance", "action_balance")],
-      [Markup.button.callback("🏠 Main Menu", "main_menu")],
-    ])
+  const lines = txs.map(
+    (t) => `#${t.id} ${t.type} ${walletLib.formatMicro(t.amount_micro)} USDC [${t.status}] ${t.created_at}`
   );
+  await ctx.reply(lines.join("\n"));
 }
-
-// ─── Settings ─────────────────────────────────────────────────────────────────
 
 async function showSettings(ctx) {
-  const user    = requireUser(ctx);
+  const user = requireUser(ctx);
   if (!user) return;
-  const context = user.active_context || "personal";
-  const hasBiz  = !!user.business_deposit_address;
-  const phone   = user.phone_number
-    ? `${user.phone_number} ${user.phone_verified ? "✅" : "⏳"}`
-    : "not set";
-
   await ctx.reply(
-    `⚙️ Settings\n──────────────────────────\n` +
-    `Active account: ${context === "business" ? "Business 💼" : "Personal 👤"}\n` +
-    `Personal account: ${user.deposit_address}\n` +
-    `Business account: ${hasBiz ? user.business_deposit_address : "not set up yet"}\n` +
-    `Linked account: ${user.external_wallet_address || "none"}\n` +
-    `Phone: ${phone}\n\n` +
-    `PayIT never holds your money. Your PIN is the only key to your funds.`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("🔑 Save Personal Security Phrase", "export_personal")],
-      [Markup.button.callback("🔑 Save Business Security Phrase", "export_business")],
-      [Markup.button.callback("🔒 Change PIN",                  "changepin")],
-      [Markup.button.callback("👛 Link External Wallet",        "setwallet_prompt")],
-      [Markup.button.callback("📱 Verify Phone",                "verifyphone_prompt")],
-      [Markup.button.callback("💼 Business Profile",            "biz_profile_menu")],
-      [Markup.button.callback("🏠 Main Menu",                   "main_menu")],
-    ])
+    `\u2699\uFE0F Settings\n\n` +
+      `Wallet: ${user.deposit_address}\n` +
+      `Linked external wallet: ${user.external_wallet_address || "none"}\n` +
+      `Phone: ${user.phone_number ? `${user.phone_number} (${user.phone_verified ? "verified" : "not verified"})` : "not set"}\n\n` +
+      `/export - show your private key (PIN required, auto-deletes after 60s)\n` +
+      `/changepin - change your PIN\n` +
+      `/setwallet <address> - link an external wallet\n` +
+      `/verifyphone <phone> - start SMS verification (Termii)\n\n` +
+      `PayIT is non-custodial: this wallet is genuinely yours. We never hold a usable copy of your ` +
+      `private key without your PIN.`
   );
 }
-
-// ─── Business Profile Menu ────────────────────────────────────────────────────
-
-bot.action("biz_profile_menu", async (ctx) => {
-  ctx.answerCbQuery();
-  const user    = requireUser(ctx);
-  if (!user) return;
-  const profile = bizProfile.getBizProfile(ctx.from.id);
-
-  if (!profile) {
-    return ctx.reply(
-      `💼 No business profile yet.\n\nSet one up to add your branding to invoices.`,
-      Markup.inlineKeyboard([
-        [Markup.button.callback("Set Up Profile", "onboard_business")],
-        [Markup.button.callback("« Back",         "action_settings")],
-      ])
-    );
-  }
-
-  await ctx.reply(
-    `💼 Business Profile\n──────────────────────────\n` +
-    `Name: ${profile.business_name}\n` +
-    `Email: ${profile.business_email || "not set"}\n` +
-    `Phone: ${profile.phone || "not set"}\n` +
-    `Address: ${profile.address || "not set"}\n` +
-    `Default payment terms: ${profile.default_due_days} days\n` +
-    `Logo: ${profile.logo_path ? "uploaded ✅" : "not uploaded"}`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("✏️ Update Name",         "biz_edit_name")],
-      [Markup.button.callback("✏️ Update Email",        "biz_edit_email")],
-      [Markup.button.callback("✏️ Update Phone",        "biz_edit_phone")],
-      [Markup.button.callback("✏️ Update Address",      "biz_edit_address")],
-      [Markup.button.callback("🖼️ Upload Logo",         "biz_edit_logo")],
-      [Markup.button.callback("✏️ Payment Terms",       "biz_edit_terms")],
-      [Markup.button.callback("« Back to Settings",    "action_settings")],
-    ])
-  );
-});
-
-// Individual field edits
-const bizEditFields = {
-  biz_edit_name:    { field: "business_name",    prompt: "Enter your new business name:" },
-  biz_edit_email:   { field: "business_email",   prompt: "Enter your business email address:" },
-  biz_edit_phone:   { field: "phone",            prompt: "Enter your business phone number:" },
-  biz_edit_address: { field: "address",          prompt: "Enter your business address:" },
-  biz_edit_terms:   { field: "default_due_days", prompt: "How many days until invoices are due? (e.g. 14, 30)" },
-};
-
-for (const [action, { field, prompt }] of Object.entries(bizEditFields)) {
-  bot.action(action, (ctx) => {
-    ctx.answerCbQuery();
-    convState.setState(ctx.from.id, "biz_edit_field", { field }, getContext(ctx.from.id));
-    return ctx.reply(
-      prompt,
-      Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "biz_profile_menu")]])
-    );
-  });
-}
-
-bot.action("biz_edit_logo", (ctx) => {
-  ctx.answerCbQuery();
-  convState.setState(ctx.from.id, "await_logo_upload", {}, getContext(ctx.from.id));
-  return ctx.reply(
-    `🖼️ Send your business logo as a photo.\n\n` +
-    `Recommended: square image (PNG or JPG), at least 200×200px.`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "biz_profile_menu")]])
-  );
-});
-
-// ─── Help & Features ──────────────────────────────────────────────────────────
 
 function showHelp(ctx) {
-  const context = getContext(ctx.from?.id);
-  if (context === "business") {
-    return ctx.reply(
-      `📖 PayIT for Business\n──────────────────────────\n` +
-      `🧾 New Invoice — describe it in plain English, get a PDF\n` +
-      `📋 My Invoices — track and manage what's owed to you\n` +
-      `💸 Log Expense — record a business spend quickly\n` +
-      `👥 Pay Team — bulk pay your staff in dollars\n` +
-      `📊 This Month — income vs expenses summary\n` +
-      `💰 Business Savings — set aside money for tax or goals\n` +
-      `📤 Send Payment — pay suppliers in dollars\n` +
-      `💵 Cash Out — convert dollars to Naira\n\n` +
-      `You can also just type what you want to do — PayIT understands plain English and Pidgin.`,
-      mainMenu(context)
-    );
-  }
   return ctx.reply(
-    `📖 How to Use PayIT\n──────────────────────────\n` +
-    `💰 My Money — your dollar and euro balance\n` +
-    `📥 Add Money — your account number to receive\n` +
-    `📤 Send Money — send to a saved contact or account number\n` +
-    `📈 Save & Earn — earn interest on your dollars\n` +
-    `🤖 Auto-Pay — set up recurring payments\n` +
-    `🧾 Invoice — create and send payment requests\n` +
-    `👥 Contacts — save people you pay often\n` +
-    `🌍 Add from Abroad — bring money from Binance, Coinbase, MetaMask\n\n` +
-    `You can also just type what you want — "send 10 dollars to Emeka", ` +
-    `"cash out 50 to my GTBank account", "invoice TechCorp 200 for design work".\n\n` +
-    `You can even send a photo of a bill or invoice and PayIT will read it.`,
-    mainMenu(context)
+    "PayIT (non-custodial, Arc testnet)\n\n" +
+      "\u{1F4B0} Balance - your live on-chain balance + Naira estimate\n" +
+      "\u{1F4E5} Receive - your wallet address\n" +
+      "\u{1F4CB} History - PayIT-initiated transactions\n" +
+      "\u2699\uFE0F Settings - PIN, linked wallet, phone\n" +
+      "/withdraw <amount> - cash out to Naira via Paj Cash (placeholder integration)\n" +
+      "/sendout <amount> - send USDC to your linked external wallet\n" +
+      "\u{1F501} Swap - not wired to a verified router address yet\n" +
+      "\u{1F4B0} Yields - earn yield via Azuro Protocol (Polygon)\n" +
+      "/deposit_yield <amount> - deposit USDC into Azuro yield pool\n" +
+      "/my_yield - check your current yield position\n" +
+      "/withdraw_yield - close your yield position and collect earnings\n\n" +
+      "Bills and Bulk Send aren't built yet."
   );
 }
 
 function showFeatures(ctx) {
-  const context = getContext(ctx.from?.id);
   return ctx.reply(
-    `✨ What's live on PayIT:\n\n` +
-    `✅ Personal and Business accounts (one PIN)\n` +
-    `✅ Dollar and Euro wallets\n` +
-    `✅ Add money from Binance, Coinbase, MetaMask and more\n` +
-    `✅ Cash out to Naira via bank transfer\n` +
-    `✅ Earn interest on your dollar balance\n` +
-    `✅ Create professional invoices in plain English\n` +
-    `✅ Auto-payments — schedule recurring transfers\n` +
-    `✅ Business tools: invoices, expenses, payroll, cash flow\n` +
-    `✅ Send a photo of a bill and PayIT reads and pays it\n` +
-    `✅ Upload a spreadsheet to bulk pay your team\n` +
-    `✅ Save contacts — send to "Emeka" instead of a long account number\n\n` +
-    `🚧 Coming soon:\n` +
-    `— Card spending\n` +
-    `— Airtime and bills\n` +
-    `— Business AI reports`,
-    mainMenu(context)
+    "\u2728 What's actually live right now (Arc testnet):\n" +
+      "- Your own independently-generated, non-custodial wallet\n" +
+      "- PIN-encrypted private key, with a safe export flow\n" +
+      "- Live on-chain balance check with Naira estimate\n" +
+      "- Naira off-ramp request (placeholder - needs real Paj Cash credentials)\n" +
+      "- Send to a linked external wallet\n" +
+      "- SMS OTP via Termii (needs your Termii API key configured)\n" +
+      "- \u{1F4C8} Yield deposits via Azuro Protocol (Polygon) - live APY, PIN-confirmed\n" +
+      "  PayIT takes 10% of APY as a service fee; you keep 90%\n\n" +
+      "\u{1F6A7} Not built yet:\n" +
+      "- Card spending (no card issuer chosen)\n" +
+      "- Real swap execution (no verified Arc router address yet)\n" +
+      "- Cross-chain bridge for yield (Arc \u2192 Polygon) - yield is simulated on testnet\n" +
+      "- Bills, Bulk Send"
   );
 }
 
-// ─── Contacts (Payee Book) ────────────────────────────────────────────────────
-
-async function showContacts(ctx) {
-  const user    = requireUser(ctx);
-  if (!user) return;
-  const payees  = payeeBook.getAllPayees(ctx.from.id);
-
-  if (!payees.length) {
-    return ctx.reply(
-      `👥 No contacts saved yet.\n\n` +
-      `Save someone by typing:\n` +
-      `"Save 0xABC... as Emeka"\n` +
-      `"Add Amara — GTBank 0123456789"\n\n` +
-      `Once saved, just say "send 50 to Emeka" and PayIT knows who you mean.`,
-      backToMenu
-    );
+async function executeWithdraw(ctx, user, amountMicro, amountUsdcStr, pin) {
+  let userWallet;
+  try {
+    const pk = db.decryptPrivateKey(pin, user);
+    userWallet = walletLib.walletFromPrivateKey(pk);
+  } catch {
+    return ctx.reply("Couldn't unlock your wallet with that PIN.");
   }
 
-  const list = payeeBook.formatPayeeList(payees);
-  await ctx.reply(
-    `👥 Your Contacts\n──────────────────────────\n${list}`,
-    { parse_mode: "Markdown",
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback("➕ Add Contact", "add_contact")],
-        [Markup.button.callback("🏠 Main Menu",   "main_menu")],
-      ])
-    }
-  );
+  const offrampAddress = process.env.PAJCASH_OFFRAMP_ADDRESS;
+  if (!offrampAddress || !walletLib.isValidAddress(offrampAddress)) {
+    return ctx.reply("Off-ramp isn't configured yet (PAJCASH_OFFRAMP_ADDRESS missing in .env) - see docs.");
+  }
+
+  const txId = db.recordTransaction(user.telegram_id, "offramp_request", amountMicro, "pending", null);
+
+  let txHash;
+  try {
+    txHash = await walletLib.sendFromWallet(userWallet, offrampAddress, amountMicro);
+  } catch (err) {
+    db.updateTransactionStatus(txId, "failed");
+    return ctx.reply("On-chain transfer failed: " + err.message);
+  }
+
+  try {
+    const result = await offramp.requestOfframp(user.telegram_id, amountMicro, {
+      accountNumber: "0000000000",
+      bankCode: "000",
+      accountName: ctx.from.first_name || "PayIT User",
+    });
+    db.updateTransactionStatus(txId, "submitted");
+    await ctx.reply(
+      `Sent ${amountUsdcStr} USDC on-chain (tx: ${txHash}) and notified Paj Cash. ` +
+        `Reference: ${result.reference || result.id}\n(Placeholder integration - needs real Paj Cash credentials.)`
+    );
+  } catch (err) {
+    db.updateTransactionStatus(txId, "onchain_sent_notify_failed");
+    await ctx.reply(
+      `Your USDC was sent on-chain successfully (tx: ${txHash}), but notifying Paj Cash failed: ${err.message}\n` +
+        `That transfer is real and can't be auto-reversed - contact support with this tx hash if the Naira doesn't arrive.`
+    );
+  }
 }
 
-bot.action("add_contact", (ctx) => {
-  ctx.answerCbQuery();
-  convState.setState(ctx.from.id, "await_add_contact", {}, getContext(ctx.from.id));
-  return ctx.reply(
-    `👥 Add a contact\n──────────────────────────\n` +
-    `Type their details in plain English:\n\n` +
-    `• "Save 0xABC...123 as Emeka"\n` +
-    `• "Add Amara — GTBank account 0123456789"\n` +
-    `• "Save john@payit.app as John for invoices"`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-  );
-});
+async function executeSendout(ctx, user, amountMicro, pin) {
+  if (!user.external_wallet_address) {
+    return ctx.reply("Link a wallet first with /setwallet <address>.");
+  }
+  let userWallet;
+  try {
+    const pk = db.decryptPrivateKey(pin, user);
+    userWallet = walletLib.walletFromPrivateKey(pk);
+  } catch {
+    return ctx.reply("Couldn't unlock your wallet with that PIN.");
+  }
 
-// ─── Yields / Save & Earn ─────────────────────────────────────────────────────
+  const txId = db.recordTransaction(user.telegram_id, "sendout", amountMicro, "pending", null);
+  try {
+    const txHash = await walletLib.sendFromWallet(userWallet, user.external_wallet_address, amountMicro);
+    db.updateTransactionStatus(txId, "confirmed");
+    await ctx.reply(
+      `Sent ${walletLib.formatMicro(amountMicro)} USDC to ${user.external_wallet_address}\ntx: ${txHash}`
+    );
+  } catch (err) {
+    db.updateTransactionStatus(txId, "failed");
+    await ctx.reply("Transfer failed: " + err.message);
+  }
+}
 
 async function showYields(ctx) {
-  await ctx.reply("Fetching current interest rates...");
+  await ctx.reply("Fetching live Azuro yield pools...");
   try {
-    const pools = await savings.getYieldPools();
-    await ctx.reply(
-      savings.formatYieldList(pools),
-      Markup.inlineKeyboard([
-        [Markup.button.callback("➕ Start Saving",      "yield_deposit_start")],
-        [Markup.button.callback("📊 My Savings",        "action_my_yield")],
-        [Markup.button.callback("💵 Withdraw Savings",  "yield_withdraw_start")],
-        [Markup.button.callback("🏠 Main Menu",         "main_menu")],
-      ])
-    );
+    const pools = await savings.getAzuroPools();
+    await ctx.reply(savings.formatYieldList(pools));
   } catch (err) {
     console.error("[yields]", err.message);
-    await ctx.reply("Couldn't fetch interest rates right now — try again shortly.");
+    await ctx.reply("Couldn't fetch yield data right now - try again shortly.");
   }
 }
 
-async function showMyYield(ctx) {
-  const user     = requireUser(ctx);
+// ---------- Commands ----------
+
+bot.command("help", showHelp);
+bot.command("deposit", showDeposit);
+bot.command("balance", showBalance);
+bot.command("history", showHistory);
+bot.command("settings", showSettings);
+bot.command("yields", showYields);
+
+bot.command("export", (ctx) => {
+  const user = requireUser(ctx);
   if (!user) return;
-  const position = db.getOpenYieldPosition(ctx.from.id);
-  if (!position) {
-    return ctx.reply(
-      `📊 No active savings yet.\n\nStart earning interest on your dollars.`,
-      Markup.inlineKeyboard([
-        [Markup.button.callback("➕ Start Saving", "yield_deposit_start")],
-        [Markup.button.callback("🏠 Main Menu",    "main_menu")],
-      ])
-    );
+  pendingAction.set(ctx.from.id, { type: "confirm_export" });
+  return ctx.reply("This will show your raw private key. Enter your 4-digit PIN to confirm.");
+});
+
+bot.command("changepin", (ctx) => {
+  const user = requireUser(ctx);
+  if (!user) return;
+  pendingAction.set(ctx.from.id, { type: "changepin_old" });
+  return ctx.reply("Enter your CURRENT 4-digit PIN.");
+});
+
+bot.command("setwallet", (ctx) => {
+  const user = requireUser(ctx);
+  if (!user) return;
+  const parts = ctx.message.text.split(" ").slice(1);
+  if (parts.length === 0) return ctx.reply("Usage: /setwallet <your Arc wallet address>");
+  const address = parts[0];
+  if (!walletLib.isValidAddress(address)) return ctx.reply("That doesn't look like a valid address.");
+  db.setExternalWallet(ctx.from.id, address);
+  return ctx.reply(`Linked external wallet: ${address}\nUse /sendout <amount> to send USDC there.`);
+});
+
+bot.command("verifyphone", async (ctx) => {
+  const user = requireUser(ctx);
+  if (!user) return;
+  const parts = ctx.message.text.split(" ").slice(1);
+  if (parts.length === 0) {
+    return ctx.reply("Usage: /verifyphone <phone number with country code, no +>\nExample: /verifyphone 2348100000000");
   }
-  await ctx.reply(
-    savings.formatPosition(position),
-    Markup.inlineKeyboard([
-      [Markup.button.callback("💵 Withdraw Savings", "yield_withdraw_start")],
-      [Markup.button.callback("📈 View Rates",       "action_yields")],
-      [Markup.button.callback("🏠 Main Menu",        "main_menu")],
-    ])
-  );
-}
-
-// ─── Gateway / Add from Abroad ────────────────────────────────────────────────
-
-bot.action("action_gateway", async (ctx) => {
-  ctx.answerCbQuery();
-  const user    = requireUser(ctx);
-  if (!user) return;
-  const address = getActiveWallet(user);
-
-  await ctx.reply(
-    `🌍 Add Money from Abroad\n──────────────────────────\n` +
-    `Bring dollars from another platform — Binance, Coinbase, MetaMask, Trust Wallet, and more.\n\n` +
-    `How it works:\n` +
-    `1️⃣ Copy your PayIT account number below\n` +
-    `2️⃣ Go to your other platform and send USDC to that number\n` +
-    `3️⃣ Your balance updates automatically — usually in under a minute\n\n` +
-    `Supported platforms: any wallet that supports Ethereum, Base, Polygon, or Arbitrum\n\n` +
-    `Fee: 0.05%`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("📋 Copy Account Number",   "gateway_myaddress")],
-      [Markup.button.callback("📖 Step-by-Step Guide",    "gateway_steps")],
-      [Markup.button.callback("🔍 Check Incoming Balance", "gateway_balance")],
-      [Markup.button.callback("🏠 Back",                  "main_menu")],
-    ])
-  );
-});
-
-bot.action("gateway_myaddress", async (ctx) => {
-  ctx.answerCbQuery();
-  const user    = requireUser(ctx);
-  if (!user) return;
-  const address = getActiveWallet(user);
-  await ctx.reply(
-    `📋 Your PayIT Account Number\n──────────────────────────\n` +
-    `\`${address}\`\n\n` +
-    `Tap the number above to copy it, then paste it as the recipient in your other platform.`,
-    { parse_mode: "Markdown",
-      ...Markup.inlineKeyboard([
-        [Markup.button.url("🔎 View transaction history", `https://testnet.arcscan.app/address/${address}`)],
-        [Markup.button.callback("« Back", "action_gateway")],
-      ])
-    }
-  );
-});
-
-bot.action("gateway_steps", async (ctx) => {
-  ctx.answerCbQuery();
-  const user    = requireUser(ctx);
-  if (!user) return;
-  const address = getActiveWallet(user);
-  await ctx.reply(
-    `📖 How to Add Money from Another Platform\n──────────────────────────\n\n` +
-    `Step 1: Get your PayIT account number\n` +
-    `\`${address}\`\n\n` +
-    `Step 2: Go to your other platform (Binance, Coinbase, MetaMask, etc.)\n\n` +
-    `Step 3: Start a withdrawal or send, choose USDC (dollars), paste your PayIT account number as the destination\n\n` +
-    `Step 4: Confirm the transaction on that platform\n\n` +
-    `Step 5: Your PayIT balance updates — usually in under a minute\n\n` +
-    `⚠️ Always send USDC (dollars). Sending a different currency to this address may result in permanent loss.`,
-    { parse_mode: "Markdown",
-      ...Markup.inlineKeyboard([
-        [Markup.button.url("🚰 Get free test dollars (Circle Faucet)", "https://faucet.circle.com")],
-        [Markup.button.callback("« Back", "action_gateway")],
-      ])
-    }
-  );
-});
-
-bot.action("gateway_balance", async (ctx) => {
-  ctx.answerCbQuery();
-  const user    = requireUser(ctx);
-  if (!user) return;
-  const address = getActiveWallet(user);
-  await ctx.reply("🔍 Checking for incoming transfers...");
-  const status  = await gateway.getTransferStatus(address);
-
-  if (!status || Object.keys(status).length === 0) {
-    return ctx.reply(
-      `No incoming transfers found yet.\n\n` +
-      `If you just sent from another platform, it may take a few minutes to arrive.`,
-      Markup.inlineKeyboard([
-        [Markup.button.callback("🔄 Check Again", "gateway_balance")],
-        [Markup.button.callback("« Back",         "action_gateway")],
-      ])
-    );
-  }
-
-  const lines = Object.entries(status)
-    .filter(([k]) => k !== "pending")
-    .map(([chain, data]) => `${chain}: ${JSON.stringify(data.available)}`)
-    .join("\n");
-
-  await ctx.reply(
-    `Incoming balance detected:\n\n${lines}\n\nThis will appear in your PayIT balance shortly.`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("🔄 Refresh", "gateway_balance")],
-      [Markup.button.callback("« Back",     "action_gateway")],
-    ])
-  );
-});
-
-// ─── Send menu ────────────────────────────────────────────────────────────────
-
-bot.action("action_send_menu", (ctx) => {
-  ctx.answerCbQuery();
-  const user = requireUser(ctx);
-  if (!user) return;
-  return ctx.reply(
-    `📤 Send Money\n──────────────────────────\nWhere are you sending to?`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("💵 Cash Out to Naira",      "action_withdraw_menu")],
-      [Markup.button.callback("👛 Send to a Wallet",       "action_sendout_menu")],
-      [Markup.button.callback("👥 Send to a Saved Contact","action_send_contact")],
-      [Markup.button.callback("🏠 Main Menu",              "main_menu")],
-    ])
-  );
-});
-
-bot.action("action_send_contact", async (ctx) => {
-  ctx.answerCbQuery();
-  const user   = requireUser(ctx);
-  if (!user) return;
-  const payees = payeeBook.getAllPayees(ctx.from.id);
-  if (!payees.length) {
-    return ctx.reply(
-      "No contacts saved yet. Add one first.",
-      Markup.inlineKeyboard([[Markup.button.callback("👥 Add Contact", "add_contact")]])
-    );
-  }
-  const buttons = payees.slice(0, 8).map(p =>
-    [Markup.button.callback(p.name, `send_to_payee_${p.id}`)]
-  );
-  return ctx.reply(
-    "Who would you like to send to?",
-    Markup.inlineKeyboard([...buttons, [Markup.button.callback("❌ Cancel", "main_menu")]])
-  );
-});
-
-bot.action(/^send_to_payee_(\d+)$/, (ctx) => {
-  ctx.answerCbQuery();
-  const user    = requireUser(ctx);
-  if (!user) return;
-  const payeeId = parseInt(ctx.match[1]);
-  const payees  = payeeBook.getAllPayees(ctx.from.id);
-  const payee   = payees.find(p => p.id === payeeId);
-  if (!payee) return ctx.reply("Contact not found.");
-  convState.setState(ctx.from.id, "await_sendout_amount", {
-    token:          "USDC",
-    recipientName:  payee.name,
-    walletAddress:  payee.wallet_address,
-    accountNumber:  payee.account_number,
-    bankName:       payee.bank_name,
-    accountName:    payee.account_name,
-  }, getContext(ctx.from.id));
-  return ctx.reply(
-    `📤 Send to ${payee.name}\n──────────────────────────\n` +
-    `${payee.wallet_address ? "Wallet: " + payee.wallet_address.slice(0, 12) + "..." : ""}\n` +
-    `${payee.account_number ? "Bank: " + (payee.bank_name || "") + " · " + payee.account_number : ""}\n\n` +
-    `How much would you like to send?`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-  );
-});
-
-// ─── Withdraw / Cash Out ──────────────────────────────────────────────────────
-
-bot.action("action_withdraw_menu", (ctx) => {
-  ctx.answerCbQuery();
-  const user = requireUser(ctx);
-  if (!user) return;
-  convState.setState(ctx.from.id, "await_withdraw_amount", {}, getContext(ctx.from.id));
-  return ctx.reply(
-    `💵 Cash Out to Naira\n──────────────────────────\n` +
-    `How much would you like to cash out?`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-  );
-});
-
-// ─── Send to external wallet ──────────────────────────────────────────────────
-
-bot.action("action_sendout_menu", (ctx) => {
-  ctx.answerCbQuery();
-  const user = requireUser(ctx);
-  if (!user) return;
-  convState.setState(ctx.from.id, "await_sendout_address", { token: "USDC" }, getContext(ctx.from.id));
-  return ctx.reply(
-    `👛 Send Dollars to a Wallet\n──────────────────────────\n` +
-    `Paste the account number you want to send to (starts with 0x):`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-  );
-});
-
-// ─── Yield actions ────────────────────────────────────────────────────────────
-
-bot.action("yield_deposit_start", async (ctx) => {
-  ctx.answerCbQuery();
-  const user = requireUser(ctx);
-  if (!user) return;
-  let bal;
+  const phone = parts[0];
   try {
-    const micro = await walletLib.getNativeBalanceMicro(user.deposit_address);
-    bal         = parseFloat(walletLib.formatMicro(micro));
+    const result = await otp.sendOtp(phone);
+    db.setPhoneNumber(ctx.from.id, phone);
+    pendingAction.set(ctx.from.id, { type: "confirm_otp", pinId: result.pinId });
+    await ctx.reply("Code sent via SMS. Enter the 4-digit code to verify.");
+  } catch (err) {
+    console.error(err.message);
+    await ctx.reply("Couldn't send the verification code (check TERMII_API_KEY in .env): " + err.message);
+  }
+});
+
+bot.command("withdraw", async (ctx) => {
+  const user = requireUser(ctx);
+  if (!user) return;
+  const parts = ctx.message.text.split(" ").slice(1);
+  if (parts.length === 0) return ctx.reply("Usage: /withdraw <amount in USDC>");
+
+  let amountMicro;
+  try {
+    amountMicro = walletLib.parseToMicro(parts[0]);
   } catch {
-    return ctx.reply("Couldn't check your balance right now.");
+    return ctx.reply("That doesn't look like a valid amount.");
   }
-  convState.setState(ctx.from.id, "await_yield_amount", { balanceUsdc: bal }, getContext(ctx.from.id));
-  return ctx.reply(
-    `📈 Start Earning Interest\n──────────────────────────\n` +
-    `Available: $${bal.toFixed(2)} · Minimum: $1.00\n\n` +
-    `How much would you like to put into savings?`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_yields")]])
+
+  const balance = await walletLib.getNativeBalanceMicro(user.deposit_address);
+  if (balance < amountMicro) return ctx.reply(`Insufficient balance. Your balance: ${fmt(balance)}`);
+
+  pendingAction.set(ctx.from.id, {
+    type: "confirm_withdraw",
+    amountMicro: amountMicro.toString(),
+    amountUsdc: parts[0],
+  });
+  return ctx.reply("Enter your 4-digit PIN to confirm this withdrawal.");
+});
+
+bot.command("sendout", async (ctx) => {
+  const user = requireUser(ctx);
+  if (!user) return;
+  if (!user.external_wallet_address) return ctx.reply("Link a wallet first with /setwallet <address>.");
+
+  const parts = ctx.message.text.split(" ").slice(1);
+  if (parts.length === 0) return ctx.reply("Usage: /sendout <amount in USDC>");
+
+  let amountMicro;
+  try {
+    amountMicro = walletLib.parseToMicro(parts[0]);
+  } catch {
+    return ctx.reply("That doesn't look like a valid amount.");
+  }
+
+  const balance = await walletLib.getNativeBalanceMicro(user.deposit_address);
+  if (balance < amountMicro) return ctx.reply(`Insufficient balance. Your balance: ${fmt(balance)}`);
+
+  pendingAction.set(ctx.from.id, { type: "confirm_sendout", amountMicro: amountMicro.toString() });
+  return ctx.reply("Enter your 4-digit PIN to confirm this transfer.");
+});
+
+bot.command("deposit_yield", async (ctx) => {
+  const user = requireUser(ctx);
+  if (!user) return;
+
+  const parts = ctx.message.text.split(" ").slice(1);
+  if (parts.length === 0) {
+    return ctx.reply(
+      "Usage: /deposit_yield <amount in USDC>\n\nExample: /deposit_yield 10\n\n" +
+        "Tap \u{1F4B0} Yields first to see current rates."
+    );
+  }
+
+  const amount = parseFloat(parts[0]);
+  if (isNaN(amount) || amount <= 0) {
+    return ctx.reply("Please enter a valid amount. Example: /deposit_yield 10");
+  }
+  if (amount < 1) {
+    return ctx.reply("Minimum deposit is 1 USDC.");
+  }
+
+  let balanceMicro;
+  try {
+    balanceMicro = await walletLib.getNativeBalanceMicro(user.deposit_address);
+  } catch {
+    return ctx.reply("Couldn't check your balance right now - try again shortly.");
+  }
+  const balanceUsdc = parseFloat(walletLib.formatMicro(balanceMicro));
+  if (balanceUsdc < amount) {
+    return ctx.reply(
+      `Insufficient balance.\nYou have ${balanceUsdc.toFixed(4)} USDC, tried to deposit ${amount} USDC.`
+    );
+  }
+
+  let pools;
+  try {
+    pools = await savings.getAzuroPools();
+  } catch {
+    return ctx.reply("Couldn't load yield pool data right now - try again shortly.");
+  }
+  const bestPool = pools[0];
+
+  pendingAction.set(ctx.from.id, {
+    type: "confirm_yield_deposit",
+    amountUsdc: amount,
+    pool: bestPool,
+  });
+
+  await ctx.reply(
+    `\u{1F4C8} Yield Deposit Summary\n` +
+      `\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n` +
+      `Amount: $${amount.toFixed(2)} USDC\n` +
+      `Pool: ${bestPool.symbol} \u00B7 Azuro Protocol \u00B7 ${bestPool.chain}\n` +
+      `Your APY: ${bestPool.userApy}%\n` +
+      `Raw pool APY: ${bestPool.rawApy.toFixed(1)}%\n` +
+      `PayIT service fee: ${bestPool.payitApy}% APY\n\n` +
+      `\u26A0\uFE0F Testnet demo: position is recorded locally; no real bridge fires.\n\n` +
+      `Enter your 4-digit PIN to confirm, or /menu to cancel.`
   );
 });
 
-bot.action("yield_withdraw_start", (ctx) => {
-  ctx.answerCbQuery();
-  const user     = requireUser(ctx);
+bot.command("my_yield", (ctx) => {
+  const user = requireUser(ctx);
   if (!user) return;
+
   const position = db.getOpenYieldPosition(ctx.from.id);
   if (!position) {
     return ctx.reply(
-      "No active savings to withdraw.",
-      Markup.inlineKeyboard([[Markup.button.callback("➕ Start Saving", "yield_deposit_start")]])
+      "You have no active yield position.\n\nUse /deposit_yield <amount> to start earning."
     );
   }
+
+  return ctx.reply(savings.formatPosition(position));
+});
+
+bot.command("withdraw_yield", (ctx) => {
+  const user = requireUser(ctx);
+  if (!user) return;
+
+  const position = db.getOpenYieldPosition(ctx.from.id);
+  if (!position) {
+    return ctx.reply(
+      "No active yield position to withdraw.\n\nUse /deposit_yield <amount> to open one."
+    );
+  }
+
   const accrued = savings.calcAccruedYield(position);
-  const total   = parseFloat((position.amount_usdc + accrued).toFixed(4));
-  convState.setState(ctx.from.id, "confirm_yield_withdraw", { position, accrued, total }, getContext(ctx.from.id));
+  const total = (position.amount_usdc + accrued).toFixed(4);
+
+  pendingAction.set(ctx.from.id, {
+    type: "confirm_yield_withdraw",
+    position,
+    accrued,
+    total: parseFloat(total),
+  });
+
   return ctx.reply(
-    `💵 Withdraw Savings\n──────────────────────────\n` +
-    `Saved: $${position.amount_usdc.toFixed(2)}\n` +
-    `Interest earned: +$${accrued.toFixed(4)}\n` +
-    `Total: $${total.toFixed(4)}\n\n` +
-    `Enter your PIN to withdraw:`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_yields")]])
+    `\u{1F4B8} Withdraw Yield Position\n` +
+      `\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n` +
+      `Principal: $${position.amount_usdc.toFixed(2)} USDC\n` +
+      `Accrued yield: +$${accrued.toFixed(4)} USDC\n` +
+      `Total payout: $${total} USDC\n\n` +
+      `\u26A0\uFE0F Testnet demo: payout credited back to your wallet record.\n\n` +
+      `Enter your 4-digit PIN to confirm withdrawal.`
   );
 });
 
-// ─── Settings actions ─────────────────────────────────────────────────────────
+// ---------- Menu button handlers ----------
 
-bot.action("export_personal", (ctx) => {
-  ctx.answerCbQuery();
-  convState.setState(ctx.from.id, "confirm_export", { walletType: "personal" }, getContext(ctx.from.id));
-  return ctx.reply(
-    `🔑 Personal Security Phrase\n──────────────────────────\n` +
-    `This phrase is like a master key to your money — never share it with anyone.\n\n` +
-    `Enter your PIN to reveal it:`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_settings")]])
-  );
-});
+bot.hears("\u{1F4B0} Balance", showBalance);
+bot.hears("\u{1F4E5} Receive", showDeposit);
+bot.hears("\u{1F4CB} History", showHistory);
+bot.hears("\u2699\uFE0F Settings", showSettings);
+bot.hears("\u{1F4D6} How to Use", showHelp);
+bot.hears("\u2728 Features", showFeatures);
+bot.hears("\u{1F4B0} Yields", showYields);
 
-bot.action("export_business", (ctx) => {
-  ctx.answerCbQuery();
-  const user = requireUser(ctx);
-  if (!user?.business_deposit_address) return ctx.reply("No Business account set up yet.");
-  convState.setState(ctx.from.id, "confirm_export", { walletType: "business" }, getContext(ctx.from.id));
-  return ctx.reply(
-    `🔑 Business Security Phrase\n──────────────────────────\n` +
-    `This phrase is like a master key to your business money — never share it with anyone.\n\n` +
-    `Enter your PIN to reveal it:`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_settings")]])
-  );
-});
+bot.hears("\u{1F4E4} Send", (ctx) =>
+  ctx.reply("Use /sendout <amount> (to your linked wallet) or /withdraw <amount> (to Naira).")
+);
+bot.hears("\u{1F501} Swap", (ctx) =>
+  ctx.reply(
+    "\u{1F6A7} Swap isn't wired to a real router address yet - see \u2728 Features. " +
+      "Run `arc-canteen context sync` to help pin down a verified Arc testnet DEX address, then we can turn this on."
+  )
+);
 
-bot.action("changepin", (ctx) => {
-  ctx.answerCbQuery();
-  convState.setState(ctx.from.id, "changepin_old", {}, getContext(ctx.from.id));
-  return ctx.reply(
-    `🔒 Change PIN\n──────────────────────────\nEnter your CURRENT PIN:`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_settings")]])
-  );
-});
+// ---------- Catch-all: handles multi-step flows (PIN entry, etc.) ----------
 
-bot.action("setwallet_prompt", (ctx) => {
-  ctx.answerCbQuery();
-  convState.setState(ctx.from.id, "await_setwallet", {}, getContext(ctx.from.id));
-  return ctx.reply(
-    `👛 Link an External Account\n──────────────────────────\nPaste the account number (starts with 0x):`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_settings")]])
-  );
-});
+bot.on("text", async (ctx) => {
+  const pending = pendingAction.get(ctx.from.id);
+  if (!pending) return; // not in the middle of anything - ignore stray text
 
-bot.action("verifyphone_prompt", (ctx) => {
-  ctx.answerCbQuery();
-  convState.setState(ctx.from.id, "await_phone", {}, getContext(ctx.from.id));
-  return ctx.reply(
-    `📱 Verify Your Phone\n──────────────────────────\n` +
-    `Enter your number with country code — no + sign:\n\nExample: 2348100000000`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_settings")]])
-  );
-});
+  const text = ctx.message.text.trim();
 
-// ─── Shared inline shortcuts ──────────────────────────────────────────────────
+  if (pending.type === "onboarding_set_pin") {
+    if (!/^\d{4}$/.test(text)) return ctx.reply("PIN must be exactly 4 digits. Try again.");
+    const user = db.createUserWithWallet(ctx.from.id, pending.username, pending.address, pending.privateKey, text);
+    pendingAction.delete(ctx.from.id);
 
-bot.action("action_balance",  (ctx) => { ctx.answerCbQuery(); return getContext(ctx.from?.id) === "business" ? showBizBalance(ctx) : showBalance(ctx); });
-bot.action("action_receive",  (ctx) => { ctx.answerCbQuery(); return showReceive(ctx); });
-bot.action("action_history",  (ctx) => { ctx.answerCbQuery(); return showHistory(ctx); });
-bot.action("action_yields",   (ctx) => { ctx.answerCbQuery(); return showYields(ctx); });
-bot.action("action_my_yield", (ctx) => { ctx.answerCbQuery(); return showMyYield(ctx); });
-bot.action("action_settings", (ctx) => { ctx.answerCbQuery(); return showSettings(ctx); });
-bot.action("action_swap",     (ctx) => {
-  ctx.answerCbQuery();
-  return ctx.reply(
-    `🔄 Swap\n──────────────────────────\n` +
-    `Swap between dollar and euro balances — coming very soon.`,
-    backToMenu
-  );
-});
-
-// ─── Business Invoice actions ─────────────────────────────────────────────────
-
-async function showBizInvoiceMenu(ctx) {
-  const user = requireUser(ctx);
-  if (!user) return;
-  convState.setState(ctx.from.id, "await_biz_invoice_instruction", {}, "business");
-  return ctx.reply(
-    `🧾 Create Invoice\n──────────────────────────\n` +
-    `Describe it in plain English:\n\n` +
-    `• "Invoice Acme Ltd $500 for web design, due July 15"\n` +
-    `• "Bill TechCorp $200 consulting and $100 hosting"\n` +
-    `• "Invoice john@example.com $1,500 for brand identity"\n\n` +
-    `Type your instruction:`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("📋 All Invoices", "action_list_biz_invoices")],
-      [Markup.button.callback("❌ Cancel",        "main_menu")],
-    ])
-  );
-}
-
-bot.action("action_new_biz_invoice",   (ctx) => { ctx.answerCbQuery(); return showBizInvoiceMenu(ctx); });
-
-bot.action("action_list_biz_invoices", async (ctx) => {
-  ctx.answerCbQuery();
-  const user     = requireUser(ctx);
-  if (!user) return;
-  const invoices = bizDb.getBizInvoices(ctx.from.id);
-  if (!invoices.length) {
-    return ctx.reply(
-      "No invoices yet. Create your first one.",
-      Markup.inlineKeyboard([[Markup.button.callback("🧾 New Invoice", "action_new_biz_invoice")]])
+    const exportMsg = await ctx.reply(
+      `PIN set. Your wallet is ready:\n${user.deposit_address}\n\n` +
+        `Here is your private key - this is the ONLY time it's shown automatically. Save it somewhere safe ` +
+        `right now (a password manager, not a screenshot you'll forget about):\n\n` +
+        `${pending.privateKey}\n\n` +
+        `Anyone with this key has full control of this wallet. This message auto-deletes in 60 seconds.`
     );
+    scheduleDelete(ctx, exportMsg.message_id, 60000);
+    return ctx.reply("Menu:", mainMenu);
   }
-  const lines = invoices.slice(0, 8).map(inv => {
-    const status = inv.status === "paid" ? "✅" : "⏳";
-    return `${status} #${inv.invoice_number} — ${inv.client_name}\n   $${inv.total_usdc}${inv.due_date ? " · Due " + inv.due_date : ""}\n   /bizpaid_${inv.id}`;
-  }).join("\n\n");
 
-  await ctx.reply(
-    `📋 Your Invoices\n──────────────────────────\n${lines}\n\nTap a /bizpaid_ link to mark as paid.`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("🧾 New Invoice", "action_new_biz_invoice")],
-      [Markup.button.callback("📊 This Month",  "action_cash_flow")],
-      [Markup.button.callback("🏠 Main Menu",   "main_menu")],
-    ])
-  );
-});
-
-bot.hears(/^\/bizpaid_(\d+)$/, async (ctx) => {
-  const inv = bizDb.getBizInvoice(parseInt(ctx.match[1]));
-  if (!inv || parseInt(inv.telegram_id) !== ctx.from.id) return ctx.reply("Invoice not found.");
-  if (inv.status === "paid") return ctx.reply(`Invoice #${inv.invoice_number} is already paid ✅`);
-  bizDb.markBizInvoicePaid(parseInt(ctx.match[1]));
-  const goal = bizDb.getSavingsGoal(ctx.from.id);
-  if (goal) bizDb.addToBizSavings(ctx.from.id, parseFloat(inv.total_usdc) * goal.percentage / 100);
-  await ctx.reply(
-    `✅ Invoice #${inv.invoice_number} paid!\n${inv.client_name} · $${inv.total_usdc}` +
-    (goal ? `\n💰 ${goal.percentage}% moved to Business Savings.` : ""),
-    Markup.inlineKeyboard([[Markup.button.callback("📋 All Invoices", "action_list_biz_invoices")]])
-  );
-});
-
-bot.action("action_log_expense", (ctx) => {
-  ctx.answerCbQuery();
-  convState.setState(ctx.from.id, "await_expense_entry", {}, "business");
-  return ctx.reply(
-    `💸 Log Expense\n──────────────────────────\nDescribe it naturally:\n\n` +
-    `• "₦8,000 transport to client meeting"\n` +
-    `• "$50 SaaS subscription"\n` +
-    `• "₦20,000 office supplies"`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-  );
-});
-
-bot.action("action_cash_flow", async (ctx) => {
-  ctx.answerCbQuery();
-  const user = requireUser(ctx);
-  if (!user) return;
-  const income   = bizDb.getMonthIncome(ctx.from.id);
-  const expenses = bizDb.getMonthExpenses(ctx.from.id);
-  const net      = income - expenses;
-  const pending  = bizDb.getPendingInvoiceTotal(ctx.from.id);
-  await ctx.reply(
-    `📊 This Month\n──────────────────────────\n` +
-    `💚 Income (paid invoices): $${income.toFixed(2)}\n` +
-    `🔴 Expenses: $${expenses.toFixed(2)}\n` +
-    `──────────────────────────\n` +
-    `${net >= 0 ? "✅" : "⚠️"} Net: $${net.toFixed(2)}\n\n` +
-    `📬 Awaiting payment: $${pending.toFixed(2)}`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("📈 Full Report",  "action_biz_reports")],
-      [Markup.button.callback("🧾 New Invoice",  "action_new_biz_invoice")],
-      [Markup.button.callback("🏠 Main Menu",    "main_menu")],
-    ])
-  );
-});
-
-bot.action("action_biz_reports", async (ctx) => {
-  ctx.answerCbQuery();
-  const user     = requireUser(ctx);
-  if (!user) return;
-  const income   = bizDb.getMonthIncome(ctx.from.id);
-  const expenses = bizDb.getMonthExpenses(ctx.from.id);
-  const net      = income - expenses;
-  const margin   = income > 0 ? ((net / income) * 100).toFixed(1) : "0";
-  const breakdown = bizDb.getExpenseBreakdown(ctx.from.id);
-  const topClient = bizDb.getTopClient(ctx.from.id);
-  const invoiceCount = bizDb.getMonthInvoiceCount(ctx.from.id);
-  const breakdownLines = breakdown.slice(0, 3)
-    .map(e => `  • ${e.category}: $${e.total.toFixed(2)}`).join("\n") || "  None yet";
-
-  await ctx.reply(
-    `📈 Business Report — This Month\n──────────────────────────\n` +
-    `Revenue: $${income.toFixed(2)} (${invoiceCount} paid invoice${invoiceCount !== 1 ? "s" : ""})\n` +
-    `Expenses: $${expenses.toFixed(2)}\n` +
-    `Net profit: $${net.toFixed(2)} (${margin}% margin)\n\n` +
-    `Top expenses:\n${breakdownLines}\n\n` +
-    (topClient ? `Top client: ${topClient.name} ($${topClient.total.toFixed(2)})\n\n` : "") +
-    `💡 ${net < 0 ? "Expenses exceed revenue this month — review your top spend." : net < income * 0.2 ? "Tight margins — review your top expenses." : "Healthy margins. Consider moving surplus to savings."}`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("📊 Cash Flow", "action_cash_flow")],
-      [Markup.button.callback("🏠 Main Menu", "main_menu")],
-    ])
-  );
-});
-
-// ─── Invoice confirm (Business) ───────────────────────────────────────────────
-
-bot.action("action_confirm_biz_invoice", async (ctx) => {
-  ctx.answerCbQuery();
-  const user    = requireUser(ctx);
-  if (!user) return;
-  const state   = convState.getState(ctx.from.id);
-  if (!state || state.type !== "confirm_biz_invoice") {
-    return ctx.reply("Session expired. Start again with 🧾 New Invoice.");
-  }
-  convState.clearState(ctx.from.id);
-  const { parsed, total, walletAddress } = state.data;
-
-  await ctx.reply("⏳ Generating your invoice...");
-  try {
-    const profile      = bizProfile.getBizProfile(ctx.from.id);
-    const invoiceNumber = bizDb.getNextBizInvoiceNumber(ctx.from.id);
-    const issueDate    = new Date().toISOString().split("T")[0];
-    const logoDataUri  = profile ? bizProfile.getLogoDataUri(ctx.from.id) : null;
-
-    const pngPath = await generateInvoicePNG({
-      invoiceNumber,
-      clientName:      parsed.clientName,
-      clientEmail:     parsed.clientEmail,
-      items:           parsed.items,
-      dueDate:         parsed.dueDate,
-      notes:           parsed.notes,
-      businessName:    profile?.business_name || ctx.from.username || `User ${ctx.from.id}`,
-      businessEmail:   profile?.business_email || null,
-      businessPhone:   profile?.phone || null,
-      businessAddress: profile?.address || null,
-      logoDataUri,
-      walletAddress,
-      issueDate,
-    });
-
-    const invoiceId = bizDb.createBizInvoice(ctx.from.id, {
-      invoiceNumber,
-      clientName:  parsed.clientName,
-      clientEmail: parsed.clientEmail || null,
-      items:       parsed.items,
-      totalUsdc:   total,
-      dueDate:     parsed.dueDate || null,
-      notes:       parsed.notes   || null,
-      walletAddress,
-      pngPath,
-    });
-
-    const goal     = bizDb.getSavingsGoal(ctx.from.id);
-    const goalNote = goal
-      ? `\n💰 ${goal.percentage}% ($${(total * goal.percentage / 100).toFixed(2)}) will go to Business Savings on payment.`
-      : "";
-
-    await ctx.replyWithPhoto({ source: pngPath }, {
-      caption:
-        `🧾 Invoice #${invoiceNumber}\n` +
-        `To: ${parsed.clientName}\n` +
-        `Amount: $${total.toFixed(2)}\n` +
-        (parsed.dueDate ? `Due: ${parsed.dueDate}\n` : "") +
-        `\nSend payment to:\n\`${walletAddress}\`` + goalNote,
-      parse_mode: "Markdown",
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback("📋 All Invoices",  "action_list_biz_invoices")],
-        [Markup.button.callback(`✅ Mark as Paid`,  `action_bizpaid_${invoiceId}`)],
-        [Markup.button.callback("🏠 Main Menu",     "main_menu")],
-      ]),
-    });
-  } catch (err) {
-    console.error("[biz_invoice]", err);
-    await ctx.reply("Something went wrong. Please try again.");
-  }
-});
-
-bot.action(/^action_bizpaid_(\d+)$/, async (ctx) => {
-  ctx.answerCbQuery();
-  const inv = bizDb.getBizInvoice(parseInt(ctx.match[1]));
-  if (!inv || parseInt(inv.telegram_id) !== ctx.from.id) return ctx.reply("Invoice not found.");
-  if (inv.status === "paid") return ctx.reply("Already paid ✅");
-  bizDb.markBizInvoicePaid(parseInt(ctx.match[1]));
-  const goal = bizDb.getSavingsGoal(ctx.from.id);
-  if (goal) bizDb.addToBizSavings(ctx.from.id, parseFloat(inv.total_usdc) * goal.percentage / 100);
-  await ctx.reply(
-    `✅ Invoice #${inv.invoice_number} paid!\n${inv.client_name} · $${inv.total_usdc}` +
-    (goal ? `\n💰 ${goal.percentage}% moved to Business Savings.` : ""),
-    Markup.inlineKeyboard([[Markup.button.callback("📋 All Invoices", "action_list_biz_invoices")]])
-  );
-});
-
-// ─── Invoice confirm (Personal) ───────────────────────────────────────────────
-
-bot.action("action_confirm_invoice", async (ctx) => {
-  ctx.answerCbQuery();
-  const user  = requireUser(ctx);
-  if (!user) return;
-  const state = convState.getState(ctx.from.id);
-  if (!state || state.type !== "confirm_invoice") {
-    return ctx.reply("Session expired. Start again with 🧾 Invoice.");
-  }
-  convState.clearState(ctx.from.id);
-  const { parsed, total } = state.data;
-
-  await ctx.reply("⏳ Generating your invoice...");
-  try {
-    const invoiceNumber = invoiceDb.getNextInvoiceNumber(ctx.from.id);
-    const issueDate     = new Date().toISOString().split("T")[0];
-    const walletAddress = user.deposit_address;
-
-    const pngPath = await generateInvoicePNG({
-      invoiceNumber,
-      clientName:   parsed.clientName,
-      clientEmail:  parsed.clientEmail,
-      items:        parsed.items,
-      dueDate:      parsed.dueDate,
-      notes:        parsed.notes,
-      businessName: user.username || `User ${ctx.from.id}`,
-      walletAddress,
-      issueDate,
-    });
-
-    const invoiceId = invoiceDb.createInvoice(ctx.from.id, {
-      invoiceNumber,
-      clientName:   parsed.clientName,
-      clientEmail:  parsed.clientEmail || null,
-      items:        parsed.items,
-      totalUsdc:    total,
-      dueDate:      parsed.dueDate || null,
-      notes:        parsed.notes   || null,
-      walletAddress,
-      pngPath,
-    });
-
-    await ctx.replyWithPhoto({ source: pngPath }, {
-      caption:
-        `🧾 Invoice #${invoiceNumber}\n` +
-        `To: ${parsed.clientName}\nAmount: $${total.toFixed(2)}\n` +
-        (parsed.dueDate ? `Due: ${parsed.dueDate}\n` : "") +
-        `\nSend payment to:\n\`${walletAddress}\``,
-      parse_mode: "Markdown",
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback("📋 All Invoices", "action_list_invoices")],
-        [Markup.button.callback("✅ Mark as Paid", `action_paid_${invoiceId}`)],
-        [Markup.button.callback("🏠 Main Menu",    "main_menu")],
-      ]),
-    });
-  } catch (err) {
-    console.error("[invoice]", err);
-    await ctx.reply("Something went wrong. Please try again.");
-  }
-});
-
-bot.action(/^action_paid_(\d+)$/, async (ctx) => {
-  ctx.answerCbQuery();
-  const inv = invoiceDb.getInvoice(parseInt(ctx.match[1]));
-  if (!inv || parseInt(inv.telegram_id) !== ctx.from.id) return ctx.reply("Invoice not found.");
-  if (inv.status === "paid") return ctx.reply("Already paid ✅");
-  invoiceDb.markInvoicePaid(parseInt(ctx.match[1]));
-  await ctx.reply(
-    `✅ Invoice #${inv.invoice_number} paid!\n${inv.client_name} · $${inv.total_usdc}`,
-    Markup.inlineKeyboard([[Markup.button.callback("📋 All Invoices", "action_list_invoices")]])
-  );
-});
-
-bot.action("action_list_invoices", async (ctx) => {
-  ctx.answerCbQuery();
-  const user     = requireUser(ctx);
-  if (!user) return;
-  const invoices = invoiceDb.getUserInvoices(ctx.from.id);
-  if (!invoices.length) {
-    return ctx.reply(
-      "No invoices yet.",
-      Markup.inlineKeyboard([[Markup.button.callback("🧾 Create", "action_new_invoice")]])
-    );
-  }
-  const lines = invoices.map((inv, i) => {
-    const status = inv.status === "paid" ? "✅" : "⏳";
-    return `${i + 1}. #${inv.invoice_number} — ${inv.client_name}\n   $${inv.total_usdc} · ${status}${inv.due_date ? " · Due " + inv.due_date : ""}\n   /markinvoicepaid_${inv.id}`;
-  }).join("\n\n");
-  await ctx.reply(
-    `📋 Your Invoices\n──────────────────────────\n${lines}`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("🧾 New Invoice", "action_new_invoice")],
-      [Markup.button.callback("🏠 Main Menu",   "main_menu")],
-    ])
-  );
-});
-
-bot.hears(/^\/markinvoicepaid_(\d+)$/, async (ctx) => {
-  const inv = invoiceDb.getInvoice(parseInt(ctx.match[1]));
-  if (!inv || parseInt(inv.telegram_id) !== ctx.from.id) return ctx.reply("Invoice not found.");
-  if (inv.status === "paid") return ctx.reply("Already paid ✅");
-  invoiceDb.markInvoicePaid(parseInt(ctx.match[1]));
-  await ctx.reply(`✅ Invoice #${inv.invoice_number} marked as paid!`);
-});
-
-// ─── Auto-Pay ─────────────────────────────────────────────────────────────────
-
-async function showAutoPay(ctx) {
-  const user = requireUser(ctx);
-  if (!user) return;
-  convState.setState(ctx.from.id, "await_autopay_instruction", {}, getContext(ctx.from.id));
-  const jobs = getUserSchedules(ctx.from.id.toString());
-  const jobLine = jobs.length > 0
-    ? `\n\n📅 You have ${jobs.length} active schedule(s). Use /schedules to manage.`
-    : "";
-  return ctx.reply(
-    `🤖 Auto-Pay\n──────────────────────────\n` +
-    `Set up recurring payments in plain English:\n\n` +
-    `• "Send $5 to 0xABC... every Friday"\n` +
-    `• "Pay Emeka $100 on the 1st of every month"\n` +
-    `• "Split $50 between Amara and John weekly"\n\n` +
-    `Type your instruction:` + jobLine,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("📅 View Schedules", "action_schedules")],
-      [Markup.button.callback("🏠 Main Menu",      "main_menu")],
-    ])
-  );
-}
-
-bot.action("action_schedules", async (ctx) => {
-  ctx.answerCbQuery();
-  const jobs = getUserSchedules(ctx.from.id.toString());
-  if (!jobs.length) return ctx.reply("No active scheduled payments.");
-  const list = jobs.map((j, i) =>
-    `${i + 1}. ${j.plan.summary}\n   ${describeSchedule(j.plan.schedule)}\n   /cancelschedule_${j.id}`
-  ).join("\n\n");
-  return ctx.reply(`📅 Scheduled Payments\n──────────────────────────\n${list}`);
-});
-
-bot.command("schedules", async (ctx) => {
-  const jobs = getUserSchedules(ctx.from.id.toString());
-  if (!jobs.length) {
-    return ctx.reply(
-      "No scheduled payments yet.\n\nUse 🤖 Auto-Pay to set one up.",
-      Markup.inlineKeyboard([[Markup.button.callback("🤖 Auto-Pay", "action_autopay")]])
-    );
-  }
-  const list = jobs.map((j, i) =>
-    `${i + 1}. ${j.plan.summary}\n   ${describeSchedule(j.plan.schedule)}\n   /cancelschedule_${j.id}`
-  ).join("\n\n");
-  await ctx.reply(`📅 Scheduled Payments\n──────────────────────────\n${list}`);
-});
-
-bot.hears(/^\/cancelschedule_(.+)$/, async (ctx) => {
-  const jobId   = ctx.match[1];
-  cancelJob(jobId);
-  const removed = removeSchedule(ctx.from.id.toString(), jobId);
-  await ctx.reply(
-    removed ? "✅ Schedule cancelled." : "Couldn't find that schedule.",
-    Markup.inlineKeyboard([[Markup.button.callback("📅 Schedules", "action_schedules")]])
-  );
-});
-
-bot.action("action_autopay", showAutoPay);
-bot.action("action_new_invoice", (ctx) => {
-  ctx.answerCbQuery();
-  const context = getContext(ctx.from?.id);
-  if (context === "business") return showBizInvoiceMenu(ctx);
-  convState.setState(ctx.from.id, "await_invoice_instruction", {}, context);
-  return ctx.reply(
-    `🧾 Create Invoice\n──────────────────────────\n` +
-    `Describe it:\n\n` +
-    `• "Invoice Acme Ltd $500 for web design, due July 15"\n` +
-    `• "Bill TechCorp $200 consulting and $100 hosting"\n\n` +
-    `Type your instruction:`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("📋 My Invoices", "action_list_invoices")],
-      [Markup.button.callback("❌ Cancel",       "main_menu")],
-    ])
-  );
-});
-
-// ─── Photo handler — image / screenshot parsing ───────────────────────────────
-
-bot.on("photo", async (ctx) => {
-  const state = convState.getState(ctx.from.id);
-
-  // Business onboarding — logo step (this branch was missing; onboarding
-  // sets state "onboard_biz_logo", but this handler only ever checked for
-  // "await_logo_upload" — the Settings/Edit-Profile logo state — so a logo
-  // sent during onboarding fell through to the payment-document reader below).
-  if (state?.type === "onboard_biz_logo") {
-    await ctx.reply("⏳ Saving your logo...");
+  if (pending.type === "confirm_export") {
+    pendingAction.delete(ctx.from.id);
+    if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
+    if (!db.verifyPin(ctx.from.id, text)) return ctx.reply("Incorrect PIN.");
     try {
-      const photo    = ctx.message.photo[ctx.message.photo.length - 1];
-      const buffer   = await downloadTelegramFile(ctx, photo.file_id);
-      const logoPath = await bizProfile.saveLogo(ctx.from.id, buffer);
-
-      const d = state.data;
-      const personalWallet = walletLib.generateUserWallet();
-      const businessWallet = walletLib.generateUserWallet();
-      convState.setState(ctx.from.id, "onboarding_pin", {
-        accountType:        "business",
-        address:            personalWallet.address,
-        privateKey:         personalWallet.privateKey,
-        businessAddress:    businessWallet.address,
-        businessPrivateKey: businessWallet.privateKey,
-        username:           ctx.from.username,
-        bizProfile: {
-          businessName:   d.businessName,
-          businessEmail:  d.businessEmail,
-          phone:          d.businessPhone,
-          address:        d.businessAddress,
-          defaultDueDays: d.defaultDueDays,
-          logoPath,
-        },
-      }, "business");
-
-      return ctx.reply(
-        `✅ Logo saved!\n\n` +
-        `Now let's secure your wallet.\n\n` +
-        `Choose a 4-digit PIN — write it down somewhere safe. If you forget it and haven't saved your security phrase, your money cannot be recovered.\n\n` +
-        `Type your PIN:`
+      const user = db.getUser(ctx.from.id);
+      const pk = db.decryptPrivateKey(text, user);
+      const msg = await ctx.reply(
+        `Your private key:\n\n${pk}\n\nSave it now - this message auto-deletes in 60 seconds. ` +
+          `Anyone with this key controls your wallet.`
       );
-    } catch (err) {
-      console.error("[onboard_biz_logo]", err);
-      return ctx.reply(`Couldn't save that image. Please try again, or type "skip" to continue without a logo.`);
-    }
-  }
-
-  // Settings → Edit Business Profile → Edit Logo (this path already worked)
-  if (state?.type === "await_logo_upload") {
-    convState.clearState(ctx.from.id);
-    await ctx.reply("⏳ Saving your logo...");
-    try {
-      const photo    = ctx.message.photo[ctx.message.photo.length - 1];
-      const buffer   = await downloadTelegramFile(ctx, photo.file_id);
-      const logoPath = await bizProfile.saveLogo(ctx.from.id, buffer);
-      bizProfile.updateBizProfileField(ctx.from.id, "logo_path", logoPath);
-      await ctx.reply(
-        "✅ Logo saved! It will appear on all future invoices.",
-        Markup.inlineKeyboard([[Markup.button.callback("« Back to Profile", "biz_profile_menu")]])
-      );
-    } catch (err) {
-      console.error("[logo_upload]", err);
-      await ctx.reply("Couldn't save the logo. Please try again.");
+      scheduleDelete(ctx, msg.message_id, 60000);
+    } catch {
+      await ctx.reply("Couldn't decrypt your key.");
     }
     return;
   }
 
-  // Otherwise: treat as a payment document
-  await ctx.reply("📷 Reading your image...");
-  try {
-    const photo    = ctx.message.photo[ctx.message.photo.length - 1];
-    const buffer   = await downloadTelegramFile(ctx, photo.file_id);
-    const parsed   = await parseImagePayment(buffer, "image/jpeg");
-    const preview  = formatExtractionPreview(parsed);
-
-    if (parsed.unreadable || parsed.error === "no_vision_provider") {
-      return ctx.reply(preview, backToMenu);
+  if (pending.type === "changepin_old") {
+    if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your current 4-digit PIN.");
+    if (!db.verifyPin(ctx.from.id, text)) {
+      pendingAction.delete(ctx.from.id);
+      return ctx.reply("Incorrect PIN. Run /changepin again to retry.");
     }
+    const user = db.getUser(ctx.from.id);
+    let pk;
+    try {
+      pk = db.decryptPrivateKey(text, user);
+    } catch {
+      pendingAction.delete(ctx.from.id);
+      return ctx.reply("Couldn't unlock your wallet with that PIN.");
+    }
+    pendingAction.set(ctx.from.id, { type: "changepin_new", privateKey: pk });
+    return ctx.reply("Now send your NEW 4-digit PIN.");
+  }
 
-    // Store parsed result and ask for confirmation
-    convState.setState(ctx.from.id, "confirm_image_payment", {
-      parsed,
-      caption: ctx.message.caption || null,
-    }, getContext(ctx.from.id));
+  if (pending.type === "changepin_new") {
+    if (!/^\d{4}$/.test(text)) return ctx.reply("PIN must be exactly 4 digits. Try again.");
+    db.updatePin(ctx.from.id, text, pending.privateKey);
+    pendingAction.delete(ctx.from.id);
+    return ctx.reply("PIN changed successfully.");
+  }
 
-    await ctx.reply(
-      preview,
-      { parse_mode: "Markdown",
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback("✅ Yes, use these details", "image_payment_confirm")],
-          [Markup.button.callback("✏️ Enter details manually",  "image_payment_manual")],
-          [Markup.button.callback("❌ Cancel",                  "main_menu")],
-        ])
+  if (pending.type === "confirm_withdraw") {
+    if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN, or /menu to cancel.");
+    pendingAction.delete(ctx.from.id);
+    if (!db.verifyPin(ctx.from.id, text)) return ctx.reply("Incorrect PIN. Run /withdraw again to retry.");
+    const user = db.getUser(ctx.from.id);
+    return executeWithdraw(ctx, user, BigInt(pending.amountMicro), pending.amountUsdc, text);
+  }
+
+  if (pending.type === "confirm_sendout") {
+    if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN, or /menu to cancel.");
+    pendingAction.delete(ctx.from.id);
+    if (!db.verifyPin(ctx.from.id, text)) return ctx.reply("Incorrect PIN. Run /sendout again to retry.");
+    const user = db.getUser(ctx.from.id);
+    return executeSendout(ctx, user, BigInt(pending.amountMicro), text);
+  }
+
+  if (pending.type === "confirm_otp") {
+    pendingAction.delete(ctx.from.id);
+    if (!/^\d{4}$/.test(text)) return ctx.reply("Enter the 4-digit code you received.");
+    try {
+      const verified = await otp.verifyOtp(pending.pinId, text);
+      if (verified) {
+        db.setPhoneVerified(ctx.from.id, true);
+        return ctx.reply("Phone verified.");
       }
-    );
-  } catch (err) {
-    console.error("[photo_handler]", err);
-    await ctx.reply("Couldn't read the image. Please try a clearer photo or type the details manually.");
+      return ctx.reply("That code didn't match. Run /verifyphone again to retry.");
+    } catch (err) {
+      console.error(err.message);
+      return ctx.reply("Couldn't verify the code right now: " + err.message);
+    }
+  }
+
+  if (pending.type === "confirm_yield_deposit") {
+    if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN, or /menu to cancel.");
+    pendingAction.delete(ctx.from.id);
+    if (!db.verifyPin(ctx.from.id, text)) return ctx.reply("Incorrect PIN. Run /deposit_yield again to retry.");
+
+    try {
+      savings.openYieldPosition(ctx.from.id, pending.amountUsdc, pending.pool);
+      db.recordTransaction(
+        ctx.from.id,
+        "yield_deposit",
+        BigInt(Math.round(pending.amountUsdc * 1e18)),
+        "confirmed",
+        null
+      );
+
+      await ctx.reply(
+        `\u2705 Yield position opened!\n\n` +
+          `$${pending.amountUsdc.toFixed(2)} USDC is now earning at ${pending.pool.userApy}% APY\n` +
+          `Pool: ${pending.pool.symbol} \u00B7 Azuro \u00B7 ${pending.pool.chain}\n\n` +
+          `Use /my_yield to track your accrual.\n` +
+          `Use /withdraw_yield when you want to close the position.`
+      );
+    } catch (err) {
+      console.error("[yield_deposit]", err.message);
+      await ctx.reply("Something went wrong opening the yield position: " + err.message);
+    }
+    return;
+  }
+
+  if (pending.type === "confirm_yield_withdraw") {
+    if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN, or /menu to cancel.");
+    pendingAction.delete(ctx.from.id);
+    if (!db.verifyPin(ctx.from.id, text)) return ctx.reply("Incorrect PIN. Run /withdraw_yield again to retry.");
+
+    try {
+      db.closeYieldPosition(ctx.from.id, pending.total);
+      db.recordTransaction(
+        ctx.from.id,
+        "yield_withdraw",
+        BigInt(Math.round(pending.total * 1e18)),
+        "confirmed",
+        null
+      );
+
+      await ctx.reply(
+        `\u2705 Yield position closed.\n\n` +
+          `Principal: $${pending.position.amount_usdc.toFixed(2)} USDC\n` +
+          `Yield earned: +$${pending.accrued.toFixed(4)} USDC\n` +
+          `Total returned: $${pending.total.toFixed(4)} USDC\n\n` +
+          `\u{1F4CC} Testnet demo: funds returned to your wallet record.\n` +
+          `In production, this would bridge USDC back from Polygon to Arc.`
+      );
+    } catch (err) {
+      console.error("[yield_withdraw]", err.message);
+      await ctx.reply("Something went wrong closing your position: " + err.message);
+    }
+    return;
   }
 });
 
-// Image payment confirmed — route to appropriate flow
-bot.action("image_payment_confirm", async (ctx) => {
-  ctx.answerCbQuery();
-  const state = convState.getState(ctx.from.id);
-  if (!state || state.type !== "confirm_image_payment") {
-    return ctx.reply("Session expired. Please send the image again.");
-  }
-  const { parsed } = state.data;
+bot.launch().then(() => console.log("PayIT bot is running (Arc testnet, non-custodial)..."));
 
-  // Route based on what was extracted
-  if (parsed.document_type === "invoice" || parsed.document_type === "bill") {
-    // Create an invoice or ask to pay it
-    convState.setState(ctx.from.id, "await_image_pay_amount", { parsed }, getContext(ctx.from.id));
-    return ctx.reply(
-      `How would you like to handle this ${parsed.document_type}?\n\n` +
-      `Amount: ${parsed.currency} ${parsed.amount}`,
-      Markup.inlineKeyboard([
-        [Markup.button.callback("💸 Pay It Now",       "image_pay_now")],
-        [Markup.button.callback("🧾 Create My Invoice", "image_create_invoice")],
-        [Markup.button.callback("❌ Cancel",            "main_menu")],
-      ])
-    );
-  }
-
-  // Default: set up as a payment
-  convState.setState(ctx.from.id, "confirm_image_pay_pin", { parsed }, getContext(ctx.from.id));
-  return ctx.reply(
-    `💸 Confirm Payment\n──────────────────────────\n` +
-    `To: ${parsed.recipient_name || parsed.recipient_account || "?"}\n` +
-    `Amount: ${parsed.currency} ${parsed.amount}\n` +
-    (parsed.description ? `For: ${parsed.description}\n` : "") +
-    `\nEnter your PIN to confirm:`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-  );
-});
-
-bot.action("image_payment_manual", (ctx) => {
-  ctx.answerCbQuery();
-  convState.clearState(ctx.from.id);
-  return ctx.reply(
-    "No problem — just type what you'd like to do and PayIT will take it from there.",
-    backToMenu
-  );
-});
-
-// ─── Document handler — PDF and Excel/CSV ─────────────────────────────────────
-
-bot.on("document", async (ctx) => {
-  const doc      = ctx.message.document;
-  const mimeType = doc.mime_type || "";
-  const fileName = (doc.file_name || "").toLowerCase();
-
-  const isPdf  = mimeType === "application/pdf" || fileName.endsWith(".pdf");
-  const isCsv  = mimeType === "text/csv"        || fileName.endsWith(".csv");
-  const isXlsx = mimeType.includes("spreadsheet") ||
-    fileName.endsWith(".xlsx") || fileName.endsWith(".xls");
-
-  if (!isPdf && !isCsv && !isXlsx) {
-    return ctx.reply(
-      "I can read PDF, Excel (.xlsx), and CSV files to extract payment details.\n\n" +
-      "For other files, please type the details directly."
-    );
-  }
-
-  await ctx.reply(`📄 Reading your ${isPdf ? "PDF" : isCsv ? "CSV" : "spreadsheet"}...`);
-
-  try {
-    const buffer = await downloadTelegramFile(ctx, doc.file_id);
-    const parsed = isPdf
-      ? await parsePdf(buffer)
-      : await parseSpreadsheetFile(buffer, isCsv);
-
-    const preview = formatFilePreview(parsed);
-
-    if (parsed.error && !parsed.rows.length) {
-      return ctx.reply(preview, backToMenu);
-    }
-
-    convState.setState(ctx.from.id, "confirm_file_payment", { parsed }, getContext(ctx.from.id));
-
-    await ctx.reply(
-      preview,
-      Markup.inlineKeyboard([
-        [Markup.button.callback("✅ Confirm Payments",    "file_payment_confirm")],
-        [Markup.button.callback("❌ Cancel",              "main_menu")],
-      ])
-    );
-  } catch (err) {
-    console.error("[document_handler]", err);
-    await ctx.reply("Couldn't read that file. Please try again or type the details manually.");
-  }
-});
-
-// File payment confirmed
-bot.action("file_payment_confirm", (ctx) => {
-  ctx.answerCbQuery();
-  const state = convState.getState(ctx.from.id);
-  if (!state || state.type !== "confirm_file_payment") {
-    return ctx.reply("Session expired. Please send the file again.");
-  }
-  const { parsed } = state.data;
-  const total      = parsed.total?.toFixed(2) || "?";
-
-  convState.setState(ctx.from.id, "confirm_file_pay_pin", { parsed }, getContext(ctx.from.id));
-  return ctx.reply(
-    `💸 Total: $${total} to ${parsed.rows.length} recipient(s)\n\n` +
-    `Enter your PIN to send:`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-  );
-});
-
-// ─── Keyboard hears ───────────────────────────────────────────────────────────
-
-bot.hears("💰 My Money",         (ctx) => showBalance(ctx));
-bot.hears("💼 Business Balance", (ctx) => showBizBalance(ctx));
-bot.hears("📥 Add Money",        (ctx) => showReceive(ctx));
-bot.hears("📋 History",          (ctx) => showHistory(ctx));
-bot.hears("⚙️ Settings",         (ctx) => showSettings(ctx));
-bot.hears("📖 Help",             (ctx) => showHelp(ctx));
-bot.hears("✨ What's New",       (ctx) => showFeatures(ctx));
-bot.hears("📈 Save & Earn",      (ctx) => showYields(ctx));
-bot.hears("👥 Contacts",         (ctx) => showContacts(ctx));
-bot.hears("🤖 Auto-Pay",         (ctx) => showAutoPay(ctx));
-bot.hears("💰 Balance",          (ctx) => getContext(ctx.from?.id) === "business" ? showBizBalance(ctx) : showBalance(ctx));
-bot.hears("💼 Biz Balance",      (ctx) => showBizBalance(ctx));
-bot.hears("📊 This Month",       (ctx) => bot.handleUpdate({ ...ctx.update }));
-bot.hears("📈 Reports",          (ctx) => bot.handleUpdate({ ...ctx.update }));
-
-bot.hears("📤 Send Money",  (ctx) => ctx.reply(
-  `📤 Send Money\n──────────────────────────\nWhere are you sending?`,
-  Markup.inlineKeyboard([
-    [Markup.button.callback("💵 Cash Out to Naira",       "action_withdraw_menu")],
-    [Markup.button.callback("👛 Send to a Wallet Address", "action_sendout_menu")],
-    [Markup.button.callback("👥 Send to a Saved Contact",  "action_send_contact")],
-    [Markup.button.callback("🏠 Main Menu",               "main_menu")],
-  ])
-));
-
-bot.hears("📤 Send Payment", (ctx) => ctx.reply(
-  `📤 Business Payment`,
-  Markup.inlineKeyboard([
-    [Markup.button.callback("👛 Send Dollars",            "action_sendout_menu")],
-    [Markup.button.callback("💵 Cash Out to Naira",       "action_withdraw_menu")],
-    [Markup.button.callback("👥 Saved Contacts",           "action_send_contact")],
-    [Markup.button.callback("🏠 Main Menu",               "main_menu")],
-  ])
-));
-
-bot.hears("💵 Cash Out", (ctx) => {
-  convState.setState(ctx.from.id, "await_withdraw_amount", {}, getContext(ctx.from.id));
-  return ctx.reply(
-    `💵 Cash Out to Naira\n──────────────────────────\nHow much would you like to cash out?`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-  );
-});
-
-bot.hears("🔄 Swap", (ctx) => ctx.reply(
-  `🔄 Swap between currencies — coming very soon.`, backToMenu
-));
-
-bot.hears("🧾 Invoice", (ctx) => {
-  const context = getContext(ctx.from?.id);
-  if (context === "business") return showBizInvoiceMenu(ctx);
-  convState.setState(ctx.from.id, "await_invoice_instruction", {}, context);
-  return ctx.reply(
-    `🧾 Create an Invoice\n──────────────────────────\nDescribe it in plain English:\n\n` +
-    `• "Invoice Acme Ltd $500 for website design, due July 15"\n\n` +
-    `Type your instruction:`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("📋 My Invoices", "action_list_invoices")],
-      [Markup.button.callback("❌ Cancel",       "main_menu")],
-    ])
-  );
-});
-
-bot.hears("🧾 New Invoice", (ctx) => showBizInvoiceMenu(ctx));
-bot.hears("📋 My Invoices", (ctx) => {
-  const context = getContext(ctx.from?.id);
-  if (context === "business") {
-    ctx.callbackQuery = { data: "action_list_biz_invoices" };
-    return bot.handleUpdate({ update_id: ctx.update.update_id,
-      callback_query: { id: "0", from: ctx.from, chat_instance: "0",
-        data: "action_list_biz_invoices", message: ctx.message } });
-  }
-  return ctx.reply("📋 Invoices", Markup.inlineKeyboard([[Markup.button.callback("📋 Open", "action_list_invoices")]]));
-});
-
-bot.hears("💸 Log Expense", (ctx) => {
-  convState.setState(ctx.from.id, "await_expense_entry", {}, "business");
-  return ctx.reply(
-    `💸 Log Expense\n──────────────────────────\nDescribe it naturally:\n\n` +
-    `• "₦8,000 transport to client meeting"\n` +
-    `• "$50 SaaS subscription"`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-  );
-});
-
-bot.hears("👥 Pay Team", (ctx) => {
-  convState.setState(ctx.from.id, "await_payroll_instruction", {}, "business");
-  return ctx.reply(
-    `👥 Pay Your Team\n──────────────────────────\n` +
-    `Describe who to pay:\n\n` +
-    `• "Pay Emeka $100 and Amara $80 for this week"\n` +
-    `• "Pay 0xABC...123 $150 salary"\n\n` +
-    `Or upload a spreadsheet with your team's payment details.\n\n` +
-    `Type your instruction or send a file:`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-  );
-});
-
-bot.hears("💰 Business Savings", async (ctx) => {
-  const user   = requireUser(ctx);
-  if (!user) return;
-  const goal   = bizDb.getSavingsGoal(ctx.from.id);
-  const saved  = bizDb.getBizSavingsBalance(ctx.from.id);
-  await ctx.reply(
-    `💰 Business Savings\n──────────────────────────\n` +
-    `Current balance: $${saved.toFixed(2)}\n` +
-    (goal ? `Auto-save rule: ${goal.percentage}% of every invoice → ${goal.label}` : "No auto-save rule set yet.") +
-    `\n\nSet a rule like "Save 20% of every invoice for tax" and PayIT handles it automatically.`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("⚙️ Set Auto-Save Rule", "set_savings_goal")],
-      [Markup.button.callback("📈 Earn Interest on Savings", "action_yields")],
-      [Markup.button.callback("🏠 Main Menu", "main_menu")],
-    ])
-  );
-});
-
-bot.action("set_savings_goal", (ctx) => {
-  ctx.answerCbQuery();
-  convState.setState(ctx.from.id, "await_savings_goal", {}, "business");
-  return ctx.reply(
-    `⚙️ Set Auto-Save Rule\n──────────────────────────\n` +
-    `Describe your goal:\n\n` +
-    `• "Save 20% of every invoice for tax"\n` +
-    `• "Set aside 10% for emergency fund"`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-  );
-});
-
-// ─── Commands ─────────────────────────────────────────────────────────────────
-
-bot.command("menu",     (ctx) => ctx.reply("What would you like to do?", mainMenu(getContext(ctx.from?.id))));
-bot.command("help",     showHelp);
-bot.command("balance",  showBalance);
-bot.command("history",  showHistory);
-bot.command("settings", showSettings);
-bot.command("yields",   showYields);
-bot.command("deposit",  showReceive);
-bot.command("contacts", showContacts);
-bot.command("autopay",  showAutoPay);
-bot.command("invoice",  (ctx) => {
-  const context = getContext(ctx.from?.id);
-  if (context === "business") return showBizInvoiceMenu(ctx);
-  convState.setState(ctx.from.id, "await_invoice_instruction", {}, context);
-  return ctx.reply("Describe your invoice:");
-});
-
-bot.command("admin", (ctx) => {
-  if (!ADMIN_IDS.includes(String(ctx.from.id))) return ctx.reply("Not authorised.");
-  const userCount   = db.db.prepare("SELECT COUNT(*) as c FROM users").get().c;
-  const positions   = db.db.prepare("SELECT COUNT(*) as c, COALESCE(SUM(amount_usdc),0) as t FROM yield_positions WHERE status='active'").get();
-  const invoiceCount = db.db.prepare("SELECT COUNT(*) as c FROM invoices").get().c;
-  const recentTx    = db.db.prepare("SELECT * FROM transactions ORDER BY id DESC LIMIT 8").all();
-  const txLines     = recentTx.map(t => `#${t.id} ${t.type} · user ${t.telegram_id} · [${t.status}]`).join("\n") || "none";
-  ctx.reply(
-    `🛠 Admin\n──────────────────────────\n` +
-    `Users: ${userCount}\n` +
-    `Active savings: ${positions.c} ($${Number(positions.t).toFixed(2)})\n` +
-    `Invoices: ${invoiceCount}\n\n` +
-    `Recent transactions:\n${txLines}`
-  );
-});
-
-// ─── Main text handler — intent router ───────────────────────────────────────
-// Every text message that isn't caught above passes through here.
-// The intent router classifies it, resolves payees, and routes accordingly.
-
-bot.on("text", async (ctx) => {
-  const state = convState.getState(ctx.from.id);
-  const text  = ctx.message.text.trim();
-  const userId = ctx.from.id;
-
-  // ── Multi-step flow states ─────────────────────────────────────────────────
-
-  if (state) {
-    convState.touchState(userId); // keep alive
-
-    // ── Business onboarding ──────────────────────────────────────────────────
-
-    if (state.type === "onboard_biz_name") {
-      convState.setState(userId, "onboard_biz_email", { ...state.data, businessName: text }, "business");
-      return ctx.reply(
-        `Great — ${text}.\n\nWhat's your business email address? (Type "skip" to leave blank)`
-      );
-    }
-
-    if (state.type === "onboard_biz_email") {
-      const email = text.toLowerCase() === "skip" ? null : text;
-      convState.setState(userId, "onboard_biz_phone", { ...state.data, businessEmail: email }, "business");
-      return ctx.reply(`Business phone number? (Type "skip" to leave blank)`);
-    }
-
-    if (state.type === "onboard_biz_phone") {
-      const phone = text.toLowerCase() === "skip" ? null : text;
-      convState.setState(userId, "onboard_biz_address", { ...state.data, businessPhone: phone }, "business");
-      return ctx.reply(`Business address or city? (Type "skip" to leave blank)`);
-    }
-
-    if (state.type === "onboard_biz_address") {
-      const address = text.toLowerCase() === "skip" ? null : text;
-      convState.setState(userId, "onboard_biz_terms", { ...state.data, businessAddress: address }, "business");
-      return ctx.reply(
-        `How many days until your invoices are due by default?\n\nCommon choices: 7, 14, 30\n(Type a number or "skip" for 14 days)`
-      );
-    }
-
-    if (state.type === "onboard_biz_terms") {
-      const days = parseInt(text) || 14;
-      const d    = state.data;
-      convState.setState(userId, "onboard_biz_logo", { ...d, defaultDueDays: days }, "business");
-      return ctx.reply(
-        `Almost done.\n\nSend your business logo as a photo, or type "skip" to continue without one.\n\nYou can always add it later in Settings.`
-      );
-    }
-
-    // logo handled in photo handler — text "skip" here
-    if (state.type === "onboard_biz_logo") {
-      if (text.toLowerCase() !== "skip") {
-        return ctx.reply(`Please send a photo, or type "skip" to continue.`);
-      }
-      // Fall through to PIN setup
-      const d = state.data;
-      const personalWallet = walletLib.generateUserWallet();
-      const businessWallet = walletLib.generateUserWallet();
-      convState.setState(userId, "onboarding_pin", {
-        accountType:      "business",
-        address:          personalWallet.address,
-        privateKey:       personalWallet.privateKey,
-        businessAddress:  businessWallet.address,
-        businessPrivateKey: businessWallet.privateKey,
-        username:         ctx.from.username,
-        bizProfile: {
-          businessName:    d.businessName,
-          businessEmail:   d.businessEmail,
-          phone:           d.businessPhone,
-          address:         d.businessAddress,
-          defaultDueDays:  d.defaultDueDays,
-        },
-      }, "business");
-      return ctx.reply(
-        `✅ Profile saved!\n\n` +
-        `Now let's secure your wallet.\n\n` +
-        `Choose a 4-digit PIN — write it down somewhere safe. If you forget it and haven't saved your security phrase, your money cannot be recovered.\n\n` +
-        `Type your PIN:`
-      );
-    }
-
-    // ── PIN setup (shared between personal and business onboarding) ──────────
-
-    if (state.type === "onboarding_pin") {
-      await deleteSensitiveMessage(ctx);
-      if (!/^\d{4}$/.test(text)) return ctx.reply("PIN must be exactly 4 digits. Try again.");
-
-      const isBusiness = state.data.accountType === "business";
-      const user = db.createUserWithWallet(
-        userId,
-        state.data.username,
-        state.data.address,
-        state.data.privateKey,
-        text,
-        isBusiness ? state.data.businessAddress    : null,
-        isBusiness ? state.data.businessPrivateKey : null
-      );
-
-      // Save business profile if collected
-      if (isBusiness && state.data.bizProfile) {
-        bizProfile.upsertBizProfile(userId, state.data.bizProfile);
-      }
-
-      convState.clearState(userId);
-      db.setActiveContext(userId, isBusiness ? "business" : "personal");
-
-      const exportMsg = await ctx.reply(
-        `✅ You're all set!\n\n` +
-        `Personal account number:\n${state.data.address}\n` +
-        `Personal security phrase:\n${state.data.privateKey}\n\n` +
-        (isBusiness
-          ? `Business account number:\n${state.data.businessAddress}\n` +
-            `Business security phrase:\n${state.data.businessPrivateKey}\n\n`
-          : "") +
-        `⚠️ Save your security phrase NOW — use a password manager or write it down. Not a screenshot.\n` +
-        `This message deletes in 60 seconds.`
-      );
-      scheduleDelete(ctx, exportMsg.message_id, 60000);
-
-      const context = isBusiness ? "business" : "personal";
-      return ctx.reply(
-        `What would you like to do first?`,
-        mainMenu(context)
-      );
-    }
-
-    // ── Create business wallet (lazy, for personal users adding business later) ──
-
-    if (state.type === "create_biz_wallet_pin") {
-      await deleteSensitiveMessage(ctx);
-      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
-      if (!db.verifyPin(userId, text)) return ctx.reply("Incorrect PIN. Try again.");
-      const bizWallet = walletLib.generateUserWallet();
-      db.addBusinessWallet(userId, bizWallet.address, bizWallet.privateKey, text);
-      db.setActiveContext(userId, "business");
-      convState.clearState(userId);
-      const exportMsg = await ctx.reply(
-        `✅ Business account created!\n\n` +
-        `Business account number (tap to copy):\n${bizWallet.address}\n` +
-        `Business security phrase:\n${bizWallet.privateKey}\n\n` +
-        `⚠️ Save your security phrase now — it deletes in 60 seconds.`
-      );
-      scheduleDelete(ctx, exportMsg.message_id, 60000);
-      return ctx.reply("Switched to Business account.", mainMenu("business"));
-    }
-
-    // ── Business profile field edit ──────────────────────────────────────────
-
-    if (state.type === "biz_edit_field") {
-      const { field } = state.data;
-      let value = text;
-      if (field === "default_due_days") {
-        value = parseInt(text);
-        if (isNaN(value) || value < 1) return ctx.reply("Enter a number of days (e.g. 14).");
-      }
-      bizProfile.updateBizProfileField(userId, field, value);
-      convState.clearState(userId);
-      return ctx.reply(
-        `✅ Updated!`,
-        Markup.inlineKeyboard([[Markup.button.callback("« Back to Profile", "biz_profile_menu")]])
-      );
-    }
-
-    // ── Export key ───────────────────────────────────────────────────────────
-
-    if (state.type === "confirm_export") {
-      await deleteSensitiveMessage(ctx);
-      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
-      if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
-      const user = db.getUser(userId);
-      try {
-        const pk    = state.data.walletType === "business"
-          ? db.decryptBusinessPrivateKey(text, user)
-          : db.decryptPrivateKey(text, user);
-        const label = state.data.walletType === "business" ? "Business" : "Personal";
-        convState.clearState(userId);
-        const msg = await ctx.reply(
-          `🔑 Your ${label} Security Phrase\n──────────────────────────\n${pk}\n\n` +
-          `Save this now — it deletes in 60 seconds.`
-        );
-        scheduleDelete(ctx, msg.message_id, 60000);
-      } catch {
-        await ctx.reply("Couldn't verify your PIN. Please try again.");
-      }
-      return;
-    }
-
-    // ── Change PIN ───────────────────────────────────────────────────────────
-
-    if (state.type === "changepin_old") {
-      await deleteSensitiveMessage(ctx);
-      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your current 4-digit PIN.");
-      if (!db.verifyPin(userId, text)) {
-        convState.clearState(userId);
-        return ctx.reply("Incorrect PIN.", Markup.inlineKeyboard([[Markup.button.callback("Try Again", "changepin")]]));
-      }
-      const user = db.getUser(userId);
-      let pk, bizPk;
-      try {
-        pk    = db.decryptPrivateKey(text, user);
-        if (user.business_deposit_address) bizPk = db.decryptBusinessPrivateKey(text, user);
-      } catch {
-        convState.clearState(userId);
-        return ctx.reply("Couldn't unlock your wallet.");
-      }
-      convState.setState(userId, "changepin_new", { privateKey: pk, businessPrivateKey: bizPk }, getContext(userId));
-      return ctx.reply("Now enter your NEW 4-digit PIN:");
-    }
-
-    if (state.type === "changepin_new") {
-      await deleteSensitiveMessage(ctx);
-      if (!/^\d{4}$/.test(text)) return ctx.reply("PIN must be exactly 4 digits.");
-      db.updatePin(userId, text, state.data.privateKey, state.data.businessPrivateKey);
-      convState.clearState(userId);
-      return ctx.reply(
-        "✅ PIN changed successfully.",
-        Markup.inlineKeyboard([[Markup.button.callback("« Back to Settings", "action_settings")]])
-      );
-    }
-
-    // ── Link external wallet ─────────────────────────────────────────────────
-
-    if (state.type === "await_setwallet") {
-      convState.clearState(userId);
-      if (!walletLib.isValidAddress(text)) {
-        return ctx.reply(
-          "That doesn't look like a valid account number.",
-          Markup.inlineKeyboard([[Markup.button.callback("« Cancel", "action_settings")]])
-        );
-      }
-      db.setExternalWallet(userId, text);
-      return ctx.reply(
-        `✅ Wallet linked!\n${text}`,
-        Markup.inlineKeyboard([
-          [Markup.button.callback("📤 Send Dollars", "action_sendout_menu")],
-          [Markup.button.callback("« Settings",      "action_settings")],
-        ])
-      );
-    }
-
-    // ── Phone verify ─────────────────────────────────────────────────────────
-
-    if (state.type === "await_phone") {
-      convState.clearState(userId);
-      const phone = text.replace(/\D/g, "");
-      try {
-        const result = await otp.sendOtp(phone);
-        db.setPhoneNumber(userId, phone);
-        convState.setState(userId, "confirm_otp", { pinId: result.pinId }, getContext(userId));
-        return ctx.reply(
-          `📱 Code sent to ${phone}.\n\nEnter the code to verify:`,
-          Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_settings")]])
-        );
-      } catch (err) {
-        return ctx.reply("Couldn't send the code — please try again later.");
-      }
-    }
-
-    if (state.type === "confirm_otp") {
-      convState.clearState(userId);
-      try {
-        const verified = await otp.verifyOtp(state.data.pinId, text);
-        if (verified) {
-          db.setPhoneVerified(userId, true);
-          return ctx.reply("✅ Phone verified!", Markup.inlineKeyboard([[Markup.button.callback("« Settings", "action_settings")]]));
-        }
-        return ctx.reply("That code didn't match.", Markup.inlineKeyboard([[Markup.button.callback("« Settings", "action_settings")]]));
-      } catch {
-        return ctx.reply("Couldn't verify the code — please try again.");
-      }
-    }
-
-    // ── Withdraw amount ──────────────────────────────────────────────────────
-
-    if (state.type === "await_withdraw_amount") {
-      const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
-      if (isNaN(amount) || amount <= 0) {
-        return ctx.reply("Enter a valid amount (e.g. 50):");
-      }
-      const user = requireUser(ctx);
-      if (!user) return;
-      const address     = getActiveWallet(user);
-      let amountMicro;
-      try { amountMicro = walletLib.parseToMicro(amount.toString()); } catch {
-        return ctx.reply("Invalid amount. Try again.");
-      }
-      const balance = await walletLib.getNativeBalanceMicro(address);
-      if (balance < amountMicro) {
-        return ctx.reply(`Not enough dollars. You have $${parseFloat(walletLib.formatMicro(balance)).toFixed(2)}.`);
-      }
-      const rate      = await fx.getUsdToNgnRate();
-      const nairaEst  = rate ? fx.formatNaira(amount * rate) : null;
-      const rateNote  = rate ? `Today's rate: ₦${Math.round(rate).toLocaleString()}/$\nYou'll receive: ~${nairaEst}` : "";
-
-      convState.setState(userId, "await_withdraw_bank", { amountUsdc: amount }, state.context);
-      return ctx.reply(
-        `💵 Cash Out $${amount.toFixed(2)}\n──────────────────────────\n` +
-        `${rateNote}\n\n` +
-        `Which bank account should we pay the Naira into?\n` +
-        `Type it like this: Bank name · Account number · Account name\n\nFor example: GTBank · 0123456789 · Emeka Johnson`,
-        Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-      );
-    }
-
-    if (state.type === "await_withdraw_bank") {
-      // Parse "GTBank · 0123456789 · Emeka Johnson" or similar
-      const parts      = text.split(/[·\-,|]/).map(s => s.trim());
-      const bankName   = parts[0] || null;
-      const acctNumber = parts[1]?.replace(/\D/g, "") || null;
-      const acctName   = parts[2] || null;
-
-      if (!acctNumber || acctNumber.length < 6) {
-        return ctx.reply(
-          "Please include the account number. Format:\nBank name · Account number · Account name",
-          Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-        );
-      }
-
-      convState.setState(userId, "confirm_withdraw", {
-        amountUsdc: state.data.amountUsdc,
-        bankName, accountNumber: acctNumber, accountName: acctName,
-      }, state.context);
-
-      return ctx.reply(
-        `💵 Confirm Cash Out\n──────────────────────────\n` +
-        `Amount: $${state.data.amountUsdc.toFixed(2)}\n` +
-        `Bank: ${bankName || "?"}\n` +
-        `Account: ${acctNumber}\n` +
-        `Name: ${acctName || "?"}\n\n` +
-        `Enter your PIN to confirm:`,
-        Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-      );
-    }
-
-    if (state.type === "confirm_withdraw") {
-      await deleteSensitiveMessage(ctx);
-      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
-      if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN. Try again."); }
-      const user = db.getUser(userId);
-      convState.clearState(userId);
-      await ctx.reply("⏳ Processing your cash out...");
-      const context = state.context || "personal";
-      let userWallet;
-      try {
-        const pk = context === "business" && user.business_deposit_address
-          ? db.decryptBusinessPrivateKey(text, user)
-          : db.decryptPrivateKey(text, user);
-        userWallet = walletLib.walletFromPrivateKey(pk);
-      } catch {
-        return ctx.reply("Couldn't unlock your wallet with that PIN.");
-      }
-      const result = await executeOfframp(
-        userWallet,
-        state.data.amountUsdc,
-        { accountNumber: state.data.accountNumber, bankCode: "000", accountName: state.data.accountName },
-        userId,
-        "Cash Out"
-      );
-
-      if (result.success) {
-        try {
-          const receiptPath = await generateReceiptPNG({
-            receiptId:        result.reference || result.txHash?.slice(0, 10) || `CO-${Date.now()}`,
-            senderName:       "PayIT Wallet",
-            senderAddress:    getActiveWallet(user),
-            recipientName:    state.data.accountName || state.data.bankName || "Bank Account",
-            recipientAddress: state.data.accountNumber,
-            amountUsdc:       state.data.amountUsdc,
-            token:            "USDC",
-            type:             "Cash Out",
-            timestamp:        new Date().toISOString(),
-            status:           "Confirmed",
-            txHash:           result.txHash || null,
-          });
-          await ctx.replyWithPhoto({ source: receiptPath }, {
-            caption: result.warning || `✅ Cash out submitted! Naira arrives in ~10 minutes.`,
-            ...afterPaymentButtons,
-          });
-        } catch {
-          await ctx.reply(result.warning || `✅ Cash out submitted! Naira arrives in ~10 minutes.`, afterPaymentButtons);
-        }
-      } else {
-        await ctx.reply(`❌ ${result.error}`, backToMenu);
-      }
-      return;
-    }
-
-    // ── Send to external wallet ──────────────────────────────────────────────
-
-    if (state.type === "await_sendout_address") {
-      if (!walletLib.isValidAddress(text)) {
-        return ctx.reply(
-          "That doesn't look like a valid account number. Please paste the full account number starting with 0x.",
-          Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-        );
-      }
-      convState.setState(userId, "await_sendout_amount", {
-        token: state.data.token || "USDC",
-        walletAddress: text,
-      }, state.context);
-      return ctx.reply(
-        `👛 Send to ${text.slice(0, 10)}...\n\nHow much would you like to send?`,
-        Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-      );
-    }
-
-    if (state.type === "await_sendout_amount") {
-      const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
-      if (isNaN(amount) || amount <= 0) return ctx.reply("Enter a valid amount:");
-      const user    = requireUser(ctx);
-      if (!user) return;
-      const address = getActiveWallet(user);
-      let amountMicro;
-      try { amountMicro = walletLib.parseToMicro(amount.toString()); } catch {
-        return ctx.reply("Invalid amount.");
-      }
-      const balance = state.data.token === "EURC"
-        ? await tokens.getEurcBalance(address)
-        : await walletLib.getNativeBalanceMicro(address);
-      if (balance < amountMicro) {
-        return ctx.reply(`Not enough ${state.data.token}. You have ${walletLib.formatMicro(balance)}.`);
-      }
-      const recipient = state.data.recipientName || state.data.walletAddress;
-      convState.setState(userId, "confirm_sendout", {
-        amountUsdc:    amount,
-        token:         state.data.token || "USDC",
-        walletAddress: state.data.walletAddress,
-        recipientName: state.data.recipientName || null,
-      }, state.context);
-      return ctx.reply(
-        `📤 Confirm Payment\n──────────────────────────\n` +
-        `To: ${recipient}\nAmount: $${amount.toFixed(2)} ${state.data.token || "USDC"}\n\n` +
-        `Enter your PIN:`,
-        Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-      );
-    }
-
-    if (state.type === "confirm_sendout") {
-      await deleteSensitiveMessage(ctx);
-      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
-      if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
-      const user    = db.getUser(userId);
-      const context = state.context || "personal";
-      convState.clearState(userId);
-      await ctx.reply("⏳ Sending...");
-
-      const plan = {
-        payments: [{
-          to:       state.data.walletAddress,
-          amount:   state.data.amountUsdc,
-          label:    `Send to ${state.data.recipientName || state.data.walletAddress}`,
-          currency: state.data.token || "USDC",
-        }],
-      };
-      const results = await executePlan(plan, text, user, context);
-
-      if (results[0]?.success) {
-        try {
-          const receiptPath = await generateReceiptPNG({
-            receiptId:        results[0].txHash?.slice(0, 10) || `TX-${Date.now()}`,
-            senderName:       "PayIT Wallet",
-            senderAddress:    getActiveWallet(user),
-            recipientName:    state.data.recipientName || state.data.walletAddress,
-            recipientAddress: state.data.walletAddress,
-            amountUsdc:       state.data.amountUsdc,
-            token:            state.data.token || "USDC",
-            type:             "Payment",
-            timestamp:        new Date().toISOString(),
-            status:           "Confirmed",
-            txHash:           results[0].txHash,
-          });
-          await ctx.replyWithPhoto({ source: receiptPath }, { caption: "✅ Payment sent!", ...afterPaymentButtons });
-        } catch {
-          await ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
-        }
-      } else {
-        await ctx.reply(formatResults(results), { parse_mode: "Markdown", ...backToMenu });
-      }
-      return;
-    }
-
-    // ── Yield amount ─────────────────────────────────────────────────────────
-
-    if (state.type === "await_yield_amount") {
-      const amount = parseFloat(text);
-      if (isNaN(amount) || amount < 1) return ctx.reply("Enter a valid amount (minimum $1):");
-      if (amount > state.data.balanceUsdc) {
-        return ctx.reply(`Not enough dollars. You have $${state.data.balanceUsdc.toFixed(2)}.`);
-      }
-      let pools;
-      try { pools = await savings.getYieldPools(); } catch {
-        return ctx.reply("Couldn't load savings pools — try again.");
-      }
-      const best = pools[0];
-      convState.setState(userId, "confirm_yield_deposit", { amountUsdc: amount, pool: best }, state.context);
-      return ctx.reply(
-        `📈 Confirm Savings\n──────────────────────────\n` +
-        `Amount: $${amount.toFixed(2)}\n` +
-        `Interest rate: ${best.userApy}% per year\n` +
-        `Provider: ${best.project}\n\n` +
-        `You can withdraw anytime.\n\nEnter your PIN to start saving:`,
-        Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_yields")]])
-      );
-    }
-
-    if (state.type === "confirm_yield_deposit") {
-      await deleteSensitiveMessage(ctx);
-      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your PIN.");
-      if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
-      convState.clearState(userId);
-      savings.openYieldPosition(userId, state.data.amountUsdc, state.data.pool);
-      db.recordTransaction(userId, "yield_deposit", BigInt(Math.round(state.data.amountUsdc * 1e18)), "confirmed", null);
-      return ctx.reply(
-        `✅ Savings started!\n──────────────────────────\n` +
-        `$${state.data.amountUsdc.toFixed(2)} earning at ${state.data.pool.userApy}% per year\n` +
-        `Withdraw anytime from 📈 Save & Earn.`,
-        Markup.inlineKeyboard([
-          [Markup.button.callback("📊 My Savings", "action_my_yield")],
-          [Markup.button.callback("🏠 Main Menu",  "main_menu")],
-        ])
-      );
-    }
-
-    if (state.type === "confirm_yield_withdraw") {
-      await deleteSensitiveMessage(ctx);
-      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your PIN.");
-      if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
-      convState.clearState(userId);
-      db.closeYieldPosition(userId, state.data.total);
-      db.recordTransaction(userId, "yield_withdraw", BigInt(Math.round(state.data.total * 1e18)), "confirmed", null);
-      return ctx.reply(
-        `✅ Savings withdrawn!\n──────────────────────────\n` +
-        `Saved: $${state.data.position.amount_usdc.toFixed(2)}\n` +
-        `Interest earned: +$${state.data.accrued.toFixed(4)}\n` +
-        `Total returned: $${state.data.total.toFixed(4)}`,
-        afterPaymentButtons
-      );
-    }
-
-    // ── Add contact ──────────────────────────────────────────────────────────
-
-    if (state.type === "await_add_contact") {
-      convState.clearState(userId);
-      // Let the intent router handle this — route "save X as Y" naturally
-      // by falling through to the intent router below
-    }
-
-    // ── Business invoice instruction ─────────────────────────────────────────
-
-    if (state.type === "await_biz_invoice_instruction") {
-      convState.clearState(userId);
-      const user = requireUser(ctx);
-      if (!user) return;
-      await ctx.reply("⏳ Parsing your invoice...");
-      const walletAddress = user.business_deposit_address || user.deposit_address;
-      const profile       = bizProfile.getBizProfile(userId);
-      const parsed = await parseInvoiceIntent(text, {
-        businessName:  profile?.business_name || ctx.from.username || `User ${userId}`,
-        walletAddress,
-      });
-      if (parsed.error) {
-        return ctx.reply(
-          `❌ ${parsed.error}\n\nTry again with 🧾 New Invoice.`,
-          Markup.inlineKeyboard([[Markup.button.callback("🧾 Try Again", "action_new_biz_invoice")]])
-        );
-      }
-      const total     = parsed.items.reduce((s, i) => s + Number(i.quantity || 1) * Number(i.unitPrice || 0), 0);
-      const itemLines = parsed.items.map(i => `• ${i.description} × ${i.quantity || 1} @ $${Number(i.unitPrice).toFixed(2)}`).join("\n");
-      convState.setState(userId, "confirm_biz_invoice", { parsed, total, walletAddress }, "business");
-      return ctx.reply(
-        `📋 Invoice Preview\n──────────────────────────\n` +
-        `To: ${parsed.clientName}${parsed.clientEmail ? " (" + parsed.clientEmail + ")" : ""}\n` +
-        `${itemLines}\n──────────────────────────\n` +
-        `Total: $${total.toFixed(2)}\n` +
-        (parsed.dueDate ? `Due: ${parsed.dueDate}\n` : "") +
-        `\nLooks right?`,
-        Markup.inlineKeyboard([
-          [Markup.button.callback("✅ Generate Invoice", "action_confirm_biz_invoice")],
-          [Markup.button.callback("✏️ Edit",             "action_new_biz_invoice")],
-          [Markup.button.callback("❌ Cancel",            "main_menu")],
-        ])
-      );
-    }
-
-    // ── Personal invoice instruction ─────────────────────────────────────────
-
-    if (state.type === "await_invoice_instruction") {
-      convState.clearState(userId);
-      const user = requireUser(ctx);
-      if (!user) return;
-      await ctx.reply("⏳ Parsing your invoice...");
-      const parsed = await parseInvoiceIntent(text, {
-        businessName:  user.username || `User ${userId}`,
-        walletAddress: user.deposit_address,
-      });
-      if (parsed.error) {
-        return ctx.reply(
-          `❌ ${parsed.error}`,
-          Markup.inlineKeyboard([[Markup.button.callback("🧾 Try Again", "action_new_invoice")]])
-        );
-      }
-      const total     = parsed.items.reduce((s, i) => s + Number(i.quantity || 1) * Number(i.unitPrice || 0), 0);
-      const itemLines = parsed.items.map(i => `• ${i.description} × ${i.quantity || 1} @ $${Number(i.unitPrice).toFixed(2)}`).join("\n");
-      convState.setState(userId, "confirm_invoice", { parsed, total }, "personal");
-      return ctx.reply(
-        `📋 Invoice Preview\n──────────────────────────\n` +
-        `To: ${parsed.clientName}\n${itemLines}\n──────────────────────────\n` +
-        `Total: $${total.toFixed(2)}\n` +
-        (parsed.dueDate ? `Due: ${parsed.dueDate}\n` : ""),
-        Markup.inlineKeyboard([
-          [Markup.button.callback("✅ Generate Invoice", "action_confirm_invoice")],
-          [Markup.button.callback("✏️ Edit",             "action_new_invoice")],
-          [Markup.button.callback("❌ Cancel",            "main_menu")],
-        ])
-      );
-    }
-
-    // ── Expense entry ────────────────────────────────────────────────────────
-
-    if (state.type === "await_expense_entry") {
-      convState.clearState(userId);
-      const nairaMatch = text.match(/[₦]?\s*(\d[\d,]*)\s*(naira|ngn)/i);
-      const usdcMatch  = text.match(/\$?\s*(\d+(?:\.\d+)?)\s*(usdc|\$|dollar)/i);
-      let amount = 0, currency = "NGN";
-      if (usdcMatch)  { amount = parseFloat(usdcMatch[1]);  currency = "USDC"; }
-      else if (nairaMatch) { amount = parseFloat(nairaMatch[1].replace(/,/g, "")); }
-      else {
-        const numMatch = text.match(/^[\$₦]?(\d+(?:\.\d+)?)\s+(.+)/);
-        if (numMatch) amount = parseFloat(numMatch[1]);
-      }
-      if (amount <= 0) {
-        return ctx.reply(
-          "Couldn't read an amount from that. Try: '₦8,000 transport' or '$50 SaaS tools'",
-          Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-        );
-      }
-      bizDb.logExpense(userId, amount, currency, text);
-      return ctx.reply(
-        `✅ Expense logged!\n${currency === "USDC" ? "$" : "₦"}${amount.toLocaleString()} — ${text}`,
-        Markup.inlineKeyboard([
-          [Markup.button.callback("💸 Log Another",  "action_log_expense")],
-          [Markup.button.callback("📊 This Month",   "action_cash_flow")],
-          [Markup.button.callback("🏠 Main Menu",    "main_menu")],
-        ])
-      );
-    }
-
-    // ── Savings goal ─────────────────────────────────────────────────────────
-
-    if (state.type === "await_savings_goal") {
-      convState.clearState(userId);
-      const pct   = parseInt((text.match(/(\d+)%/) || [])[1]) || 10;
-      const label = text.replace(/set aside|save|of every invoice/gi, "").trim() || "Savings";
-      bizDb.setSavingsGoal(userId, pct, label);
-      return ctx.reply(
-        `✅ Auto-save rule set!\nEvery invoice paid → ${pct}% moves to Business Savings (${label}).`,
-        Markup.inlineKeyboard([[Markup.button.callback("🏠 Main Menu", "main_menu")]])
-      );
-    }
-
-    // ── AutoPay instruction ───────────────────────────────────────────────────
-
-    if (state.type === "await_autopay_instruction") {
-      convState.clearState(userId);
-      const user = requireUser(ctx);
-      if (!user) return;
-      await ctx.reply("🤖 Working out your payment plan...");
-      let balMicro = BigInt(0);
-      try { balMicro = await walletLib.getNativeBalanceMicro(user.deposit_address); } catch {}
-      const plan = await parsePaymentIntent(text, {
-        balance: walletLib.formatMicro(balMicro),
-        address: user.deposit_address,
-      });
-      if (plan.error) {
-        return ctx.reply(`❌ ${plan.error}`, Markup.inlineKeyboard([[Markup.button.callback("🤖 Try Again", "action_autopay")]]));
-      }
-      const paymentLines = plan.payments.map(p => `• $${p.amount} → \`${p.to}\`\n  (${p.label})`).join("\n");
-      const scheduleText = plan.schedule?.frequency
-        ? `\n🔁 Repeats: ${describeSchedule(plan.schedule)}`
-        : "\n⚡ One-time payment";
-      convState.setState(userId, "confirm_autopay_pin", { plan }, getContext(userId));
-      return ctx.reply(
-        `📋 Payment Plan\n──────────────────────────\n${paymentLines}${scheduleText}\n\n${plan.summary}\n\nEnter your PIN to confirm:`,
-        { parse_mode: "Markdown", ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]) }
-      );
-    }
-
-    if (state.type === "confirm_autopay_pin") {
-      await deleteSensitiveMessage(ctx);
-      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
-      if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
-      const user     = db.getUser(userId);
-      const { plan } = state.data;
-      const context  = state.context || "personal";
-      convState.clearState(userId);
-
-      if (plan.schedule?.frequency) {
-        const jobId = saveSchedule(userId.toString(), plan);
-        startJob(jobId, userId.toString(), plan, text, context, async (uid, jid, results) => {
-          const msg = formatResults(results);
-          await ctx.telegram.sendMessage(parseInt(uid), `🔔 Scheduled payment ran:\n\n${msg}`, { parse_mode: "Markdown" });
-        });
-        return ctx.reply(
-          `✅ Scheduled!\n${plan.summary}\nRuns ${describeSchedule(plan.schedule)}.\n\nUse /schedules to view or cancel.`,
-          Markup.inlineKeyboard([
-            [Markup.button.callback("📅 Schedules", "action_schedules")],
-            [Markup.button.callback("🏠 Main Menu", "main_menu")],
-          ])
-        );
-      } else {
-        await ctx.reply("⏳ Sending...");
-        const results = await executePlan(plan, text, user, context);
-        return ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
-      }
-    }
-
-    // ── Payroll instruction ───────────────────────────────────────────────────
-
-    if (state.type === "await_payroll_instruction") {
-      convState.clearState(userId);
-      const user = requireUser(ctx);
-      if (!user) return;
-      await ctx.reply("🤖 Parsing payroll...");
-      const plan = await parsePaymentIntent(text, {
-        balance: "0",
-        address: user.business_deposit_address || user.deposit_address,
-      });
-      if (plan.error) {
-        return ctx.reply(`❌ ${plan.error}`, Markup.inlineKeyboard([[Markup.button.callback("« Back", "main_menu")]]));
-      }
-      const lines = plan.payments.map(p => `• $${p.amount} → \`${p.to}\`\n  (${p.label})`).join("\n");
-      convState.setState(userId, "confirm_payroll_pin", { plan }, "business");
-      return ctx.reply(
-        `👥 Payroll Preview\n──────────────────────────\n${lines}\n\n${plan.summary}\n\nEnter your PIN:`,
-        { parse_mode: "Markdown", ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]) }
-      );
-    }
-
-    if (state.type === "confirm_payroll_pin") {
-      await deleteSensitiveMessage(ctx);
-      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
-      if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
-      const user = db.getUser(userId);
-      convState.clearState(userId);
-      await ctx.reply("⏳ Processing payroll...");
-      const results = await executePlan(state.data.plan, text, user, "business");
-      return ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
-    }
-
-    // ── File payment PIN confirm ───────────────────────────────────────────────
-
-    if (state.type === "confirm_file_pay_pin") {
-      await deleteSensitiveMessage(ctx);
-      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
-      if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
-      const user    = db.getUser(userId);
-      const context = state.context || "personal";
-      const { parsed } = state.data;
-      convState.clearState(userId);
-      await ctx.reply(`⏳ Processing ${parsed.rows.length} payment(s)...`);
-      const plan = {
-        payments: parsed.rows.map(r => ({
-          to:             r.wallet_address || "__offramp__",
-          amount:         r.amount,
-          label:          r.name || r.description || "Payment",
-          currency:       r.currency || "USDC",
-          account_number: r.account_number || null,
-          bank_name:      r.bank_name      || null,
-          account_name:   r.account_name   || null,
-        })),
-      };
-      const results = await executePlan(plan, text, user, context);
-      return ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
-    }
-
-    // ── Image payment PIN confirm ─────────────────────────────────────────────
-
-    if (state.type === "confirm_image_pay_pin") {
-      await deleteSensitiveMessage(ctx);
-      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
-      if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
-      const user    = db.getUser(userId);
-      const context = state.context || "personal";
-      const { parsed } = state.data;
-      convState.clearState(userId);
-      await ctx.reply("⏳ Processing payment...");
-      const isOfframp = !parsed.recipient_wallet && parsed.recipient_account;
-      const plan = {
-        payments: [{
-          to:             isOfframp ? "__offramp__" : (parsed.recipient_wallet || "__offramp__"),
-          amount:         parsed.amount,
-          label:          parsed.description || "Payment from image",
-          currency:       "USDC",
-          account_number: parsed.recipient_account  || null,
-          bank_name:      parsed.recipient_bank      || null,
-          account_name:   parsed.recipient_name      || null,
-        }],
-      };
-      const results = await executePlan(plan, text, user, context);
-      return ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
-    }
-  } // end if (state)
-
-  // ── No active state — run intent router ──────────────────────────────────
-
-  const user = db.getUser(userId);
-  if (!user) {
-    return ctx.reply(
-      "Send /start to set up your PayIT wallet.",
-      Markup.inlineKeyboard([[Markup.button.callback("Get Started", "noop")]])
-    );
-  }
-
-  // Skip very short messages (likely accidental)
-  if (text.length < 3) return;
-
-  await ctx.reply("⏳ On it...");
-
-  const context   = user.active_context || "personal";
-  const address   = getActiveWallet(user);
-  let balMicro    = BigInt(0);
-  try { balMicro  = await walletLib.getNativeBalanceMicro(address); } catch {}
-
-  const classified = await classifyIntent(text, userId, {
-    balance:         walletLib.formatMicro(balMicro),
-    address,
-    active_context:  context,
-  });
-
-  // Handle unclassifiable
-  if (classified.intent === "unknown" || classified.confidence === "low") {
-    return ctx.reply(
-      `I didn't quite get that. Here's what I can help with:\n\n` +
-      `• "Send $50 to Emeka" or "Send $20 to 0xABC..."\n` +
-      `• "Cash out $100 to my GTBank account"\n` +
-      `• "Invoice TechCorp $500 for design work"\n` +
-      `• "Schedule $10 to 0xABC... every Friday"\n` +
-      `• "How much do I have"\n` +
-      `• "Show my invoices"\n\n` +
-      `Or just tap a button below.`,
-      mainMenu(context)
-    );
-  }
-
-  // Check for missing info
-  const missing = getMissingQuestion(classified);
-  if (missing) {
-    convState.setState(userId, "await_intent_clarification", { classified }, context);
-    return ctx.reply(missing, Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]));
-  }
-
-  // Route by intent
-  switch (classified.intent) {
-
-    case "balance":
-      return context === "business" ? showBizBalance(ctx) : showBalance(ctx);
-
-    case "history":
-      return showHistory(ctx);
-
-    case "invoice_list":
-      return context === "business"
-        ? bot.handleUpdate({ update_id: ctx.update.update_id,
-            callback_query: { id: "0", from: ctx.from, chat_instance: "0",
-              data: "action_list_biz_invoices", message: ctx.message } })
-        : bot.handleUpdate({ update_id: ctx.update.update_id,
-            callback_query: { id: "0", from: ctx.from, chat_instance: "0",
-              data: "action_list_invoices", message: ctx.message } });
-
-    case "invoice_create": {
-      const instruction = classified.params?.invoice_instruction || text;
-      convState.setState(userId, context === "business" ? "await_biz_invoice_instruction" : "await_invoice_instruction", {}, context);
-      // Re-process the same text through the invoice flow by triggering state handler
-      // Simplest approach: synthetic re-entry
-      const syntheticCtx = { ...ctx, message: { ...ctx.message, text: instruction } };
-      // Store and immediately re-handle — easier to just set state and ask user to resend
-      convState.clearState(userId);
-      // Parse directly here
-      const walletAddress = getActiveWallet(user);
-      const profile       = bizProfile.getBizProfile(userId);
-      const parsed = await parseInvoiceIntent(instruction, {
-        businessName:  profile?.business_name || user.username || `User ${userId}`,
-        walletAddress,
-      });
-      if (parsed.error) return ctx.reply(`❌ ${parsed.error}`);
-      const total     = parsed.items.reduce((s, i) => s + Number(i.quantity || 1) * Number(i.unitPrice || 0), 0);
-      const itemLines = parsed.items.map(i => `• ${i.description} × ${i.quantity || 1} @ $${Number(i.unitPrice).toFixed(2)}`).join("\n");
-      const stateType = context === "business" ? "confirm_biz_invoice" : "confirm_invoice";
-      convState.setState(userId, stateType, { parsed, total, walletAddress }, context);
-      return ctx.reply(
-        `📋 Invoice Preview\n──────────────────────────\n` +
-        `To: ${parsed.clientName}\n${itemLines}\n──────────────────────────\n` +
-        `Total: $${total.toFixed(2)}\n` +
-        (parsed.dueDate ? `Due: ${parsed.dueDate}\n` : ""),
-        Markup.inlineKeyboard([
-          [Markup.button.callback("✅ Generate", context === "business" ? "action_confirm_biz_invoice" : "action_confirm_invoice")],
-          [Markup.button.callback("❌ Cancel", "main_menu")],
-        ])
-      );
-    }
-
-    case "list_payees":
-      return showContacts(ctx);
-
-    case "save_payee": {
-      const r       = classified.params?.recipients?.[0] || {};
-      const saveName = classified.params?.save_as || r.name_or_address;
-      const addr    = r.wallet_address;
-      const acct    = r.account_number;
-      if (!saveName) return ctx.reply("What name should I save this contact as?");
-      if (!addr && !acct) return ctx.reply(`What's the account number or bank details for ${saveName}?`);
-      payeeBook.upsertPayee(userId, {
-        name:          saveName,
-        walletAddress: addr   || null,
-        bankName:      r.bank_name      || null,
-        accountNumber: acct   || null,
-        accountName:   r.account_name   || null,
-      });
-      return ctx.reply(
-        `✅ ${saveName} saved to your contacts!\n\n` +
-        `Now you can say "send $50 to ${saveName}" and PayIT knows who you mean.`,
-        Markup.inlineKeyboard([
-          [Markup.button.callback("👥 All Contacts", "add_contact")],
-          [Markup.button.callback("🏠 Main Menu",    "main_menu")],
-        ])
-      );
-    }
-
-    case "delete_payee": {
-      const r    = classified.params?.recipients?.[0] || {};
-      const name = r.name_or_address;
-      if (!name) return ctx.reply("Who would you like to remove from contacts?");
-      payeeBook.deletePayee(userId, name);
-      return ctx.reply(`✅ ${name} removed from your contacts.`, backToMenu);
-    }
-
-    case "expense_log": {
-      const desc = classified.params?.expense_description || text;
-      convState.setState(userId, "await_expense_entry", {}, context);
-      // Re-process as expense
-      const nairaMatch = desc.match(/[₦]?\s*(\d[\d,]*)\s*(naira|ngn)/i);
-      const usdcMatch  = desc.match(/\$?\s*(\d+(?:\.\d+)?)\s*(usdc|\$|dollar)/i);
-      let amount = 0, currency = "NGN";
-      if (usdcMatch)  { amount = parseFloat(usdcMatch[1]);  currency = "USDC"; }
-      else if (nairaMatch) { amount = parseFloat(nairaMatch[1].replace(/,/g, "")); }
-      convState.clearState(userId);
-      if (amount > 0) {
-        bizDb.logExpense(userId, amount, currency, desc);
-        return ctx.reply(
-          `✅ Expense logged!\n${currency === "USDC" ? "$" : "₦"}${amount.toLocaleString()} — ${desc}`,
-          Markup.inlineKeyboard([
-            [Markup.button.callback("📊 This Month", "action_cash_flow")],
-            [Markup.button.callback("🏠 Main Menu",  "main_menu")],
-          ])
-        );
-      }
-      convState.setState(userId, "await_expense_entry", {}, context);
-      return ctx.reply("How much was the expense? (e.g. ₦8,000 or $50)");
-    }
-
-    case "cash_flow":
-      return bot.handleUpdate({ update_id: ctx.update.update_id,
-        callback_query: { id: "0", from: ctx.from, chat_instance: "0",
-          data: "action_cash_flow", message: ctx.message } });
-
-    case "help":
-      return showHelp(ctx);
-
-    case "transfer":
-    case "bulk_transfer":
-    case "offramp":
-    case "scheduled": {
-      // Build a plan from the classified intent
-      const confirmText = buildConfirmationText(classified, classified.params.recipients);
-      convState.setState(userId, "confirm_intent_pin", { classified }, context);
-      return ctx.reply(
-        `${confirmText}\n\nEnter your PIN to confirm:`,
-        { parse_mode: "Markdown",
-          ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]) }
-      );
-    }
-
-    default:
-      return ctx.reply(
-        `I understood that as: ${classified.raw_summary}\n\nWhat would you like to do?`,
-        mainMenu(context)
-      );
-  }
-});
-
-// ── Intent PIN confirmation (from natural language routing) ───────────────────
-
-bot.on("text", async (ctx) => {}); // placeholder — handled above
-
-// Handle confirm_intent_pin state — needs to be caught in main text handler
-// This is already handled by the state check at the top of bot.on("text")
-// We add it here explicitly as a named state handler block:
-// (The state "confirm_intent_pin" falls through to the intent router's default
-//  because it starts with a state. We handle it by checking state.type directly.)
-
-// NOTE: The confirm_intent_pin PIN entry is caught inside the main bot.on("text")
-// state block. It works because:
-//   1. User sends natural language → intent classified → state set to "confirm_intent_pin"
-//   2. User sends PIN → state block catches it before the intent router runs
-
-// Patch: add confirm_intent_pin to the state handler block above
-// This is done inline in the state handler — see the state.type checks
-
-// ─── Photo handler for onboarding logo (business profile step) ───────────────
-// Already handled above in bot.on("photo") — state "await_logo_upload" is checked first.
-
-// ─── Launch ───────────────────────────────────────────────────────────────────
-
-bot.launch().then(() => {
-  console.log(
-    "PayIT is running.\n" +
-    "Personal + Business · Dollar + Euro wallets · Image and file reading active."
-  );
-  reloadAll(() => {});
-});
-
-process.once("SIGINT",  () => bot.stop("SIGINT"));
+process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
