@@ -82,14 +82,16 @@ function buildMainMenu(context) {
       ["💰 Biz Savings", "📈 Reports", "📤 Send Payment"],
       ["💵 Cash Out", "🔄 Swap", "⚙️ Settings"],
       ["📖 How to Use", "✨ Features"],
+      ["👤 Switch to Personal"],
     ]).resize();
   }
-  // Personal (unchanged from original)
+  // Personal
   return Markup.keyboard([
     ["💰 Balance", "📤 Send", "🔄 Swap"],
     ["📥 Receive", "📈 Yields", "📋 History"],
     ["🤖 AutoPay", "🧾 Invoice", "⚙️ Settings"],
     ["📖 How to Use", "✨ Features"],
+    ["🏢 Switch to Business"],
   ]).resize();
 }
 
@@ -1071,6 +1073,60 @@ async function executeSendout(ctx, user, amountMicro, pin, token = "USDC") {
     await ctx.reply("Transfer failed: " + err.message);
   }
 }
+
+// ─── Account switch helpers ────────────────────────────────────────────────────
+
+async function switchToPersonal(ctx) {
+  const user = requireUser(ctx);
+  if (!user) return;
+  db.setActiveContext(ctx.from.id, "personal");
+  const balance = await safeGetBalance(user.deposit_address);
+  return ctx.reply(
+    `👤 Switched to Personal account.\n\nBalance: ${balance}\nWallet: ${user.deposit_address}`,
+    buildMainMenu("personal")
+  );
+}
+
+async function switchToBusiness(ctx) {
+  const user = requireUser(ctx);
+  if (!user) return;
+  if (!user.business_deposit_address) {
+    pendingAction.set(ctx.from.id, {
+      type: "create_business_wallet",
+      businessAddress: walletLib.generateUserWallet().address,
+      businessPrivateKey: walletLib.generateUserWallet().privateKey,
+    });
+    return ctx.reply(
+      `🏢 Setting up your Business account.\n\nEnter your PIN to create and encrypt your Business wallet:`,
+      Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_main_menu")]])
+    );
+  }
+  db.setActiveContext(ctx.from.id, "business");
+  const balance = await safeGetBalance(user.business_deposit_address);
+  const pendingInvoices = bizDb.getPendingInvoiceCount(ctx.from.id);
+  const pendingLine = pendingInvoices > 0
+    ? `\n📬 ${pendingInvoices} unpaid invoice${pendingInvoices > 1 ? "s" : ""} pending.`
+    : "";
+  return ctx.reply(
+    `🏢 Switched to Business account.\n\nBalance: ${balance}${pendingLine}\nWallet: ${user.business_deposit_address}`,
+    buildMainMenu("business")
+  );
+}
+
+bot.hears("🏢 Switch to Business", switchToBusiness);
+bot.hears("👤 Switch to Personal", switchToPersonal);
+
+// /switch command — works from anywhere anytime
+bot.command("switch", async (ctx) => {
+  const user = requireUser(ctx);
+  if (!user) return;
+  const current = user.active_context || "personal";
+  if (current === "personal") {
+    return switchToBusiness(ctx);
+  } else {
+    return switchToPersonal(ctx);
+  }
+});
 
 // ─── Bottom keyboard listeners ─────────────────────────────────────────────────
 
