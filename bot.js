@@ -13,6 +13,7 @@
 require("dotenv").config();
 
 const { Telegraf, Markup } = require("telegraf");
+const { JsonRpcProvider } = require("ethers");
 const https = require("https");
 
 // ── Src modules ───────────────────────────────────────────────────────────────
@@ -44,6 +45,10 @@ const { parsePdf, parseSpreadsheetFile, formatFilePreview, parsePptx } = require
 const { transcribeVoice } = require("./agent/voice_parser");
 const { createHDInvoice, validateAndConfirmPayment, generateInvoiceQRData } = require("./src/invoice_hd");
 const invoiceListener = require("./agent/invoice_listener");
+
+const ARC_RPC_URL = process.env.ARC_RPC_URL || "https://rpc.testnet.arc.network";
+const ARC_CHAIN_ID = 5042002;
+const arcProvider = new JsonRpcProvider(ARC_RPC_URL, ARC_CHAIN_ID);
 
 // ─── Startup checks ───────────────────────────────────────────────────────────
 
@@ -3348,12 +3353,17 @@ bot.on("text", async (ctx) => {}); // placeholder — handled above
 
 // ─── Launch ───────────────────────────────────────────────────────────────────
 
-bot.launch().then(() => {
+bot.launch().then(async () => {
   console.log(
     "PayIT is running.\n" +
     "Personal + Business · Dollar + Euro wallets · Image and file reading active."
   );
   reloadAll(() => {});
+  try {
+    await invoiceListener.startInvoiceListener(bot, arcProvider, 10000);
+  } catch (err) {
+    console.error("[bot] Failed to start invoice listener:", err.message);
+  }
 });
 
 process.once("SIGINT",  () => bot.stop("SIGINT"));

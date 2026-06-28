@@ -143,17 +143,22 @@ function rebuildWatchList() {
  */
 async function getRecentTransactionsTo(provider, toAddress) {
   try {
-    // Get current block
     const currentBlock = await provider.getBlockNumber();
-    const blocksToCheck = 100; // Check last 100 blocks (~200 seconds on 2-second blocks)
+    const blocksToCheck = 20; // scan the most recent blocks
     const fromBlock = Math.max(0, currentBlock - blocksToCheck);
+    const txs = [];
 
-    // Query logs for transfer events to this address
-    // Note: This is a simple approach; production may use graph-node or indexer
-    
-    // For now, return empty (full event listener requires provider upgrade)
-    // In production, subscribe to provider events or use The Graph
-    return [];
+    for (let blockNumber = fromBlock; blockNumber <= currentBlock; blockNumber += 1) {
+      const block = await provider.getBlockWithTransactions(blockNumber);
+      if (!block || !Array.isArray(block.transactions)) continue;
+      for (const tx of block.transactions) {
+        if (tx.to && tx.to.toLowerCase() === toAddress.toLowerCase()) {
+          txs.push(tx);
+        }
+      }
+    }
+
+    return txs;
   } catch (err) {
     console.error("[invoice_listener] getRecentTransactionsTo error:", err.message);
     return [];
