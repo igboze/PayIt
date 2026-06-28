@@ -1385,57 +1385,19 @@ bot.action("action_new_invoice", (ctx) => {
 bot.on("photo", async (ctx) => {
   const state = convState.getState(ctx.from.id);
 
-  // Business onboarding — logo step (this branch was missing; onboarding
-  // sets state "onboard_biz_logo", but this handler only ever checked for
-  // "await_logo_upload" — the Settings/Edit-Profile logo state — so a logo
-  // sent during onboarding fell through to the payment-document reader below).
-  if (state?.type === "onboard_biz_logo") {
-    await ctx.reply("⏳ Saving your logo...");
-    try {
-      const photo    = ctx.message.photo[ctx.message.photo.length - 1];
-      const buffer   = await downloadTelegramFile(ctx, photo.file_id);
-      const logoPath = await bizProfile.saveLogo(ctx.from.id, buffer);
-
-      const d = state.data;
-      const personalWallet = walletLib.generateUserWallet();
-      const businessWallet = walletLib.generateUserWallet();
-      convState.setState(ctx.from.id, "onboarding_pin", {
-        accountType:        "business",
-        address:            personalWallet.address,
-        privateKey:         personalWallet.privateKey,
-        businessAddress:    businessWallet.address,
-        businessPrivateKey: businessWallet.privateKey,
-        username:           ctx.from.username,
-        bizProfile: {
-          businessName:   d.businessName,
-          businessEmail:  d.businessEmail,
-          phone:          d.businessPhone,
-          address:        d.businessAddress,
-          defaultDueDays: d.defaultDueDays,
-          logoPath,
-        },
-      }, "business");
-
-      return ctx.reply(
-        `✅ Logo saved!\n\n` +
-        `Now let's secure your wallet.\n\n` +
-        `Choose a 4-digit PIN — write it down somewhere safe. If you forget it and haven't saved your security phrase, your money cannot be recovered.\n\n` +
-        `Type your PIN:`
-      );
-    } catch (err) {
-      console.error("[onboard_biz_logo]", err);
-      return ctx.reply(`Couldn't save that image. Please try again, or type "skip" to continue without a logo.`);
-    }
+  // ── Logo upload helper ────────────────────────────────────────────────────
+  async function handleLogoSave() {
+    const photo  = ctx.message.photo[ctx.message.photo.length - 1];
+    const buffer = await downloadTelegramFile(ctx, photo.file_id);
+    return await bizProfile.saveLogo(ctx.from.id, buffer);
   }
 
-  // Settings → Edit Business Profile → Edit Logo (this path already worked)
+  // ── Logo upload from Settings ─────────────────────────────────────────────
   if (state?.type === "await_logo_upload") {
     convState.clearState(ctx.from.id);
     await ctx.reply("⏳ Saving your logo...");
     try {
-      const photo    = ctx.message.photo[ctx.message.photo.length - 1];
-      const buffer   = await downloadTelegramFile(ctx, photo.file_id);
-      const logoPath = await bizProfile.saveLogo(ctx.from.id, buffer);
+      const logoPath = await handleLogoSave();
       bizProfile.updateBizProfileField(ctx.from.id, "logo_path", logoPath);
       await ctx.reply(
         "✅ Logo saved! It will appear on all future invoices.",
@@ -1446,6 +1408,44 @@ bot.on("photo", async (ctx) => {
       await ctx.reply("Couldn't save the logo. Please try again.");
     }
     return;
+  }
+
+  // ── Logo upload during business onboarding ────────────────────────────────
+  if (state?.type === "onboard_biz_logo") {
+    await ctx.reply("⏳ Saving your logo...");
+    try {
+      const logoPath = await handleLogoSave();
+      const d = state.data;
+      const personalWallet = walletLib.generateUserWallet();
+      const businessWallet = walletLib.generateUserWallet();
+      convState.setState(ctx.from.id, "onboarding_pin", {
+        accountType:        "business",
+        address:            personalWallet.address,
+        privateKey:         personalWallet.privateKey,
+        businessAddress:    businessWallet.address,
+        businessPrivateKey: businessWallet.privateKey,
+        username:           ctx.from.username,
+        logoPath,
+        bizProfile: {
+          businessName:   d.businessName,
+          businessEmail:  d.businessEmail,
+          phone:          d.businessPhone,
+          address:        d.businessAddress,
+          defaultDueDays: d.defaultDueDays,
+        },
+      }, "business");
+      return ctx.reply(
+        "✅ Logo saved!\n\n" +
+        "Now let's secure your wallet.\n\n" +
+        "Choose a 4-digit PIN — write it down somewhere safe. " +
+        "If you forget it and haven't saved your security phrase, " +
+        "your money cannot be recovered.\n\n" +
+        "Type your PIN:"
+      );
+    } catch (err) {
+      console.error("[logo_upload_onboarding]", err);
+      return ctx.reply('Couldn't save the logo — please try again, or type "skip" to continue without one.');
+    }
   }
 
   // Otherwise: treat as a payment document
@@ -1846,43 +1846,60 @@ bot.on("text", async (ctx) => {
       await deleteSensitiveMessage(ctx);
       if (!/^\d{4}$/.test(text)) return ctx.reply("PIN must be exactly 4 digits. Try again.");
 
-      const isBusiness = state.data.accountType === "business";
-      const user = db.createUserWithWallet(
-        userId,
-        state.data.username,
-        state.data.address,
-        state.data.privateKey,
-        text,
-        isBusiness ? state.data.businessAddress    : null,
-        isBusiness ? state.data.businessPrivateKey : null
-      );
+      const isBusiness   = state.data.accountType === "business";
+      const existingUser = db.getUser(userId);
+
+      if (existingUser) {
+        // Personal account already exists — just attach the business wallet
+        if (isBusiness && state.data.businessAddress) {
+          // Verify their existing PIN first
+          if (!db.verifyPin(userId, text)) {
+            return ctx.reply("Incorrect PIN. Please enter your existing PayIT PIN:");
+          }
+          db.addBusinessWallet(userId, state.data.businessAddress, state.data.businessPrivateKey, text);
+        }
+      } else {
+        // Brand new user — create full account
+        db.createUserWithWallet(
+          userId,
+          state.data.username,
+          state.data.address,
+          state.data.privateKey,
+          text,
+          isBusiness ? state.data.businessAddress    : null,
+          isBusiness ? state.data.businessPrivateKey : null
+        );
+      }
 
       // Save business profile if collected
       if (isBusiness && state.data.bizProfile) {
-        bizProfile.upsertBizProfile(userId, state.data.bizProfile);
+        bizProfile.upsertBizProfile(userId, {
+          ...state.data.bizProfile,
+          logoPath: state.data.logoPath || null,
+        });
       }
 
       convState.clearState(userId);
       db.setActiveContext(userId, isBusiness ? "business" : "personal");
 
-      const exportMsg = await ctx.reply(
-        `✅ You're all set!\n\n` +
-        `Personal account number:\n${state.data.address}\n` +
-        `Personal security phrase:\n${state.data.privateKey}\n\n` +
-        (isBusiness
-          ? `Business account number:\n${state.data.businessAddress}\n` +
-            `Business security phrase:\n${state.data.businessPrivateKey}\n\n`
-          : "") +
-        `⚠️ Save your security phrase NOW — use a password manager or write it down. Not a screenshot.\n` +
-        `This message deletes in 60 seconds.`
-      );
+      // Show only relevant keys
+      let exportText = "\u2705 You're all set!\n\n";
+      if (!existingUser) {
+        exportText += `Personal account number:\n${state.data.address}\n`;
+        exportText += `Personal security phrase:\n${state.data.privateKey}\n\n`;
+      }
+      if (isBusiness && state.data.businessAddress) {
+        exportText += `Business account number:\n${state.data.businessAddress}\n`;
+        exportText += `Business security phrase:\n${state.data.businessPrivateKey}\n\n`;
+      }
+      exportText += "\u26a0\ufe0f Save your security phrase NOW \u2014 use a password manager or write it down. Not a screenshot.\n";
+      exportText += "This message deletes in 60 seconds.";
+
+      const exportMsg = await ctx.reply(exportText);
       scheduleDelete(ctx, exportMsg.message_id, 60000);
 
       const context = isBusiness ? "business" : "personal";
-      return ctx.reply(
-        `What would you like to do first?`,
-        mainMenu(context)
-      );
+      return ctx.reply(`What would you like to do first?`, mainMenu(context));
     }
 
     // ── Create business wallet (lazy, for personal users adding business later) ──
