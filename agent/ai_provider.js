@@ -98,6 +98,51 @@ async function callGemini(systemPrompt, userMessage) {
  * @returns {Promise<object>} parsed JSON response
  */
 async function getJSONCompletion(systemPrompt, userMessage) {
+  // Mock mode for tests and offline demos
+  if (process.env.USE_MOCK_AI === '1') {
+    try {
+      // Simple heuristics to return predictable JSON for common prompts
+      const user = String(userMessage || "");
+      // Intent classifier prompt
+      if (/intent classifier/i.test(systemPrompt)) {
+        // rudimentary parse: 'send $50 to Emeka' or 'send 50 to 0x...'
+        const sendMatch = user.match(/send\s+\$?(\d+(?:\.\d+)?)\s+to\s+(.+)/i);
+        if (sendMatch) {
+          return {
+            intent: "transfer",
+            confidence: "high",
+            params: { recipients: [{ name_or_address: sendMatch[2].trim(), amount: Number(sendMatch[1]), currency: "USDC" }], schedule: {}, missing: null },
+            raw_summary: `Send $${sendMatch[1]} to ${sendMatch[2].trim()}`,
+          };
+        }
+        if (/balance|wetin i get|how much/i.test(user)) {
+          return { intent: "balance", confidence: "high", params: { recipients: [] , schedule: {}, missing: null }, raw_summary: "Check balance" };
+        }
+        return { intent: "unknown", confidence: "low", params: { recipients: [], schedule: {}, missing: null }, raw_summary: user };
+      }
+
+      // Orchestrator payment parsing prompt
+      if (/payment orchestration agent/i.test(systemPrompt) || /payment plan/i.test(systemPrompt)) {
+        // reuse simple send pattern
+        const sendMatch = user.match(/send\s+\$?(\d+(?:\.\d+)?)\s+to\s+(.+)/i);
+        if (sendMatch) {
+          return {
+            type: "one_time",
+            payments: [{ to: sendMatch[2].trim().startsWith('0x') ? sendMatch[2].trim() : `__name__:${sendMatch[2].trim()}`, amount: Number(sendMatch[1]), label: `Payment to ${sendMatch[2].trim()}`, bank_name: null, account_number: null, account_name: null, currency: "USDC" }],
+            schedule: { frequency: null, day: null, time: null },
+            summary: `Send $${sendMatch[1]} to ${sendMatch[2].trim()}`,
+          };
+        }
+        return { error: "Could not understand the payment instruction." };
+      }
+
+      // Fallback for other prompts — return a generic unknown
+      return {};
+    } catch (err) {
+      throw err;
+    }
+  }
+
   const provider = getActiveProvider();
   if (!provider) {
     throw new Error(

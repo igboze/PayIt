@@ -127,6 +127,7 @@ async function parseImagePayment(imageBuffer, mimeType = "image/jpeg") {
   const provider = getVisionProvider();
 
   if (!provider) {
+    console.warn('[vision_parser] No vision provider configured');
     return {
       unreadable: true,
       document_type: "unknown",
@@ -139,7 +140,8 @@ async function parseImagePayment(imageBuffer, mimeType = "image/jpeg") {
     if (provider === "openai") return await parseWithOpenAI(imageBuffer, mimeType);
     if (provider === "gemini") return await parseWithGemini(imageBuffer, mimeType);
   } catch (err) {
-    console.error("[vision_parser] Error:", err.message);
+    const size = (imageBuffer.length / 1024).toFixed(1);
+    console.error(`[vision_parser] Extraction failed (${provider}, ${size}KB):`, err.message?.slice(0, 100) || String(err).slice(0, 100));
     return {
       unreadable: false,
       document_type: "unknown",

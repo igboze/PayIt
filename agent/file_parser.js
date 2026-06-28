@@ -18,6 +18,35 @@
 require("dotenv").config();
 const { getJSONCompletion } = require("./ai_provider");
 
+// ─── PPTX extraction (slide text) ───────────────────────────────────────────
+async function parsePptx(buffer) {
+  try {
+    const JSZip = require('jszip');
+    const zip = await JSZip.loadAsync(buffer);
+    const slideFiles = Object.keys(zip.files).filter(f => f.match(/^ppt\/slides\/slide[0-9]+\.xml$/i)).sort();
+    const slides = [];
+    for (const sf of slideFiles) {
+      const content = await zip.files[sf].async('string');
+      // extract text nodes `<a:t>...</a:t>` which hold slide text
+      const texts = [];
+      const re = /<a:t[^>]*>(.*?)<\/a:t>/gms;
+      let m;
+      while ((m = re.exec(content)) !== null) texts.push(m[1]);
+      slides.push(texts.join(' '));
+    }
+    const raw = slides.join('\n\n');
+    if (!raw || raw.trim().length < 20) {
+      return { type: 'unknown', rows: [], total: 0, currency: null, error: 'PPTX appears empty or contains images only.' };
+    }
+    // Use the LLM structuring fallback to interpret slides as a payment document
+    const result = await structureWithLLM(raw, 'pptx');
+    return result;
+  } catch (err) {
+    console.error('[file_parser/pptx]', err.message || err);
+    return { type: 'unknown', rows: [], total: 0, currency: null, error: 'Could not read the PPTX file.' };
+  }
+}
+
 // ─── PDF extraction ───────────────────────────────────────────────────────────
 
 async function extractPdfText(buffer) {
@@ -31,15 +60,35 @@ async function extractPdfText(buffer) {
 /**
  * Parse an Excel or CSV buffer into row objects.
  * Returns { headers, rows } where rows is an array of plain objects.
+ * Uses exceljs for better security than xlsx.
  */
-function parseSpreadsheet(buffer, isCSV = false) {
-  const XLSX = require("xlsx");
-  const workbook = XLSX.read(buffer, { type: "buffer" });
-  const sheetName = workbook.SheetNames[0];
-  const sheet     = workbook.Sheets[sheetName];
-  const rows      = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-  const headers   = rows.length > 0 ? Object.keys(rows[0]) : [];
-  return { headers, rows };
+async function parseSpreadsheet(buffer, isCSV = false) {
+  const ExcelJS = require('exceljs');
+  try {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer);
+    const worksheet = workbook.worksheets[0];
+    if (!worksheet) return { headers: [], rows: [] };
+
+    const rows = [];
+    let headerRow = null;
+    worksheet.eachRow((row, rowNum) => {
+      const values = row.values || [];
+      const obj = {};
+      if (rowNum === 1) {
+        headerRow = values.slice(1).map(v => (v || "").toString());
+      } else if (headerRow) {
+        headerRow.forEach((header, idx) => {
+          obj[header] = (values[idx + 1] || "").toString();
+        });
+        if (Object.keys(obj).some(k => obj[k])) rows.push(obj);
+      }
+    });
+    return { headers: headerRow || [], rows };
+  } catch (err) {
+    console.error('[file_parser/spreadsheet] error:', err.message);
+    throw err;
+  }
 }
 
 /**
@@ -170,7 +219,7 @@ async function parsePdf(buffer) {
  */
 async function parseSpreadsheetFile(buffer, isCSV = false) {
   try {
-    const { headers, rows } = parseSpreadsheet(buffer, isCSV);
+    const { headers, rows } = await parseSpreadsheet(buffer, isCSV);
     if (rows.length === 0) {
       return { type: "unknown", rows: [], total: 0, currency: null, error: "The spreadsheet appears to be empty." };
     }
@@ -238,4 +287,5 @@ function formatFilePreview(parsed, maxPreviewRows = 8) {
   );
 }
 
-module.exports = { parsePdf, parseSpreadsheetFile, formatFilePreview };
+module.exports = { parsePdf, parseSpreadsheetFile, formatFilePreview, mapSpreadsheetRows, parsePptx };
+

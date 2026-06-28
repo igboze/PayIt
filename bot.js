@@ -40,7 +40,8 @@ const { saveSchedule, removeSchedule, getUserSchedules }   = require("./agent/st
 const { parseInvoiceIntent }      = require("./agent/invoice_parser");
 const { classifyIntent, getMissingQuestion, buildConfirmationText } = require("./agent/intent_router");
 const { parseImagePayment, formatExtractionPreview } = require("./agent/vision_parser");
-const { parsePdf, parseSpreadsheetFile, formatFilePreview } = require("./agent/file_parser");
+const { parsePdf, parseSpreadsheetFile, formatFilePreview, parsePptx } = require("./agent/file_parser");
+const { transcribeVoice } = require("./agent/voice_parser");
 
 // ─── Startup checks ───────────────────────────────────────────────────────────
 
@@ -1695,6 +1696,7 @@ bot.on("document", async (ctx) => {
   const isCsv  = mimeType === "text/csv"        || fileName.endsWith(".csv");
   const isXlsx = mimeType.includes("spreadsheet") ||
     fileName.endsWith(".xlsx") || fileName.endsWith(".xls");
+  const isPptx = fileName.endsWith('.pptx') || mimeType.includes('presentation');
 
   if (!isPdf && !isCsv && !isXlsx) {
     return ctx.reply(
@@ -1707,9 +1709,10 @@ bot.on("document", async (ctx) => {
 
   try {
     const buffer = await downloadTelegramFile(ctx, doc.file_id);
-    const parsed = isPdf
-      ? await parsePdf(buffer)
-      : await parseSpreadsheetFile(buffer, isCsv);
+    let parsed;
+    if (isPdf) parsed = await parsePdf(buffer);
+    else if (isPptx) parsed = await parsePptx(buffer);
+    else parsed = await parseSpreadsheetFile(buffer, isCsv);
 
     const preview = formatFilePreview(parsed);
 
@@ -1748,6 +1751,93 @@ bot.action("file_payment_confirm", (ctx) => {
     `Enter your PIN to send:`,
     Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
   );
+});
+
+// ─── Clarification quick-actions (from missing-info keyboard) ───────────────
+bot.action('clarify_choose_contact', (ctx) => {
+  ctx.answerCbQuery();
+  return showContacts(ctx);
+});
+
+bot.action('clarify_paste_address', (ctx) => {
+  ctx.answerCbQuery();
+  // Preserve previous classified intent if present
+  const prev = convState.getState(ctx.from.id);
+  const data = prev && prev.data ? { classified: prev.data.classified } : {};
+  convState.setState(ctx.from.id, 'await_paste_address', data, getContext(ctx.from.id));
+  return ctx.reply('Paste the wallet address or bank account number now.');
+});
+
+bot.action('clarify_enter_amount', (ctx) => {
+  ctx.answerCbQuery();
+  const prev = convState.getState(ctx.from.id);
+  const data = prev && prev.data ? { classified: prev.data.classified } : {};
+  convState.setState(ctx.from.id, 'await_enter_amount', data, getContext(ctx.from.id));
+  return ctx.reply('How much would you like to send? (e.g. $50 or 5000 NGN)');
+});
+
+bot.action('clarify_enter_bank', (ctx) => {
+  ctx.answerCbQuery();
+  const prev = convState.getState(ctx.from.id);
+  const data = prev && prev.data ? { classified: prev.data.classified } : {};
+  convState.setState(ctx.from.id, 'await_bank_details', data, getContext(ctx.from.id));
+  return ctx.reply('Please enter bank name and account number (e.g. GTBank 0123456789).');
+});
+
+// ─── Voice & audio handlers — transcribe then re-enter text flow ───────────
+bot.on('voice', async (ctx) => {
+  const user = db.getUser(ctx.from.id);
+  if (!user) return ctx.reply('Send /start to set up your wallet.');
+
+  await ctx.reply('🔊 Transcribing your voice note...');
+  try {
+    const voice = ctx.message.voice;
+    const buffer = await downloadTelegramFile(ctx, voice.file_id);
+    const res = await transcribeVoice(buffer, 'audio/ogg');
+    if (res.error) {
+      return ctx.reply(res.message || 'Could not transcribe audio.');
+    }
+    const transcript = (res.text || '').trim();
+    if (!transcript || transcript.length < 2) return ctx.reply("Couldn't hear anything clear — please try again.");
+
+    // Re-enter main text handler by synthesising a text message update
+    const synthetic = {
+      update_id: ctx.update.update_id || Date.now(),
+      message: {
+        message_id: (ctx.message.message_id || 0) + 1,
+        from: ctx.from,
+        chat: ctx.chat,
+        date: Math.floor(Date.now() / 1000),
+        text: transcript,
+      },
+    };
+    return await bot.handleUpdate(synthetic);
+  } catch (err) {
+    console.error('[voice_handler]', err);
+    return ctx.reply('Could not process that voice note. Try again or send it as a file.');
+  }
+});
+
+bot.on('audio', async (ctx) => {
+  // audio may be music or voice — treat similarly to voice notes
+  const user = db.getUser(ctx.from.id);
+  if (!user) return ctx.reply('Send /start to set up your wallet.');
+
+  await ctx.reply('🔊 Transcribing audio...');
+  try {
+    const audio = ctx.message.audio || ctx.message.document;
+    if (!audio) return ctx.reply("I couldn't find the audio file.");
+    const buffer = await downloadTelegramFile(ctx, audio.file_id || audio.file_id);
+    const res = await transcribeVoice(buffer, audio.mime_type || 'audio/mpeg');
+    if (res.error) return ctx.reply(res.message || 'Could not transcribe audio.');
+    const transcript = (res.text || '').trim();
+    if (!transcript || transcript.length < 2) return ctx.reply("Couldn't hear anything clear — please try again.");
+    const synthetic = { update_id: ctx.update.update_id || Date.now(), message: { message_id: (ctx.message.message_id || 0) + 1, from: ctx.from, chat: ctx.chat, date: Math.floor(Date.now() / 1000), text: transcript } };
+    return await bot.handleUpdate(synthetic);
+  } catch (err) {
+    console.error('[audio_handler]', err);
+    return ctx.reply('Could not process that audio file.');
+  }
 });
 
 // ─── Keyboard hears ───────────────────────────────────────────────────────────
@@ -2608,6 +2698,93 @@ bot.on("text", async (ctx) => {
       // by falling through to the intent router below
     }
 
+    // ── Clarification: paste address / account number ───────────────────────
+    if (state.type === 'await_paste_address') {
+      convState.clearState(userId);
+      // If we have a prior classified object, update it; otherwise attempt quick parse
+      const prev = state.data && state.data.classified ? state.data.classified : null;
+      const input = text.trim();
+      // If it's a wallet address
+      if (walletLib.isValidAddress && walletLib.isValidAddress(input)) {
+        if (prev && prev.params && prev.params.recipients && prev.params.recipients[0]) {
+          prev.params.recipients[0].wallet_address = input;
+          prev.params.recipients[0].name_or_address = input;
+          prev.params.recipients[0]._resolved = true;
+          const missingNow = getMissingQuestion(prev);
+          if (missingNow) return ctx.reply(missingNow, Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+          convState.setState(userId, 'confirm_intent_pin', { classified: prev }, getContext(userId));
+          const confirmText = buildConfirmationText(prev, prev.params.recipients);
+          return ctx.reply(`${confirmText}\n\nEnter your PIN to confirm:`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]) });
+        }
+      }
+
+      // Otherwise try to parse as bank account
+      const digits = input.replace(/\D/g, '');
+      if (digits.length >= 6) {
+        // assume bank account
+        if (prev && prev.params && prev.params.recipients && prev.params.recipients[0]) {
+          prev.params.recipients[0].account_number = digits;
+          prev.params.recipients[0].name_or_address = input;
+          const missingNow = getMissingQuestion(prev);
+          if (missingNow) return ctx.reply(missingNow, Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+          convState.setState(userId, 'confirm_intent_pin', { classified: prev }, getContext(userId));
+          const confirmText = buildConfirmationText(prev, prev.params.recipients);
+          return ctx.reply(`${confirmText}\n\nEnter your PIN to confirm:`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]) });
+        }
+      }
+
+      return ctx.reply("I couldn't recognise that address or account number. Paste a full 0x address or a 10-digit Naira account number.", Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+    }
+
+    // ── Clarification: enter amount ────────────────────────────────────────
+    if (state.type === 'await_enter_amount') {
+      convState.clearState(userId);
+      const prev = state.data && state.data.classified ? state.data.classified : null;
+      const amtText = text.replace(/[,\s]/g, '');
+      let amount = null, currency = null;
+      const usMatch = amtText.match(/\$?([0-9]+(?:\.[0-9]+)?)/);
+      const ngMatch = amtText.match(/([0-9]+(?:\.[0-9]+)?)\s*(ngn|naira|₦)/i);
+      if (usMatch) { amount = parseFloat(usMatch[1]); currency = 'USDC'; }
+      else if (ngMatch) { amount = parseFloat(ngMatch[1]); currency = 'NGN'; }
+      else {
+        const justNum = parseFloat(amtText.replace(/[^0-9.]/g, ''));
+        if (!isNaN(justNum)) { amount = justNum; currency = 'USDC'; }
+      }
+      if (!amount || amount <= 0) return ctx.reply("Couldn't read that amount. Try: $50 or 5000 NGN", Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+      if (prev && prev.params && prev.params.recipients && prev.params.recipients[0]) {
+        prev.params.recipients[0].amount = amount;
+        prev.params.recipients[0].currency = currency || prev.params.recipients[0].currency || 'USDC';
+        const missingNow = getMissingQuestion(prev);
+        if (missingNow) return ctx.reply(missingNow, Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+        convState.setState(userId, 'confirm_intent_pin', { classified: prev }, getContext(userId));
+        const confirmText = buildConfirmationText(prev, prev.params.recipients);
+        return ctx.reply(`${confirmText}\n\nEnter your PIN to confirm:`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]) });
+      }
+      return ctx.reply("Couldn't attach that amount to a pending instruction.", Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+    }
+
+    // ── Clarification: bank details ────────────────────────────────────────
+    if (state.type === 'await_bank_details') {
+      convState.clearState(userId);
+      const prev = state.data && state.data.classified ? state.data.classified : null;
+      const parts = text.split(/[·,|-]/).map(s => s.trim()).filter(Boolean);
+      const bank = parts[0] || null;
+      const acct = (parts[1] || '').replace(/\D/g, '') || null;
+      const name = parts[2] || null;
+      if (!acct || acct.length < 6) return ctx.reply('Could not read an account number. Format: Bank · 0123456789 · Account Name', Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+      if (prev && prev.params && prev.params.recipients && prev.params.recipients[0]) {
+        prev.params.recipients[0].bank_name = bank;
+        prev.params.recipients[0].account_number = acct;
+        prev.params.recipients[0].account_name = name;
+        const missingNow = getMissingQuestion(prev);
+        if (missingNow) return ctx.reply(missingNow, Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+        convState.setState(userId, 'confirm_intent_pin', { classified: prev }, getContext(userId));
+        const confirmText = buildConfirmationText(prev, prev.params.recipients);
+        return ctx.reply(`${confirmText}\n\nEnter your PIN to confirm:`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]) });
+      }
+      return ctx.reply('Could not attach those bank details to a pending instruction.', Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+    }
+
     // ── Business invoice instruction ─────────────────────────────────────────
 
     if (state.type === "await_biz_invoice_instruction") {
@@ -2905,11 +3082,41 @@ bot.on("text", async (ctx) => {
     );
   }
 
-  // Check for missing info
+  // Check for missing info and offer quick clarification buttons
   const missing = getMissingQuestion(classified);
   if (missing) {
     convState.setState(userId, "await_intent_clarification", { classified }, context);
-    return ctx.reply(missing, Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]));
+    // Build a small set of context-aware buttons to help the user respond quickly
+    function buildClarificationKeyboard(classified, context) {
+      const q = (classified && classified.params && classified.params.recipients && classified.params.recipients[0]) || {};
+      // recipient missing
+      if (missing.toLowerCase().includes('who would you like')) {
+        return Markup.inlineKeyboard([
+          [Markup.button.callback('👥 Choose Contact', 'clarify_choose_contact')],
+          [Markup.button.callback('📋 Paste Address/Account', 'clarify_paste_address')],
+          [Markup.button.callback('❌ Cancel', 'main_menu')],
+        ]);
+      }
+      // amount missing
+      if (missing.toLowerCase().includes('how much')) {
+        return Markup.inlineKeyboard([
+          [Markup.button.callback('💲 Enter Amount', 'clarify_enter_amount')],
+          [Markup.button.callback('❌ Cancel', 'main_menu')],
+        ]);
+      }
+      // bank details missing for offramp
+      if (missing.toLowerCase().includes('bank') || missing.toLowerCase().includes('account')) {
+        return Markup.inlineKeyboard([
+          [Markup.button.callback('🏦 Enter Bank Details', 'clarify_enter_bank')],
+          [Markup.button.callback('👥 Choose Contact', 'clarify_choose_contact')],
+          [Markup.button.callback('❌ Cancel', 'main_menu')],
+        ]);
+      }
+      // default
+      return Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'main_menu')]]);
+    }
+
+    return ctx.reply(missing, buildClarificationKeyboard(classified, context));
   }
 
   // Route by intent

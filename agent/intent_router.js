@@ -104,6 +104,57 @@ User context: ${JSON.stringify(userContext)}`;
  */
 async function classifyIntent(message, telegramId, userContext = {}) {
   let parsed;
+  // Quick heuristic classifier for short inputs / obvious patterns to avoid
+  // unnecessary LLM calls and make single-word commands 100% reliable.
+  function quickClassify(msg) {
+    const m = String(msg || "").trim();
+    if (!m) return null;
+    const low = m.toLowerCase();
+
+    // Exact short commands
+    if (low === "balance" || low === "bal" || low === "wetin i get" || low === "how much") {
+      return { intent: "balance", confidence: "high", params: { recipients: [], schedule: {}, missing: null }, raw_summary: "Check balance" };
+    }
+    if (low === "history" || low === "transactions" || low === "txs") {
+      return { intent: "history", confidence: "high", params: { recipients: [], schedule: {}, missing: null }, raw_summary: "Show recent transactions" };
+    }
+    if (low === "help" || low === "what can you do" || low === "commands") {
+      return { intent: "help", confidence: "high", params: { recipients: [], schedule: {}, missing: null }, raw_summary: "Help" };
+    }
+    if (low === "invoices" || low === "invoice list" || low === "my invoices") {
+      return { intent: "invoice_list", confidence: "high", params: { recipients: [], schedule: {}, missing: null }, raw_summary: "List invoices" };
+    }
+    if (low === "contacts" || low === "payees" || low === "list payees") {
+      return { intent: "list_payees", confidence: "high", params: { recipients: [], schedule: {}, missing: null }, raw_summary: "List contacts" };
+    }
+
+    // 0x address alone -> transfer (recipient known, amount missing)
+    const addrMatch = m.match(/^0x[a-fA-F0-9]{40}$/);
+    if (addrMatch) {
+      return {
+        intent: "transfer",
+        confidence: "high",
+        params: { recipients: [{ name_or_address: m, amount: null, currency: null }], schedule: {}, missing: null },
+        raw_summary: `Send to ${m}`,
+      };
+    }
+
+    // Simple "send $50 to Emeka" pattern
+    const sendMatch = m.match(/^send\s+\$?(\d+(?:\.\d+)?)\s+to\s+(.+)$/i);
+    if (sendMatch) {
+      return {
+        intent: "transfer",
+        confidence: "high",
+        params: { recipients: [{ name_or_address: sendMatch[2].trim(), amount: Number(sendMatch[1]), currency: "USDC" }], schedule: {}, missing: null },
+        raw_summary: `Send $${sendMatch[1]} to ${sendMatch[2].trim()}`,
+      };
+    }
+
+    return null;
+  }
+
+  const quick = quickClassify(message);
+  if (quick) return quick;
   try {
     parsed = await getJSONCompletion(
       buildClassifierPrompt(userContext),
