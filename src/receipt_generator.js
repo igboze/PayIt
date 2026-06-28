@@ -6,6 +6,7 @@
 const sharp = require("sharp");
 const path  = require("path");
 const os    = require("os");
+const { getEmbeddedFontCss } = require("./svg_fonts");
 
 function escape(str) {
   if (!str) return "";
@@ -71,13 +72,19 @@ function buildReceiptSvg(opts) {
   const hashLine = shortHash
     ? `
   <text x="40"  y="390" font-size="11" fill="#94a3b8">Transaction ID</text>
-  <text x="640" y="390" font-size="10.5" fill="#0f766e" text-anchor="end" font-family="monospace">${escape(shortHash)}</text>`
+  <text x="640" y="390" font-size="10.5" fill="#0f766e" text-anchor="end" font-family="'DejaVu Sans Mono', monospace">${escape(shortHash)}</text>`
     : "";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg width="680" height="460" viewBox="0 0 680 460"
-     xmlns="http://www.w3.org/2000/svg"
-     font-family="Arial, Helvetica, sans-serif">
+     xmlns="http://www.w3.org/2000/svg">
+
+  <defs>
+    <style>${getEmbeddedFontCss()}</style>
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#00000015"/>
+    </filter>
+  </defs>
 
   <!-- Background -->
   <rect width="680" height="460" fill="#f8fafc" rx="14"/>
@@ -95,11 +102,6 @@ function buildReceiptSvg(opts) {
   <!-- Amount block -->
   <rect x="140" y="90" width="400" height="80" fill="#ffffff" rx="10"
         filter="url(#shadow)"/>
-  <defs>
-    <filter id="shadow" x="-5%" y="-5%" width="110%" height="120%">
-      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#00000015"/>
-    </filter>
-  </defs>
   <text x="340" y="130" font-size="13" fill="#64748b" text-anchor="middle">Amount sent</text>
   <text x="340" y="158" font-size="30" font-weight="700" fill="#0f766e" text-anchor="middle">${Number(amountUsdc).toFixed(2)} ${escape(token)}</text>
   ${nairaLine}
@@ -114,13 +116,13 @@ function buildReceiptSvg(opts) {
   <!-- From / To -->
   <text x="40"  y="250" font-size="12" fill="#94a3b8">From</text>
   <text x="640" y="250" font-size="13" fill="#1e293b" text-anchor="end" font-weight="600">${escape(senderName)}</text>
-  <text x="640" y="267" font-size="10.5" fill="#64748b" text-anchor="end" font-family="monospace">${escape(shortSender)}</text>
+  <text x="640" y="267" font-size="10.5" fill="#64748b" text-anchor="end" font-family="'DejaVu Sans Mono', monospace">${escape(shortSender)}</text>
 
   <line x1="30" y1="282" x2="650" y2="282" stroke="#f1f5f9" stroke-width="1"/>
 
   <text x="40"  y="306" font-size="12" fill="#94a3b8">To</text>
   <text x="640" y="306" font-size="13" fill="#1e293b" text-anchor="end" font-weight="600">${escape(recipientName)}</text>
-  <text x="640" y="323" font-size="10.5" fill="#64748b" text-anchor="end" font-family="monospace">${escape(shortRecip)}</text>
+  <text x="640" y="323" font-size="10.5" fill="#64748b" text-anchor="end" font-family="'DejaVu Sans Mono', monospace">${escape(shortRecip)}</text>
 
   <line x1="30" y1="338" x2="650" y2="338" stroke="#f1f5f9" stroke-width="1"/>
 

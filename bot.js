@@ -682,63 +682,102 @@ bot.action("action_gateway", async (ctx) => {
   ctx.answerCbQuery();
   const user    = requireUser(ctx);
   if (!user) return;
-  const address = getActiveWallet(user);
+  const arcAddress = getActiveWallet(user);
+  const gwAddress  = gateway.GATEWAY_WALLET_ADDRESS;
 
   await ctx.reply(
     `🌍 Add Money from Abroad\n──────────────────────────\n` +
-    `Bring dollars from another platform — Binance, Coinbase, MetaMask, Trust Wallet, and more.\n\n` +
+    `Bring USDC from Ethereum, Base, or Avalanche testnets into PayIT via Circle Gateway.\n\n` +
     `How it works:\n` +
-    `1️⃣ Copy your PayIT account number below\n` +
-    `2️⃣ Go to your other platform and send USDC to that number\n` +
-    `3️⃣ Your balance updates automatically — usually in under a minute\n\n` +
-    `Supported platforms: any wallet that supports Ethereum, Base, Polygon, or Arbitrum\n\n` +
-    `Fee: 0.05%`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("📋 Copy Account Number",   "gateway_myaddress")],
-      [Markup.button.callback("📖 Step-by-Step Guide",    "gateway_steps")],
-      [Markup.button.callback("🔍 Check Incoming Balance", "gateway_balance")],
-      [Markup.button.callback("🏠 Back",                  "main_menu")],
-    ])
+    `1️⃣ Copy the Gateway contract address\n` +
+    `2️⃣ In MetaMask (or similar), approve + call deposit() on that contract\n` +
+    `3️⃣ After finality, tap Transfer to Arc — funds appear on Arc\n\n` +
+    `⚠️ Do NOT send USDC directly to the contract — you must call deposit().\n\n` +
+    `Gateway contract:\n<code>${gwAddress}</code>\n\n` +
+    `Your Arc depositor ID:\n<code>${arcAddress}</code>`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("📋 Copy Gateway Contract", "gateway_copy_contract")],
+        [Markup.button.callback("📋 Copy Arc Depositor ID",  "gateway_copy_arc")],
+        [Markup.button.callback("📖 Step-by-Step Guide",      "gateway_steps")],
+        [Markup.button.callback("🔍 Check Incoming Balance",  "gateway_balance")],
+        [Markup.button.callback("🏠 Back",                    "main_menu")],
+      ]),
+    }
   );
 });
 
-bot.action("gateway_myaddress", async (ctx) => {
+bot.action(["gateway_copy_contract", "gateway_myaddress"], async (ctx) => {
   ctx.answerCbQuery();
-  const user    = requireUser(ctx);
-  if (!user) return;
-  const address = getActiveWallet(user);
+  const gwAddress = gateway.GATEWAY_WALLET_ADDRESS;
   await ctx.reply(
-    `📋 Your PayIT Account Number\n──────────────────────────\n` +
-    `\`${address}\`\n\n` +
-    `Tap the number above to copy it, then paste it as the recipient in your other platform.`,
-    { parse_mode: "Markdown",
+    `📋 Gateway Contract Address\n──────────────────────────\n` +
+    `Tap to copy:\n\n<code>${gwAddress}</code>\n\n` +
+    `Use this contract in MetaMask to approve and call deposit().\n` +
+    `⚠️ A plain USDC transfer to this address permanently loses funds.`,
+    {
+      parse_mode: "HTML",
       ...Markup.inlineKeyboard([
-        [Markup.button.url("🔎 View transaction history", `https://testnet.arcscan.app/address/${address}`)],
+        [Markup.button.callback("📖 Step-by-Step Guide", "gateway_steps")],
         [Markup.button.callback("« Back", "action_gateway")],
-      ])
+      ]),
+    }
+  );
+});
+
+bot.action("gateway_copy_arc", async (ctx) => {
+  ctx.answerCbQuery();
+  const user       = requireUser(ctx);
+  if (!user) return;
+  const arcAddress = getActiveWallet(user);
+  await ctx.reply(
+    `📋 Your Arc Depositor ID\n──────────────────────────\n` +
+    `Tap to copy:\n\n<code>${arcAddress}</code>\n\n` +
+    `This is your PayIT account number on Arc. Gateway uses it to credit your balance after deposit.`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.url("🔎 View on Arcscan", `https://testnet.arcscan.app/address/${arcAddress}`)],
+        [Markup.button.callback("« Back", "action_gateway")],
+      ]),
     }
   );
 });
 
 bot.action("gateway_steps", async (ctx) => {
   ctx.answerCbQuery();
-  const user    = requireUser(ctx);
+  const user       = requireUser(ctx);
   if (!user) return;
-  const address = getActiveWallet(user);
+  const arcAddress = getActiveWallet(user);
+  const gwAddress  = gateway.GATEWAY_WALLET_ADDRESS;
+  const info       = await gateway.getDepositInfo(arcAddress);
+
+  const chainList = info.chains
+    .map(c => `• ${c.name}`)
+    .join("\n");
+
   await ctx.reply(
-    `📖 How to Add Money from Another Platform\n──────────────────────────\n\n` +
-    `Step 1: Get your PayIT account number\n` +
-    `\`${address}\`\n\n` +
-    `Step 2: Go to your other platform (Binance, Coinbase, MetaMask, etc.)\n\n` +
-    `Step 3: Start a withdrawal or send, choose USDC (dollars), paste your PayIT account number as the destination\n\n` +
-    `Step 4: Confirm the transaction on that platform\n\n` +
-    `Step 5: Your PayIT balance updates — usually in under a minute\n\n` +
-    `⚠️ Always send USDC (dollars). Sending a different currency to this address may result in permanent loss.`,
-    { parse_mode: "Markdown",
+    `📖 How to Add Money from Another Chain\n──────────────────────────\n\n` +
+    `<b>Step 1 — Get testnet USDC</b>\n` +
+    `Visit faucet.circle.com and request USDC on your source chain.\n\n` +
+    `<b>Step 2 — Copy Gateway contract</b>\n` +
+    `<code>${gwAddress}</code>\n\n` +
+    `<b>Step 3 — Approve + Deposit</b>\n` +
+    `In MetaMask, approve the Gateway contract to spend your USDC, then call deposit().\n` +
+    `⚠️ Do NOT send USDC directly — use deposit().\n\n` +
+    `<b>Step 4 — Your depositor ID</b>\n` +
+    `<code>${arcAddress}</code>\n\n` +
+    `<b>Step 5 — Wait for finality</b>\n` +
+    `Sepolia ~12 min · Base Sepolia ~2 min · Fuji instant\n\n` +
+    `<b>Supported chains:</b>\n${chainList}`,
+    {
+      parse_mode: "HTML",
       ...Markup.inlineKeyboard([
-        [Markup.button.url("🚰 Get free test dollars (Circle Faucet)", "https://faucet.circle.com")],
+        [Markup.button.callback("📋 Copy Gateway Contract", "gateway_copy_contract")],
+        [Markup.button.url("🚰 Circle Faucet", "https://faucet.circle.com")],
         [Markup.button.callback("« Back", "action_gateway")],
-      ])
+      ]),
     }
   );
 });

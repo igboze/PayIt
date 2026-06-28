@@ -1,18 +1,14 @@
 // src/invoice_generator.js
 // Renders invoices as PNG using sharp (SVG pipeline).
 //
-// Font strategy: explicitly uses "DejaVu Sans" which is bundled inside
-// sharp's own prebuilt binary via fontconfig on every platform including
-// Railway. Falls back to Liberation Sans and then any sans-serif.
-// This avoids the "boxes instead of text" problem caused by Railway's
-// librsvg not finding Arial or Helvetica.
+// Font strategy: embed DejaVu Sans TTF files directly in the SVG via
+// base64 @font-face rules (see svg_fonts.js). This works on every platform
+// without relying on system fontconfig — fixes missing text on Railway.
 
 const sharp = require("sharp");
 const path  = require("path");
 const os    = require("os");
-
-// Tell fontconfig where to find fonts — covers Railway's container path
-process.env.FONTCONFIG_PATH = process.env.FONTCONFIG_PATH || "/etc/fonts";
+const { getEmbeddedFontCss } = require("./svg_fonts");
 
 function escape(str) {
   if (!str) return "";
@@ -46,10 +42,8 @@ function buildSvg(opts) {
     currency         = "USDC",
   } = opts;
 
-  // Use DejaVu Sans — confirmed available in sharp's bundled fontconfig
-  // on both local installs and Railway containers
-  const FONT     = "DejaVu Sans, Liberation Sans, sans-serif";
-  const FONT_MONO = "DejaVu Sans Mono, Liberation Mono, monospace";
+  const FONT      = "'DejaVu Sans', sans-serif";
+  const FONT_MONO = "'DejaVu Sans Mono', monospace";
 
   const total = items.reduce((s, i) =>
     s + (Number(i.quantity || 1) || 1) * safeNum(i.unitPrice), 0);
@@ -98,7 +92,7 @@ function buildSvg(opts) {
 
   <defs>
     <style>
-      text { font-family: DejaVu Sans, Liberation Sans, sans-serif; }
+      ${getEmbeddedFontCss()}
     </style>
   </defs>
 
