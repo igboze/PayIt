@@ -18,13 +18,20 @@
 // Docs: https://developers.circle.com/gateway
 
 const axios = require("axios");
-const { Contract, Wallet, JsonRpcProvider, parseUnits, formatUnits } = require("ethers");
+const {
+  Contract, Wallet, JsonRpcProvider,
+  parseUnits, formatUnits, ZeroAddress,
+  MaxUint256, randomBytes, zeroPadValue, getAddress,
+} = require("ethers");
 
 const GATEWAY_API_BASE = process.env.GATEWAY_API_URL || "https://gateway-api-testnet.circle.com/v1";
 
 // ── Confirmed contract addresses (same on all supported chains) ────────────────
 const GATEWAY_WALLET_ADDRESS  = "0x0077777d7EBA4688BDeF3E311b846F25870A19B9";
 const GATEWAY_MINTER_ADDRESS  = "0x0022222ABE238Cc2C7Bb1f21003F0a260052475B";
+const ARC_USDC_ADDRESS        = "0x3600000000000000000000000000000000000000";
+const ARC_DOMAIN_ID           = 26; // confirmed via GET /v1/info (ARC Testnet)
+const MAX_TRANSFER_FEE        = parseUnits("2.01", 6);
 
 // ── USDC contract addresses per testnet chain ──────────────────────────────────
 const USDC_ADDRESSES = {
@@ -38,8 +45,38 @@ const DOMAIN_IDS = {
   "Ethereum Sepolia": 0,
   "Avalanche Fuji":   1,
   "Base Sepolia":     6,
-  "Arc Testnet":      7, // destination domain
+  "Arc Testnet":      ARC_DOMAIN_ID,
 };
+
+const EIP712_DOMAIN = { name: "GatewayWallet", version: "1" };
+
+const BURN_INTENT_TYPES = {
+  TransferSpec: [
+    { name: "version",             type: "uint32"   },
+    { name: "sourceDomain",        type: "uint32"   },
+    { name: "destinationDomain",   type: "uint32"   },
+    { name: "sourceContract",      type: "bytes32"  },
+    { name: "destinationContract", type: "bytes32"  },
+    { name: "sourceToken",         type: "bytes32"  },
+    { name: "destinationToken",    type: "bytes32"  },
+    { name: "sourceDepositor",     type: "bytes32"  },
+    { name: "destinationRecipient",type: "bytes32"  },
+    { name: "sourceSigner",        type: "bytes32"  },
+    { name: "destinationCaller",   type: "bytes32"  },
+    { name: "value",               type: "uint256"  },
+    { name: "salt",                type: "bytes32"  },
+    { name: "hookData",            type: "bytes"    },
+  ],
+  BurnIntent: [
+    { name: "maxBlockHeight", type: "uint256" },
+    { name: "maxFee",         type: "uint256" },
+    { name: "spec",           type: "TransferSpec" },
+  ],
+};
+
+function toBytes32(address) {
+  return zeroPadValue(getAddress(address), 32);
+}
 
 // ── RPC endpoints for each source chain ───────────────────────────────────────
 // FIX 2: Exported so wallet.js can use these for balance checks
@@ -172,6 +209,90 @@ async function getDepositInfo(arcAddress) {
  * @param {string|number} amountUsdc - Human-readable USDC amount, e.g. "25.00"
  * @returns {{ approveTxHash: string, depositTxHash: string }}
  */
+async function getSourceChainNativeBalance(walletAddress, sourceChainName) {
+  const chain = SUPPORTED_CHAINS.find(c => c.name === sourceChainName);
+  if (!chain) throw new Error(`Unsupported chain: ${sourceChainName}`);
+  const provider = new JsonRpcProvider(CHAIN_RPCS[sourceChainName], chain.chainId);
+  const raw = await provider.getBalance(walletAddress);
+  return formatUnits(raw, 18);
+}
+
+/**
+ * Build and EIP-712-sign a burn intent to move Gateway USDC to Arc.
+ */
+async function buildSignedBurnIntent(signer, sourceChainName, amountUsdc, recipientAddress) {
+  const chain = SUPPORTED_CHAINS.find(c => c.name === sourceChainName);
+  if (!chain) throw new Error(`Unsupported chain: ${sourceChainName}`);
+
+  const usdcAddress = USDC_ADDRESSES[sourceChainName];
+  const depositor     = getAddress(await signer.getAddress());
+  const recipient     = getAddress(recipientAddress);
+  const value         = parseUnits(amountUsdc.toString(), 6);
+  const salt          = "0x" + Buffer.from(randomBytes(32)).toString("hex");
+
+  const burnIntent = {
+    maxBlockHeight: MaxUint256,
+    maxFee:         MAX_TRANSFER_FEE,
+    spec: {
+      version:              1,
+      sourceDomain:         chain.domain,
+      destinationDomain:    ARC_DOMAIN_ID,
+      sourceContract:       toBytes32(GATEWAY_WALLET_ADDRESS),
+      destinationContract:  toBytes32(GATEWAY_MINTER_ADDRESS),
+      sourceToken:          toBytes32(usdcAddress),
+      destinationToken:     toBytes32(ARC_USDC_ADDRESS),
+      sourceDepositor:      toBytes32(depositor),
+      destinationRecipient: toBytes32(recipient),
+      sourceSigner:         toBytes32(depositor),
+      destinationCaller:    toBytes32(ZeroAddress),
+      value,
+      salt,
+      hookData: "0x",
+    },
+  };
+
+  const signature = await signer.signTypedData(EIP712_DOMAIN, BURN_INTENT_TYPES, burnIntent);
+  return { burnIntent, signature };
+}
+
+/**
+ * Transfer Gateway USDC from a source chain to Arc (burn + mint via Circle API).
+ * Uses enableForwarder so Circle submits the Arc mint automatically.
+ */
+async function transferToArc(privateKey, sourceChainName, amountUsdc, recipientAddress) {
+  const signer = new Wallet(privateKey);
+  const { burnIntent, signature } = await buildSignedBurnIntent(
+    signer, sourceChainName, amountUsdc, recipientAddress
+  );
+
+  const res = await axios.post(
+    `${GATEWAY_API_BASE}/transfer?enableForwarder=true`,
+    [{ burnIntent, signature }],
+    { headers: { "Content-Type": "application/json" } }
+  );
+  return res.data;
+}
+
+/**
+ * Summarise per-chain USDC + gas balances for the bot UI.
+ */
+async function getSourceChainBalances(walletAddress) {
+  const walletLib = require("./wallet");
+  const rows = [];
+  for (const chain of SUPPORTED_CHAINS) {
+    try {
+      const [usdc, gas] = await Promise.all([
+        walletLib.getUsdcBalance(walletAddress, chain.name),
+        getSourceChainNativeBalance(walletAddress, chain.name),
+      ]);
+      rows.push({ chain: chain.name, symbol: chain.symbol, usdc, gas });
+    } catch (err) {
+      rows.push({ chain: chain.name, symbol: chain.symbol, usdc: "?", gas: "?", error: err.message });
+    }
+  }
+  return rows;
+}
+
 async function executeDeposit(privateKey, sourceChainName, amountUsdc) {
   const chain = SUPPORTED_CHAINS.find(c => c.name === sourceChainName);
   if (!chain) throw new Error(`Unsupported chain: ${sourceChainName}`);
@@ -227,15 +348,21 @@ async function getTransferStatus(depositorAddress) {
 module.exports = {
   getDepositInfo,
   getTransferStatus,
-  executeDeposit,           // FIX 1: new export
+  executeDeposit,
+  transferToArc,
+  buildSignedBurnIntent,
+  getSourceChainBalances,
+  getSourceChainNativeBalance,
   getGatewayInfo,
   getGatewayBalance,
   getPendingDeposits,
   submitTransfer,
   SUPPORTED_CHAINS,
-  CHAIN_RPCS,               // FIX 2: new export
+  CHAIN_RPCS,
   GATEWAY_WALLET_ADDRESS,
   GATEWAY_MINTER_ADDRESS,
+  ARC_USDC_ADDRESS,
+  ARC_DOMAIN_ID,
   USDC_ADDRESSES,
   DOMAIN_IDS,
   GATEWAY_WALLET_ABI,

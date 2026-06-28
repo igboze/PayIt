@@ -3,10 +3,10 @@
 // Uses the same sharp/SVG pipeline as the invoice generator.
 // Receipts are stored in tmp and sent to the user, not persisted long-term.
 
-const sharp = require("sharp");
 const path  = require("path");
 const os    = require("os");
-const { getEmbeddedFontCss } = require("./svg_fonts");
+const { FONT_MONO, getFontCss } = require("./svg_fonts");
+const { renderSvgToPngFile } = require("./svg_render");
 
 function escape(str) {
   if (!str) return "";
@@ -80,7 +80,7 @@ function buildReceiptSvg(opts) {
      xmlns="http://www.w3.org/2000/svg">
 
   <defs>
-    <style>${getEmbeddedFontCss()}</style>
+    <style>${getFontCss()}</style>
     <filter id="shadow" x="-5%" y="-5%" width="110%" height="120%">
       <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#00000015"/>
     </filter>
@@ -153,7 +153,7 @@ async function generateReceiptPNG(opts) {
   const receiptId = opts.receiptId || `R-${Date.now()}`;
   const svg       = buildReceiptSvg({ ...opts, receiptId });
   const outPath   = path.join(os.tmpdir(), `receipt-${receiptId}-${Date.now()}.png`);
-  await sharp(Buffer.from(svg)).png().toFile(outPath);
+  renderSvgToPngFile(svg, outPath);
   return outPath;
 }
 

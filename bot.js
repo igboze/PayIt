@@ -683,25 +683,24 @@ bot.action("action_gateway", async (ctx) => {
   const user    = requireUser(ctx);
   if (!user) return;
   const arcAddress = getActiveWallet(user);
-  const gwAddress  = gateway.GATEWAY_WALLET_ADDRESS;
 
   await ctx.reply(
     `🌍 Add Money from Abroad\n──────────────────────────\n` +
-    `Bring USDC from Ethereum, Base, or Avalanche testnets into PayIT via Circle Gateway.\n\n` +
-    `How it works:\n` +
-    `1️⃣ Copy the Gateway contract address\n` +
-    `2️⃣ In MetaMask (or similar), approve + call deposit() on that contract\n` +
-    `3️⃣ After finality, tap Transfer to Arc — funds appear on Arc\n\n` +
-    `⚠️ Do NOT send USDC directly to the contract — you must call deposit().\n\n` +
-    `Gateway contract:\n<code>${gwAddress}</code>\n\n` +
-    `Your Arc depositor ID:\n<code>${arcAddress}</code>`,
+    `The easy way: tap <b>Deposit USDC</b> below — PayIT handles approve + deposit for you.\n\n` +
+    `Before you start:\n` +
+    `1. Get testnet USDC from faucet.circle.com (pick your source chain)\n` +
+    `2. Get a little gas on that chain (ETH / BASE / AVAX)\n` +
+    `3. Use the <b>same PayIT address</b> on every chain:\n<code>${arcAddress}</code>\n\n` +
+    `After deposit finalises, tap <b>Transfer to Arc</b> to move USDC into PayIT.`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
-        [Markup.button.callback("📋 Copy Gateway Contract", "gateway_copy_contract")],
-        [Markup.button.callback("📋 Copy Arc Depositor ID",  "gateway_copy_arc")],
-        [Markup.button.callback("📖 Step-by-Step Guide",      "gateway_steps")],
-        [Markup.button.callback("🔍 Check Incoming Balance",  "gateway_balance")],
+        [Markup.button.callback("🚀 Deposit USDC (Easy)",     "gateway_easy_deposit")],
+        [Markup.button.callback("⚡ Transfer to Arc",         "gateway_transfer_arc")],
+        [Markup.button.callback("📋 Copy Gateway Contract",    "gateway_copy_contract")],
+        [Markup.button.callback("📋 Copy Arc Depositor ID",   "gateway_copy_arc")],
+        [Markup.button.callback("🔍 Check Gateway Balance",   "gateway_balance")],
+        [Markup.button.callback("📖 Manual Guide (MetaMask)", "gateway_steps")],
         [Markup.button.callback("🏠 Back",                    "main_menu")],
       ]),
     }
@@ -807,11 +806,125 @@ bot.action("gateway_balance", async (ctx) => {
     .join("\n");
 
   await ctx.reply(
-    `Incoming balance detected:\n\n${lines}\n\nThis will appear in your PayIT balance shortly.`,
+    `Incoming Gateway balance:\n\n${lines}\n\nTap <b>Transfer to Arc</b> to move this into your PayIT balance.`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("⚡ Transfer to Arc", "gateway_transfer_arc")],
+        [Markup.button.callback("🔄 Refresh",        "gateway_balance")],
+        [Markup.button.callback("« Back",            "action_gateway")],
+      ]),
+    }
+  );
+});
+
+// ─── Gateway: easy in-bot deposit + transfer ─────────────────────────────────
+
+bot.action("gateway_easy_deposit", async (ctx) => {
+  ctx.answerCbQuery();
+  const user = requireUser(ctx);
+  if (!user) return;
+  const address = getActiveWallet(user);
+
+  await ctx.reply("⏳ Checking your balances on source chains...");
+  const rows = await gateway.getSourceChainBalances(address);
+  const lines = rows.map(r =>
+    `• <b>${r.chain}</b>: ${r.usdc} USDC · ${r.gas} ${r.symbol} gas`
+  ).join("\n");
+
+  const chainButtons = gateway.SUPPORTED_CHAINS.map((c, i) =>
+    [Markup.button.callback(c.name, `gateway_dep_chain_${i}`)]
+  );
+
+  await ctx.reply(
+    `🚀 Easy Gateway Deposit\n──────────────────────────\n` +
+    `Your address on every chain:\n<code>${address}</code>\n\n` +
+    `<b>Current balances:</b>\n${lines}\n\n` +
+    `Need tokens? Get USDC + gas from faucet.circle.com\n` +
+    `(use the address above — it's the same on all chains)\n\n` +
+    `Pick a source chain to deposit from:`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        ...chainButtons,
+        [Markup.button.url("🚰 Circle Faucet", "https://faucet.circle.com")],
+        [Markup.button.callback("« Back", "action_gateway")],
+      ]),
+    }
+  );
+});
+
+bot.action(/^gateway_dep_chain_(\d+)$/, async (ctx) => {
+  ctx.answerCbQuery();
+  const user = requireUser(ctx);
+  if (!user) return;
+  const chain = gateway.SUPPORTED_CHAINS[parseInt(ctx.match[1])];
+  if (!chain) return ctx.reply("Unknown chain.");
+
+  const address = getActiveWallet(user);
+  let usdc = "0", gas = "0";
+  try {
+    usdc = await walletLib.getUsdcBalance(address, chain.name);
+    gas  = await gateway.getSourceChainNativeBalance(address, chain.name);
+  } catch {}
+
+  convState.setState(ctx.from.id, "await_gateway_deposit_amount", { chainName: chain.name }, getContext(ctx.from.id));
+
+  await ctx.reply(
+    `🚀 Deposit from ${chain.name}\n──────────────────────────\n` +
+    `USDC available: <b>${usdc}</b>\n` +
+    `Gas available: <b>${gas}</b> ${chain.symbol}\n\n` +
+    `How much USDC do you want to deposit into Gateway?\n` +
+    `(e.g. <code>5</code> or <code>10.50</code>)\n\n` +
+    `PayIT will approve + call deposit() for you.`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_gateway")]]),
+    }
+  );
+});
+
+bot.action("gateway_transfer_arc", async (ctx) => {
+  ctx.answerCbQuery();
+  const user = requireUser(ctx);
+  if (!user) return;
+  const address = getActiveWallet(user);
+
+  const chainButtons = gateway.SUPPORTED_CHAINS.map((c, i) =>
+    [Markup.button.callback(c.name, `gateway_xfer_chain_${i}`)]
+  );
+
+  await ctx.reply(
+    `⚡ Transfer to Arc\n──────────────────────────\n` +
+    `Move your Gateway USDC into PayIT on Arc.\n\n` +
+    `Only works after your deposit has finalised on the source chain:\n` +
+    `• Sepolia ~12 min\n• Base Sepolia ~2 min\n• Fuji ~instant\n\n` +
+    `Pick the source chain:`,
     Markup.inlineKeyboard([
-      [Markup.button.callback("🔄 Refresh", "gateway_balance")],
-      [Markup.button.callback("« Back",     "action_gateway")],
+      ...chainButtons,
+      [Markup.button.callback("🔍 Check Balance First", "gateway_balance")],
+      [Markup.button.callback("« Back", "action_gateway")],
     ])
+  );
+});
+
+bot.action(/^gateway_xfer_chain_(\d+)$/, async (ctx) => {
+  ctx.answerCbQuery();
+  const user = requireUser(ctx);
+  if (!user) return;
+  const chain = gateway.SUPPORTED_CHAINS[parseInt(ctx.match[1])];
+  if (!chain) return ctx.reply("Unknown chain.");
+
+  convState.setState(ctx.from.id, "await_gateway_transfer_amount", { chainName: chain.name }, getContext(ctx.from.id));
+
+  await ctx.reply(
+    `⚡ Transfer from ${chain.name} → Arc\n──────────────────────────\n` +
+    `How much USDC to move to Arc? (e.g. <code>5</code>)\n\n` +
+    `Must be ≤ your Gateway balance on this chain.`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_gateway")]]),
+    }
   );
 });
 
@@ -2085,6 +2198,134 @@ bot.on("text", async (ctx) => {
       } catch {
         return ctx.reply("Couldn't verify the code — please try again.");
       }
+    }
+
+    // ── Gateway deposit amount ───────────────────────────────────────────────
+
+    if (state.type === "await_gateway_deposit_amount") {
+      const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
+      if (isNaN(amount) || amount <= 0) {
+        return ctx.reply("Enter a valid USDC amount (e.g. 5):");
+      }
+      const { chainName } = state.data;
+      convState.setState(userId, "confirm_gateway_deposit_pin", { chainName, amount }, state.context);
+      return ctx.reply(
+        `🚀 Confirm Gateway Deposit\n──────────────────────────\n` +
+        `Chain: ${chainName}\n` +
+        `Amount: ${amount.toFixed(2)} USDC\n\n` +
+        `PayIT will approve + deposit into Circle Gateway.\n` +
+        `You need USDC + gas on ${chainName}.\n\n` +
+        `Enter your PIN to confirm:`,
+        Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_gateway")]])
+      );
+    }
+
+    if (state.type === "confirm_gateway_deposit_pin") {
+      await deleteSensitiveMessage(ctx);
+      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
+      if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
+      const user = db.getUser(userId);
+      convState.clearState(userId);
+      const { chainName, amount } = state.data;
+      const chain = gateway.SUPPORTED_CHAINS.find(c => c.name === chainName);
+
+      let privateKey;
+      try {
+        privateKey = db.decryptPrivateKey(text, user);
+      } catch {
+        return ctx.reply("Couldn't unlock your wallet with that PIN.");
+      }
+
+      await ctx.reply(`⏳ Depositing ${amount.toFixed(2)} USDC on ${chainName}...\nThis may take a minute.`);
+      try {
+        const { approveTxHash, depositTxHash } = await gateway.executeDeposit(privateKey, chainName, amount);
+        const explorer = chain?.explorer || "";
+        await ctx.reply(
+          `✅ Deposited into Gateway!\n\n` +
+          `Approve: ${explorer}${approveTxHash}\n` +
+          `Deposit: ${explorer}${depositTxHash}\n\n` +
+          `Wait for finality, then tap <b>Transfer to Arc</b>.`,
+          {
+            parse_mode: "HTML",
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback("⚡ Transfer to Arc", "gateway_transfer_arc")],
+              [Markup.button.callback("🏠 Main Menu",      "main_menu")],
+            ]),
+          }
+        );
+      } catch (err) {
+        console.error("[gateway_deposit]", err);
+        await ctx.reply(
+          `❌ Deposit failed: ${err.message}\n\n` +
+          `Common fixes:\n` +
+          `• Get USDC from faucet.circle.com for ${chainName}\n` +
+          `• Get gas (${chain?.symbol || "native token"}) on ${chainName}\n` +
+          `• Try a smaller amount`,
+          Markup.inlineKeyboard([[Markup.button.callback("« Back", "action_gateway")]])
+        );
+      }
+      return;
+    }
+
+    if (state.type === "await_gateway_transfer_amount") {
+      const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
+      if (isNaN(amount) || amount <= 0) {
+        return ctx.reply("Enter a valid USDC amount (e.g. 5):");
+      }
+      const { chainName } = state.data;
+      convState.setState(userId, "confirm_gateway_transfer_pin", { chainName, amount }, state.context);
+      return ctx.reply(
+        `⚡ Confirm Transfer to Arc\n──────────────────────────\n` +
+        `From: ${chainName}\n` +
+        `Amount: ${amount.toFixed(2)} USDC\n\n` +
+        `Enter your PIN to confirm:`,
+        Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_gateway")]])
+      );
+    }
+
+    if (state.type === "confirm_gateway_transfer_pin") {
+      await deleteSensitiveMessage(ctx);
+      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
+      if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
+      const user = db.getUser(userId);
+      convState.clearState(userId);
+      const { chainName, amount } = state.data;
+      const arcAddress = getActiveWallet(user);
+
+      let privateKey;
+      try {
+        privateKey = db.decryptPrivateKey(text, user);
+      } catch {
+        return ctx.reply("Couldn't unlock your wallet with that PIN.");
+      }
+
+      await ctx.reply(`⏳ Transferring ${amount.toFixed(2)} USDC to Arc...`);
+      try {
+        const result = await gateway.transferToArc(privateKey, chainName, amount, arcAddress);
+        await ctx.reply(
+          `✅ Transfer submitted!\n\n` +
+          `USDC should appear on Arc in under a minute.\n` +
+          (result.transferId ? `Transfer ID: ${result.transferId}\n` : "") +
+          `\nTap Check Balance to confirm.`,
+          Markup.inlineKeyboard([
+            [Markup.button.callback("💰 Check Balance", "action_balance")],
+            [Markup.button.callback("🏠 Main Menu",     "main_menu")],
+          ])
+        );
+      } catch (err) {
+        console.error("[gateway_transfer]", err);
+        const detail = err?.response?.data?.message || err.message;
+        await ctx.reply(
+          `❌ Transfer failed: ${detail}\n\n` +
+          `If you just deposited, wait for finality first:\n` +
+          `• Sepolia ~12 min · Base ~2 min · Fuji instant`,
+          Markup.inlineKeyboard([
+            [Markup.button.callback("🔍 Check Balance", "gateway_balance")],
+            [Markup.button.callback("« Back",           "action_gateway")],
+          ])
+        );
+      }
+      return;
     }
 
     // ── Withdraw amount ──────────────────────────────────────────────────────

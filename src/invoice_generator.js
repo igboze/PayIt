@@ -1,14 +1,13 @@
 // src/invoice_generator.js
 // Renders invoices as PNG using sharp (SVG pipeline).
 //
-// Font strategy: embed DejaVu Sans TTF files directly in the SVG via
-// base64 @font-face rules (see svg_fonts.js). This works on every platform
-// without relying on system fontconfig — fixes missing text on Railway.
+// Font strategy: DejaVu fonts are loaded from disk by svg_render.js (resvg-js).
+// Avoids sharp/librsvg missing-font tofu boxes on Railway.
 
-const sharp = require("sharp");
 const path  = require("path");
 const os    = require("os");
-const { getEmbeddedFontCss } = require("./svg_fonts");
+const { FONT, FONT_MONO, getFontCss } = require("./svg_fonts");
+const { renderSvgToPngFile } = require("./svg_render");
 
 function escape(str) {
   if (!str) return "";
@@ -41,9 +40,6 @@ function buildSvg(opts) {
     issueDate,
     currency         = "USDC",
   } = opts;
-
-  const FONT      = "'DejaVu Sans', sans-serif";
-  const FONT_MONO = "'DejaVu Sans Mono', monospace";
 
   const total = items.reduce((s, i) =>
     s + (Number(i.quantity || 1) || 1) * safeNum(i.unitPrice), 0);
@@ -92,7 +88,7 @@ function buildSvg(opts) {
 
   <defs>
     <style>
-      ${getEmbeddedFontCss()}
+      ${getFontCss()}
     </style>
   </defs>
 
@@ -135,7 +131,7 @@ function buildSvg(opts) {
   <!-- Total -->
   <line x1="30" y1="${totalY - 14}" x2="650" y2="${totalY - 14}" stroke="#e2e8f0" stroke-width="1"/>
   <rect x="440" y="${totalY - 4}" width="210" height="40" fill="#0f766e" rx="6"/>
-  <text x="455" y="${totalY + 18}" font-size="13" font-weight="bold" fill="#ffffff" font-family="${FONT}">Amount Due</text>
+  <text x="435" y="${totalY + 18}" font-size="12" font-weight="bold" fill="#ffffff" font-family="${FONT}">Due</text>
   <text x="642" y="${totalY + 20}" font-size="17" font-weight="bold" fill="#ffffff" font-family="${FONT}" text-anchor="end">${total.toFixed(2)} ${escape(currency)}</text>
 
   ${notes ? `
@@ -159,9 +155,7 @@ async function generateInvoicePNG(data) {
     os.tmpdir(),
     `invoice-${data.invoiceNumber}-${Date.now()}.png`
   );
-  await sharp(Buffer.from(svg))
-    .png()
-    .toFile(outPath);
+  renderSvgToPngFile(svg, outPath);
   return outPath;
 }
 

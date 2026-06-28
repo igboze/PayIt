@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@resvg/resvg-js": "^2.6.2",
     "axios": "^1.7.7",
     "dejavu-fonts-ttf": "^2.37.3",
     "dotenv": "^16.6.1",
@@ -27,6 +28,7 @@
     "xlsx": "^0.18.5"
   },
   "allowScripts": {
-    "sharp@0.33.5": true
+    "sharp@0.33.5": true,
+    "@resvg/resvg-js@2.6.2": true
   }
 }
