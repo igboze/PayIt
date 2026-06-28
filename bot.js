@@ -1444,7 +1444,7 @@ bot.on("photo", async (ctx) => {
       );
     } catch (err) {
       console.error("[logo_upload_onboarding]", err);
-      return ctx.reply('Couldn't save the logo — please try again, or type "skip" to continue without one.');
+      return ctx.reply("Couldn't save the logo — please try again, or type \"skip\" to continue without one.");
     }
   }
 
