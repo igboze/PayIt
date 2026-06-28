@@ -187,12 +187,16 @@ bot.start(async (ctx) => {
     const context = existing.active_context || "personal";
     const addr    = getActiveWallet(existing);
     const bal     = await safeGetBalance(addr);
-    return ctx.reply(
+    await ctx.reply(
       `👋 Welcome back, ${ctx.from.first_name || "there"}!\n\n` +
       `Your balance: ${bal.display}\n` +
       `Account: ${context === "business" ? "Business 💼" : "Personal 👤"}\n\n` +
       `What would you like to do?`,
-      { ...mainMenu(context), ...accountToggle(context) }
+      mainMenu(context)
+    );
+    return ctx.reply(
+      `Active account: ${context === "business" ? "Business 💼" : "Personal 👤"}\nSwitch below:`,
+      accountToggle(context)
     );
   }
 
@@ -253,9 +257,14 @@ bot.action("switch_personal", async (ctx) => {
   if (!user) return;
   db.setActiveContext(ctx.from.id, "personal");
   const bal = await safeGetBalance(user.deposit_address);
+  try {
+    await ctx.editMessageReplyMarkup(accountToggle("personal").reply_markup);
+  } catch (err) {
+    // Ignore error if edit fails
+  }
   await ctx.reply(
     `👤 Switched to Personal\n\nYour balance: ${bal.display}`,
-    { ...mainMenu("personal"), ...accountToggle("personal") }
+    mainMenu("personal")
   );
 });
 
@@ -279,9 +288,15 @@ bot.action("switch_business", async (ctx) => {
     ? `\n📬 ${pending} unpaid invoice${pending > 1 ? "s" : ""} waiting.`
     : "";
 
+  try {
+    await ctx.editMessageReplyMarkup(accountToggle("business").reply_markup);
+  } catch (err) {
+    // Ignore error if edit fails
+  }
+
   await ctx.reply(
     `💼 Switched to Business\n\nBalance: ${bal.display}${pendingLine}`,
-    { ...mainMenu("business"), ...accountToggle("business") }
+    mainMenu("business")
   );
 });
 
