@@ -12,7 +12,7 @@
 // defaults: VAT 7.5%, WHT 5% (10% for consultancy/technical services),
 // only applied when explicitly mentioned, never invented silently.
 
-const { getAiProvider } = require("./ai_provider");
+const { getActiveProvider: getAiProvider } = require("./ai_provider");
 
 function stripCodeFences(raw) {
   return raw.replace(/^```json|^```|```$/gm, "").trim();
