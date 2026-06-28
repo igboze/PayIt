@@ -152,6 +152,81 @@ async function sendFromWallet(signer, toAddress, amountMicro) {
   return receipt.hash;
 }
 
+// ─── HD Wallet: Derive unique address per invoice (BIP44-ish) ─────────────────
+// Each invoice gets a deterministic, unique address derived from the user's 
+// master private key. All derived addresses remain under user control.
+//
+// Derivation: child_key = keccak256(master_key || invoice_index)
+// This ensures: (1) each invoice has unique address, (2) all recoverable from master
+
+function deriveInvoiceAddress(masterPrivateKey, invoiceIndex) {
+  const { keccak256, toBeHex, Wallet: EthersWallet, getAddress } = require("ethers");
+  
+  // Ensure master key is hex-formatted
+  const cleanMasterKey = masterPrivateKey.startsWith("0x") 
+    ? masterPrivateKey 
+    : "0x" + masterPrivateKey;
+  
+  // Convert invoice index to 32-byte hex
+  const indexHex = toBeHex(invoiceIndex, 32);
+  
+  // Concatenate as hex strings and hash
+  const combined = cleanMasterKey + indexHex.slice(2);
+  const childSeed = keccak256(combined);
+  
+  // Create wallet from derived seed
+  const childWallet = new EthersWallet(childSeed);
+  
+  return {
+    address: getAddress(childWallet.address), // Checksum format
+    derivationPath: `m/44'/60'/0'/0/${invoiceIndex}`,
+    invoiceIndex: invoiceIndex,
+    childPrivateKey: childWallet.privateKey
+  };
+}
+
+/**
+ * Validate invoice payment on-chain
+ * Checks if payment to invoice address matches expected amount
+ * 
+ * @param {number} invoiceId - Invoice ID in database
+ * @param {BigInt} expectedAmountMicro - Expected payment in Arc's 18-decimal USDC
+ * @param {string} txHash - Transaction hash to verify
+ * @param {string} paymentAddress - Invoice's unique payment address
+ * @returns {Promise<boolean>} - true if payment is valid, false otherwise
+ */
+async function validateInvoicePayment(invoiceId, expectedAmountMicro, txHash, paymentAddress) {
+  try {
+    const provider = getProvider();
+    const receipt = await provider.getTransactionReceipt(txHash);
+    
+    if (!receipt) return false; // TX not yet mined
+    
+    // Check: recipient matches + amount matches (within 1% tolerance for rounding)
+    const recipientMatches = receipt.to && 
+      receipt.to.toLowerCase() === paymentAddress.toLowerCase();
+    
+    const actualAmount = receipt.value;
+    const tolerance = expectedAmountMicro / BigInt(100); // 1% tolerance
+    const amountMatches = actualAmount >= (expectedAmountMicro - tolerance) && 
+                         actualAmount <= (expectedAmountMicro + tolerance);
+    
+    return recipientMatches && amountMatches;
+  } catch (err) {
+    console.error(`[wallet] validateInvoicePayment error for INV_${invoiceId}:`, err.message);
+    return false;
+  }
+}
+
+async function sendFromWallet(signer, toAddress, amountMicro) {
+  const tx = await signer.sendTransaction({
+    to: toAddress,
+    value: amountMicro,
+  });
+  const receipt = await tx.wait();
+  return receipt.hash;
+}
+
 module.exports = {
   generateUserWallet,
   walletFromPrivateKey,
@@ -162,5 +237,7 @@ module.exports = {
   formatMicro,
   getNativeBalanceMicro,
   getUsdcBalance,           // FIX: new export — use this for source-chain balances
+  deriveInvoiceAddress,     // NEW: HD wallet invoice address derivation
+  validateInvoicePayment,   // NEW: validate payment against invoice
   sendFromWallet,
 };

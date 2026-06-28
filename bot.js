@@ -42,6 +42,8 @@ const { classifyIntent, getMissingQuestion, buildConfirmationText } = require(".
 const { parseImagePayment, formatExtractionPreview } = require("./agent/vision_parser");
 const { parsePdf, parseSpreadsheetFile, formatFilePreview, parsePptx } = require("./agent/file_parser");
 const { transcribeVoice } = require("./agent/voice_parser");
+const { createHDInvoice, validateAndConfirmPayment, generateInvoiceQRData } = require("./src/invoice_hd");
+const invoiceListener = require("./agent/invoice_listener");
 
 // ─── Startup checks ───────────────────────────────────────────────────────────
 
@@ -1372,50 +1374,31 @@ bot.action("action_confirm_invoice", async (ctx) => {
   try {
     const invoiceNumber = invoiceDb.getNextInvoiceNumber(ctx.from.id);
     const issueDate     = new Date().toISOString().split("T")[0];
-    const walletAddress = user.deposit_address;
-
-    const pngPath = await generateInvoicePNG({
+    
+    // Request PIN to decrypt private key for HD wallet derivation
+    convState.setState(ctx.from.id, "confirm_invoice_pin", {
       invoiceNumber,
-      clientName:   parsed.clientName,
-      clientEmail:  parsed.clientEmail,
-      items:        parsed.items,
-      dueDate:      parsed.dueDate,
-      notes:        parsed.notes,
-      businessName: user.username || `User ${ctx.from.id}`,
-      walletAddress,
       issueDate,
-    });
-
-    const invoiceId = invoiceDb.createInvoice(ctx.from.id, {
-      invoiceNumber,
-      clientName:   parsed.clientName,
-      clientEmail:  parsed.clientEmail || null,
-      items:        parsed.items,
-      totalUsdc:    total,
-      dueDate:      parsed.dueDate || null,
-      notes:        parsed.notes   || null,
-      walletAddress,
-      pngPath,
-    });
-
-    await ctx.replyWithPhoto({ source: pngPath }, {
-      caption:
-        `🧾 Invoice #${invoiceNumber}\n` +
-        `To: ${parsed.clientName}\nAmount: $${total.toFixed(2)}\n` +
-        (parsed.dueDate ? `Due: ${parsed.dueDate}\n` : "") +
-        `\nSend payment to:\n\`${walletAddress}\``,
-      parse_mode: "Markdown",
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback("📋 All Invoices", "action_list_invoices")],
-        [Markup.button.callback("✅ Mark as Paid", `action_paid_${invoiceId}`)],
-        [Markup.button.callback("🏠 Main Menu",    "main_menu")],
-      ]),
-    });
+      parsed,
+      total,
+    }, "personal");
+    
+    return ctx.reply(
+      "Enter your PIN to create the invoice with a unique payment address:",
+      Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+    );
   } catch (err) {
     console.error("[invoice]", err);
     await ctx.reply("Something went wrong. Please try again.");
   }
 });
+
+// Process PIN and create HD invoice
+if (!bot.listeners.get("text").some(h => h.toString().includes("confirm_invoice_pin"))) {
+  convState.on("state_entered:confirm_invoice_pin", async (userId, state) => {
+    // Handler added below in text handler
+  });
+}
 
 bot.action(/^action_paid_(\d+)$/, async (ctx) => {
   ctx.answerCbQuery();
@@ -2688,6 +2671,90 @@ bot.on("text", async (ctx) => {
         `Total returned: $${state.data.total.toFixed(4)}`,
         afterPaymentButtons
       );
+    }
+
+    // ── HD Invoice creation (Personal) ────────────────────────────────────────
+
+    if (state.type === "confirm_invoice_pin") {
+      await deleteSensitiveMessage(ctx);
+      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
+      if (!db.verifyPin(userId, text)) {
+        convState.clearState(userId);
+        return ctx.reply("Incorrect PIN. Please try again.");
+      }
+
+      const user = db.getUser(userId);
+      let decryptedKey;
+      try {
+        decryptedKey = db.decryptPrivateKey(text, user);
+      } catch (err) {
+        console.error("[invoice_hd] Decryption failed:", err.message);
+        convState.clearState(userId);
+        return ctx.reply("Couldn't unlock your wallet with that PIN.");
+      }
+
+      convState.clearState(userId);
+
+      try {
+        // Create HD invoice with unique derivation address
+        const hdInvoice = createHDInvoice(userId, decryptedKey, {
+          invoiceNumber: state.data.invoiceNumber,
+          clientName: state.data.parsed.clientName,
+          clientEmail: state.data.parsed.clientEmail,
+          items: state.data.parsed.items,
+          totalUsdc: state.data.total,
+          dueDate: state.data.parsed.dueDate,
+          notes: state.data.parsed.notes,
+          walletAddress: user.deposit_address, // User's main address (backup)
+          pngPath: null,
+        });
+
+        const issueDate = state.data.issueDate;
+        const paymentAddressForQR = hdInvoice.paymentAddress;
+
+        // Generate invoice PNG with HD payment address
+        const pngPath = await generateInvoicePNG({
+          invoiceNumber: hdInvoice.invoiceNumber,
+          clientName: state.data.parsed.clientName,
+          clientEmail: state.data.parsed.clientEmail,
+          items: state.data.parsed.items,
+          dueDate: state.data.parsed.dueDate,
+          notes: state.data.parsed.notes,
+          businessName: user.username || `User ${userId}`,
+          walletAddress: paymentAddressForQR, // HD-derived address
+          issueDate,
+        });
+
+        // Update invoice with PNG path
+        invoiceDb.db.prepare(
+          "UPDATE invoices SET png_path = ? WHERE id = ?"
+        ).run(pngPath, hdInvoice.invoiceId);
+
+        const qrData = generateInvoiceQRData(paymentAddressForQR, hdInvoice.expectedAmountMicro);
+
+        await ctx.replyWithPhoto({ source: pngPath }, {
+          caption:
+            `🧾 Invoice #${hdInvoice.invoiceNumber}\n` +
+            `To: ${state.data.parsed.clientName}\n` +
+            `Amount: $${hdInvoice.totalUsdc.toFixed(2)}\n` +
+            (state.data.parsed.dueDate ? `Due: ${state.data.parsed.dueDate}\n` : "") +
+            `\n📍 Unique Payment Address (for this invoice only):\n\`${paymentAddressForQR}\`\n` +
+            `\nQR Code: ↑ Scan to pay\n` +
+            `Index: ${hdInvoice.derivationIndex}`,
+          parse_mode: "Markdown",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback("📋 All Invoices", "action_list_invoices")],
+            [Markup.button.callback("✅ Mark as Paid", `action_paid_${hdInvoice.invoiceId}`)],
+            [Markup.button.callback("🏠 Main Menu", "main_menu")],
+          ]),
+        });
+
+        console.log(`[invoice_hd] Created invoice #${hdInvoice.invoiceNumber} with HD address ${paymentAddressForQR.slice(0, 10)}...`);
+      } catch (err) {
+        console.error("[invoice_hd]", err);
+        await ctx.reply("❌ Failed to create invoice. Please try again.");
+      }
+      return;
     }
 
     // ── Add contact ──────────────────────────────────────────────────────────
