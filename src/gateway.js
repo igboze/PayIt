@@ -78,12 +78,35 @@ function toBytes32(address) {
   return zeroPadValue(getAddress(address), 32);
 }
 
+/** JSON.stringify replacer — axios cannot serialize BigInt from ethers. */
+function jsonSafe(value) {
+  return JSON.parse(JSON.stringify(value, (_k, v) =>
+    typeof v === "bigint" ? v.toString() : v
+  ));
+}
+
+function friendlyGatewayError(err, chainName) {
+  const msg = err?.shortMessage || err?.message || String(err);
+  if (/404 Not Found/i.test(msg) && /rpc/i.test(msg)) {
+    return `Cannot reach ${chainName} RPC. Try again in a moment or contact support.`;
+  }
+  if (/INSUFFICIENT_FUNDS|insufficient funds/i.test(msg)) {
+    const chain = SUPPORTED_CHAINS.find(c => c.name === chainName);
+    return `Not enough gas on ${chainName}. Get testnet ${chain?.symbol || "native token"} from a faucet — you need it to pay transaction fees (separate from USDC).`;
+  }
+  if (/insufficient funds|exceeds balance|transfer amount exceeds/i.test(msg) && /USDC/i.test(msg) === false) {
+    const chain = SUPPORTED_CHAINS.find(c => c.name === chainName);
+    return `Not enough USDC on ${chainName}. Request USDC from faucet.circle.com for your PayIT address, then try again.`;
+  }
+  return msg;
+}
+
 // ── RPC endpoints for each source chain ───────────────────────────────────────
-// FIX 2: Exported so wallet.js can use these for balance checks
+// Public fallbacks; override via env if needed (e.g. SEPOLIA_RPC_URL).
 const CHAIN_RPCS = {
-  "Ethereum Sepolia": "https://rpc.sepolia.org",
-  "Base Sepolia":     "https://sepolia.base.org",
-  "Avalanche Fuji":   "https://api.avax-test.network/ext/bc/C/rpc",
+  "Ethereum Sepolia": process.env.SEPOLIA_RPC_URL     || "https://ethereum-sepolia-rpc.publicnode.com",
+  "Base Sepolia":     process.env.BASE_SEPOLIA_RPC_URL || "https://base-sepolia-rpc.publicnode.com",
+  "Avalanche Fuji":   process.env.FUJI_RPC_URL         || "https://api.avax-test.network/ext/bc/C/rpc",
 };
 
 const SUPPORTED_CHAINS = [
@@ -260,17 +283,23 @@ async function buildSignedBurnIntent(signer, sourceChainName, amountUsdc, recipi
  * Uses enableForwarder so Circle submits the Arc mint automatically.
  */
 async function transferToArc(privateKey, sourceChainName, amountUsdc, recipientAddress) {
-  const signer = new Wallet(privateKey);
-  const { burnIntent, signature } = await buildSignedBurnIntent(
-    signer, sourceChainName, amountUsdc, recipientAddress
-  );
+  try {
+    const signer = new Wallet(privateKey);
+    const { burnIntent, signature } = await buildSignedBurnIntent(
+      signer, sourceChainName, amountUsdc, recipientAddress
+    );
 
-  const res = await axios.post(
-    `${GATEWAY_API_BASE}/transfer?enableForwarder=true`,
-    [{ burnIntent, signature }],
-    { headers: { "Content-Type": "application/json" } }
-  );
-  return res.data;
+    const res = await axios.post(
+      `${GATEWAY_API_BASE}/transfer?enableForwarder=true`,
+      jsonSafe([{ burnIntent, signature }]),
+      { headers: { "Content-Type": "application/json" } }
+    );
+    return res.data;
+  } catch (err) {
+    const apiMsg = err?.response?.data?.message || err?.response?.data?.error;
+    if (apiMsg) throw new Error(typeof apiMsg === "string" ? apiMsg : JSON.stringify(apiMsg));
+    throw err;
+  }
 }
 
 /**
@@ -305,29 +334,51 @@ async function executeDeposit(privateKey, sourceChainName, amountUsdc) {
 
   const provider = new JsonRpcProvider(rpcUrl, chain.chainId);
   const signer   = new Wallet(privateKey, provider);
+  const address  = await signer.getAddress();
 
-  // Source chains use 6 decimals (NOT 18 — that's only Arc's native USDC)
   const amountBN = parseUnits(amountUsdc.toString(), 6);
 
   const usdc    = new Contract(usdcAddress, ERC20_ABI, signer);
   const gateway = new Contract(GATEWAY_WALLET_ADDRESS, GATEWAY_WALLET_ABI, signer);
 
-  // Step 1: Approve Gateway Wallet to spend user's USDC
-  console.log(`[gateway] Approving ${amountUsdc} USDC on ${sourceChainName}...`);
-  const approveTx = await usdc.approve(GATEWAY_WALLET_ADDRESS, amountBN);
-  const approveReceipt = await approveTx.wait();
-  console.log(`[gateway] Approve confirmed: ${approveReceipt.hash}`);
+  // Pre-flight: USDC + gas before sending any transactions
+  const [usdcBal, gasBal] = await Promise.all([
+    usdc.balanceOf(address),
+    provider.getBalance(address),
+  ]);
+  if (usdcBal < amountBN) {
+    throw new Error(
+      `Not enough USDC on ${sourceChainName}. You have ${formatUnits(usdcBal, 6)} USDC but need ${amountUsdc}. ` +
+      `Get USDC from faucet.circle.com for your PayIT address.`
+    );
+  }
+  if (gasBal === 0n) {
+    throw new Error(
+      `No gas on ${sourceChainName}. Get testnet ${chain.symbol} from a faucet first — ` +
+      `you need it to pay transaction fees (this is separate from USDC).`
+    );
+  }
 
-  // Step 2: Call deposit() — NOT a plain transfer
-  console.log(`[gateway] Depositing ${amountUsdc} USDC via Gateway Wallet contract...`);
-  const depositTx = await gateway.deposit(usdcAddress, amountBN);
-  const depositReceipt = await depositTx.wait();
-  console.log(`[gateway] Deposit confirmed: ${depositReceipt.hash}`);
+  try {
+    // Step 1: Approve Gateway Wallet to spend user's USDC
+    console.log(`[gateway] Approving ${amountUsdc} USDC on ${sourceChainName}...`);
+    const approveTx = await usdc.approve(GATEWAY_WALLET_ADDRESS, amountBN);
+    const approveReceipt = await approveTx.wait();
+    console.log(`[gateway] Approve confirmed: ${approveReceipt.hash}`);
 
-  return {
-    approveTxHash: approveReceipt.hash,
-    depositTxHash: depositReceipt.hash,
-  };
+    // Step 2: Call deposit() — NOT a plain transfer
+    console.log(`[gateway] Depositing ${amountUsdc} USDC via Gateway Wallet contract...`);
+    const depositTx = await gateway.deposit(usdcAddress, amountBN);
+    const depositReceipt = await depositTx.wait();
+    console.log(`[gateway] Deposit confirmed: ${depositReceipt.hash}`);
+
+    return {
+      approveTxHash: approveReceipt.hash,
+      depositTxHash: depositReceipt.hash,
+    };
+  } catch (err) {
+    throw new Error(friendlyGatewayError(err, sourceChainName));
+  }
 }
 
 /**

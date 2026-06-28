@@ -870,10 +870,15 @@ bot.action(/^gateway_dep_chain_(\d+)$/, async (ctx) => {
 
   convState.setState(ctx.from.id, "await_gateway_deposit_amount", { chainName: chain.name }, getContext(ctx.from.id));
 
+  const gasWarning = parseFloat(gas) === 0
+    ? `\n\n⚠️ You have <b>no ${chain.symbol} gas</b> on this chain. ` +
+      `Get testnet ${chain.symbol} from a faucet before depositing — gas pays transaction fees (separate from USDC).\n`
+    : "";
+
   await ctx.reply(
     `🚀 Deposit from ${chain.name}\n──────────────────────────\n` +
     `USDC available: <b>${usdc}</b>\n` +
-    `Gas available: <b>${gas}</b> ${chain.symbol}\n\n` +
+    `Gas available: <b>${gas}</b> ${chain.symbol}${gasWarning}\n` +
     `How much USDC do you want to deposit into Gateway?\n` +
     `(e.g. <code>5</code> or <code>10.50</code>)\n\n` +
     `PayIT will approve + call deposit() for you.`,
