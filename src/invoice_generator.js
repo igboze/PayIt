@@ -98,12 +98,12 @@ async function generateInvoicePNG(invoice) {
 
     // Description (possibly multi-line)
     descLines.forEach((line, i) => {
-      itemRows += `<text x="${COL1 + 8}" y="${itemY + 20 + i * 20}" font-family="sans-serif" font-size="13" fill="#222">${line}</text>`;
+      itemRows += `<text x="${COL1 + 8}" y="${itemY + 20 + i * 20}" font-family="DejaVu Sans" font-size="13" fill="#222">${line}</text>`;
     });
 
-    itemRows += `<text x="${COL2}" y="${itemY + 20}" font-family="sans-serif" font-size="13" fill="#222" text-anchor="middle">${qty}</text>`;
-    itemRows += `<text x="${COL3}" y="${itemY + 20}" font-family="sans-serif" font-size="13" fill="#222" text-anchor="middle">${fmt(price)}</text>`;
-    itemRows += `<text x="${COL4 - 8}" y="${itemY + 20}" font-family="sans-serif" font-size="13" fill="#222" text-anchor="end">${fmt(subtotal)}</text>`;
+    itemRows += `<text x="${COL2}" y="${itemY + 20}" font-family="DejaVu Sans" font-size="13" fill="#222" text-anchor="middle">${qty}</text>`;
+    itemRows += `<text x="${COL3}" y="${itemY + 20}" font-family="DejaVu Sans" font-size="13" fill="#222" text-anchor="middle">${fmt(price)}</text>`;
+    itemRows += `<text x="${COL4 - 8}" y="${itemY + 20}" font-family="DejaVu Sans" font-size="13" fill="#222" text-anchor="end">${fmt(subtotal)}</text>`;
 
     itemY += rowH;
     altRow = !altRow;
@@ -114,7 +114,7 @@ async function generateInvoicePNG(invoice) {
   if (invoice.notes) {
     const noteLines = wrapText(esc(invoice.notes), 80);
     noteLines.forEach((line, i) => {
-      notesSVG += `<text x="${MARGIN}" y="${itemY + 90 + i * 18}" font-family="sans-serif" font-size="12" fill="#555">${line}</text>`;
+      notesSVG += `<text x="${MARGIN}" y="${itemY + 90 + i * 18}" font-family="DejaVu Sans" font-size="12" fill="#555">${line}</text>`;
     });
   }
 
@@ -138,35 +138,35 @@ async function generateInvoicePNG(invoice) {
   <rect x="0" y="0" width="${W}" height="8" fill="#111"/>
 
   <!-- INVOICE heading -->
-  <text x="${MARGIN}" y="70" font-family="sans-serif" font-size="42" font-weight="bold" fill="#111">INVOICE</text>
+  <text x="${MARGIN}" y="70" font-family="DejaVu Sans" font-size="42" font-weight="bold" fill="#111">INVOICE</text>
 
   <!-- Invoice number + dates -->
-  <text x="${W - MARGIN}" y="50" font-family="sans-serif" font-size="13" fill="#444" text-anchor="end">#${esc(invoice.invoiceNumber)}</text>
-  <text x="${W - MARGIN}" y="72" font-family="sans-serif" font-size="13" fill="#444" text-anchor="end">Issued: ${esc(invoice.issueDate)}</text>
-  ${invoice.dueDate ? `<text x="${W - MARGIN}" y="94" font-family="sans-serif" font-size="13" fill="#c0392b" font-weight="bold" text-anchor="end">Due: ${esc(invoice.dueDate)}</text>` : ""}
+  <text x="${W - MARGIN}" y="50" font-family="DejaVu Sans" font-size="13" fill="#444" text-anchor="end">#${esc(invoice.invoiceNumber)}</text>
+  <text x="${W - MARGIN}" y="72" font-family="DejaVu Sans" font-size="13" fill="#444" text-anchor="end">Issued: ${esc(invoice.issueDate)}</text>
+  ${invoice.dueDate ? `<text x="${W - MARGIN}" y="94" font-family="DejaVu Sans" font-size="13" fill="#c0392b" font-weight="bold" text-anchor="end">Due: ${esc(invoice.dueDate)}</text>` : ""}
 
   <!-- Divider -->
   <line x1="${MARGIN}" y1="100" x2="${W - MARGIN}" y2="100" stroke="#111" stroke-width="2"/>
 
   <!-- FROM section -->
-  <text x="${MARGIN}" y="135" font-family="sans-serif" font-size="11" font-weight="bold" fill="#888" letter-spacing="2">FROM</text>
-  <text x="${MARGIN}" y="158" font-family="sans-serif" font-size="15" font-weight="bold" fill="#111">${esc(invoice.businessName)}</text>
-  <text x="${MARGIN}" y="178" font-family="sans-serif" font-size="12" fill="#555">Arc Testnet · USDC</text>
+  <text x="${MARGIN}" y="135" font-family="DejaVu Sans" font-size="11" font-weight="bold" fill="#888" letter-spacing="2">FROM</text>
+  <text x="${MARGIN}" y="158" font-family="DejaVu Sans" font-size="15" font-weight="bold" fill="#111">${esc(invoice.businessName)}</text>
+  <text x="${MARGIN}" y="178" font-family="DejaVu Sans" font-size="12" fill="#555">Arc Testnet · USDC</text>
 
   <!-- TO section -->
-  <text x="${W / 2}" y="135" font-family="sans-serif" font-size="11" font-weight="bold" fill="#888" letter-spacing="2">BILL TO</text>
-  <text x="${W / 2}" y="158" font-family="sans-serif" font-size="15" font-weight="bold" fill="#111">${esc(invoice.clientName)}</text>
-  ${invoice.clientEmail ? `<text x="${W / 2}" y="178" font-family="sans-serif" font-size="12" fill="#555">${esc(invoice.clientEmail)}</text>` : ""}
+  <text x="${W / 2}" y="135" font-family="DejaVu Sans" font-size="11" font-weight="bold" fill="#888" letter-spacing="2">BILL TO</text>
+  <text x="${W / 2}" y="158" font-family="DejaVu Sans" font-size="15" font-weight="bold" fill="#111">${esc(invoice.clientName)}</text>
+  ${invoice.clientEmail ? `<text x="${W / 2}" y="178" font-family="DejaVu Sans" font-size="12" fill="#555">${esc(invoice.clientEmail)}</text>` : ""}
 
   <!-- Divider -->
   <line x1="${MARGIN}" y1="210" x2="${W - MARGIN}" y2="210" stroke="#ddd" stroke-width="1"/>
 
   <!-- Table header -->
   <rect x="${MARGIN}" y="220" width="${W - MARGIN * 2}" height="32" fill="#111"/>
-  <text x="${COL1 + 8}" y="241" font-family="sans-serif" font-size="12" font-weight="bold" fill="white">DESCRIPTION</text>
-  <text x="${COL2}" y="241" font-family="sans-serif" font-size="12" font-weight="bold" fill="white" text-anchor="middle">QTY</text>
-  <text x="${COL3}" y="241" font-family="sans-serif" font-size="12" font-weight="bold" fill="white" text-anchor="middle">UNIT PRICE</text>
-  <text x="${COL4 - 8}" y="241" font-family="sans-serif" font-size="12" font-weight="bold" fill="white" text-anchor="end">AMOUNT (USDC)</text>
+  <text x="${COL1 + 8}" y="241" font-family="DejaVu Sans" font-size="12" font-weight="bold" fill="white">DESCRIPTION</text>
+  <text x="${COL2}" y="241" font-family="DejaVu Sans" font-size="12" font-weight="bold" fill="white" text-anchor="middle">QTY</text>
+  <text x="${COL3}" y="241" font-family="DejaVu Sans" font-size="12" font-weight="bold" fill="white" text-anchor="middle">UNIT PRICE</text>
+  <text x="${COL4 - 8}" y="241" font-family="DejaVu Sans" font-size="12" font-weight="bold" fill="white" text-anchor="end">AMOUNT (USDC)</text>
 
   <!-- Column separators in header -->
   <line x1="${COL2 - 40}" y1="220" x2="${COL2 - 40}" y2="252" stroke="#444" stroke-width="1"/>
@@ -184,20 +184,20 @@ async function generateInvoicePNG(invoice) {
 
   <!-- Total box -->
   <rect x="${COL3 - 40}" y="${totalSectionY + 10}" width="${COL4 - COL3 + 48}" height="44" fill="#111" rx="4"/>
-  <text x="${COL3 - 20}" y="${totalSectionY + 28}" font-family="sans-serif" font-size="11" font-weight="bold" fill="white">TOTAL DUE</text>
-  <text x="${COL4 - 8}" y="${totalSectionY + 45}" font-family="sans-serif" font-size="16" font-weight="bold" fill="white" text-anchor="end">${fmt(total)} USDC</text>
+  <text x="${COL3 - 20}" y="${totalSectionY + 28}" font-family="DejaVu Sans" font-size="11" font-weight="bold" fill="white">TOTAL DUE</text>
+  <text x="${COL4 - 8}" y="${totalSectionY + 45}" font-family="DejaVu Sans" font-size="16" font-weight="bold" fill="white" text-anchor="end">${fmt(total)} USDC</text>
 
   <!-- Notes -->
   ${invoice.notes ? `
-  <text x="${MARGIN}" y="${totalSectionY + 75}" font-family="sans-serif" font-size="11" font-weight="bold" fill="#888" letter-spacing="1">NOTES</text>
+  <text x="${MARGIN}" y="${totalSectionY + 75}" font-family="DejaVu Sans" font-size="11" font-weight="bold" fill="#888" letter-spacing="1">NOTES</text>
   ${notesSVG}` : ""}
 
   <!-- Payment instructions box -->
   <rect x="${MARGIN}" y="${footerY - 10}" width="${W - MARGIN * 2}" height="88" fill="#f4f4f4" rx="4"/>
-  <text x="${MARGIN + 14}" y="${footerY + 14}" font-family="sans-serif" font-size="11" font-weight="bold" fill="#111" letter-spacing="1">PAYMENT INSTRUCTIONS</text>
-  <text x="${MARGIN + 14}" y="${footerY + 34}" font-family="sans-serif" font-size="12" fill="#444">Send ${fmt(total)} USDC on Arc Testnet to:</text>
-  <text x="${MARGIN + 14}" y="${footerY + 54}" font-family="monospace" font-size="11" fill="#111" font-weight="bold">${addrLine1}</text>
-  <text x="${MARGIN + 14}" y="${footerY + 70}" font-family="monospace" font-size="11" fill="#111" font-weight="bold">${addrLine2}</text>
+  <text x="${MARGIN + 14}" y="${footerY + 14}" font-family="DejaVu Sans" font-size="11" font-weight="bold" fill="#111" letter-spacing="1">PAYMENT INSTRUCTIONS</text>
+  <text x="${MARGIN + 14}" y="${footerY + 34}" font-family="DejaVu Sans" font-size="12" fill="#444">Send ${fmt(total)} USDC on Arc Testnet to:</text>
+  <text x="${MARGIN + 14}" y="${footerY + 54}" font-family="DejaVu Sans Mono" font-size="11" fill="#111" font-weight="bold">${addrLine1}</text>
+  <text x="${MARGIN + 14}" y="${footerY + 70}" font-family="DejaVu Sans Mono" font-size="11" fill="#111" font-weight="bold">${addrLine2}</text>
 
   <!-- Bottom border -->
   <rect x="0" y="${H - 6}" width="${W}" height="6" fill="#111"/>
