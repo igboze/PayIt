@@ -1399,11 +1399,7 @@ bot.action("action_confirm_invoice", async (ctx) => {
 });
 
 // Process PIN and create HD invoice
-if (!bot.listeners.get("text").some(h => h.toString().includes("confirm_invoice_pin"))) {
-  convState.on("state_entered:confirm_invoice_pin", async (userId, state) => {
-    // Handler added below in text handler
-  });
-}
+// The PIN state is handled inside the main text handler below.
 
 bot.action(/^action_paid_(\d+)$/, async (ctx) => {
   ctx.answerCbQuery();
