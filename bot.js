@@ -45,6 +45,7 @@ const { parsePdf, parseSpreadsheetFile, formatFilePreview, parsePptx } = require
 const { transcribeVoice } = require("./agent/voice_parser");
 const { createHDInvoice, validateAndConfirmPayment, generateInvoiceQRData } = require("./src/invoice_hd");
 const invoiceListener = require("./agent/invoice_listener");
+const { safeAnswerCbQuery } = require("./src/telegram_utils");
 
 const ARC_RPC_URL = process.env.ARC_RPC_URL || "https://rpc.testnet.arc.network";
 const ARC_CHAIN_ID = 5042002;
@@ -216,7 +217,7 @@ bot.start(async (ctx) => {
 // ── Personal onboarding path ──────────────────────────────────────────────────
 
 bot.action("onboard_personal", async (ctx) => {
-  ctx.answerCbQuery();
+  await safeAnswerCbQuery(ctx);
   const wallet = walletLib.generateUserWallet();
   convState.setState(ctx.from.id, "onboarding_pin", {
     accountType: "personal",
@@ -238,7 +239,7 @@ bot.action("onboard_personal", async (ctx) => {
 // ── Business onboarding path — collects full profile before PIN ───────────────
 
 bot.action("onboard_business", async (ctx) => {
-  ctx.answerCbQuery();
+  await safeAnswerCbQuery(ctx);
   convState.setState(ctx.from.id, "onboard_biz_name", {
     username: ctx.from.username,
   }, "business");
@@ -252,7 +253,7 @@ bot.action("onboard_business", async (ctx) => {
 // ─── Account switching ────────────────────────────────────────────────────────
 
 bot.action("switch_personal", async (ctx) => {
-  ctx.answerCbQuery();
+  await safeAnswerCbQuery(ctx);
   const user = requireUser(ctx);
   if (!user) return;
   db.setActiveContext(ctx.from.id, "personal");
@@ -269,7 +270,7 @@ bot.action("switch_personal", async (ctx) => {
 });
 
 bot.action("switch_business", async (ctx) => {
-  ctx.answerCbQuery();
+  await safeAnswerCbQuery(ctx);
   const user = requireUser(ctx);
   if (!user) return;
 
