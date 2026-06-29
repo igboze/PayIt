@@ -438,6 +438,7 @@ module.exports = {
   stopInvoiceListener,
   rebuildWatchList,
   checkTransactionForInvoice,
+  settleInvoiceFunds,
   getSettlementDestination,
   getWatchedAddresses: () => Array.from(watchedAddresses.keys())
 };

@@ -14,7 +14,11 @@ const { DatabaseSync } = require("node:sqlite");
 const path = require("path");
 const walletLib = require("./wallet");
 
-const DB_PATH = path.join(__dirname, "..", "payit.db");
+function resolveDbPath() {
+  return process.env.PAYIT_DB_PATH || path.join(__dirname, "..", "payit.db");
+}
+
+const DB_PATH = resolveDbPath();
 const db = new DatabaseSync(DB_PATH);
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
@@ -477,6 +481,7 @@ function getFinancialSummary(ownerTelegramId) {
 
 module.exports = {
   db,
+  resolveDbPath,
   getUser,
   createUserWithWallet,
   addBusinessWallet,

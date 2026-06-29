@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { getSettlementDestination } = require('../agent/invoice_listener');
+const invoiceListener = require('../agent/invoice_listener');
+const { getSettlementDestination } = invoiceListener;
 
 test('prefers the main business wallet address for settlement', () => {
   const invoice = {
@@ -17,4 +18,8 @@ test('falls back to the virtual payment address when no main wallet address exis
   };
 
   assert.equal(getSettlementDestination(invoice), '0xvirtualinvoice');
+});
+
+test('exposes settleInvoiceFunds for the manual settlement button', () => {
+  assert.equal(typeof invoiceListener.settleInvoiceFunds, 'function');
 });
