@@ -363,6 +363,10 @@ async function confirmBusinessPaymentByBalance(address, metadata) {
   };
 }
 
+function getSettlementDestination(invoice) {
+  return invoice?.wallet_address || invoice?.payment_address || null;
+}
+
 async function settleInvoiceFunds(invoiceId, type) {
   let invoice = null;
   if (type === "personal") {
@@ -387,7 +391,7 @@ async function settleInvoiceFunds(invoiceId, type) {
 
   const childPrivateKey = walletLib.decryptSensitiveValue(encryptedKey, process.env.INVOICE_FORWARDING_SECRET);
   const signer = walletLib.walletFromPrivateKey(childPrivateKey);
-  const destination = invoice.wallet_address || invoice.payment_address;
+  const destination = getSettlementDestination(invoice);
   const balance = await signer.getBalance();
   if (balance === 0n) {
     return null;
@@ -434,5 +438,6 @@ module.exports = {
   stopInvoiceListener,
   rebuildWatchList,
   checkTransactionForInvoice,
+  getSettlementDestination,
   getWatchedAddresses: () => Array.from(watchedAddresses.keys())
 };

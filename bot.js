@@ -46,6 +46,7 @@ const { transcribeVoice } = require("./agent/voice_parser");
 const { createHDInvoice, validateAndConfirmPayment, generateInvoiceQRData } = require("./src/invoice_hd");
 const invoiceListener = require("./agent/invoice_listener");
 const { safeAnswerCbQuery } = require("./src/telegram_utils");
+const { getSettlementDestination } = require("./agent/invoice_listener");
 
 const ARC_RPC_URL = process.env.ARC_RPC_URL || "https://rpc.testnet.arc.network";
 const ARC_CHAIN_ID = 5042002;
@@ -1240,13 +1241,19 @@ bot.action(/^action_viewbizinvoice_(\d+)$/, async (ctx) => {
   const inv = bizDb.getBizInvoice(parseInt(ctx.match[1]));
   if (!inv || parseInt(inv.telegram_id) !== ctx.from.id) return ctx.reply("Invoice not found.");
   const paymentAddress = inv.payment_address || inv.wallet_address || "(none)";
+  const keyboard = [[Markup.button.callback("💸 Settle Funds", `action_settle_bizinvoice_${inv.id}`)]];
+  if (inv.status !== "paid") {
+    keyboard.unshift([Markup.button.callback("✅ Mark as Paid", `action_markbizinvoice_${inv.id}`)]);
+  }
+  keyboard.push([Markup.button.callback("📋 All Invoices", "action_list_biz_invoices")]);
   await ctx.reply(
     `🧾 Business Invoice #${inv.invoice_number}\n` +
     `Client: ${inv.client_name}\n` +
     `Amount: $${inv.total_usdc}${inv.due_date ? "\nDue: " + inv.due_date : ""}\n` +
     `Status: ${inv.status === "paid" ? "✅ Paid" : "⏳ Unpaid"}\n` +
     `Payment address: ${paymentAddress}\n` +
-    `${inv.paid_tx_hash ? `Tx: ${inv.paid_tx_hash}` : ""}`
+    `${inv.paid_tx_hash ? `Tx: ${inv.paid_tx_hash}` : ""}`,
+    Markup.inlineKeyboard(keyboard)
   );
 });
 
@@ -1259,6 +1266,23 @@ bot.action(/^action_markbizinvoice_(\d+)$/, async (ctx) => {
   const goal = bizDb.getSavingsGoal(ctx.from.id);
   if (goal) bizDb.addToBizSavings(ctx.from.id, parseFloat(inv.total_usdc) * goal.percentage / 100);
   await ctx.reply(`✅ Invoice #${inv.invoice_number} marked as paid!${goal ? `\n💰 ${goal.percentage}% moved to Business Savings.` : ""}`, Markup.inlineKeyboard([[Markup.button.callback("📋 All Invoices", "action_list_biz_invoices")]]));
+});
+
+bot.action(/^action_settle_bizinvoice_(\d+)$/, async (ctx) => {
+  await safeAnswerCbQuery(ctx);
+  const inv = bizDb.getBizInvoice(parseInt(ctx.match[1]));
+  if (!inv || parseInt(inv.telegram_id) !== ctx.from.id) return ctx.reply("Invoice not found.");
+  try {
+    const settlementTxHash = await invoiceListener.settleInvoiceFunds(inv.id, "business");
+    if (!settlementTxHash) {
+      return ctx.reply("No invoice balance was available to settle yet.");
+    }
+    bizDb.updateBizInvoiceSettlementTxHash(inv.id, settlementTxHash);
+    await ctx.reply(`💸 Settlement sent to your main business wallet.\nTx: ${settlementTxHash}`);
+  } catch (err) {
+    console.error("[invoice_settle]", err);
+    await ctx.reply(`Settlement failed: ${err.message}`);
+  }
 });
 
 bot.hears(/^\/bizpaid_(\d+)$/, async (ctx) => {
