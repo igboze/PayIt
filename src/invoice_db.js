@@ -26,7 +26,9 @@ function initInvoiceTables() {
       derivation_index  INTEGER,
       payment_address   TEXT UNIQUE,
       expected_amount_micro BIGINT,
-      paid_tx_hash      TEXT
+      invoice_private_key_encrypted TEXT,
+      paid_tx_hash      TEXT,
+      settlement_tx_hash TEXT
     );
   `);
   
@@ -43,6 +45,19 @@ function initInvoiceTables() {
   } catch (e) {
     // Indexes may already exist; silently continue
   }
+}
+
+// Add encrypted invoice child key storage column if table exists without it.
+try {
+  db.exec("ALTER TABLE invoices ADD COLUMN invoice_private_key_encrypted TEXT;");
+} catch (e) {
+  // Ignore if already exists.
+}
+
+try {
+  db.exec("ALTER TABLE invoices ADD COLUMN settlement_tx_hash TEXT;");
+} catch (e) {
+  // Ignore if already exists.
 }
 
 function getNextInvoiceNumber(telegramId) {
@@ -83,7 +98,8 @@ function createInvoiceWithHDAddress(
     pngPath,
     paymentAddress,           // Derived HD address (from wallet.deriveInvoiceAddress)
     derivationIndex,          // Invoice's index in derivation path
-    expectedAmountMicro       // Amount in Arc's 18-decimal format (BigInt string)
+    expectedAmountMicro,      // Amount in Arc's 18-decimal format (BigInt string)
+    invoicePrivateKeyEncrypted,
   }
 ) {
   const result = db.prepare(`
@@ -91,9 +107,9 @@ function createInvoiceWithHDAddress(
       (
         telegram_id, invoice_number, client_name, client_email, 
         items_json, total_usdc, due_date, notes, wallet_address, 
-        png_path, payment_address, derivation_index, expected_amount_micro, status
+        png_path, payment_address, derivation_index, expected_amount_micro, invoice_private_key_encrypted, status
       )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     telegramId,
     invoiceNumber,
@@ -108,6 +124,7 @@ function createInvoiceWithHDAddress(
     paymentAddress,           // Unique per invoice
     derivationIndex,          // Sequence number
     String(expectedAmountMicro), // Store as string to preserve precision
+    invoicePrivateKeyEncrypted || null,
     "unpaid"
   );
   
@@ -165,6 +182,12 @@ function markInvoicePaidWithTxHash(invoiceId, txHash) {
   ).run(txHash, invoiceId);
 }
 
+function updateInvoiceSettlementTxHash(invoiceId, settlementTxHash) {
+  db.prepare(
+    "UPDATE invoices SET settlement_tx_hash = ? WHERE id = ?"
+  ).run(settlementTxHash, invoiceId);
+}
+
 function updateInvoicePngPath(invoiceId, pngPath) {
   db.prepare(
     "UPDATE invoices SET png_path = ? WHERE id = ?"
@@ -183,5 +206,6 @@ module.exports = {
   getInvoiceByPaymentAddress,  // NEW: payment validation
   markInvoicePaid,
   markInvoicePaidWithTxHash,   // NEW: record tx hash
+  updateInvoiceSettlementTxHash,
   updateInvoicePngPath
 };

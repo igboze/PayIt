@@ -140,17 +140,42 @@ async function getUsdcBalance(walletAddress, chainName) {
   return formatUnits(raw, 6);
 }
 
+function deriveSecretKey(secret) {
+  if (!secret || typeof secret !== "string") {
+    throw new Error("INVOICE_FORWARDING_SECRET is required for sensitive encryption/decryption.");
+  }
+  return crypto.createHash("sha256").update(secret, "utf8").digest();
+}
+
+function encryptSensitiveValue(value, secret) {
+  const key = deriveSecretKey(secret);
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${iv.toString("hex")}:${tag.toString("hex")}:${encrypted.toString("hex")}`;
+}
+
+function decryptSensitiveValue(encryptedValue, secret) {
+  const key = deriveSecretKey(secret);
+  const parts = encryptedValue.split(":");
+  if (parts.length !== 3) {
+    throw new Error("Invalid encrypted value format.");
+  }
+  const [ivHex, tagHex, encryptedHex] = parts;
+  const iv = Buffer.from(ivHex, "hex");
+  const tag = Buffer.from(tagHex, "hex");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(tag);
+  const decrypted = Buffer.concat([
+    decipher.update(Buffer.from(encryptedHex, "hex")),
+    decipher.final(),
+  ]);
+  return decrypted.toString("utf8");
+}
+
 // ─── Arc RPC: native USDC send ────────────────────────────────────────────────
 // Native USDC on Arc: just send ETH-style (it IS the native token)
-
-async function sendFromWallet(signer, toAddress, amountMicro) {
-  const tx = await signer.sendTransaction({
-    to: toAddress,
-    value: amountMicro,
-  });
-  const receipt = await tx.wait();
-  return receipt.hash;
-}
 
 // ─── HD Wallet: Derive unique address per invoice (BIP44-ish) ─────────────────
 // Each invoice gets a deterministic, unique address derived from the user's 
@@ -233,6 +258,8 @@ module.exports = {
   isValidAddress,
   encryptPrivateKey,
   decryptPrivateKey,
+  encryptSensitiveValue,
+  decryptSensitiveValue,
   parseToMicro,
   formatMicro,
   getNativeBalanceMicro,

@@ -95,6 +95,11 @@ async function startInvoiceListener(bot, arcProvider, pollIntervalMs = 10000) {
 
             if (result) {
               confirmed = true;
+              try {
+                result.settlementTxHash = await settleInvoiceFunds(result.invoiceId, metadata.type);
+              } catch (err) {
+                console.error(`[invoice_listener] Settlement failed for invoice ${result.invoiceId}:`, err.message);
+              }
               await notifyInvoicePaid(bot, result, metadata, "tx");
               // Remove from watch list (invoice is paid)
               watchedAddresses.delete(address);
@@ -115,6 +120,11 @@ async function startInvoiceListener(bot, arcProvider, pollIntervalMs = 10000) {
               }
 
               if (result) {
+                try {
+                  result.settlementTxHash = await settleInvoiceFunds(result.invoiceId, metadata.type);
+                } catch (err) {
+                  console.error(`[invoice_listener] Settlement failed for invoice ${result.invoiceId}:`, err.message);
+                }
                 await notifyInvoicePaid(bot, result, metadata, "balance");
                 watchedAddresses.delete(address);
               }
@@ -240,6 +250,9 @@ async function notifyInvoicePaid(bot, result, metadata, method) {
   const amount = result.totalUsdc || "unknown";
   const clientName = result.clientName || "Customer";
   const txLine = result.txHash ? `Tx: \`${result.txHash.slice(0, 16)}...\`\n` : "";
+  const settlementLine = result.settlementTxHash
+    ? `Settlement Tx: \`${result.settlementTxHash.slice(0, 16)}...\`\n`
+    : "";
   const methodLine = method === "balance"
     ? "_Auto-confirmed by invoice address balance check._"
     : "_Auto-confirmed by transaction scan._";
@@ -275,6 +288,7 @@ async function notifyInvoicePaid(bot, result, metadata, method) {
       `Amount: ${amount} USDC\n` +
       `Address: \`${address}\`\n` +
       txLine +
+      settlementLine +
       `${methodLine}` +
       unpaidSection,
       { parse_mode: "Markdown" }
@@ -313,6 +327,7 @@ async function validateBizInvoicePayment(address, txHash) {
       totalUsdc: invoice.total_usdc,
       paymentAddress: address,
       txHash,
+      invoice,
     };
   }
   return null;
@@ -329,6 +344,7 @@ async function confirmPersonalPaymentByBalance(address, metadata) {
     totalUsdc: invoice.total_usdc,
     paymentAddress: address,
     txHash: null,
+    invoice,
   };
 }
 
@@ -343,7 +359,74 @@ async function confirmBusinessPaymentByBalance(address, metadata) {
     totalUsdc: invoice.total_usdc,
     paymentAddress: address,
     txHash: null,
+    invoice,
   };
+}
+
+async function settleInvoiceFunds(invoiceId, type) {
+  let invoice = null;
+  if (type === "personal") {
+    invoice = invoiceDb.getInvoice(invoiceId);
+  } else if (type === "business") {
+    invoice = bizDb.getBizInvoice(invoiceId);
+  }
+
+  if (!invoice) {
+    throw new Error(`Invoice ${invoiceId} not found for settlement`);
+  }
+
+  const encryptedKey = invoice.invoice_private_key_encrypted;
+  if (!encryptedKey) {
+    // No child key stored; payment likely landed on a primary wallet address.
+    return null;
+  }
+
+  if (!process.env.INVOICE_FORWARDING_SECRET) {
+    throw new Error("INVOICE_FORWARDING_SECRET is not configured.");
+  }
+
+  const childPrivateKey = walletLib.decryptSensitiveValue(encryptedKey, process.env.INVOICE_FORWARDING_SECRET);
+  const signer = walletLib.walletFromPrivateKey(childPrivateKey);
+  const destination = invoice.wallet_address || invoice.payment_address;
+  const balance = await signer.getBalance();
+  if (balance === 0n) {
+    return null;
+  }
+
+  const feeData = await signer.provider.getFeeData();
+  const gasLimit = await signer.estimateGas({ to: destination, value: 0n });
+  const gasPrice = feeData.maxFeePerGas || feeData.gasPrice;
+  if (!gasPrice) {
+    throw new Error("Unable to determine gas price for settlement transaction.");
+  }
+
+  const fee = gasLimit.mul(gasPrice);
+  const amountToSend = balance > fee ? balance.sub(fee) : 0n;
+  if (amountToSend <= 0n) {
+    throw new Error("Insufficient invoice balance to cover settlement fee.");
+  }
+
+  const txOptions = { to: destination, value: amountToSend, gasLimit };
+  if (feeData.maxFeePerGas) {
+    txOptions.maxFeePerGas = feeData.maxFeePerGas;
+    if (feeData.maxPriorityFeePerGas) {
+      txOptions.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas;
+    }
+  } else {
+    txOptions.gasPrice = feeData.gasPrice;
+  }
+
+  const tx = await signer.sendTransaction(txOptions);
+  const receipt = await tx.wait();
+  const settlementTxHash = receipt.hash;
+
+  if (type === "personal") {
+    invoiceDb.updateInvoiceSettlementTxHash(invoiceId, settlementTxHash);
+  } else {
+    bizDb.updateBizInvoiceSettlementTxHash(invoiceId, settlementTxHash);
+  }
+
+  return settlementTxHash;
 }
 
 module.exports = {

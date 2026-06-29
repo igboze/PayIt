@@ -32,15 +32,17 @@ function createHDInvoice(telegramId, decryptedPrivateKey, invoiceData) {
   const derivationIndex = invoiceDb.getNextDerivationIndex(telegramId);
 
   // Derive unique address for this invoice
-  const { address: paymentAddress } = walletLib.deriveInvoiceAddress(
-    decryptedPrivateKey,
-    derivationIndex
+  const derived = walletLib.deriveInvoiceAddress(decryptedPrivateKey, derivationIndex);
+  const paymentAddress = derived.address;
+  const invoicePrivateKeyEncrypted = walletLib.encryptSensitiveValue(
+    derived.childPrivateKey,
+    process.env.INVOICE_FORWARDING_SECRET
   );
 
   // Convert amount to Arc's 18-decimal format (BigInt)
   const expectedAmountMicro = parseToMicro(String(totalUsdc));
 
-  // Create invoice in database with HD address
+  // Create invoice in database with HD address and encrypted child key
   const invoiceId = invoiceDb.createInvoiceWithHDAddress(telegramId, {
     invoiceNumber,
     clientName,
@@ -53,7 +55,8 @@ function createHDInvoice(telegramId, decryptedPrivateKey, invoiceData) {
     pngPath,
     paymentAddress,        // Unique per invoice
     derivationIndex,       // Sequence for recovery
-    expectedAmountMicro: expectedAmountMicro.toString() // Store as string
+    expectedAmountMicro: expectedAmountMicro.toString(), // Store as string
+    invoicePrivateKeyEncrypted,
   });
 
   return {

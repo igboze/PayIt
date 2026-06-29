@@ -20,13 +20,15 @@ function initBizTables() {
       notes           TEXT,
       wallet_address  TEXT NOT NULL,
       payment_address TEXT UNIQUE,
+      invoice_private_key_encrypted TEXT,
       png_path        TEXT,
       status          TEXT NOT NULL DEFAULT 'unpaid',
       created_at      TEXT NOT NULL DEFAULT (datetime('now')),
       paid_at         TEXT,
       derivation_index INTEGER,
       expected_amount_micro BIGINT,
-      paid_tx_hash    TEXT
+      paid_tx_hash    TEXT,
+      settlement_tx_hash TEXT
     );
 
     CREATE TABLE IF NOT EXISTS biz_expenses (
@@ -64,6 +66,9 @@ function initBizTables() {
   } catch (e) {}
   try {
     db.exec("ALTER TABLE biz_invoices ADD COLUMN payment_address TEXT;");
+  } catch (e) {}
+  try {
+    db.exec("ALTER TABLE biz_invoices ADD COLUMN invoice_private_key_encrypted TEXT;");
   } catch (e) {}
   try {
     db.exec("CREATE INDEX IF NOT EXISTS idx_biz_invoices_wallet_address ON biz_invoices(wallet_address);");
@@ -107,13 +112,29 @@ function createBizInvoiceWithHDAddress(telegramId, {
   pngPath,
   paymentAddress,
   derivationIndex,
-  expectedAmountMicro
+  expectedAmountMicro,
+  invoicePrivateKeyEncrypted,
 }) {
   const result = db.prepare(`
     INSERT INTO biz_invoices
-      (telegram_id, invoice_number, client_name, client_email, items_json, total_usdc, due_date, notes, wallet_address, payment_address, png_path, derivation_index, expected_amount_micro)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(telegramId, invoiceNumber, clientName, clientEmail || null, JSON.stringify(items), totalUsdc, dueDate || null, notes || null, walletAddress, paymentAddress || null, pngPath || null, derivationIndex, String(expectedAmountMicro));
+      (telegram_id, invoice_number, client_name, client_email, items_json, total_usdc, due_date, notes, wallet_address, payment_address, invoice_private_key_encrypted, png_path, derivation_index, expected_amount_micro)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    telegramId,
+    invoiceNumber,
+    clientName,
+    clientEmail || null,
+    JSON.stringify(items),
+    totalUsdc,
+    dueDate || null,
+    notes || null,
+    walletAddress,
+    paymentAddress || null,
+    invoicePrivateKeyEncrypted || null,
+    pngPath || null,
+    derivationIndex,
+    String(expectedAmountMicro)
+  );
   return result.lastInsertRowid;
 }
 
@@ -145,6 +166,12 @@ function markBizInvoicePaidWithTxHash(invoiceId, txHash) {
   db.prepare(
     "UPDATE biz_invoices SET status = 'paid', paid_at = datetime('now'), paid_tx_hash = ? WHERE id = ?"
   ).run(txHash, invoiceId);
+}
+
+function updateBizInvoiceSettlementTxHash(invoiceId, settlementTxHash) {
+  db.prepare(
+    "UPDATE biz_invoices SET settlement_tx_hash = ? WHERE id = ?"
+  ).run(settlementTxHash, invoiceId);
 }
 
 function getNextBizDerivationIndex(telegramId) {

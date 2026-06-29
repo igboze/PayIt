@@ -155,7 +155,7 @@ function mainMenu(context) {
     ["💰 My Money",    "📤 Send Money",  "🔄 Swap"],
     ["📥 Add Money",   "📈 Save & Earn", "📋 History"],
     ["🤖 Auto-Pay",   "🧾 Invoice",     "👥 Contacts"],
-    ["⚙️ Settings",   "📖 Help"],
+    ["🔁 Switch Account", "⚙️ Settings",   "📖 Help"],
   ]).resize();
 }
 
@@ -301,10 +301,24 @@ bot.action("switch_business", async (ctx) => {
 });
 
 bot.action("noop",      (ctx) => ctx.answerCbQuery());
+bot.action("action_switch_account", async (ctx) => {
+  ctx.answerCbQuery();
+  const user = requireUser(ctx);
+  if (!user) return;
+  const context = user.active_context || "personal";
+  return ctx.reply("Switch active account:", accountToggle(context));
+});
 bot.action("main_menu", (ctx) => {
   ctx.answerCbQuery();
   const context = getContext(ctx.from?.id);
   return ctx.reply("What would you like to do?", mainMenu(context));
+});
+
+bot.hears("🔁 Switch Account", async (ctx) => {
+  const user = requireUser(ctx);
+  if (!user) return;
+  const context = user.active_context || "personal";
+  await ctx.reply("Switch active account:", accountToggle(context));
 });
 
 // ─── Balance ──────────────────────────────────────────────────────────────────
@@ -474,7 +488,8 @@ async function showSettings(ctx) {
     `Phone: ${phone}\n\n` +
     `PayIT never holds your money. Your PIN is the only key to your funds.`,
     Markup.inlineKeyboard([
-      [Markup.button.callback("🔑 Save Personal Security Phrase", "export_personal")],
+      [Markup.button.callback("� Switch Account",              "action_switch_account")],
+      [Markup.button.callback("�🔑 Save Personal Security Phrase", "export_personal")],
       [Markup.button.callback("🔑 Save Business Security Phrase", "export_business")],
       [Markup.button.callback("🔒 Change PIN",                  "changepin")],
       [Markup.button.callback("👛 Link External Wallet",        "setwallet_prompt")],
@@ -2842,9 +2857,14 @@ bot.on("text", async (ctx) => {
 
       try {
         const derivationIndex = bizDb.getNextBizDerivationIndex(userId);
-        const { address: paymentAddress } = walletLib.deriveInvoiceAddress(decryptedBizKey, derivationIndex);
-        const expectedAmountMicro = walletLib.parseToMicro(String(state.data.total));
-        const profile = bizProfile.getBizProfile(userId);
+      const derived = walletLib.deriveInvoiceAddress(decryptedBizKey, derivationIndex);
+      const paymentAddress = derived.address;
+      const invoicePrivateKeyEncrypted = walletLib.encryptSensitiveValue(
+        derived.childPrivateKey,
+        process.env.INVOICE_FORWARDING_SECRET
+      );
+      const expectedAmountMicro = walletLib.parseToMicro(String(state.data.total));
+      const profile = bizProfile.getBizProfile(userId);
 
         const pngPath = await generateInvoicePNG({
           invoiceNumber: state.data.invoiceNumber,
@@ -2870,7 +2890,9 @@ bot.on("text", async (ctx) => {
           totalUsdc:     state.data.total,
           dueDate:       state.data.parsed.dueDate || null,
           notes:         state.data.parsed.notes || null,
-          walletAddress: paymentAddress,
+          walletAddress: user.business_deposit_address || user.deposit_address,
+          paymentAddress,
+          invoicePrivateKeyEncrypted,
           pngPath,
           derivationIndex,
           expectedAmountMicro: expectedAmountMicro.toString(),
