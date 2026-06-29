@@ -255,8 +255,23 @@ async function sendFromWallet(signer, toAddress, amountMicro) {
     to: toAddress,
     value: amountMicro,
   });
-  const receipt = await tx.wait();
-  return receipt.hash;
+
+  const provider = signer.provider || getProvider();
+  if (provider && typeof provider.waitForTransaction === "function") {
+    provider.waitForTransaction(tx.hash, 1, 120000)
+      .then((receipt) => {
+        if (!receipt) {
+          console.warn(`[wallet] No receipt returned for ${tx.hash}`);
+          return;
+        }
+        console.log(`[wallet] Transaction confirmed: ${tx.hash}`);
+      })
+      .catch((err) => {
+        console.warn(`[wallet] Transaction wait failed for ${tx.hash}:`, err.message);
+      });
+  }
+
+  return tx.hash;
 }
 
 module.exports = {

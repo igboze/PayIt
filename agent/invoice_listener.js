@@ -389,20 +389,21 @@ async function settleInvoiceFunds(invoiceId, type) {
   const childPrivateKey = walletLib.decryptSensitiveValue(encryptedKey, secret);
   const signer = walletLib.walletFromPrivateKey(childPrivateKey);
   const destination = getSettlementDestination(invoice);
-  const balance = await signer.getBalance();
+  const provider = signer.provider || walletLib.getProvider?.();
+  const balance = provider ? await provider.getBalance(signer.address) : 0n;
   if (balance === 0n) {
     return null;
   }
 
-  const feeData = await signer.provider.getFeeData();
+  const feeData = await provider.getFeeData();
   const gasLimit = await signer.estimateGas({ to: destination, value: 0n });
   const gasPrice = feeData.maxFeePerGas || feeData.gasPrice;
   if (!gasPrice) {
     throw new Error("Unable to determine gas price for settlement transaction.");
   }
 
-  const fee = gasLimit.mul(gasPrice);
-  const amountToSend = balance > fee ? balance.sub(fee) : 0n;
+  const fee = gasLimit * gasPrice;
+  const amountToSend = balance > fee ? balance - fee : 0n;
   if (amountToSend <= 0n) {
     throw new Error("Insufficient invoice balance to cover settlement fee.");
   }
