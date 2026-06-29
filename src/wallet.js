@@ -221,9 +221,8 @@ function deriveInvoiceAddress(masterPrivateKey, invoiceIndex) {
  * @param {string} paymentAddress - Invoice's unique payment address
  * @returns {Promise<boolean>} - true if payment is valid, false otherwise
  */
-async function validateInvoicePayment(invoiceId, expectedAmountMicro, txHash, paymentAddress) {
+async function validateInvoicePayment(invoiceId, expectedAmountMicro, txHash, paymentAddress, provider = getProvider()) {
   try {
-    const provider = getProvider();
     const receipt = await provider.getTransactionReceipt(txHash);
     
     if (!receipt) return false; // TX not yet mined
@@ -231,8 +230,15 @@ async function validateInvoicePayment(invoiceId, expectedAmountMicro, txHash, pa
     // Check: recipient matches + amount matches (within 1% tolerance for rounding)
     const recipientMatches = receipt.to && 
       receipt.to.toLowerCase() === paymentAddress.toLowerCase();
-    
-    const actualAmount = receipt.value;
+
+    let actualAmount = receipt.value;
+    if (actualAmount == null && provider.getTransaction) {
+      const tx = await provider.getTransaction(txHash);
+      actualAmount = tx?.value ?? null;
+    }
+
+    if (actualAmount == null) return false;
+
     const tolerance = expectedAmountMicro / BigInt(100); // 1% tolerance
     const amountMatches = actualAmount >= (expectedAmountMicro - tolerance) && 
                          actualAmount <= (expectedAmountMicro + tolerance);
