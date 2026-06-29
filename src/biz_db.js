@@ -19,10 +19,14 @@ function initBizTables() {
       due_date        TEXT,
       notes           TEXT,
       wallet_address  TEXT NOT NULL,
+      payment_address TEXT UNIQUE,
       png_path        TEXT,
       status          TEXT NOT NULL DEFAULT 'unpaid',
       created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-      paid_at         TEXT
+      paid_at         TEXT,
+      derivation_index INTEGER,
+      expected_amount_micro BIGINT,
+      paid_tx_hash    TEXT
     );
 
     CREATE TABLE IF NOT EXISTS biz_expenses (
@@ -48,6 +52,25 @@ function initBizTables() {
       updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
+  // Add HD invoice support columns if the table already exists.
+  try {
+    db.exec("ALTER TABLE biz_invoices ADD COLUMN derivation_index INTEGER;");
+  } catch (e) {}
+  try {
+    db.exec("ALTER TABLE biz_invoices ADD COLUMN expected_amount_micro BIGINT;");
+  } catch (e) {}
+  try {
+    db.exec("ALTER TABLE biz_invoices ADD COLUMN paid_tx_hash TEXT;");
+  } catch (e) {}
+  try {
+    db.exec("ALTER TABLE biz_invoices ADD COLUMN payment_address TEXT;");
+  } catch (e) {}
+  try {
+    db.exec("CREATE INDEX IF NOT EXISTS idx_biz_invoices_wallet_address ON biz_invoices(wallet_address);");
+  } catch (e) {}
+  try {
+    db.exec("CREATE INDEX IF NOT EXISTS idx_biz_invoices_payment_address ON biz_invoices(payment_address);");
+  } catch (e) {}
 }
 
 // ─── Invoice number sequencing ────────────────────────────────────────────────
@@ -72,6 +95,36 @@ function createBizInvoice(telegramId, { invoiceNumber, clientName, clientEmail, 
   return result.lastInsertRowid;
 }
 
+function createBizInvoiceWithHDAddress(telegramId, {
+  invoiceNumber,
+  clientName,
+  clientEmail,
+  items,
+  totalUsdc,
+  dueDate,
+  notes,
+  walletAddress,
+  pngPath,
+  paymentAddress,
+  derivationIndex,
+  expectedAmountMicro
+}) {
+  const result = db.prepare(`
+    INSERT INTO biz_invoices
+      (telegram_id, invoice_number, client_name, client_email, items_json, total_usdc, due_date, notes, wallet_address, payment_address, png_path, derivation_index, expected_amount_micro)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(telegramId, invoiceNumber, clientName, clientEmail || null, JSON.stringify(items), totalUsdc, dueDate || null, notes || null, walletAddress, paymentAddress || null, pngPath || null, derivationIndex, String(expectedAmountMicro));
+  return result.lastInsertRowid;
+}
+
+function getUnpaidBizInvoices() {
+  return db.prepare("SELECT * FROM biz_invoices WHERE status = 'unpaid' AND (payment_address IS NOT NULL OR wallet_address IS NOT NULL)").all();
+}
+
+function getBizInvoiceByWalletAddress(walletAddress) {
+  return db.prepare("SELECT * FROM biz_invoices WHERE payment_address = ? OR wallet_address = ?").get(walletAddress, walletAddress) || null;
+}
+
 function getBizInvoices(telegramId, limit = 20) {
   return db.prepare(
     "SELECT * FROM biz_invoices WHERE telegram_id = ? ORDER BY id DESC LIMIT ?"
@@ -86,6 +139,19 @@ function markBizInvoicePaid(invoiceId) {
   db.prepare(
     "UPDATE biz_invoices SET status = 'paid', paid_at = datetime('now') WHERE id = ?"
   ).run(invoiceId);
+}
+
+function markBizInvoicePaidWithTxHash(invoiceId, txHash) {
+  db.prepare(
+    "UPDATE biz_invoices SET status = 'paid', paid_at = datetime('now'), paid_tx_hash = ? WHERE id = ?"
+  ).run(txHash, invoiceId);
+}
+
+function getNextBizDerivationIndex(telegramId) {
+  const last = db.prepare(
+    "SELECT MAX(derivation_index) as maxIndex FROM biz_invoices WHERE telegram_id = ?"
+  ).get(telegramId);
+  return (last?.maxIndex ?? -1) + 1;
 }
 
 function getPendingInvoiceCount(telegramId) {
@@ -214,9 +280,13 @@ module.exports = {
   initBizTables,
   getNextBizInvoiceNumber,
   createBizInvoice,
+  createBizInvoiceWithHDAddress,
   getBizInvoices,
   getBizInvoice,
+  getBizInvoiceByWalletAddress,
   markBizInvoicePaid,
+  markBizInvoicePaidWithTxHash,
+  getNextBizDerivationIndex,
   getPendingInvoiceCount,
   getPendingInvoiceTotal,
   getRecentClients,
@@ -230,4 +300,9 @@ module.exports = {
   setSavingsGoal,
   getBizSavingsBalance,
   addToBizSavings,
+  createBizInvoiceWithHDAddress,
+  getUnpaidBizInvoices,
+  getBizInvoiceByWalletAddress,
+  markBizInvoicePaidWithTxHash,
+  getNextBizDerivationIndex,
 };

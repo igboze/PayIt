@@ -374,13 +374,13 @@ async function showBizBalance(ctx) {
       `📬 Unpaid invoices: ${pending}\n` +
       `📉 Expenses this month: $${expenses.toFixed(2)}\n\n` +
       `Account number:\n${addr}`,
-      Markup.inlineKeyboard([
+      { ...Markup.inlineKeyboard([
         [Markup.button.callback("🧾 New Invoice",   "action_new_biz_invoice"),
          Markup.button.callback("💸 Log Expense",   "action_log_expense")],
         [Markup.button.callback("📋 Invoices",      "action_list_biz_invoices"),
          Markup.button.callback("📊 This Month",    "action_cash_flow")],
         [Markup.button.callback("🌍 Add from Abroad", "action_gateway")],
-      ])
+      ]), ...accountToggle("business") }
     );
   } catch (err) {
     console.error("[biz_balance]", err);
@@ -1198,17 +1198,51 @@ bot.action("action_list_biz_invoices", async (ctx) => {
   }
   const lines = invoices.slice(0, 8).map(inv => {
     const status = inv.status === "paid" ? "✅" : "⏳";
-    return `${status} #${inv.invoice_number} — ${inv.client_name}\n   $${inv.total_usdc}${inv.due_date ? " · Due " + inv.due_date : ""}\n   /bizpaid_${inv.id}`;
+    const paymentAddress = inv.payment_address || inv.wallet_address || "(none)";
+    return `${status} #${inv.invoice_number} — ${inv.client_name}\n   $${inv.total_usdc}${inv.due_date ? " · Due " + inv.due_date : ""}\n   Address: ${paymentAddress}`;
   }).join("\n\n");
 
+  const keyboard = invoices.slice(0, 8).map(inv => {
+    const row = [Markup.button.callback(`View ${inv.invoice_number}`, `action_viewbizinvoice_${inv.id}`)];
+    if (inv.status !== "paid") {
+      row.push(Markup.button.callback("Mark Paid", `action_markbizinvoice_${inv.id}`));
+    }
+    return row;
+  });
+  keyboard.push([Markup.button.callback("🧾 New Invoice", "action_new_biz_invoice")]);
+  keyboard.push([Markup.button.callback("📊 This Month", "action_cash_flow")]);
+  keyboard.push([Markup.button.callback("🏠 Main Menu", "main_menu")]);
+
   await ctx.reply(
-    `📋 Your Invoices\n──────────────────────────\n${lines}\n\nTap a /bizpaid_ link to mark as paid.`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("🧾 New Invoice", "action_new_biz_invoice")],
-      [Markup.button.callback("📊 This Month",  "action_cash_flow")],
-      [Markup.button.callback("🏠 Main Menu",   "main_menu")],
-    ])
+    `📋 Your Invoices\n──────────────────────────\n${lines}`,
+    Markup.inlineKeyboard(keyboard)
   );
+});
+
+bot.action(/^action_viewbizinvoice_(\d+)$/, async (ctx) => {
+  ctx.answerCbQuery();
+  const inv = bizDb.getBizInvoice(parseInt(ctx.match[1]));
+  if (!inv || parseInt(inv.telegram_id) !== ctx.from.id) return ctx.reply("Invoice not found.");
+  const paymentAddress = inv.payment_address || inv.wallet_address || "(none)";
+  await ctx.reply(
+    `🧾 Business Invoice #${inv.invoice_number}\n` +
+    `Client: ${inv.client_name}\n` +
+    `Amount: $${inv.total_usdc}${inv.due_date ? "\nDue: " + inv.due_date : ""}\n` +
+    `Status: ${inv.status === "paid" ? "✅ Paid" : "⏳ Unpaid"}\n` +
+    `Payment address: ${paymentAddress}\n` +
+    `${inv.paid_tx_hash ? `Tx: ${inv.paid_tx_hash}` : ""}`
+  );
+});
+
+bot.action(/^action_markbizinvoice_(\d+)$/, async (ctx) => {
+  ctx.answerCbQuery();
+  const inv = bizDb.getBizInvoice(parseInt(ctx.match[1]));
+  if (!inv || parseInt(inv.telegram_id) !== ctx.from.id) return ctx.reply("Invoice not found.");
+  if (inv.status === "paid") return ctx.reply(`Invoice #${inv.invoice_number} is already paid ✅`);
+  bizDb.markBizInvoicePaid(inv.id);
+  const goal = bizDb.getSavingsGoal(ctx.from.id);
+  if (goal) bizDb.addToBizSavings(ctx.from.id, parseFloat(inv.total_usdc) * goal.percentage / 100);
+  await ctx.reply(`✅ Invoice #${inv.invoice_number} marked as paid!${goal ? `\n💰 ${goal.percentage}% moved to Business Savings.` : ""}`, Markup.inlineKeyboard([[Markup.button.callback("📋 All Invoices", "action_list_biz_invoices")]]));
 });
 
 bot.hears(/^\/bizpaid_(\d+)$/, async (ctx) => {
@@ -1222,6 +1256,20 @@ bot.hears(/^\/bizpaid_(\d+)$/, async (ctx) => {
     `✅ Invoice #${inv.invoice_number} paid!\n${inv.client_name} · $${inv.total_usdc}` +
     (goal ? `\n💰 ${goal.percentage}% moved to Business Savings.` : ""),
     Markup.inlineKeyboard([[Markup.button.callback("📋 All Invoices", "action_list_biz_invoices")]])
+  );
+});
+
+bot.hears(/^\/viewbizinvoice_(\d+)$/, async (ctx) => {
+  const inv = bizDb.getBizInvoice(parseInt(ctx.match[1]));
+  if (!inv || parseInt(inv.telegram_id) !== ctx.from.id) return ctx.reply("Invoice not found.");
+  const paymentAddress = inv.payment_address || inv.wallet_address || "(none)";
+  await ctx.reply(
+    `🧾 Business Invoice #${inv.invoice_number}\n` +
+    `Client: ${inv.client_name}\n` +
+    `Amount: $${inv.total_usdc}${inv.due_date ? "\nDue: " + inv.due_date : ""}\n` +
+    `Status: ${inv.status === "paid" ? "✅ Paid" : "⏳ Unpaid"}\n` +
+    `Payment address: ${paymentAddress}\n` +
+    `${inv.paid_tx_hash ? `Tx: ${inv.paid_tx_hash}` : ""}`
   );
 });
 
@@ -1299,67 +1347,21 @@ bot.action("action_confirm_biz_invoice", async (ctx) => {
   if (!state || state.type !== "confirm_biz_invoice") {
     return ctx.reply("Session expired. Start again with 🧾 New Invoice.");
   }
-  convState.clearState(ctx.from.id);
-  const { parsed, total, walletAddress } = state.data;
 
-  await ctx.reply("⏳ Generating your invoice...");
-  try {
-    const profile      = bizProfile.getBizProfile(ctx.from.id);
-    const invoiceNumber = bizDb.getNextBizInvoiceNumber(ctx.from.id);
-    const issueDate    = new Date().toISOString().split("T")[0];
-    const logoDataUri  = profile ? bizProfile.getLogoDataUri(ctx.from.id) : null;
+  const invoiceNumber = bizDb.getNextBizInvoiceNumber(ctx.from.id);
+  const issueDate     = new Date().toISOString().split("T")[0];
+  convState.setState(ctx.from.id, "confirm_biz_invoice_pin", {
+    parsed:       state.data.parsed,
+    total:        state.data.total,
+    walletAddress: state.data.walletAddress,
+    invoiceNumber,
+    issueDate,
+  }, "business");
 
-    const pngPath = await generateInvoicePNG({
-      invoiceNumber,
-      clientName:      parsed.clientName,
-      clientEmail:     parsed.clientEmail,
-      items:           parsed.items,
-      dueDate:         parsed.dueDate,
-      notes:           parsed.notes,
-      businessName:    profile?.business_name || ctx.from.username || `User ${ctx.from.id}`,
-      businessEmail:   profile?.business_email || null,
-      businessPhone:   profile?.phone || null,
-      businessAddress: profile?.address || null,
-      logoDataUri,
-      walletAddress,
-      issueDate,
-    });
-
-    const invoiceId = bizDb.createBizInvoice(ctx.from.id, {
-      invoiceNumber,
-      clientName:  parsed.clientName,
-      clientEmail: parsed.clientEmail || null,
-      items:       parsed.items,
-      totalUsdc:   total,
-      dueDate:     parsed.dueDate || null,
-      notes:       parsed.notes   || null,
-      walletAddress,
-      pngPath,
-    });
-
-    const goal     = bizDb.getSavingsGoal(ctx.from.id);
-    const goalNote = goal
-      ? `\n💰 ${goal.percentage}% ($${(total * goal.percentage / 100).toFixed(2)}) will go to Business Savings on payment.`
-      : "";
-
-    await ctx.replyWithPhoto({ source: pngPath }, {
-      caption:
-        `🧾 Invoice #${invoiceNumber}\n` +
-        `To: ${parsed.clientName}\n` +
-        `Amount: $${total.toFixed(2)}\n` +
-        (parsed.dueDate ? `Due: ${parsed.dueDate}\n` : "") +
-        `\nSend payment to:\n\`${walletAddress}\`` + goalNote,
-      parse_mode: "Markdown",
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback("📋 All Invoices",  "action_list_biz_invoices")],
-        [Markup.button.callback(`✅ Mark as Paid`,  `action_bizpaid_${invoiceId}`)],
-        [Markup.button.callback("🏠 Main Menu",     "main_menu")],
-      ]),
-    });
-  } catch (err) {
-    console.error("[biz_invoice]", err);
-    await ctx.reply("Something went wrong. Please try again.");
-  }
+  return ctx.reply(
+    "Enter your PIN to create the invoice with a unique payment address:",
+    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+  );
 });
 
 bot.action(/^action_bizpaid_(\d+)$/, async (ctx) => {
@@ -1441,15 +1443,48 @@ bot.action("action_list_invoices", async (ctx) => {
   }
   const lines = invoices.map((inv, i) => {
     const status = inv.status === "paid" ? "✅" : "⏳";
-    return `${i + 1}. #${inv.invoice_number} — ${inv.client_name}\n   $${inv.total_usdc} · ${status}${inv.due_date ? " · Due " + inv.due_date : ""}\n   /markinvoicepaid_${inv.id}`;
+    const paymentAddress = inv.payment_address || inv.wallet_address || "(none)";
+    return `${i + 1}. #${inv.invoice_number} — ${inv.client_name}\n   $${inv.total_usdc} · ${status}${inv.due_date ? " · Due " + inv.due_date : ""}\n   Address: ${paymentAddress}`;
   }).join("\n\n");
+
+  const keyboard = invoices.map(inv => {
+    const row = [Markup.button.callback(`View ${inv.invoice_number}`, `action_viewinvoice_${inv.id}`)];
+    if (inv.status !== "paid") {
+      row.push(Markup.button.callback("Mark Paid", `action_markinvoice_${inv.id}`));
+    }
+    return row;
+  });
+  keyboard.push([Markup.button.callback("🧾 New Invoice", "action_new_invoice")]);
+  keyboard.push([Markup.button.callback("🏠 Main Menu", "main_menu")]);
+
   await ctx.reply(
     `📋 Your Invoices\n──────────────────────────\n${lines}`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("🧾 New Invoice", "action_new_invoice")],
-      [Markup.button.callback("🏠 Main Menu",   "main_menu")],
-    ])
+    Markup.inlineKeyboard(keyboard)
   );
+});
+
+bot.action(/^action_viewinvoice_(\d+)$/, async (ctx) => {
+  ctx.answerCbQuery();
+  const inv = invoiceDb.getInvoice(parseInt(ctx.match[1]));
+  if (!inv || parseInt(inv.telegram_id) !== ctx.from.id) return ctx.reply("Invoice not found.");
+  const paymentAddress = inv.payment_address || inv.wallet_address || "(none)";
+  await ctx.reply(
+    `🧾 Invoice #${inv.invoice_number}\n` +
+    `Client: ${inv.client_name}\n` +
+    `Amount: $${inv.total_usdc}${inv.due_date ? "\nDue: " + inv.due_date : ""}\n` +
+    `Status: ${inv.status === "paid" ? "✅ Paid" : "⏳ Unpaid"}\n` +
+    `Payment address: ${paymentAddress}\n` +
+    `${inv.paid_tx_hash ? `Tx: ${inv.paid_tx_hash}` : ""}`
+  );
+});
+
+bot.action(/^action_markinvoice_(\d+)$/, async (ctx) => {
+  ctx.answerCbQuery();
+  const inv = invoiceDb.getInvoice(parseInt(ctx.match[1]));
+  if (!inv || parseInt(inv.telegram_id) !== ctx.from.id) return ctx.reply("Invoice not found.");
+  if (inv.status === "paid") return ctx.reply(`Invoice #${inv.invoice_number} is already paid ✅`);
+  invoiceDb.markInvoicePaid(inv.id);
+  await ctx.reply(`✅ Invoice #${inv.invoice_number} marked as paid!`, Markup.inlineKeyboard([[Markup.button.callback("📋 All Invoices", "action_list_invoices")]]));
 });
 
 bot.hears(/^\/markinvoicepaid_(\d+)$/, async (ctx) => {
@@ -1458,6 +1493,20 @@ bot.hears(/^\/markinvoicepaid_(\d+)$/, async (ctx) => {
   if (inv.status === "paid") return ctx.reply("Already paid ✅");
   invoiceDb.markInvoicePaid(parseInt(ctx.match[1]));
   await ctx.reply(`✅ Invoice #${inv.invoice_number} marked as paid!`);
+});
+
+bot.hears(/^\/viewinvoice_(\d+)$/, async (ctx) => {
+  const inv = invoiceDb.getInvoice(parseInt(ctx.match[1]));
+  if (!inv || parseInt(inv.telegram_id) !== ctx.from.id) return ctx.reply("Invoice not found.");
+  const paymentAddress = inv.payment_address || inv.wallet_address || "(none)";
+  await ctx.reply(
+    `🧾 Invoice #${inv.invoice_number}\n` +
+    `Client: ${inv.client_name}\n` +
+    `Amount: $${inv.total_usdc}${inv.due_date ? "\nDue: " + inv.due_date : ""}\n` +
+    `Status: ${inv.status === "paid" ? "✅ Paid" : "⏳ Unpaid"}\n` +
+    `Payment address: ${paymentAddress}\n` +
+    `${inv.paid_tx_hash ? `Tx: ${inv.paid_tx_hash}` : ""}`
+  );
 });
 
 // ─── Auto-Pay ─────────────────────────────────────────────────────────────────
@@ -2742,9 +2791,7 @@ bot.on("text", async (ctx) => {
         });
 
         // Update invoice with PNG path
-        invoiceDb.db.prepare(
-          "UPDATE invoices SET png_path = ? WHERE id = ?"
-        ).run(pngPath, hdInvoice.invoiceId);
+        invoiceDb.updateInvoicePngPath(hdInvoice.invoiceId, pngPath);
 
         const qrData = generateInvoiceQRData(paymentAddressForQR, hdInvoice.expectedAmountMicro);
 
@@ -2769,6 +2816,88 @@ bot.on("text", async (ctx) => {
       } catch (err) {
         console.error("[invoice_hd]", err);
         await ctx.reply("❌ Failed to create invoice. Please try again.");
+      }
+      return;
+    }
+    
+    if (state.type === "confirm_biz_invoice_pin") {
+      await deleteSensitiveMessage(ctx);
+      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
+      if (!db.verifyPin(userId, text)) {
+        convState.clearState(userId);
+        return ctx.reply("Incorrect PIN. Please try again.");
+      }
+
+      const user = db.getUser(userId);
+      let decryptedBizKey;
+      try {
+        decryptedBizKey = db.decryptBusinessPrivateKey(text, user);
+      } catch (err) {
+        console.error("[biz_invoice_hd] Decryption failed:", err.message);
+        convState.clearState(userId);
+        return ctx.reply("Couldn't unlock your Business wallet with that PIN.");
+      }
+
+      convState.clearState(userId);
+
+      try {
+        const derivationIndex = bizDb.getNextBizDerivationIndex(userId);
+        const { address: paymentAddress } = walletLib.deriveInvoiceAddress(decryptedBizKey, derivationIndex);
+        const expectedAmountMicro = walletLib.parseToMicro(String(state.data.total));
+        const profile = bizProfile.getBizProfile(userId);
+
+        const pngPath = await generateInvoicePNG({
+          invoiceNumber: state.data.invoiceNumber,
+          clientName:      state.data.parsed.clientName,
+          clientEmail:     state.data.parsed.clientEmail,
+          items:           state.data.parsed.items,
+          dueDate:         state.data.parsed.dueDate,
+          notes:           state.data.parsed.notes,
+          businessName:    profile?.business_name || ctx.from.username || `User ${userId}`,
+          businessEmail:   profile?.business_email || null,
+          businessPhone:   profile?.phone || null,
+          businessAddress: profile?.address || null,
+          logoDataUri:     profile ? bizProfile.getLogoDataUri(userId) : null,
+          walletAddress:   paymentAddress,
+          issueDate:       state.data.issueDate,
+        });
+
+        const invoiceId = bizDb.createBizInvoiceWithHDAddress(userId, {
+          invoiceNumber: state.data.invoiceNumber,
+          clientName:    state.data.parsed.clientName,
+          clientEmail:   state.data.parsed.clientEmail || null,
+          items:         state.data.parsed.items,
+          totalUsdc:     state.data.total,
+          dueDate:       state.data.parsed.dueDate || null,
+          notes:         state.data.parsed.notes || null,
+          walletAddress: paymentAddress,
+          pngPath,
+          derivationIndex,
+          expectedAmountMicro: expectedAmountMicro.toString(),
+        });
+
+        const goal     = bizDb.getSavingsGoal(userId);
+        const goalNote = goal
+          ? `\n💰 ${goal.percentage}% ($${(state.data.total * goal.percentage / 100).toFixed(2)}) will go to Business Savings on payment.`
+          : "";
+
+        await ctx.replyWithPhoto({ source: pngPath }, {
+          caption:
+            `🧾 Invoice #${state.data.invoiceNumber}\n` +
+            `To: ${state.data.parsed.clientName}\n` +
+            `Amount: $${state.data.total.toFixed(2)}\n` +
+            (state.data.parsed.dueDate ? `Due: ${state.data.parsed.dueDate}\n` : "") +
+            `\n📍 Unique Payment Address (for this invoice only):\n\`${paymentAddress}\`` + goalNote,
+          parse_mode: "Markdown",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback("📋 All Invoices",  "action_list_biz_invoices")],
+            [Markup.button.callback(`✅ Mark as Paid`,  `action_bizpaid_${invoiceId}`)],
+            [Markup.button.callback("🏠 Main Menu",     "main_menu")],
+          ]),
+        });
+      } catch (err) {
+        console.error("[biz_invoice_hd]", err);
+        await ctx.reply("❌ Failed to create business invoice. Please try again.");
       }
       return;
     }

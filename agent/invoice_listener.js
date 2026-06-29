@@ -7,6 +7,8 @@
 
 const invoiceHd = require("../src/invoice_hd");
 const invoiceDb = require("../src/invoice_db");
+const bizDb = require("../src/biz_db");
+const walletLib = require("../src/wallet");
 
 let listenerActive = false;
 let checkInterval = null;
@@ -38,11 +40,10 @@ async function startInvoiceListener(bot, arcProvider, pollIntervalMs = 10000) {
   checkInterval = setInterval(async () => {
     try {
       // Refresh list of unpaid invoices to monitor
-      const unpaidInvoices = invoiceDb.db
-        .prepare("SELECT * FROM invoices WHERE status = 'unpaid' AND payment_address IS NOT NULL")
-        .all();
+      const unpaidInvoices = invoiceDb.getUnpaidPersonalInvoices();
+      const unpaidBizInvoices = bizDb.getUnpaidBizInvoices();
 
-      // Update watch list
+      // Update watch list for personal invoices
       for (const inv of unpaidInvoices) {
         if (!watchedAddresses.has(inv.payment_address)) {
           watchedAddresses.set(inv.payment_address, {
@@ -50,7 +51,26 @@ async function startInvoiceListener(bot, arcProvider, pollIntervalMs = 10000) {
             invoiceNumber: inv.invoice_number,
             telegramId: inv.telegram_id,
             expectedAmountMicro: inv.expected_amount_micro,
-            lastChecked: 0
+            type: "personal",
+            address: inv.payment_address,
+            lastChecked: 0,
+          });
+        }
+      }
+
+      // Update watch list for business invoices
+      for (const inv of unpaidBizInvoices) {
+        const address = inv.payment_address || inv.wallet_address;
+        if (!address) continue;
+        if (!watchedAddresses.has(address)) {
+          watchedAddresses.set(address, {
+            invoiceId: inv.id,
+            invoiceNumber: inv.invoice_number,
+            telegramId: inv.telegram_id,
+            expectedAmountMicro: inv.expected_amount_micro || walletLib.parseToMicro(String(inv.total_usdc)).toString(),
+            type: "business",
+            address,
+            lastChecked: 0,
           });
         }
       }
@@ -60,34 +80,45 @@ async function startInvoiceListener(bot, arcProvider, pollIntervalMs = 10000) {
         try {
           const txs = await getRecentTransactionsTo(arcProvider, address);
           
+          let confirmed = false;
           for (const tx of txs) {
             // Skip if already recorded
             if (metadata.lastChecked >= tx.blockNumber) continue;
 
-            // Validate payment
-            const result = await invoiceHd.validateAndConfirmPayment(address, tx.hash);
-            
-            if (result) {
-              // Notify user
-              try {
-                await bot.telegram.sendMessage(
-                  result.telegramId || metadata.telegramId,
-                  `✅ *Payment Confirmed!*\n\n` +
-                  `Invoice: #${result.invoiceNumber}\n` +
-                  `From: ${result.clientName}\n` +
-                  `Amount: ${result.totalUsdc} USDC\n` +
-                  `Tx: \`${result.txHash.slice(0, 16)}...\``,
-                  { parse_mode: "Markdown" }
-                );
-              } catch (notifyErr) {
-                console.error(`[invoice_listener] Failed to notify user:`, notifyErr.message);
-              }
+            // Validate payment based on invoice type
+            let result = null;
+            if (metadata.type === "personal") {
+              result = await invoiceHd.validateAndConfirmPayment(address, tx.hash);
+            } else if (metadata.type === "business") {
+              result = await validateBizInvoicePayment(address, tx.hash);
+            }
 
+            if (result) {
+              confirmed = true;
+              await notifyInvoicePaid(bot, result, metadata, "tx");
               // Remove from watch list (invoice is paid)
               watchedAddresses.delete(address);
             }
 
             metadata.lastChecked = tx.blockNumber;
+          }
+
+          if (!confirmed) {
+            const expected = BigInt(metadata.expectedAmountMicro);
+            const balance = await arcProvider.getBalance(address);
+            if (balance >= expected && expected > 0n) {
+              let result = null;
+              if (metadata.type === "personal") {
+                result = await confirmPersonalPaymentByBalance(address, metadata);
+              } else {
+                result = await confirmBusinessPaymentByBalance(address, metadata);
+              }
+
+              if (result) {
+                await notifyInvoicePaid(bot, result, metadata, "balance");
+                watchedAddresses.delete(address);
+              }
+            }
           }
         } catch (err) {
           console.error(`[invoice_listener] Error checking ${address}:`, err.message);
@@ -118,19 +149,36 @@ function stopInvoiceListener() {
 function rebuildWatchList() {
   watchedAddresses.clear();
   try {
-    const unpaidInvoices = invoiceDb.db
-      .prepare("SELECT * FROM invoices WHERE status = 'unpaid' AND payment_address IS NOT NULL")
-      .all();
+    const unpaidInvoices = invoiceDb.getUnpaidPersonalInvoices();
+    const unpaidBizInvoices = bizDb.getUnpaidBizInvoices();
 
     for (const inv of unpaidInvoices) {
-      watchedAddresses.set(inv.payment_address, {
-        invoiceId: inv.id,
-        invoiceNumber: inv.invoice_number,
-        telegramId: inv.telegram_id,
-        expectedAmountMicro: inv.expected_amount_micro,
-        lastChecked: 0
-      });
+      if (inv.payment_address) {
+        watchedAddresses.set(inv.payment_address, {
+          invoiceId: inv.id,
+          invoiceNumber: inv.invoice_number,
+          telegramId: inv.telegram_id,
+          expectedAmountMicro: inv.expected_amount_micro,
+          type: "personal",
+          lastChecked: 0
+        });
+      }
     }
+
+    for (const inv of unpaidBizInvoices) {
+      const address = inv.payment_address || inv.wallet_address;
+      if (address) {
+        watchedAddresses.set(address, {
+          invoiceId: inv.id,
+          invoiceNumber: inv.invoice_number,
+          telegramId: inv.telegram_id,
+          expectedAmountMicro: inv.expected_amount_micro || walletLib.parseToMicro(String(inv.total_usdc)).toString(),
+          type: "business",
+          lastChecked: 0
+        });
+      }
+    }
+
     console.log(`[invoice_listener] Loaded ${watchedAddresses.size} unpaid invoices to watch`);
   } catch (err) {
     console.error("[invoice_listener] Failed to rebuild watch list:", err.message);
@@ -176,11 +224,126 @@ async function checkTransactionForInvoice(txHash, provider) {
 
     // Validate against any invoice with matching recipient
     const result = await invoiceHd.validateAndConfirmPayment(receipt.to, txHash);
-    return result;
+    if (result) return result;
+
+    const bizResult = await validateBizInvoicePayment(receipt.to, txHash);
+    return bizResult;
   } catch (err) {
     console.error("[invoice_listener] checkTransactionForInvoice error:", err.message);
     return null;
   }
+}
+
+async function notifyInvoicePaid(bot, result, metadata, method) {
+  const address = result.paymentAddress || metadata.address || "(unknown)";
+  const invoiceType = metadata.type === "business" ? "Business Invoice" : "Invoice";
+  const amount = result.totalUsdc || "unknown";
+  const clientName = result.clientName || "Customer";
+  const txLine = result.txHash ? `Tx: \`${result.txHash.slice(0, 16)}...\`\n` : "";
+  const methodLine = method === "balance"
+    ? "_Auto-confirmed by invoice address balance check._"
+    : "_Auto-confirmed by transaction scan._";
+
+  const unpaidPersonal = invoiceDb.getUserInvoices(result.telegramId, 20)
+    .filter(inv => inv.status === "unpaid" && inv.id !== result.invoiceId)
+    .slice(0, 5);
+  const unpaidBiz = bizDb.getBizInvoices(result.telegramId, 20)
+    .filter(inv => inv.status === "unpaid" && inv.id !== result.invoiceId)
+    .slice(0, 5);
+
+  const unpaidLines = [];
+  if (unpaidPersonal.length) {
+    unpaidLines.push("#UNPAID PERSONAL");
+    unpaidLines.push(...unpaidPersonal.map(inv => `• ${inv.invoice_number} · $${inv.total_usdc} · ${inv.client_name}${inv.due_date ? ` · Due ${inv.due_date}` : ""}`));
+  }
+  if (unpaidBiz.length) {
+    unpaidLines.push("#UNPAID BUSINESS");
+    unpaidLines.push(...unpaidBiz.map(inv => `• ${inv.invoice_number} · $${inv.total_usdc} · ${inv.client_name}${inv.due_date ? ` · Due ${inv.due_date}` : ""}`));
+  }
+  if (!unpaidLines.length) {
+    unpaidLines.push("#UNPAID None");
+  }
+
+  const unpaidSection = `\n\n${unpaidLines.join("\n")}`;
+
+  try {
+    await bot.telegram.sendMessage(
+      result.telegramId || metadata.telegramId,
+      `#PAID ✅ *Payment Confirmed!*\n\n` +
+      `${invoiceType}: #${result.invoiceNumber}\n` +
+      `Client: ${clientName}\n` +
+      `Amount: ${amount} USDC\n` +
+      `Address: \`${address}\`\n` +
+      txLine +
+      `${methodLine}` +
+      unpaidSection,
+      { parse_mode: "Markdown" }
+    );
+  } catch (notifyErr) {
+    console.error(`[invoice_listener] Failed to notify user:`, notifyErr.message);
+  }
+}
+
+async function validateBizInvoicePayment(address, txHash) {
+  const invoice = bizDb.getBizInvoiceByWalletAddress(address);
+  if (!invoice) {
+    return null;
+  }
+  if (invoice.status === "paid") {
+    return null;
+  }
+
+  const expectedAmountMicro = invoice.expected_amount_micro
+    ? BigInt(invoice.expected_amount_micro)
+    : walletLib.parseToMicro(String(invoice.total_usdc));
+
+  const isValid = await walletLib.validateInvoicePayment(
+    invoice.id,
+    expectedAmountMicro,
+    txHash,
+    address
+  );
+
+  if (isValid) {
+    bizDb.markBizInvoicePaidWithTxHash(invoice.id, txHash);
+    return {
+      invoiceId: invoice.id,
+      invoiceNumber: invoice.invoice_number,
+      clientName: invoice.client_name,
+      totalUsdc: invoice.total_usdc,
+      paymentAddress: address,
+      txHash,
+    };
+  }
+  return null;
+}
+
+async function confirmPersonalPaymentByBalance(address, metadata) {
+  const invoice = invoiceDb.getInvoiceByPaymentAddress(address);
+  if (!invoice || invoice.status === "paid") return null;
+  invoiceDb.markInvoicePaidWithTxHash(invoice.id, null);
+  return {
+    invoiceId: invoice.id,
+    invoiceNumber: invoice.invoice_number,
+    clientName: invoice.client_name,
+    totalUsdc: invoice.total_usdc,
+    paymentAddress: address,
+    txHash: null,
+  };
+}
+
+async function confirmBusinessPaymentByBalance(address, metadata) {
+  const invoice = bizDb.getBizInvoiceByWalletAddress(address);
+  if (!invoice || invoice.status === "paid") return null;
+  bizDb.markBizInvoicePaid(invoice.id);
+  return {
+    invoiceId: invoice.id,
+    invoiceNumber: invoice.invoice_number,
+    clientName: invoice.client_name,
+    totalUsdc: invoice.total_usdc,
+    paymentAddress: address,
+    txHash: null,
+  };
 }
 
 module.exports = {

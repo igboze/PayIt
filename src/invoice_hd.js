@@ -108,6 +108,7 @@ async function validateAndConfirmPayment(paymentAddress, txHash) {
       invoiceNumber: invoice.invoice_number,
       clientName: invoice.client_name,
       totalUsdc: invoice.total_usdc,
+      paymentAddress,
       txHash
     };
   } else {

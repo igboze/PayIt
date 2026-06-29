@@ -91,7 +91,7 @@ function createInvoiceWithHDAddress(
       (
         telegram_id, invoice_number, client_name, client_email, 
         items_json, total_usdc, due_date, notes, wallet_address, 
-        png_path, paymentAddress, derivation_index, expected_amount_micro, status
+        png_path, payment_address, derivation_index, expected_amount_micro, status
       )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
@@ -137,6 +137,12 @@ function getInvoice(invoiceId) {
  * Look up invoice by its unique payment address (HD wallet)
  * Used to validate incoming payments on-chain
  */
+function getUnpaidPersonalInvoices() {
+  return db.prepare(
+    "SELECT * FROM invoices WHERE status = 'unpaid' AND payment_address IS NOT NULL"
+  ).all();
+}
+
 function getInvoiceByPaymentAddress(paymentAddress) {
   return db.prepare(
     "SELECT * FROM invoices WHERE payment_address = ?"
@@ -159,6 +165,12 @@ function markInvoicePaidWithTxHash(invoiceId, txHash) {
   ).run(txHash, invoiceId);
 }
 
+function updateInvoicePngPath(invoiceId, pngPath) {
+  db.prepare(
+    "UPDATE invoices SET png_path = ? WHERE id = ?"
+  ).run(pngPath, invoiceId);
+}
+
 module.exports = { 
   initInvoiceTables, 
   getNextInvoiceNumber,
@@ -167,7 +179,9 @@ module.exports = {
   createInvoiceWithHDAddress,  // NEW: HD wallet creation
   getUserInvoices, 
   getInvoice,
+  getUnpaidPersonalInvoices,
   getInvoiceByPaymentAddress,  // NEW: payment validation
   markInvoicePaid,
-  markInvoicePaidWithTxHash    // NEW: record tx hash
+  markInvoicePaidWithTxHash,   // NEW: record tx hash
+  updateInvoicePngPath
 };
