@@ -53,6 +53,8 @@ This installs: telegraf, ethers, better-sqlite3, sharp, openai, @anthropic-ai/sd
    - `ADMIN_TELEGRAM_IDS` — your own Telegram numeric ID (get from @userinfobot)
    - `ANTHROPIC_API_KEY` — for AutoPay and Payroll parsing (get from console.anthropic.com)
    - `OPENAI_API_KEY` or `GEMINI_API_KEY` — for Invoice parsing
+   - `INVOICE_FORWARDING_SECRET` — set a long random secret in production so invoice settlement can decrypt payments reliably
+   - `PAYIT_DB_PATH` — use a persistent path such as `/app/payit.db` in hosted deployments
 
 Everything else is optional until you're ready to enable that feature:
 - `PAJCASH_OFFRAMP_ADDRESS` + `PAJCASH_API_KEY` — for real Naira cashout

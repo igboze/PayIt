@@ -372,6 +372,8 @@ Schedules
    ADMIN_TELEGRAM_IDS=<your_numeric_telegram_id>
    OPENAI_API_KEY=<from_platform.openai.com>
    # OR use GEMINI_API_KEY or GROQ_API_KEY
+   INVOICE_FORWARDING_SECRET=<long-random-secret>
+   PAYIT_DB_PATH=/app/payit.db
    ```
 
 5. **Run the bot**
