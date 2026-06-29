@@ -313,6 +313,7 @@ module.exports = {
   getBizInvoiceByWalletAddress,
   markBizInvoicePaid,
   markBizInvoicePaidWithTxHash,
+  updateBizInvoiceSettlementTxHash,
   getNextBizDerivationIndex,
   getPendingInvoiceCount,
   getPendingInvoiceTotal,

@@ -24,6 +24,11 @@ test('exposes settleInvoiceFunds for the manual settlement button', () => {
   assert.equal(typeof invoiceListener.settleInvoiceFunds, 'function');
 });
 
+test('bizDb exports updateBizInvoiceSettlementTxHash for settlement bookkeeping', () => {
+  const bizDb = require('../src/biz_db');
+  assert.equal(typeof bizDb.updateBizInvoiceSettlementTxHash, 'function');
+});
+
 test('settleInvoiceFunds uses provider balance lookup instead of signer.getBalance', async () => {
   const walletLib = require('../src/wallet');
   const invoiceDb = require('../src/invoice_db');
