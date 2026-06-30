@@ -61,6 +61,26 @@ if (!process.env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN.includes("
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
+// Wrap Telegraf callback query responses so stale or invalid callback IDs do not crash the bot.
+bot.use(async (ctx, next) => {
+  if (ctx && typeof ctx.answerCbQuery === "function") {
+    const originalAnswer = ctx.answerCbQuery.bind(ctx);
+    ctx.answerCbQuery = async (text, showAlert) => {
+      try {
+        return await originalAnswer(text, showAlert);
+      } catch (err) {
+        const message = err?.message || "";
+        const code = err?.code || err?.response?.error_code;
+        if (code === 400 || /query is too old|timeout expired|invalid/i.test(message)) {
+          return null;
+        }
+        throw err;
+      }
+    };
+  }
+  return next();
+});
+
 const ADMIN_IDS = (process.env.ADMIN_TELEGRAM_IDS || "")
   .split(",").map(s => s.trim()).filter(Boolean);
 
