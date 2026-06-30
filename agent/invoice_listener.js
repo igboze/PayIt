@@ -11,7 +11,8 @@ const bizDb = require("../src/biz_db");
 const walletLib = require("../src/wallet");
 
 let listenerActive = false;
-let checkInterval = null;
+let pollTimer = null;
+let pollInFlight = false;
 
 // Cache of known payment addresses to monitor
 let watchedAddresses = new Map();
@@ -32,123 +33,148 @@ async function startInvoiceListener(bot, arcProvider, pollIntervalMs = 10000) {
 
   console.log(`[invoice_listener] Starting... (poll interval: ${pollIntervalMs}ms)`);
   listenerActive = true;
+  pollInFlight = false;
 
   // Rebuild watched addresses on startup
   rebuildWatchList();
 
-  // Periodic check for new invoices and payments
-  checkInterval = setInterval(async () => {
+  scheduleNextPoll(bot, arcProvider, pollIntervalMs);
+}
+
+function scheduleNextPoll(bot, arcProvider, pollIntervalMs) {
+  if (!listenerActive) return;
+
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+  }
+
+  pollTimer = setTimeout(async () => {
+    if (!listenerActive || pollInFlight) {
+      scheduleNextPoll(bot, arcProvider, pollIntervalMs);
+      return;
+    }
+
+    pollInFlight = true;
     try {
-      // Refresh list of unpaid invoices to monitor
-      const unpaidInvoices = invoiceDb.getUnpaidPersonalInvoices();
-      const unpaidBizInvoices = bizDb.getUnpaidBizInvoices();
+      await pollInvoices(bot, arcProvider);
+    } catch (err) {
+      console.error("[invoice_listener] Polling error:", err.message);
+    } finally {
+      pollInFlight = false;
+      if (listenerActive) {
+        scheduleNextPoll(bot, arcProvider, pollIntervalMs);
+      }
+    }
+  }, pollIntervalMs);
+}
 
-      // Update watch list for personal invoices
-      for (const inv of unpaidInvoices) {
-        if (!watchedAddresses.has(inv.payment_address)) {
-          watchedAddresses.set(inv.payment_address, {
-            invoiceId: inv.id,
-            invoiceNumber: inv.invoice_number,
-            telegramId: inv.telegram_id,
-            expectedAmountMicro: inv.expected_amount_micro,
-            type: "personal",
-            address: inv.payment_address,
-            lastChecked: 0,
-          });
+async function pollInvoices(bot, arcProvider) {
+  const unpaidInvoices = invoiceDb.getUnpaidPersonalInvoices();
+  const unpaidBizInvoices = bizDb.getUnpaidBizInvoices();
+
+  // Update watch list for personal invoices
+  for (const inv of unpaidInvoices) {
+    if (!watchedAddresses.has(inv.payment_address)) {
+      watchedAddresses.set(inv.payment_address, {
+        invoiceId: inv.id,
+        invoiceNumber: inv.invoice_number,
+        telegramId: inv.telegram_id,
+        expectedAmountMicro: inv.expected_amount_micro,
+        type: "personal",
+        address: inv.payment_address,
+        lastChecked: 0,
+      });
+    }
+  }
+
+  // Update watch list for business invoices
+  for (const inv of unpaidBizInvoices) {
+    const address = inv.payment_address || inv.wallet_address;
+    if (!address) continue;
+    if (!watchedAddresses.has(address)) {
+      watchedAddresses.set(address, {
+        invoiceId: inv.id,
+        invoiceNumber: inv.invoice_number,
+        telegramId: inv.telegram_id,
+        expectedAmountMicro: inv.expected_amount_micro || walletLib.parseToMicro(String(inv.total_usdc)).toString(),
+        type: "business",
+        address,
+        lastChecked: 0,
+      });
+    }
+  }
+
+  // Check each watched address for recent transactions
+  for (const [address, metadata] of watchedAddresses) {
+    try {
+      const txs = await getRecentTransactionsTo(arcProvider, address);
+
+      let confirmed = false;
+      for (const tx of txs) {
+        // Skip if already recorded
+        if (metadata.lastChecked >= tx.blockNumber) continue;
+
+        // Validate payment based on invoice type
+        let result = null;
+        if (metadata.type === "personal") {
+          result = await invoiceHd.validateAndConfirmPayment(address, tx.hash);
+        } else if (metadata.type === "business") {
+          result = await validateBizInvoicePayment(address, tx.hash);
         }
+
+        if (result) {
+          confirmed = true;
+          try {
+            result.settlementTxHash = await settleInvoiceFunds(result.invoiceId, metadata.type);
+          } catch (err) {
+            console.error(`[invoice_listener] Settlement failed for invoice ${result.invoiceId}:`, err.message);
+          }
+          await notifyInvoicePaid(bot, result, metadata, "tx");
+          // Remove from watch list (invoice is paid)
+          watchedAddresses.delete(address);
+        }
+
+        metadata.lastChecked = tx.blockNumber;
       }
 
-      // Update watch list for business invoices
-      for (const inv of unpaidBizInvoices) {
-        const address = inv.payment_address || inv.wallet_address;
-        if (!address) continue;
-        if (!watchedAddresses.has(address)) {
-          watchedAddresses.set(address, {
-            invoiceId: inv.id,
-            invoiceNumber: inv.invoice_number,
-            telegramId: inv.telegram_id,
-            expectedAmountMicro: inv.expected_amount_micro || walletLib.parseToMicro(String(inv.total_usdc)).toString(),
-            type: "business",
-            address,
-            lastChecked: 0,
-          });
-        }
-      }
-
-      // Check each watched address for recent transactions
-      for (const [address, metadata] of watchedAddresses) {
-        try {
-          const txs = await getRecentTransactionsTo(arcProvider, address);
-          
-          let confirmed = false;
-          for (const tx of txs) {
-            // Skip if already recorded
-            if (metadata.lastChecked >= tx.blockNumber) continue;
-
-            // Validate payment based on invoice type
-            let result = null;
-            if (metadata.type === "personal") {
-              result = await invoiceHd.validateAndConfirmPayment(address, tx.hash);
-            } else if (metadata.type === "business") {
-              result = await validateBizInvoicePayment(address, tx.hash);
-            }
-
-            if (result) {
-              confirmed = true;
-              try {
-                result.settlementTxHash = await settleInvoiceFunds(result.invoiceId, metadata.type);
-              } catch (err) {
-                console.error(`[invoice_listener] Settlement failed for invoice ${result.invoiceId}:`, err.message);
-              }
-              await notifyInvoicePaid(bot, result, metadata, "tx");
-              // Remove from watch list (invoice is paid)
-              watchedAddresses.delete(address);
-            }
-
-            metadata.lastChecked = tx.blockNumber;
+      if (!confirmed) {
+        const expected = BigInt(metadata.expectedAmountMicro);
+        const balance = await arcProvider.getBalance(address);
+        if (balance >= expected && expected > 0n) {
+          let result = null;
+          if (metadata.type === "personal") {
+            result = await confirmPersonalPaymentByBalance(address, metadata);
+          } else {
+            result = await confirmBusinessPaymentByBalance(address, metadata);
           }
 
-          if (!confirmed) {
-            const expected = BigInt(metadata.expectedAmountMicro);
-            const balance = await arcProvider.getBalance(address);
-            if (balance >= expected && expected > 0n) {
-              let result = null;
-              if (metadata.type === "personal") {
-                result = await confirmPersonalPaymentByBalance(address, metadata);
-              } else {
-                result = await confirmBusinessPaymentByBalance(address, metadata);
-              }
-
-              if (result) {
-                try {
-                  result.settlementTxHash = await settleInvoiceFunds(result.invoiceId, metadata.type);
-                } catch (err) {
-                  console.error(`[invoice_listener] Settlement failed for invoice ${result.invoiceId}:`, err.message);
-                }
-                await notifyInvoicePaid(bot, result, metadata, "balance");
-                watchedAddresses.delete(address);
-              }
+          if (result) {
+            try {
+              result.settlementTxHash = await settleInvoiceFunds(result.invoiceId, metadata.type);
+            } catch (err) {
+              console.error(`[invoice_listener] Settlement failed for invoice ${result.invoiceId}:`, err.message);
             }
+            await notifyInvoicePaid(bot, result, metadata, "balance");
+            watchedAddresses.delete(address);
           }
-        } catch (err) {
-          console.error(`[invoice_listener] Error checking ${address}:`, err.message);
         }
       }
     } catch (err) {
-      console.error("[invoice_listener] Polling error:", err.message);
+      console.error(`[invoice_listener] Error checking ${address}:`, err.message);
     }
-  }, pollIntervalMs);
+  }
 }
 
 /**
  * Stop listening for invoice payments
  */
 function stopInvoiceListener() {
-  if (checkInterval) {
-    clearInterval(checkInterval);
-    checkInterval = null;
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
   }
   listenerActive = false;
+  pollInFlight = false;
   watchedAddresses.clear();
   console.log("[invoice_listener] Stopped");
 }
