@@ -141,9 +141,19 @@ async function parseImagePayment(imageBuffer, mimeType = "image/jpeg") {
     if (provider === "gemini") return await parseWithGemini(imageBuffer, mimeType);
   } catch (err) {
     const size = (imageBuffer.length / 1024).toFixed(1);
-    console.error(`[vision_parser] Extraction failed (${provider}, ${size}KB):`, err.message?.slice(0, 100) || String(err).slice(0, 100));
+    const short = err.message?.slice(0, 200) || String(err).slice(0, 200);
+    console.error(`[vision_parser] Extraction failed (${provider}, ${size}KB):`, short);
+    // If the provider returned a quota/rate-limit error, surface that specifically
+    if (err?.response?.status === 429 || /quota|rate limit|exceeded/i.test(short)) {
+      return {
+        unreadable: true,
+        document_type: "unknown",
+        error: "quota_exceeded",
+        message: "Image reading is rate-limited or quota exceeded. Please try again later.",
+      };
+    }
     return {
-      unreadable: false,
+      unreadable: true,
       document_type: "unknown",
       error: "parse_failed",
       message: "Could not read the image. Please try a clearer photo or type the details manually.",

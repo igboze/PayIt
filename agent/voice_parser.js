@@ -14,10 +14,17 @@ async function transcribeVoice(buffer, mimeType = 'audio/ogg') {
     return { text: 'send $50 to Emeka' };
   }
 
-  // Only OpenAI transcription is implemented for now
-  if (!process.env.OPENAI_API_KEY) {
-    console.warn('[voice_parser] No ASR provider (OPENAI_API_KEY missing)');
-    return { error: 'no_asr_provider', message: 'Voice transcription requires OPENAI_API_KEY. Set it in .env or continue typing.' };
+  // Decide which AI provider is configured (OpenAI, Groq, Gemini)
+  const provider = getActiveProvider();
+  if (!provider) {
+    console.warn('[voice_parser] No ASR provider configured');
+    return { error: 'no_asr_provider', message: 'Voice transcription requires an AI provider (set OPENAI_API_KEY or compatible). Type your message instead.' };
+  }
+
+  if (provider !== 'openai') {
+    // ASR currently only implemented with OpenAI in this codebase
+    console.warn(`[voice_parser] ASR provider ${provider} not implemented`);
+    return { error: 'no_asr_provider', message: `Voice transcription not supported for provider: ${provider}. Type your message instead.` };
   }
 
   const OpenAI = require('openai');
@@ -42,8 +49,12 @@ async function transcribeVoice(buffer, mimeType = 'audio/ogg') {
     return { text: res.text };
   } catch (err) {
     try { await fs.promises.unlink(tmpPath); } catch (_) {}
-    const errMsg = err.message?.slice(0, 100) || String(err).slice(0, 100);
-    console.error(`[voice_parser] Transcription failed (${model}):`, errMsg);
+    const status = err?.response?.status || null;
+    const short = err.message?.slice(0, 200) || String(err).slice(0, 200);
+    console.error(`[voice_parser] Transcription failed (${model}):`, short);
+    if (status === 429 || /quota|rate limit/i.test(short)) {
+      return { error: 'quota_exceeded', message: 'Transcription service rate-limited or quota exceeded. Please try again later.' };
+    }
     return { error: 'transcription_failed', message: `Could not transcribe audio. Please try again or type the message manually.` };
   }
 }
