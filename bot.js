@@ -43,6 +43,7 @@ const { classifyIntent, getMissingQuestion, buildConfirmationText } = require(".
 const { parseImagePayment, formatExtractionPreview } = require("./agent/vision_parser");
 const { parsePdf, parseSpreadsheetFile, formatFilePreview, parsePptx, parseDocx, parseTextFile, buildFilePaymentPlan } = require("./agent/file_parser");
 const { transcribeVoice } = require("./agent/voice_parser");
+const { shouldReprocessConversationState } = require("./src/conversation_flow");
 const { createHDInvoice, validateAndConfirmPayment, generateInvoiceQRData } = require("./src/invoice_hd");
 const invoiceListener = require("./agent/invoice_listener");
 const { safeAnswerCbQuery } = require("./src/telegram_utils");
@@ -119,6 +120,24 @@ function getContext(userId) {
   return db.getUser(userId)?.active_context || "personal";
 }
 
+function isCancelPhrase(text) {
+  const normalized = String(text || "").trim().toLowerCase();
+  return [
+    "cancel",
+    "stop",
+    "exit",
+    "main menu",
+    "menu",
+    "back",
+    "never mind",
+    "nevermind",
+  ].includes(normalized);
+}
+
+function isLikelyNewIntent(text) {
+  return shouldReprocessConversationState("", text);
+}
+
 function getActiveWallet(user) {
   if ((user.active_context || "personal") === "business") {
     return user.business_deposit_address || user.deposit_address;
@@ -135,6 +154,39 @@ function requireUser(ctx) {
     return null;
   }
   return user;
+}
+
+function buildPlanFromClassifiedIntent(classified) {
+  const recipients = Array.isArray(classified.params?.recipients)
+    ? classified.params.recipients
+    : [];
+
+  const payments = recipients.map((r) => {
+    const amount = Number(r.amount) || 0;
+    const isOfframp = !!(r.account_number || r.bank_name || r.account_name);
+    const to = isOfframp
+      ? "__offramp__"
+      : r.wallet_address || (r.name_or_address ? `__name__:${r.name_or_address}` : "__offramp__");
+    const label = r.label ||
+      (isOfframp
+        ? `Cash out to ${r.bank_name || r.account_name || "bank account"}`
+        : `Send to ${r.name_or_address || r.wallet_address || "recipient"}`);
+    return {
+      to,
+      amount,
+      label,
+      bank_name:     r.bank_name || null,
+      account_number:r.account_number || null,
+      account_name:  r.account_name || null,
+      currency:      r.currency || "USDC",
+    };
+  });
+
+  return {
+    payments,
+    schedule: classified.params?.schedule || { frequency: null, day: null, time: null },
+    summary: classified.raw_summary || "Payment",
+  };
 }
 
 // Delete a message after a delay (used for PIN and key exports)
@@ -2233,6 +2285,11 @@ bot.on("text", async (ctx) => {
   // ── Multi-step flow states ─────────────────────────────────────────────────
 
   if (state) {
+    if (isCancelPhrase(text)) {
+      convState.clearState(userId);
+      return ctx.reply("Okay, cancelled. What would you like to do?", mainMenu(getContext(userId)));
+    }
+
     convState.touchState(userId); // keep alive
 
     // ── Business onboarding ──────────────────────────────────────────────────
@@ -2664,7 +2721,11 @@ bot.on("text", async (ctx) => {
     if (state.type === "await_withdraw_amount") {
       const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
       if (isNaN(amount) || amount <= 0) {
-        return ctx.reply("Enter a valid amount (e.g. 50):");
+        if (shouldReprocessConversationState("await_withdraw_amount", text)) {
+          convState.clearState(userId);
+          return bot.handleUpdate({ update_id: ctx.update.update_id, message: ctx.message });
+        }
+        return ctx.reply("Enter a valid amount (e.g. 50). Type cancel to stop.");
       }
       const user = requireUser(ctx);
       if (!user) return;
@@ -2699,8 +2760,12 @@ bot.on("text", async (ctx) => {
       const acctName   = parts[2] || null;
 
       if (!acctNumber || acctNumber.length < 6) {
+        if (shouldReprocessConversationState("await_withdraw_bank", text)) {
+          convState.clearState(userId);
+          return bot.handleUpdate({ update_id: ctx.update.update_id, message: ctx.message });
+        }
         return ctx.reply(
-          "Please include the account number. Format:\nBank name · Account number · Account name",
+          "Please include the account number. Format:\nBank name · Account number · Account name\n\nType cancel to stop this cash out.",
           Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
         );
       }
@@ -3391,6 +3456,47 @@ bot.on("text", async (ctx) => {
       convState.clearState(userId);
       await ctx.reply("⏳ Processing payroll...");
       const results = await executePlan(state.data.plan, text, user, "business");
+      return ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
+    }
+
+    if (state.type === "confirm_intent_pin") {
+      await deleteSensitiveMessage(ctx);
+      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
+      if (!db.verifyPin(userId, text)) {
+        convState.clearState(userId);
+        return ctx.reply("Incorrect PIN. Please try again.", mainMenu(getContext(userId)));
+      }
+
+      const user = db.getUser(userId);
+      const context = state.context || "personal";
+      const classified = state.data.classified;
+      const plan = buildPlanFromClassifiedIntent(classified);
+      convState.clearState(userId);
+
+      if (!plan.payments.length) {
+        return ctx.reply(
+          "I couldn't build a payment plan from your request. Please try again.",
+          mainMenu(context)
+        );
+      }
+
+      if (plan.schedule?.frequency) {
+        const jobId = saveSchedule(userId.toString(), plan);
+        startJob(jobId, userId.toString(), plan, text, context, async (uid, jid, results) => {
+          const msg = formatResults(results);
+          await ctx.telegram.sendMessage(parseInt(uid), `🔔 Scheduled payment ran:\n\n${msg}`, { parse_mode: "Markdown" });
+        });
+        return ctx.reply(
+          `✅ Scheduled!\n${plan.summary}\nRuns ${describeSchedule(plan.schedule)}.\n\nUse /schedules to view or cancel.`,
+          Markup.inlineKeyboard([
+            [Markup.button.callback("📅 Schedules", "action_schedules")],
+            [Markup.button.callback("🏠 Main Menu", "main_menu")],
+          ])
+        );
+      }
+
+      await ctx.reply("⏳ Processing your request...");
+      const results = await executePlan(plan, text, user, context);
       return ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
     }
 
