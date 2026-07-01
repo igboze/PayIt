@@ -8,3 +8,4 @@ contract_test_output.json
 tests/temp_*.js
 tmp*.js
 tmp*.txt
+deployments/
