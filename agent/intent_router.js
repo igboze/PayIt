@@ -139,6 +139,27 @@ async function classifyIntent(message, telegramId, userContext = {}) {
       };
     }
 
+    // Cash out shorthand
+    if (/^(cash out|withdraw|withdrawal)/i.test(m) || m.includes("cash out") || m.includes("withdraw")) {
+      return {
+        intent: "offramp",
+        confidence: "high",
+        params: {
+          recipients: [{
+            name_or_address: null,
+            amount: null,
+            currency: null,
+            bank_name: null,
+            account_number: null,
+            account_name: null,
+          }],
+          schedule: {},
+          missing: null,
+        },
+        raw_summary: "Cash out to Naira",
+      };
+    }
+
     // Simple "send $50 to Emeka" pattern
     const sendMatch = m.match(/^send\s+\$?(\d+(?:\.\d+)?)\s+to\s+(.+)$/i);
     if (sendMatch) {
@@ -155,11 +176,43 @@ async function classifyIntent(message, telegramId, userContext = {}) {
 
   const quick = quickClassify(message);
   if (quick) return quick;
+
+  function containsKeyword(msg, keywords) {
+    const lower = String(msg || "").toLowerCase();
+    return keywords.some((keyword) => lower.includes(keyword));
+  }
+
+  function shouldRejectPaymentIntent(parsedIntent, msg) {
+    const lower = String(msg || "").toLowerCase();
+    if (parsedIntent === "offramp") {
+      return !containsKeyword(lower, ["cash out", "withdraw", "naira", "bank", "account", "convert"]);
+    }
+    if (parsedIntent === "transfer" || parsedIntent === "bulk_transfer") {
+      return !containsKeyword(lower, ["send", "pay", "transfer", "wallet", "address", "to", "payee"]);
+    }
+    if (parsedIntent === "scheduled") {
+      return !containsKeyword(lower, ["every", "weekly", "monthly", "daily", "schedule", "repeat", "recurring"]);
+    }
+    if (parsedIntent === "invoice_create") {
+      return !containsKeyword(lower, ["invoice", "bill", "due", "quote"]);
+    }
+    return false;
+  }
+
   try {
     parsed = await getJSONCompletion(
       buildClassifierPrompt(userContext),
       message
     );
+
+    if (parsed && parsed.intent && shouldRejectPaymentIntent(parsed.intent, message)) {
+      return {
+        intent: "unknown",
+        confidence: "low",
+        params: { recipients: [], schedule: {}, missing: null },
+        raw_summary: message,
+      };
+    }
   } catch (err) {
     console.error("[intent_router] Classification failed:", err.message);
     return {
