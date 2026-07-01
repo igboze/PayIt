@@ -1,5 +1,10 @@
-node_modules/ 
-.env 
-payit.db 
-data/ 
+node_modules/
+.env
+payit.db
+data/
 *.log
+contract_test_output.json
+*.out.json
+tests/temp_*.js
+tmp*.js
+tmp*.txt

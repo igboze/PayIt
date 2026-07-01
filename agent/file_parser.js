@@ -1,10 +1,13 @@
 // agent/file_parser.js
-// Extracts payment data from PDF and Excel/CSV files sent to the bot.
+// Extracts payment data from PDF, PPTX, DOCX, Excel/CSV and plain text files.
 //
 // PDF:   text extracted via pdf-parse, then sent to the LLM for structuring
+// PPTX:  slide text extracted from XML and structured by the LLM
+// DOCX:  document text extracted from XML and structured by the LLM
+// TXT:   raw text sent to the LLM for structuring
 // Excel: parsed via xlsx, rows mapped to payment records directly (no LLM needed
 //        if columns are recognisable), LLM fallback if structure is ambiguous
-// CSV:   same pipeline as Excel
+// CSV:   parsed via xlsx from text, then mapped to payment rows
 //
 // Expected output shape (always):
 // {
@@ -17,6 +20,60 @@
 
 require("dotenv").config();
 const { getJSONCompletion } = require("./ai_provider");
+
+function parseAmountValue(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const cleaned = value.replace(/[,₦$]/g, '').trim();
+    const parsed = Number(cleaned);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function parseScheduleFromInstruction(instruction) {
+  const text = String(instruction || '').trim().toLowerCase();
+  const timeMatch = text.match(/at\s+(\d{1,2}:\d{2})/i);
+  const time = timeMatch ? timeMatch[1] : null;
+
+  const monthlyMatch = text.match(/every\s+(\d{1,2})(?:st|nd|rd|th)?\s+of\s+the\s+month/i);
+  if (monthlyMatch) {
+    return { frequency: 'monthly', day: monthlyMatch[1], time: time || '08:00' };
+  }
+
+  const weeklyMatch = text.match(/every\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i);
+  if (weeklyMatch) {
+    const day = weeklyMatch[1].charAt(0).toUpperCase() + weeklyMatch[1].slice(1);
+    return { frequency: 'weekly', day, time: time || null };
+  }
+
+  const dailyMatch = text.match(/every\s+day/i);
+  if (dailyMatch) {
+    return { frequency: 'daily', day: null, time: time || null };
+  }
+
+  return { frequency: null, day: null, time: null };
+}
+
+function buildLocalPaymentPlan(rows, instruction) {
+  const schedule = parseScheduleFromInstruction(instruction);
+  const payments = (rows || []).map((r) => ({
+    to: r.wallet_address || '__offramp__',
+    amount: parseAmountValue(r.amount),
+    label: r.description || r.name || 'Payment',
+    bank_name: r.bank_name || null,
+    account_number: r.account_number || null,
+    account_name: r.account_name || null,
+    currency: r.currency || 'USDC',
+  })).filter((payment) => payment.amount > 0);
+
+  const type = schedule.frequency ? 'scheduled' : (payments.length === 1 ? 'one_time' : 'bulk');
+  const summary = schedule.frequency
+    ? `Pay ${payments.length} recipient${payments.length !== 1 ? 's' : ''} ${schedule.day ? `on ${schedule.day}` : ''}${schedule.time ? ` at ${schedule.time}` : ''}.`
+    : `Process ${payments.length} recipient${payments.length !== 1 ? 's' : ''}.`;
+
+  return { type, payments, schedule, summary };
+}
 
 // ─── PPTX extraction (slide text) ───────────────────────────────────────────
 async function parsePptx(buffer) {
@@ -47,6 +104,116 @@ async function parsePptx(buffer) {
   }
 }
 
+async function parseDocx(buffer) {
+  try {
+    const JSZip = require('jszip');
+    const zip = await JSZip.loadAsync(buffer);
+    const documentXml = zip.file('word/document.xml');
+    if (!documentXml) {
+      return { type: 'unknown', rows: [], total: 0, currency: null, error: 'DOCX appears empty or unsupported.' };
+    }
+
+    const content = await documentXml.async('string');
+    const texts = [];
+    const re = /<w:t[^>]*>(.*?)<\/w:t>/gms;
+    let match;
+    while ((match = re.exec(content)) !== null) {
+      texts.push(match[1]);
+    }
+
+    const raw = texts.join(' ');
+    if (!raw || raw.trim().length < 20) {
+      return { type: 'unknown', rows: [], total: 0, currency: null, error: 'DOCX appears empty or contains non-text content.' };
+    }
+
+    return await structureWithLLM(raw, 'DOCX');
+  } catch (err) {
+    console.error('[file_parser/docx]', err.message || err);
+    return { type: 'unknown', rows: [], total: 0, currency: null, error: 'Could not read the DOCX file.' };
+  }
+}
+
+async function parseTextFile(buffer) {
+  try {
+    const raw = buffer.toString('utf8');
+    if (!raw || raw.trim().length < 20) {
+      return { type: 'unknown', rows: [], total: 0, currency: null, error: 'Text file appears empty.' };
+    }
+    return await structureWithLLM(raw, 'text file');
+  } catch (err) {
+    console.error('[file_parser/text]', err.message || err);
+    return { type: 'unknown', rows: [], total: 0, currency: null, error: 'Could not read the text file.' };
+  }
+}
+
+async function buildFilePaymentPlan(rows, instruction, userContext = {}) {
+  const trimmed = String(instruction || '').trim();
+  if (!trimmed || !rows || rows.length === 0) {
+    return null;
+  }
+
+  const systemPrompt = `You are a payment planning assistant for PayIT, a Nigerian dollar wallet bot.
+
+Users may attach a spreadsheet, PDF, PPTX, or text file containing payment rows and add a caption or instruction about how those payments should be executed.
+
+Your job is to return a structured payment plan in JSON only, no markdown, no explanation.
+
+Rows are payment records with name, wallet_address, bank_name, account_number, account_name, amount, currency, and description.
+
+Rules:
+- If a row has a wallet_address, set "to" to that address.
+- If a row has no wallet_address but has bank details, set "to" to "__offramp__" and include account_number, bank_name, account_name.
+- Keep currency from the row when present; otherwise default to "USDC".
+- If the instruction is a recurring payroll/salary payment, set schedule.frequency to "monthly" or the closest match, and set schedule.day/time when the instruction specifies it.
+- If the instruction says "every 30th of the month", use { "frequency": "monthly", "day": "30", "time": "08:00" } unless a time is specified.
+- If no schedule is required, set schedule.frequency, schedule.day, and schedule.time to null.
+- Use "bulk" for multiple recipients and "one_time" for a single immediate payment.
+- Do not invent amounts or recipients; use the provided rows.
+- Return exactly this JSON schema:
+{
+  "type": "one_time" | "scheduled" | "split" | "bulk" | "offramp" | "scheduled_offramp",
+  "payments": [
+    {
+      "to": "<0x address or __offramp__>",
+      "amount": <number>,
+      "label": "<short description>",
+      "bank_name": "<bank name or null>",
+      "account_number": "<account number or null>",
+      "account_name": "<beneficiary name or null>",
+      "currency": "<USDC | EURC | NGN | USD | EUR | null>"
+    }
+  ],
+  "schedule": {
+    "frequency": "daily" | "weekly" | "monthly" | null,
+    "day": "<day name or date number or null>",
+    "time": "<HH:MM 24h or null>"
+  },
+  "summary": "<one plain-English sentence describing the full plan>"
+}`;
+
+  const rowsText = JSON.stringify(rows.map((r) => ({
+    name: r.name || null,
+    wallet_address: r.wallet_address || null,
+    bank_name: r.bank_name || null,
+    account_number: r.account_number || null,
+    account_name: r.account_name || null,
+    amount: typeof r.amount === 'string' ? Number(r.amount.replace(/[,₦$]/g, '')) : r.amount,
+    currency: r.currency || null,
+    description: r.description || null,
+  })), null, 2);
+
+  try {
+    const plan = await getJSONCompletion(systemPrompt, `Instruction: ${trimmed}\n\nRows: ${rowsText}`);
+    if (plan && Array.isArray(plan.payments) && plan.payments.length >= 0) {
+      return plan;
+    }
+    return buildLocalPaymentPlan(rows, instruction);
+  } catch (err) {
+    console.error('[file_parser/buildFilePaymentPlan]', err.message || err);
+    return buildLocalPaymentPlan(rows, instruction);
+  }
+}
+
 // ─── PDF extraction ───────────────────────────────────────────────────────────
 
 async function extractPdfText(buffer) {
@@ -60,31 +227,33 @@ async function extractPdfText(buffer) {
 /**
  * Parse an Excel or CSV buffer into row objects.
  * Returns { headers, rows } where rows is an array of plain objects.
- * Uses exceljs for better security than xlsx.
+ * Uses xlsx for broad spreadsheet and CSV compatibility.
  */
 async function parseSpreadsheet(buffer, isCSV = false) {
-  const ExcelJS = require('exceljs');
+  const XLSX = require('xlsx');
   try {
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(buffer);
-    const worksheet = workbook.worksheets[0];
-    if (!worksheet) return { headers: [], rows: [] };
+    const input = isCSV ? buffer.toString('utf8') : buffer;
+    const workbook = XLSX.read(input, { type: isCSV ? 'string' : 'buffer', raw: false, cellDates: true });
+    const sheetName = workbook.SheetNames[0];
+    if (!sheetName) return { headers: [], rows: [] };
 
+    const worksheet = workbook.Sheets[sheetName];
+    const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+    if (!rawRows || rawRows.length === 0) return { headers: [], rows: [] };
+
+    const headerRow = rawRows[0].map((v) => String(v || ''));
     const rows = [];
-    let headerRow = null;
-    worksheet.eachRow((row, rowNum) => {
-      const values = row.values || [];
+
+    for (let rowIndex = 1; rowIndex < rawRows.length; rowIndex += 1) {
+      const row = rawRows[rowIndex];
       const obj = {};
-      if (rowNum === 1) {
-        headerRow = values.slice(1).map(v => (v || "").toString());
-      } else if (headerRow) {
-        headerRow.forEach((header, idx) => {
-          obj[header] = (values[idx + 1] || "").toString();
-        });
-        if (Object.keys(obj).some(k => obj[k])) rows.push(obj);
-      }
-    });
-    return { headers: headerRow || [], rows };
+      headerRow.forEach((header, colIndex) => {
+        obj[header] = String(row[colIndex] || '');
+      });
+      if (Object.keys(obj).some((k) => obj[k])) rows.push(obj);
+    }
+
+    return { headers: headerRow, rows };
   } catch (err) {
     console.error('[file_parser/spreadsheet] error:', err.message);
     throw err;
@@ -287,5 +456,14 @@ function formatFilePreview(parsed, maxPreviewRows = 8) {
   );
 }
 
-module.exports = { parsePdf, parseSpreadsheetFile, formatFilePreview, mapSpreadsheetRows, parsePptx };
+module.exports = {
+  parsePdf,
+  parseSpreadsheetFile,
+  parsePptx,
+  parseDocx,
+  parseTextFile,
+  buildFilePaymentPlan,
+  formatFilePreview,
+  mapSpreadsheetRows,
+};
 

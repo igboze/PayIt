@@ -5,8 +5,12 @@
   "main": "bot.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node bot.js",
-    "generate-wallet": "node generate-wallet.js"
+    "start": "node --max-old-space-size=2048 bot.js",
+    "generate-wallet": "node generate-wallet.js",
+    "compile-contracts": "node scripts/compile-contracts.js",
+    "deploy:invoice-settlement": "dotenv -e .env -- node scripts/deploy-invoice-settlement.js",
+    "test": "node --test tests",
+    "test:contracts": "node --test tests/contract_invoice_settlement.test.js"
   },
   "engines": {
     "node": ">=22.5.0"
@@ -18,13 +22,13 @@
     "dejavu-fonts-ttf": "^2.37.3",
     "dotenv": "^16.6.1",
     "ethers": "^6.17.0",
+    "exceljs": "^4.4.0",
     "groq-sdk": "^1.3.0",
+    "jszip": "^3.10.1",
     "node-cron": "^4.5.0",
     "openai": "^6.45.0",
     "pdf-parse": "^2.4.5",
     "sharp": "^0.33.5",
-    "jszip": "^3.10.1",
-    "exceljs": "^4.4.0",
     "telegraf": "^4.16.3",
     "uuid": "^10.0.0",
     "xlsx": "^0.18.5"
@@ -32,5 +36,10 @@
   "allowScripts": {
     "sharp@0.33.5": true,
     "@resvg/resvg-js@2.6.2": true
+  },
+  "devDependencies": {
+    "solc": "^0.8.20",
+    "dotenv-cli": "^7.1.0",
+    "ganache": "^7.9.2"
   }
 }

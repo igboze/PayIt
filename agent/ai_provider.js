@@ -121,6 +121,46 @@ async function getJSONCompletion(systemPrompt, userMessage) {
         return { intent: "unknown", confidence: "low", params: { recipients: [], schedule: {}, missing: null }, raw_summary: user };
       }
 
+      // File payment plan prompt
+      if (/payment planning assistant/i.test(systemPrompt) || /Rows:/i.test(user)) {
+        try {
+          const rowsMatch = user.match(/Rows:\s*(\[.*\])$/s);
+          const rows = rowsMatch ? JSON.parse(rowsMatch[1]) : [];
+          const lowerUser = String(user || '').toLowerCase();
+          const timeMatch = lowerUser.match(/at\s+(\d{1,2}:\d{2})/i);
+          const time = timeMatch ? timeMatch[1] : null;
+          const monthlyMatch = lowerUser.match(/every\s+(\d{1,2})(?:st|nd|rd|th)?\s+of\s+the\s+month/i);
+          const weeklyMatch = lowerUser.match(/every\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i);
+          const dailyMatch = lowerUser.match(/every\s+day/i);
+          const schedule = monthlyMatch
+            ? { frequency: "monthly", day: monthlyMatch[1], time: time || "08:00" }
+            : weeklyMatch
+              ? { frequency: "weekly", day: weeklyMatch[1].charAt(0).toUpperCase() + weeklyMatch[1].slice(1), time }
+              : dailyMatch
+                ? { frequency: "daily", day: null, time }
+                : { frequency: null, day: null, time: null };
+          const payments = rows.map((r) => ({
+            to: r.wallet_address || "__offramp__",
+            amount: Number(r.amount || 0),
+            label: r.description || r.name || "Payment",
+            bank_name: r.bank_name || null,
+            account_number: r.account_number || null,
+            account_name: r.account_name || null,
+            currency: r.currency || "USDC",
+          }));
+          return {
+            type: schedule.frequency ? "scheduled" : "bulk",
+            payments,
+            schedule,
+            summary: schedule.frequency
+              ? `Pay ${payments.length} recipient${payments.length !== 1 ? "s" : ""} ${lowerUser}.`
+              : `Process ${payments.length} recipient${payments.length !== 1 ? "s" : ""}.`,
+          };
+        } catch (err) {
+          return { error: "Could not understand the payment instruction." };
+        }
+      }
+
       // Orchestrator payment parsing prompt
       if (/payment orchestration agent/i.test(systemPrompt) || /payment plan/i.test(systemPrompt)) {
         // reuse simple send pattern

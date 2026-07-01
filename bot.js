@@ -41,7 +41,7 @@ const { saveSchedule, removeSchedule, getUserSchedules }   = require("./agent/st
 const { parseInvoiceIntent }      = require("./agent/invoice_parser");
 const { classifyIntent, getMissingQuestion, buildConfirmationText } = require("./agent/intent_router");
 const { parseImagePayment, formatExtractionPreview } = require("./agent/vision_parser");
-const { parsePdf, parseSpreadsheetFile, formatFilePreview, parsePptx } = require("./agent/file_parser");
+const { parsePdf, parseSpreadsheetFile, formatFilePreview, parsePptx, parseDocx, parseTextFile, buildFilePaymentPlan } = require("./agent/file_parser");
 const { transcribeVoice } = require("./agent/voice_parser");
 const { createHDInvoice, validateAndConfirmPayment, generateInvoiceQRData } = require("./src/invoice_hd");
 const invoiceListener = require("./agent/invoice_listener");
@@ -83,6 +83,23 @@ bot.use(async (ctx, next) => {
 
 const ADMIN_IDS = (process.env.ADMIN_TELEGRAM_IDS || "")
   .split(",").map(s => s.trim()).filter(Boolean);
+
+bot.use(async (ctx, next) => {
+  const userId = ctx.from?.id;
+  if (!userId) return next();
+
+  const user = db.getUser(userId);
+  if (!user || !user.is_blocked) return next();
+
+  const text = ctx.message?.text?.trim();
+  const state = convState.getState(userId);
+  if (text?.toLowerCase() === "/unlock" || state?.type === "confirm_unlock") {
+    return next();
+  }
+
+  await ctx.reply("⚠️ Your PayIT account is locked. Send /unlock to restore access.");
+  return;
+});
 
 // ─── Init all tables ──────────────────────────────────────────────────────────
 
@@ -206,6 +223,10 @@ const afterPaymentButtons = Markup.inlineKeyboard([
 bot.start(async (ctx) => {
   const existing = db.getUser(ctx.from.id);
   if (existing) {
+    if (existing.is_blocked) {
+      return ctx.reply("⚠️ Your PayIT account is locked. Send /unlock to restore access.");
+    }
+
     const context = existing.active_context || "personal";
     const addr    = getActiveWallet(existing);
     const bal     = await safeGetBalance(addr);
@@ -510,10 +531,11 @@ async function showSettings(ctx) {
     `Phone: ${phone}\n\n` +
     `PayIT never holds your money. Your PIN is the only key to your funds.`,
     Markup.inlineKeyboard([
-      [Markup.button.callback("� Switch Account",              "action_switch_account")],
-      [Markup.button.callback("�🔑 Save Personal Security Phrase", "export_personal")],
+      [Markup.button.callback("🔁 Switch Account",              "action_switch_account")],
+      [Markup.button.callback("🔑 Save Personal Security Phrase", "export_personal")],
       [Markup.button.callback("🔑 Save Business Security Phrase", "export_business")],
       [Markup.button.callback("🔒 Change PIN",                  "changepin")],
+      [Markup.button.callback("🛡️ Lock Account",                "lock_account")],
       [Markup.button.callback("👛 Link External Wallet",        "setwallet_prompt")],
       [Markup.button.callback("📱 Verify Phone",                "verifyphone_prompt")],
       [Markup.button.callback("💼 Business Profile",            "biz_profile_menu")],
@@ -587,6 +609,17 @@ bot.action("biz_edit_logo", (ctx) => {
     `🖼️ Send your business logo as a photo.\n\n` +
     `Recommended: square image (PNG or JPG), at least 200×200px.`,
     Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "biz_profile_menu")]])
+  );
+});
+
+bot.action("lock_account", async (ctx) => {
+  await safeAnswerCbQuery(ctx);
+  const user = requireUser(ctx);
+  if (!user) return;
+  convState.setState(ctx.from.id, "confirm_lock", {}, getContext(ctx.from.id));
+  return ctx.reply(
+    `Enter your PIN to lock your account.\n\n` +
+    `This will disable PayIT until you send /unlock and confirm your PIN.`
   );
 });
 
@@ -1805,21 +1838,26 @@ bot.on("document", async (ctx) => {
   const isXlsx = mimeType.includes("spreadsheet") ||
     fileName.endsWith(".xlsx") || fileName.endsWith(".xls");
   const isPptx = fileName.endsWith('.pptx') || mimeType.includes('presentation');
+  const isDocx = fileName.endsWith('.docx') || mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  const isTxt  = fileName.endsWith('.txt') || mimeType === 'text/plain';
 
-  if (!isPdf && !isCsv && !isXlsx) {
+  if (!isPdf && !isCsv && !isXlsx && !isPptx && !isDocx && !isTxt) {
     return ctx.reply(
-      "I can read PDF, Excel (.xlsx), and CSV files to extract payment details.\n\n" +
+      "I can read PDF, DOCX, PPTX, Excel (.xlsx), CSV, and plain text files to extract payment details.\n\n" +
       "For other files, please type the details directly."
     );
   }
 
-  await ctx.reply(`📄 Reading your ${isPdf ? "PDF" : isCsv ? "CSV" : "spreadsheet"}...`);
+  const kindLabel = isPdf ? "PDF" : isPptx ? "PPTX" : isDocx ? "DOCX" : isTxt ? "text file" : isCsv ? "CSV" : "spreadsheet";
+  await ctx.reply(`📄 Reading your ${kindLabel}...`);
 
   try {
     const buffer = await downloadTelegramFile(ctx, doc.file_id);
     let parsed;
     if (isPdf) parsed = await parsePdf(buffer);
     else if (isPptx) parsed = await parsePptx(buffer);
+    else if (isDocx) parsed = await parseDocx(buffer);
+    else if (isTxt) parsed = await parseTextFile(buffer);
     else parsed = await parseSpreadsheetFile(buffer, isCsv);
 
     const preview = formatFilePreview(parsed);
@@ -1828,10 +1866,29 @@ bot.on("document", async (ctx) => {
       return ctx.reply(preview, backToMenu);
     }
 
-    convState.setState(ctx.from.id, "confirm_file_payment", { parsed }, getContext(ctx.from.id));
+    const user = db.getUser(ctx.from.id);
+    let buildPlan = null;
+    const caption = (ctx.message.caption || "").trim();
+    if (caption && parsed.rows && parsed.rows.length) {
+      try {
+        buildPlan = await buildFilePaymentPlan(parsed.rows, caption, {
+          balance: user?.balance || "0",
+          address: getActiveWallet(user),
+          active_context: getContext(ctx.from.id),
+        });
+      } catch (err) {
+        console.error('[document_handler/buildFilePaymentPlan]', err);
+      }
+    }
+
+    convState.setState(ctx.from.id, "confirm_file_payment", { parsed, plan: buildPlan, caption }, getContext(ctx.from.id));
+
+    const replyText = buildPlan && buildPlan.payments?.length
+      ? `${preview}\n\n${buildPlan.summary}`
+      : preview;
 
     await ctx.reply(
-      preview,
+      replyText,
       Markup.inlineKeyboard([
         [Markup.button.callback("✅ Confirm Payments",    "file_payment_confirm")],
         [Markup.button.callback("❌ Cancel",              "main_menu")],
@@ -1850,9 +1907,23 @@ bot.action("file_payment_confirm", (ctx) => {
   if (!state || state.type !== "confirm_file_payment") {
     return ctx.reply("Session expired. Please send the file again.");
   }
-  const { parsed } = state.data;
-  const total      = parsed.total?.toFixed(2) || "?";
+  const { parsed, plan } = state.data;
 
+  if (plan && plan.payments?.length) {
+    const scheduleNote = plan.schedule?.frequency
+      ? `\nSchedule: ${plan.schedule.frequency}${plan.schedule.day ? ` on ${plan.schedule.day}` : ""}${plan.schedule.time ? ` at ${plan.schedule.time}` : ""}`
+      : "";
+
+    convState.setState(ctx.from.id, "confirm_file_pay_pin", { plan }, getContext(ctx.from.id));
+    return ctx.reply(
+      `💸 ${plan.summary}\n\n` +
+      `Payments: ${plan.payments.length}${scheduleNote}\n\n` +
+      `Enter your PIN to confirm:`,
+      Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+    );
+  }
+
+  const total = parsed.total?.toFixed(2) || "?";
   convState.setState(ctx.from.id, "confirm_file_pay_pin", { parsed }, getContext(ctx.from.id));
   return ctx.reply(
     `💸 Total: $${total} to ${parsed.rows.length} recipient(s)\n\n` +
@@ -2084,6 +2155,20 @@ bot.command("help",     showHelp);
 bot.command("balance",  showBalance);
 bot.command("history",  showHistory);
 bot.command("settings", showSettings);
+bot.command("lock",     async (ctx) => {
+  const user = requireUser(ctx);
+  if (!user) return;
+  if (user.is_blocked) return ctx.reply("Your account is already locked. Send /unlock to restore access.");
+  convState.setState(ctx.from.id, "confirm_lock", {}, getContext(ctx.from.id));
+  return ctx.reply("Enter your PIN to lock your account.");
+});
+bot.command("unlock",   async (ctx) => {
+  const user = db.getUser(ctx.from.id);
+  if (!user) return ctx.reply("Send /start to set up your wallet first.");
+  if (!user.is_blocked) return ctx.reply("Your account is not locked.");
+  convState.setState(ctx.from.id, "confirm_unlock", {}, getContext(ctx.from.id));
+  return ctx.reply("Enter your PIN to unlock your account.");
+});
 bot.command("yields",   showYields);
 bot.command("deposit",  showReceive);
 bot.command("contacts", showContacts);
@@ -2107,8 +2192,33 @@ bot.command("admin", (ctx) => {
     `Users: ${userCount}\n` +
     `Active savings: ${positions.c} ($${Number(positions.t).toFixed(2)})\n` +
     `Invoices: ${invoiceCount}\n\n` +
-    `Recent transactions:\n${txLines}`
+    `Recent transactions:\n${txLines}\n\n` +
+    `Commands:\n/blockuser <telegram_id>\n/unblockuser <telegram_id>`
   );
+});
+
+bot.command("blockuser", async (ctx) => {
+  if (!ADMIN_IDS.includes(String(ctx.from.id))) return ctx.reply("Not authorised.");
+  const parts = ctx.message.text.trim().split(/\s+/);
+  const targetId = parts[1] ? Number(parts[1]) : NaN;
+  if (!Number.isInteger(targetId)) return ctx.reply("Usage: /blockuser <telegram_id>");
+  const user = db.getUser(targetId);
+  if (!user) return ctx.reply("User not found.");
+  if (user.is_blocked) return ctx.reply("User is already blocked.");
+  db.blockUser(targetId, `blocked by admin ${ctx.from.id}`);
+  return ctx.reply(`User ${targetId} has been blocked.`);
+});
+
+bot.command("unblockuser", async (ctx) => {
+  if (!ADMIN_IDS.includes(String(ctx.from.id))) return ctx.reply("Not authorised.");
+  const parts = ctx.message.text.trim().split(/\s+/);
+  const targetId = parts[1] ? Number(parts[1]) : NaN;
+  if (!Number.isInteger(targetId)) return ctx.reply("Usage: /unblockuser <telegram_id>");
+  const user = db.getUser(targetId);
+  if (!user) return ctx.reply("User not found.");
+  if (!user.is_blocked) return ctx.reply("User is not blocked.");
+  db.unblockUser(targetId);
+  return ctx.reply(`User ${targetId} has been unblocked.`);
 });
 
 // ─── Main text handler — intent router ───────────────────────────────────────
@@ -2316,6 +2426,24 @@ bot.on("text", async (ctx) => {
         await ctx.reply("Couldn't verify your PIN. Please try again.");
       }
       return;
+    }
+
+    if (state.type === "confirm_lock") {
+      await deleteSensitiveMessage(ctx);
+      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
+      if (!db.verifyPin(userId, text)) return ctx.reply("Incorrect PIN. Try again.");
+      db.blockUser(userId, "self locked account");
+      convState.clearState(userId);
+      return ctx.reply("✅ Your account is locked. Send /unlock and enter your PIN to restore access.");
+    }
+
+    if (state.type === "confirm_unlock") {
+      await deleteSensitiveMessage(ctx);
+      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
+      if (!db.verifyPin(userId, text)) return ctx.reply("Incorrect PIN. Try again.");
+      db.unblockUser(userId);
+      convState.clearState(userId);
+      return ctx.reply("✅ Your account is unlocked. Welcome back!");
     }
 
     // ── Change PIN ───────────────────────────────────────────────────────────
@@ -3274,10 +3402,32 @@ bot.on("text", async (ctx) => {
       if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
       const user    = db.getUser(userId);
       const context = state.context || "personal";
-      const { parsed } = state.data;
+      const { parsed, plan } = state.data;
       convState.clearState(userId);
+
+      if (plan && plan.payments?.length) {
+        if (plan.schedule?.frequency) {
+          const jobId = saveSchedule(userId.toString(), plan);
+          startJob(jobId, userId.toString(), plan, text, context, async (uid, jid, results) => {
+            const msg = formatResults(results);
+            await ctx.telegram.sendMessage(parseInt(uid), `🔔 Scheduled payment ran:\n\n${msg}`, { parse_mode: "Markdown" });
+          });
+          return ctx.reply(
+            `✅ Scheduled!\n${plan.summary}\nRuns ${describeSchedule(plan.schedule)}.\n\nUse /schedules to view or cancel.`,
+            Markup.inlineKeyboard([
+              [Markup.button.callback("📅 Schedules", "action_schedules")],
+              [Markup.button.callback("🏠 Main Menu", "main_menu")],
+            ])
+          );
+        }
+
+        await ctx.reply(`⏳ Processing ${plan.payments.length} payment(s)...`);
+        const results = await executePlan(plan, text, user, context);
+        return ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
+      }
+
       await ctx.reply(`⏳ Processing ${parsed.rows.length} payment(s)...`);
-      const plan = {
+      const fallbackPlan = {
         payments: parsed.rows.map(r => ({
           to:             r.wallet_address || "__offramp__",
           amount:         r.amount,
@@ -3288,7 +3438,7 @@ bot.on("text", async (ctx) => {
           account_name:   r.account_name   || null,
         })),
       };
-      const results = await executePlan(plan, text, user, context);
+      const results = await executePlan(fallbackPlan, text, user, context);
       return ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
     }
 

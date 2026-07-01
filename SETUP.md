@@ -54,6 +54,12 @@ This installs: telegraf, ethers, better-sqlite3, sharp, openai, @anthropic-ai/sd
    - `ANTHROPIC_API_KEY` — for AutoPay and Payroll parsing (get from console.anthropic.com)
    - `OPENAI_API_KEY` or `GEMINI_API_KEY` — for Invoice parsing
    - `INVOICE_FORWARDING_SECRET` — set a long random secret in production so invoice settlement can decrypt payments reliably
+   - `APP_FEE_RECIPIENT_ADDRESS` — address to collect invoice settlement fees
+   - `INVOICE_SETTLEMENT_FEE_BPS` — fee percentage in basis points (default 100 = 1%)
+   - `INVOICE_SETTLEMENT_MIN_FEE_USDC` — minimum fee size in USDC
+   - `INVOICE_SETTLEMENT_MAX_FEE_USDC` — maximum fee size in USDC
+   - `INVOICE_SETTLEMENT_CONTRACT_ADDRESS` — optional Arc contract to route settlement through
+   - `DEPLOYER_PRIVATE_KEY` — optional key for contract deployment
    - `PAYIT_DB_PATH` — use a persistent path such as `/app/payit.db` in hosted deployments
 
 Everything else is optional until you're ready to enable that feature:

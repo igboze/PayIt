@@ -46,7 +46,10 @@ db.exec(`
     phone_verified    INTEGER NOT NULL DEFAULT 0,
     -- Linked external wallet
     external_wallet_address TEXT,
-    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+    is_blocked         INTEGER NOT NULL DEFAULT 0,
+    blocked_at         TEXT,
+    blocked_reason     TEXT,
+    created_at         TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
   CREATE TABLE IF NOT EXISTS transactions (
@@ -102,6 +105,21 @@ db.exec(`
     updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
   );
 `);
+
+function ensureUserSchema() {
+  const columns = db.prepare("PRAGMA table_info(users)").all().map((row) => row.name);
+  if (!columns.includes("is_blocked")) {
+    db.exec("ALTER TABLE users ADD COLUMN is_blocked INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!columns.includes("blocked_at")) {
+    db.exec("ALTER TABLE users ADD COLUMN blocked_at TEXT");
+  }
+  if (!columns.includes("blocked_reason")) {
+    db.exec("ALTER TABLE users ADD COLUMN blocked_reason TEXT");
+  }
+}
+
+ensureUserSchema();
 
 // ─── User helpers ─────────────────────────────────────────────────────────────
 
@@ -244,7 +262,22 @@ function setPhoneNumber(telegramId, phone) {
 function setPhoneVerified(telegramId, verified) {
   db.prepare("UPDATE users SET phone_verified = ? WHERE telegram_id = ?").run(verified ? 1 : 0, telegramId);
 }
+function blockUser(telegramId, reason = null) {
+  db.prepare(
+    "UPDATE users SET is_blocked = 1, blocked_at = datetime('now'), blocked_reason = ? WHERE telegram_id = ?"
+  ).run(reason, telegramId);
+}
 
+function unblockUser(telegramId) {
+  db.prepare(
+    "UPDATE users SET is_blocked = 0, blocked_at = NULL, blocked_reason = NULL WHERE telegram_id = ?"
+  ).run(telegramId);
+}
+
+function isBlocked(telegramId) {
+  const row = db.prepare("SELECT is_blocked FROM users WHERE telegram_id = ?").get(telegramId);
+  return row?.is_blocked === 1;
+}
 // ─── Transactions ─────────────────────────────────────────────────────────────
 
 function recordTransaction(telegramId, type, amountMicro, status, txHash) {
@@ -493,6 +526,9 @@ module.exports = {
   setExternalWallet,
   setPhoneNumber,
   setPhoneVerified,
+  blockUser,
+  unblockUser,
+  isBlocked,
   recordTransaction,
   updateTransactionStatus,
   getTransactions,

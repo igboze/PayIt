@@ -5,10 +5,15 @@
 // Auto-confirms payment when exact amount received
 // Sends notification to user
 
+const fs = require("fs");
+const path = require("path");
+const ethers = require("ethers");
 const invoiceHd = require("../src/invoice_hd");
 const invoiceDb = require("../src/invoice_db");
 const bizDb = require("../src/biz_db");
 const walletLib = require("../src/wallet");
+
+const DEFAULT_FEE_RECIPIENT_ADDRESS = "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
 
 let listenerActive = false;
 let pollTimer = null;
@@ -16,6 +21,29 @@ let pollInFlight = false;
 
 // Cache of known payment addresses to monitor
 let watchedAddresses = new Map();
+
+function getConfiguredSettlementContractAddress() {
+  const configuredRaw = process.env.INVOICE_SETTLEMENT_CONTRACT_ADDRESS || process.env.INVOICE_SETTLEMENT_ADDRESS || "";
+  if (configuredRaw) {
+    const validated = walletLib.getValidatedAddress(configuredRaw);
+    if (!validated) {
+      throw new Error(`Invalid invoice settlement contract address configured in INVOICE_SETTLEMENT_CONTRACT_ADDRESS: ${configuredRaw}`);
+    }
+    return validated;
+  }
+
+  if (process.env.INVOICE_SETTLEMENT_USE_DEPLOYMENT_FALLBACK !== "true") {
+    return null;
+  }
+
+  const deploymentPath = path.join(__dirname, "..", "deployments", "invoice-settlement-address.txt");
+  if (!fs.existsSync(deploymentPath)) {
+    return null;
+  }
+
+  const deploymentAddress = fs.readFileSync(deploymentPath, "utf8").trim();
+  return walletLib.getValidatedAddress(deploymentAddress);
+}
 
 /**
  * Start monitoring for invoice payments
@@ -31,7 +59,13 @@ async function startInvoiceListener(bot, arcProvider, pollIntervalMs = 10000) {
     return;
   }
 
+  const settlementContractAddress = getConfiguredSettlementContractAddress();
   console.log(`[invoice_listener] Starting... (poll interval: ${pollIntervalMs}ms)`);
+  if (settlementContractAddress) {
+    console.log(`[invoice_listener] Settlement contract: ${settlementContractAddress}`);
+  } else {
+    console.log("[invoice_listener] Settlement contract: not configured");
+  }
   listenerActive = true;
   pollInFlight = false;
 
@@ -421,30 +455,152 @@ async function settleInvoiceFunds(invoiceId, type) {
     return null;
   }
 
+  const settlementContractAddress = getConfiguredSettlementContractAddress();
+
+  const feeRecipientRaw = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.FEE_RECIPIENT_ADDRESS || DEFAULT_FEE_RECIPIENT_ADDRESS;
+  const feeRecipient = walletLib.getValidatedAddress(feeRecipientRaw);
+  if (!settlementContractAddress && !feeRecipient) {
+    throw new Error(`Invalid fee recipient address configured in APP_FEE_RECIPIENT_ADDRESS or FEE_RECIPIENT_ADDRESS: ${feeRecipientRaw}`);
+  }
+
+  const feeBps = BigInt(process.env.INVOICE_SETTLEMENT_FEE_BPS || "100");
+  const minFee = walletLib.parseToMicro(process.env.INVOICE_SETTLEMENT_MIN_FEE_USDC || "0.25");
+  const maxFee = walletLib.parseToMicro(process.env.INVOICE_SETTLEMENT_MAX_FEE_USDC || "2");
+
   const feeData = await provider.getFeeData();
-  const gasLimit = await signer.estimateGas({ to: destination, value: 0n });
   const gasPrice = feeData.maxFeePerGas || feeData.gasPrice;
   if (!gasPrice) {
     throw new Error("Unable to determine gas price for settlement transaction.");
   }
 
-  const fee = gasLimit * gasPrice;
-  const amountToSend = balance > fee ? balance - fee : 0n;
-  if (amountToSend <= 0n) {
-    throw new Error("Insufficient invoice balance to cover settlement fee.");
+  if (settlementContractAddress) {
+    const contractAbi = [
+      "function settleInvoice(uint256 invoiceId, address recipient, uint16 feeBps, uint256 minFee, uint256 maxFee, uint256 total) returns (bool)"
+    ];
+    const settlementContract = new ethers.Contract(settlementContractAddress, contractAbi, signer);
+
+    const feeBpsNumber = Number(feeBps);
+    if (feeBpsNumber > 65535) {
+      throw new Error("INVOICE_SETTLEMENT_FEE_BPS must be <= 65535 for contract settlement.");
+    }
+
+    const totalAmount = balance;
+    if (totalAmount <= 0n) {
+      throw new Error("Insufficient invoice balance to settle with the contract.");
+    }
+
+    const gasLimit = await settlementContract.estimateGas.settleInvoice(
+      invoiceId,
+      destination,
+      feeBpsNumber,
+      minFee,
+      maxFee,
+      totalAmount
+    );
+
+    const txOptions = { gasLimit };
+    if (feeData.maxFeePerGas) {
+      txOptions.maxFeePerGas = feeData.maxFeePerGas;
+      if (feeData.maxPriorityFeePerGas) {
+        txOptions.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas;
+      }
+    } else {
+      txOptions.gasPrice = feeData.gasPrice;
+    }
+
+    const tx = await settlementContract.settleInvoice(
+      invoiceId,
+      destination,
+      feeBpsNumber,
+      minFee,
+      maxFee,
+      totalAmount,
+      txOptions
+    );
+    const receipt = await tx.wait();
+    const settlementTxHash = receipt.hash;
+
+    if (type === "personal") {
+      invoiceDb.updateInvoiceSettlementTxHash(invoiceId, settlementTxHash);
+    } else {
+      bizDb.updateBizInvoiceSettlementTxHash(invoiceId, settlementTxHash);
+    }
+
+    return settlementTxHash;
   }
 
-  const txOptions = { to: destination, value: amountToSend, gasLimit };
+  if (!feeRecipient || feeBps <= 0n) {
+    const gasLimit = await signer.estimateGas({ to: destination, value: 0n });
+    const fee = gasLimit * gasPrice;
+    const amountToSend = balance > fee ? balance - fee : 0n;
+    if (amountToSend <= 0n) {
+      throw new Error("Insufficient invoice balance to cover settlement fee.");
+    }
+
+    const txOptions = { to: destination, value: amountToSend, gasLimit };
+    if (feeData.maxFeePerGas) {
+      txOptions.maxFeePerGas = feeData.maxFeePerGas;
+      if (feeData.maxPriorityFeePerGas) {
+        txOptions.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas;
+      }
+    } else {
+      txOptions.gasPrice = feeData.gasPrice;
+    }
+
+    const tx = await signer.sendTransaction(txOptions);
+    const receipt = await tx.wait();
+    const settlementTxHash = receipt.hash;
+
+    if (type === "personal") {
+      invoiceDb.updateInvoiceSettlementTxHash(invoiceId, settlementTxHash);
+    } else {
+      bizDb.updateBizInvoiceSettlementTxHash(invoiceId, settlementTxHash);
+    }
+
+    return settlementTxHash;
+  }
+
+  // Legacy fee forwarding path: send fee then remainder to destination.
+  const feeTxGasLimit = await signer.estimateGas({ to: feeRecipient, value: 0n });
+  const destTxGasLimit = await signer.estimateGas({ to: destination, value: 0n });
+  const feeTxCost = feeTxGasLimit * gasPrice;
+  const destTxCost = destTxGasLimit * gasPrice;
+  const availableForValue = balance > feeTxCost + destTxCost ? balance - feeTxCost - destTxCost : 0n;
+
+  if (availableForValue <= 0n) {
+    throw new Error("Insufficient invoice balance to cover settlement gas and fees.");
+  }
+
+  let feeAmount = (availableForValue * feeBps) / 10000n;
+  if (feeAmount < minFee) feeAmount = minFee;
+  if (feeAmount > maxFee) feeAmount = maxFee;
+  if (feeAmount >= availableForValue) {
+    feeAmount = availableForValue / 10n;
+  }
+
+  const destinationAmount = availableForValue - feeAmount;
+  if (destinationAmount <= 0n) {
+    throw new Error("Insufficient invoice balance after fee calculation.");
+  }
+
+  const feeTxOptions = { to: feeRecipient, value: feeAmount, gasLimit: feeTxGasLimit };
+  const destTxOptions = { to: destination, value: destinationAmount, gasLimit: destTxGasLimit };
+
   if (feeData.maxFeePerGas) {
-    txOptions.maxFeePerGas = feeData.maxFeePerGas;
+    feeTxOptions.maxFeePerGas = feeData.maxFeePerGas;
+    destTxOptions.maxFeePerGas = feeData.maxFeePerGas;
     if (feeData.maxPriorityFeePerGas) {
-      txOptions.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas;
+      feeTxOptions.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas;
+      destTxOptions.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas;
     }
   } else {
-    txOptions.gasPrice = feeData.gasPrice;
+    feeTxOptions.gasPrice = feeData.gasPrice;
+    destTxOptions.gasPrice = feeData.gasPrice;
   }
 
-  const tx = await signer.sendTransaction(txOptions);
+  const feeTx = await signer.sendTransaction(feeTxOptions);
+  await feeTx.wait();
+  const tx = await signer.sendTransaction(destTxOptions);
   const receipt = await tx.wait();
   const settlementTxHash = receipt.hash;
 

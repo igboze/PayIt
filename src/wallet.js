@@ -33,6 +33,12 @@ function isValidAddress(address) {
   return /^0x[0-9a-fA-F]{40}$/.test(address);
 }
 
+function getValidatedAddress(address) {
+  if (!address) return null;
+  const normalized = String(address).trim();
+  return isValidAddress(normalized) ? normalized : null;
+}
+
 // ─── AES-256-GCM encryption (scrypt KDF) ─────────────────────────────────────
 // scrypt params: N=2^15, r=8, p=1 — tuned for ~200ms on a modest server.
 
@@ -288,5 +294,7 @@ module.exports = {
   getUsdcBalance,           // FIX: new export — use this for source-chain balances
   deriveInvoiceAddress,     // NEW: HD wallet invoice address derivation
   validateInvoicePayment,   // NEW: validate payment against invoice
+  getValidatedAddress,
+
   sendFromWallet,
 };
