@@ -724,6 +724,16 @@ GEMINI_API_KEY=<from_aistudio.google.com>
 GROQ_API_KEY=<from_console.groq.com>
 ```
 
+### NVIDIA / OpenAI-compatible provider (optional)
+
+```env
+OPENAI_API_KEY=<your_nvidia_api_key>
+OPENAI_BASE_URL=https://integrate.api.nvidia.com/v1
+OPENAI_MODEL=nvidia/llama-3.1-70b-instruct
+OPENAI_VISION_MODEL=nvidia/llama-3.2-90b-vision-instruct
+OPENAI_TRANSCRIBE_MODEL=nvidia/whisper-1
+```
+
 ### Optional Features
 
 ```env
@@ -741,6 +751,16 @@ PAJCASH_API_KEY=
 
 # Invoice parsing (Anthropic)
 ANTHROPIC_API_KEY=
+
+# Invoice settlement fee handling
+APP_FEE_RECIPIENT_ADDRESS=0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359
+INVOICE_SETTLEMENT_FEE_BPS=100
+INVOICE_SETTLEMENT_MIN_FEE_USDC=0.25
+INVOICE_SETTLEMENT_MAX_FEE_USDC=2
+INVOICE_SETTLEMENT_CONTRACT_ADDRESS=
+
+# Contract deployment
+DEPLOYER_PRIVATE_KEY=
 
 # Token swaps (when router verified)
 SWAP_ROUTER_ADDRESS=
