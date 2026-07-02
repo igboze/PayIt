@@ -146,6 +146,48 @@ function ensureUserSchema() {
   if (!columns.includes("points_balance")) {
     db.exec("ALTER TABLE users ADD COLUMN points_balance INTEGER NOT NULL DEFAULT 0");
   }
+  if (!columns.includes("deposit_address")) {
+    db.exec("ALTER TABLE users ADD COLUMN deposit_address TEXT NOT NULL DEFAULT ''");
+  }
+  if (!columns.includes("encrypted_key")) {
+    db.exec("ALTER TABLE users ADD COLUMN encrypted_key TEXT NOT NULL DEFAULT ''");
+  }
+  if (!columns.includes("key_salt")) {
+    db.exec("ALTER TABLE users ADD COLUMN key_salt TEXT NOT NULL DEFAULT ''");
+  }
+  if (!columns.includes("key_iv")) {
+    db.exec("ALTER TABLE users ADD COLUMN key_iv TEXT NOT NULL DEFAULT ''");
+  }
+  if (!columns.includes("key_tag")) {
+    db.exec("ALTER TABLE users ADD COLUMN key_tag TEXT NOT NULL DEFAULT ''");
+  }
+  if (!columns.includes("business_deposit_address")) {
+    db.exec("ALTER TABLE users ADD COLUMN business_deposit_address TEXT");
+  }
+  if (!columns.includes("biz_encrypted_key")) {
+    db.exec("ALTER TABLE users ADD COLUMN biz_encrypted_key TEXT");
+  }
+  if (!columns.includes("biz_key_salt")) {
+    db.exec("ALTER TABLE users ADD COLUMN biz_key_salt TEXT");
+  }
+  if (!columns.includes("biz_key_iv")) {
+    db.exec("ALTER TABLE users ADD COLUMN biz_key_iv TEXT");
+  }
+  if (!columns.includes("biz_key_tag")) {
+    db.exec("ALTER TABLE users ADD COLUMN biz_key_tag TEXT");
+  }
+  if (!columns.includes("active_context")) {
+    db.exec("ALTER TABLE users ADD COLUMN active_context TEXT NOT NULL DEFAULT 'personal'");
+  }
+  if (!columns.includes("phone_number")) {
+    db.exec("ALTER TABLE users ADD COLUMN phone_number TEXT");
+  }
+  if (!columns.includes("phone_verified")) {
+    db.exec("ALTER TABLE users ADD COLUMN phone_verified INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!columns.includes("external_wallet_address")) {
+    db.exec("ALTER TABLE users ADD COLUMN external_wallet_address TEXT");
+  }
   if (!columns.includes("referrer_telegram_id")) {
     db.exec("ALTER TABLE users ADD COLUMN referrer_telegram_id INTEGER");
   }
