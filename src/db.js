@@ -150,13 +150,22 @@ function ensureUserSchema() {
     db.exec("ALTER TABLE users ADD COLUMN referrer_telegram_id INTEGER");
   }
   if (!columns.includes("referral_code")) {
-    db.exec("ALTER TABLE users ADD COLUMN referral_code TEXT UNIQUE");
+    db.exec("ALTER TABLE users ADD COLUMN referral_code TEXT");
   }
   if (!columns.includes("referred_at")) {
     db.exec("ALTER TABLE users ADD COLUMN referred_at TEXT");
   }
   if (!columns.includes("referred_on_first_point")) {
     db.exec("ALTER TABLE users ADD COLUMN referred_on_first_point INTEGER NOT NULL DEFAULT 0");
+  }
+
+  // SQLite does not allow adding a UNIQUE constraint directly on ALTER TABLE for an existing column,
+  // so create a unique index if possible. If duplicates already exist, ignore the failure and keep
+  // the non-unique column so the service can still start.
+  try {
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS users_referral_code_unique ON users(referral_code)");
+  } catch (err) {
+    console.warn("Could not create unique index on referral_code:", err?.message || err);
   }
 }
 
