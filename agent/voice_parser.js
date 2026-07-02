@@ -21,13 +21,20 @@ async function transcribeVoice(buffer, mimeType = 'audio/ogg') {
     return { error: 'no_asr_provider', message: 'Voice transcription requires an AI provider (set OPENAI_API_KEY or compatible). Type your message instead.' };
   }
 
-  // Allow using OpenAI-compatible endpoints (NVIDIA) even when another
-  // provider API key is present. If OPENAI_API_KEY is set (and optionally
-  // OPENAI_BASE_URL), prefer that for ASR since ASR implementation uses
-  // the OpenAI-style audio.transcriptions API.
+  const transcribeKey = process.env.OPENAI_TRANSCRIBE_API_KEY || process.env.OPENAI_API_KEY;
+  if (!transcribeKey) {
+    console.warn('[voice_parser] No ASR provider configured');
+    return { error: 'no_asr_provider', message: 'Voice transcription requires an AI provider (set OPENAI_TRANSCRIBE_API_KEY or OPENAI_API_KEY). Type your message instead.' };
+  }
+
+  // Use a dedicated OpenAI transcription API key if provided, otherwise use the
+  // generic OpenAI-compatible key and optional base URL.
   let useOpenAI = false;
-  if (provider === 'openai') useOpenAI = true;
-  if (!useOpenAI && process.env.OPENAI_API_KEY && process.env.OPENAI_BASE_URL) {
+  if (process.env.OPENAI_TRANSCRIBE_API_KEY) {
+    useOpenAI = true;
+  } else if (provider === 'openai') {
+    useOpenAI = true;
+  } else if (process.env.OPENAI_API_KEY && process.env.OPENAI_BASE_URL) {
     useOpenAI = true;
     console.warn('[voice_parser] Using OPENAI-compatible base URL for ASR');
   }
@@ -37,8 +44,8 @@ async function transcribeVoice(buffer, mimeType = 'audio/ogg') {
   }
 
   const OpenAI = require('openai');
-  const clientOptions = { apiKey: process.env.OPENAI_API_KEY };
-  if (process.env.OPENAI_BASE_URL) clientOptions.baseURL = process.env.OPENAI_BASE_URL;
+  const clientOptions = { apiKey: transcribeKey };
+  if (!process.env.OPENAI_TRANSCRIBE_API_KEY && process.env.OPENAI_BASE_URL) clientOptions.baseURL = process.env.OPENAI_BASE_URL;
   const client = new OpenAI(clientOptions);
   const configuredModel = process.env.OPENAI_TRANSCRIBE_MODEL || 'whisper-1';
   const modelCandidates = [configuredModel];
@@ -76,6 +83,14 @@ async function transcribeVoice(buffer, mimeType = 'audio/ogg') {
     const status = err?.response?.status || null;
     const short = err.message?.slice(0, 200) || String(err).slice(0, 200);
     console.error(`[voice_parser] Transcription failed:`, short);
+
+    if (status === 404 && process.env.OPENAI_BASE_URL?.includes('integrate.api.nvidia.com')) {
+      return {
+        error: 'unsupported_provider',
+        message: 'NVIDIA Integrate does not support OpenAI-style audio transcription on this endpoint. Use a native OpenAI key or type the message manually.',
+      };
+    }
+
     if (status === 429 || /quota|rate limit/i.test(short)) {
       return { error: 'quota_exceeded', message: 'Transcription service rate-limited or quota exceeded. Please try again later.' };
     }
