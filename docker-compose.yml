@@ -1,0 +1,17 @@
+services:
+  payit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: payit-bot
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PAYIT_DB_PATH: /app/payit.db
+    volumes:
+      - .:/app
+      - /app/node_modules
+    restart: unless-stopped
+    stdin_open: true
+    tty: true

@@ -264,6 +264,22 @@ const backToMenu = Markup.inlineKeyboard([
   [Markup.button.callback("🏠 Main Menu", "main_menu")],
 ]);
 
+const POINTS = {
+  cashout: 5,
+  sendout: 4,
+  invoice: 10,
+  businessInvoice: 12,
+  savingsDeposit: 5,
+  savingsWithdraw: 3,
+};
+
+const POINTS_PER_USD = 20;
+const MIN_REDEEM_POINTS = 20;
+
+function formatPointValue(points) {
+  return `$${(points / POINTS_PER_USD).toFixed(2)}`;
+}
+
 const afterPaymentButtons = Markup.inlineKeyboard([
   [Markup.button.callback("💰 Check Balance", "action_balance"),
    Markup.button.callback("📋 History",       "action_history")],
@@ -573,6 +589,7 @@ async function showSettings(ctx) {
   const phone   = user.phone_number
     ? `${user.phone_number} ${user.phone_verified ? "✅" : "⏳"}`
     : "not set";
+  const points  = db.getPointsBalance(ctx.from.id);
 
   await ctx.reply(
     `⚙️ Settings\n──────────────────────────\n` +
@@ -580,8 +597,10 @@ async function showSettings(ctx) {
     `Personal account: ${user.deposit_address}\n` +
     `Business account: ${hasBiz ? user.business_deposit_address : "not set up yet"}\n` +
     `Linked account: ${user.external_wallet_address || "none"}\n` +
-    `Phone: ${phone}\n\n` +
+    `Phone: ${phone}\n` +
+    `Rewards: ${points} points (${formatPointValue(points)})\n\n` +
     `PayIT never holds your money. Your PIN is the only key to your funds.`,
+
     Markup.inlineKeyboard([
       [Markup.button.callback("🔁 Switch Account",              "action_switch_account")],
       [Markup.button.callback("🔑 Save Personal Security Phrase", "export_personal")],
@@ -590,11 +609,106 @@ async function showSettings(ctx) {
       [Markup.button.callback("🛡️ Lock Account",                "lock_account")],
       [Markup.button.callback("👛 Link External Wallet",        "setwallet_prompt")],
       [Markup.button.callback("📱 Verify Phone",                "verifyphone_prompt")],
+      [Markup.button.callback("🏅 Rewards",                     "action_rewards")],
       [Markup.button.callback("💼 Business Profile",            "biz_profile_menu")],
       [Markup.button.callback("🏠 Main Menu",                   "main_menu")],
     ])
   );
 }
+
+// ─── Rewards Menu ───────────────────────────────────────────────────────────
+
+async function showRewardsMenu(ctx) {
+  const user = requireUser(ctx);
+  if (!user) return;
+  const balance = db.getPointsBalance(ctx.from.id);
+
+  await ctx.reply(
+    `🏅 PayIT Rewards
+──────────────────────────
+` +
+    `Points balance: ${balance}
+` +
+    `Redeem value (testnet): ${formatPointValue(balance)}
+
+` +
+    `Redeem points for airtime or bill credit on testnet.
+` +
+    `This is a reward pilot experience — fulfillment is test-only for now.
+`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("📲 Redeem Airtime", "action_redeem_airtime")],
+      [Markup.button.callback("🏦 Pay Bills",       "action_redeem_bills")],
+      [Markup.button.callback("📜 Points History",  "action_rewards_history")],
+      [Markup.button.callback("🏠 Main Menu",       "main_menu")],
+    ])
+  );
+}
+
+bot.action("action_rewards", (ctx) => { ctx.answerCbQuery(); return showRewardsMenu(ctx); });
+
+bot.action("action_rewards_history", async (ctx) => {
+  ctx.answerCbQuery();
+  const user = requireUser(ctx);
+  if (!user) return;
+  const balance = db.getPointsBalance(ctx.from.id);
+  const history = db.getPointsHistory(ctx.from.id, 10);
+  const lines = history.length
+    ? history.map((row) => `${row.created_at.split(" ")[0]} · ${row.points > 0 ? "+" : ""}${row.points} · ${row.action}${row.details ? ` · ${row.details}` : ""}`).join("\n")
+    : "No activity yet.";
+
+  await ctx.reply(
+    `📜 Points History
+──────────────────────────
+` +
+    `Balance: ${balance} points (${formatPointValue(balance)})
+
+` +
+    `${lines}`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("🏠 Main Menu", "main_menu")],
+      [Markup.button.callback("📲 Redeem Airtime", "action_redeem_airtime")],
+      [Markup.button.callback("🏦 Pay Bills", "action_redeem_bills")],
+    ])
+  );
+});
+
+bot.action("action_redeem_airtime", async (ctx) => {
+  ctx.answerCbQuery();
+  convState.setState(ctx.from.id, "await_redeem_points", { redeemType: "airtime" }, getContext(ctx.from.id));
+  return ctx.reply(
+    `📲 Redeem for Airtime
+──────────────────────────
+` +
+    `How many points would you like to redeem?
+` +
+    `Minimum ${MIN_REDEEM_POINTS} points.
+
+` +
+    `Example: 100`,
+    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+  );
+});
+
+bot.action("action_redeem_bills", async (ctx) => {
+  ctx.answerCbQuery();
+  convState.setState(ctx.from.id, "await_redeem_points", { redeemType: "bills" }, getContext(ctx.from.id));
+  return ctx.reply(
+    `🏦 Redeem for Bills
+──────────────────────────
+` +
+    `How many points would you like to redeem?
+` +
+    `Minimum ${MIN_REDEEM_POINTS} points.
+
+` +
+    `Example: 100`,
+    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+  );
+});
+
+bot.command("rewards", async (ctx) => showRewardsMenu(ctx));
+bot.hears("🏅 Rewards", (ctx) => showRewardsMenu(ctx));
 
 // ─── Business Profile Menu ────────────────────────────────────────────────────
 
@@ -1702,6 +1816,21 @@ bot.command("schedules", async (ctx) => {
   await ctx.reply(`📅 Scheduled Payments\n──────────────────────────\n${list}`);
 });
 
+bot.command("points", async (ctx) => {
+  const user = requireUser(ctx);
+  if (!user) return;
+  const balance = db.getPointsBalance(ctx.from.id);
+  const history = db.getPointsHistory(ctx.from.id, 10);
+  const lines = history.length
+    ? history.map((row) => `${row.created_at.split(" ")[0]} · ${row.points > 0 ? "+" : ""}${row.points} · ${row.action}${row.details ? ` · ${row.details}` : ""}`).join("\n")
+    : "No activity yet.";
+
+  await ctx.reply(
+    `🏅 Your Points Balance: ${balance}\n──────────────────────────\n${lines}`,
+    { parse_mode: "Markdown" }
+  );
+});
+
 bot.hears(/^\/cancelschedule_(.+)$/, async (ctx) => {
   const jobId   = ctx.match[1];
   cancelJob(jobId);
@@ -2238,15 +2367,37 @@ bot.command("admin", (ctx) => {
   const positions   = db.db.prepare("SELECT COUNT(*) as c, COALESCE(SUM(amount_usdc),0) as t FROM yield_positions WHERE status='active'").get();
   const invoiceCount = db.db.prepare("SELECT COUNT(*) as c FROM invoices").get().c;
   const recentTx    = db.db.prepare("SELECT * FROM transactions ORDER BY id DESC LIMIT 8").all();
+  const dbPath      = db.resolveDbPath();
   const txLines     = recentTx.map(t => `#${t.id} ${t.type} · user ${t.telegram_id} · [${t.status}]`).join("\n") || "none";
   ctx.reply(
     `🛠 Admin\n──────────────────────────\n` +
     `Users: ${userCount}\n` +
     `Active savings: ${positions.c} ($${Number(positions.t).toFixed(2)})\n` +
-    `Invoices: ${invoiceCount}\n\n` +
+    `Invoices: ${invoiceCount}\n` +
+    `DB path: ${dbPath}\n\n` +
     `Recent transactions:\n${txLines}\n\n` +
-    `Commands:\n/blockuser <telegram_id>\n/unblockuser <telegram_id>`
+    `Commands:\n/export_points\n/blockuser <telegram_id>\n/unblockuser <telegram_id>`
   );
+});
+
+bot.command("export_points", async (ctx) => {
+  if (!ADMIN_IDS.includes(String(ctx.from.id))) return ctx.reply("Not authorised.");
+  const rows = db.db.prepare(
+    "SELECT telegram_id, username, points_balance, phone_number, active_context, is_blocked, created_at FROM users ORDER BY points_balance DESC, telegram_id ASC"
+  ).all();
+  if (!rows.length) return ctx.reply("No users found.");
+
+  const csvLines = [
+    "telegram_id,username,points_balance,phone_number,active_context,is_blocked,created_at",
+    ...rows.map((r) => {
+      const username = String(r.username || "").replace(/"/g, '""');
+      const phone = String(r.phone_number || "").replace(/"/g, '""');
+      return `${r.telegram_id},"${username}",${r.points_balance},"${phone}",${r.active_context},${r.is_blocked},${r.created_at}`;
+    }),
+  ];
+
+  const csv = csvLines.join("\n");
+  await ctx.replyWithDocument({ source: Buffer.from(csv, "utf8"), filename: "payit_user_points.csv" });
 });
 
 bot.command("blockuser", async (ctx) => {
@@ -2813,6 +2964,11 @@ bot.on("text", async (ctx) => {
 
       if (result.success) {
         try {
+          db.awardPoints(ctx.from.id, POINTS.cashout, "cashout", `Cash out $${state.data.amountUsdc.toFixed(2)}`);
+        } catch (err) {
+          console.error("[points_award_cashout]", err);
+        }
+        try {
           const receiptPath = await generateReceiptPNG({
             receiptId:        result.reference || result.txHash?.slice(0, 10) || `CO-${Date.now()}`,
             senderName:       "PayIT Wallet",
@@ -2910,6 +3066,11 @@ bot.on("text", async (ctx) => {
 
       if (results[0]?.success) {
         try {
+          db.awardPoints(ctx.from.id, POINTS.sendout, "sendout", `Sent $${state.data.amountUsdc.toFixed(2)} to ${state.data.walletAddress}`);
+        } catch (err) {
+          console.error("[points_award_sendout]", err);
+        }
+        try {
           const receiptPath = await generateReceiptPNG({
             receiptId:        results[0].txHash?.slice(0, 10) || `TX-${Date.now()}`,
             senderName:       "PayIT Wallet",
@@ -2964,6 +3125,11 @@ bot.on("text", async (ctx) => {
       convState.clearState(userId);
       savings.openYieldPosition(userId, state.data.amountUsdc, state.data.pool);
       db.recordTransaction(userId, "yield_deposit", BigInt(Math.round(state.data.amountUsdc * 1e18)), "confirmed", null);
+      try {
+        db.awardPoints(userId, POINTS.savingsDeposit, "savings_deposit", `Saved $${state.data.amountUsdc.toFixed(2)}`);
+      } catch (err) {
+        console.error("[points_award_savings_deposit]", err);
+      }
       return ctx.reply(
         `✅ Savings started!\n──────────────────────────\n` +
         `$${state.data.amountUsdc.toFixed(2)} earning at ${state.data.pool.userApy}% per year\n` +
@@ -2982,6 +3148,11 @@ bot.on("text", async (ctx) => {
       convState.clearState(userId);
       db.closeYieldPosition(userId, state.data.total);
       db.recordTransaction(userId, "yield_withdraw", BigInt(Math.round(state.data.total * 1e18)), "confirmed", null);
+      try {
+        db.awardPoints(userId, POINTS.savingsWithdraw, "savings_withdraw", `Withdrew $${state.data.total.toFixed(2)}`);
+      } catch (err) {
+        console.error("[points_award_savings_withdraw]", err);
+      }
       return ctx.reply(
         `✅ Savings withdrawn!\n──────────────────────────\n` +
         `Saved: $${state.data.position.amount_usdc.toFixed(2)}\n` +
@@ -3048,6 +3219,11 @@ bot.on("text", async (ctx) => {
 
         const qrData = generateInvoiceQRData(paymentAddressForQR, hdInvoice.expectedAmountMicro);
 
+        try {
+          db.awardPoints(userId, POINTS.invoice, "create_invoice", `Invoice #${hdInvoice.invoiceNumber} for $${hdInvoice.totalUsdc.toFixed(2)}`);
+        } catch (err) {
+          console.error("[points_award_invoice]", err);
+        }
         await ctx.replyWithPhoto({ source: pngPath }, {
           caption:
             `🧾 Invoice #${hdInvoice.invoiceNumber}\n` +
@@ -3141,6 +3317,11 @@ bot.on("text", async (ctx) => {
           ? `\n💰 ${goal.percentage}% ($${(state.data.total * goal.percentage / 100).toFixed(2)}) will go to Business Savings on payment.`
           : "";
 
+        try {
+          db.awardPoints(userId, POINTS.businessInvoice, "create_business_invoice", `Invoice #${state.data.invoiceNumber} for $${state.data.total.toFixed(2)}`);
+        } catch (err) {
+          console.error("[points_award_biz_invoice]", err);
+        }
         await ctx.replyWithPhoto({ source: pngPath }, {
           caption:
             `🧾 Invoice #${state.data.invoiceNumber}\n` +
@@ -3160,6 +3341,52 @@ bot.on("text", async (ctx) => {
         await ctx.reply("❌ Failed to create business invoice. Please try again.");
       }
       return;
+    }
+
+    if (state.type === "await_redeem_points") {
+      const balance = db.getPointsBalance(userId);
+      const points = parseInt(text.replace(/\D/g, ""), 10);
+      if (isNaN(points) || points < MIN_REDEEM_POINTS) {
+        return ctx.reply(
+          `Enter the number of points to redeem (minimum ${MIN_REDEEM_POINTS}).`,
+          Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+        );
+      }
+      if (points > balance) {
+        return ctx.reply(
+          `You only have ${balance} points. Enter a lower amount or type cancel.`,
+          Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+        );
+      }
+      convState.setState(userId, "confirm_redeem_pin", {
+        redeemType: state.data.redeemType,
+        points,
+      }, state.context);
+      return ctx.reply(
+        `Redeem ${points} points for ${formatPointValue(points)} ${state.data.redeemType === "airtime" ? "airtime" : "bill credit"}.
+\nEnter your PIN to confirm:`,
+        Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+      );
+    }
+
+    if (state.type === "confirm_redeem_pin") {
+      await deleteSensitiveMessage(ctx);
+      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
+      if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN. Try again."); }
+      const user = db.getUser(userId);
+      const points = state.data.points;
+      const redeemType = state.data.redeemType || "airtime";
+      db.awardPoints(userId, -points, `redeem_${redeemType}`, `Redeemed ${points} points for ${redeemType}`);
+      convState.clearState(userId);
+      return ctx.reply(
+        `✅ Redemption requested!
+` +
+        `${points} points redeemed for ${formatPointValue(points)} ${redeemType === "airtime" ? "airtime credit" : "bill credit"}.
+
+` +
+        `This is a testnet reward flow. When live, fulfillment will credit your account automatically.`,
+        Markup.inlineKeyboard([[Markup.button.callback("🏠 Main Menu", "main_menu")]])
+      );
     }
 
     // ── Add contact ──────────────────────────────────────────────────────────
@@ -3816,9 +4043,24 @@ bot.on("text", async (ctx) => {}); // placeholder — handled above
 
 // ─── Launch ───────────────────────────────────────────────────────────────────
 
-bot.launch().then(async () => {
+const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
+const WEBHOOK_URL = process.env.WEBHOOK_URL?.replace(/\/$/, "");
+
+async function startBot() {
+  if (WEBHOOK_URL) {
+    await bot.launch({
+      webhook: {
+        domain: WEBHOOK_URL,
+        port: PORT,
+      },
+    });
+    console.log(`PayIT is running via webhook at ${WEBHOOK_URL}`);
+  } else {
+    await bot.launch();
+    console.log("PayIT is running via polling.");
+  }
+
   console.log(
-    "PayIT is running.\n" +
     "Personal + Business · Dollar + Euro wallets · Image and file reading active."
   );
   reloadAll(() => {});
@@ -3827,7 +4069,9 @@ bot.launch().then(async () => {
   } catch (err) {
     console.error("[bot] Failed to start invoice listener:", err.message);
   }
-});
+}
+
+startBot();
 
 process.once("SIGINT",  () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
