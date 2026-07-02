@@ -21,8 +21,17 @@ async function transcribeVoice(buffer, mimeType = 'audio/ogg') {
     return { error: 'no_asr_provider', message: 'Voice transcription requires an AI provider (set OPENAI_API_KEY or compatible). Type your message instead.' };
   }
 
-  if (provider !== 'openai') {
-    // ASR currently only implemented with OpenAI in this codebase
+  // Allow using OpenAI-compatible endpoints (NVIDIA) even when another
+  // provider API key is present. If OPENAI_API_KEY is set (and optionally
+  // OPENAI_BASE_URL), prefer that for ASR since ASR implementation uses
+  // the OpenAI-style audio.transcriptions API.
+  let useOpenAI = false;
+  if (provider === 'openai') useOpenAI = true;
+  if (!useOpenAI && process.env.OPENAI_API_KEY && process.env.OPENAI_BASE_URL) {
+    useOpenAI = true;
+    console.warn('[voice_parser] Using OPENAI-compatible base URL for ASR');
+  }
+  if (!useOpenAI) {
     console.warn(`[voice_parser] ASR provider ${provider} not implemented`);
     return { error: 'no_asr_provider', message: `Voice transcription not supported for provider: ${provider}. Type your message instead.` };
   }

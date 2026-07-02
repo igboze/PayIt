@@ -1194,6 +1194,20 @@ npm start
 # User will re-onboard on next /start
 ```
 
+If you are deploying to a container, make sure the DB path is mounted to a stable volume. For example:
+```bash
+docker run -v /host/path/payit.db:/app/payit.db ...
+```
+
+### Prevent wallet and points reset on redeploy
+
+If the bot is restarted in a container or hosted environment, make sure the SQLite file is backed by persistent storage. Set `PAYIT_DB_PATH` to a stable path and mount that path across restarts.
+
+Example Docker-style mount:
+```bash
+docker run -v /host/path/payit.db:/app/payit.db ...
+```
+
 ---
 
 ## License
