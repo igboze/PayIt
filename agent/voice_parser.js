@@ -76,6 +76,14 @@ async function transcribeVoice(buffer, mimeType = 'audio/ogg') {
     const status = err?.response?.status || null;
     const short = err.message?.slice(0, 200) || String(err).slice(0, 200);
     console.error(`[voice_parser] Transcription failed:`, short);
+
+    if (status === 404 && process.env.OPENAI_BASE_URL?.includes('integrate.api.nvidia.com')) {
+      return {
+        error: 'unsupported_provider',
+        message: 'NVIDIA Integrate does not support OpenAI-style audio transcription on this endpoint. Use a native OpenAI key or type the message manually.',
+      };
+    }
+
     if (status === 429 || /quota|rate limit/i.test(short)) {
       return { error: 'quota_exceeded', message: 'Transcription service rate-limited or quota exceeded. Please try again later.' };
     }
