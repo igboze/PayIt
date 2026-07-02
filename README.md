@@ -200,6 +200,25 @@ Receipt generated + saved to ledger
 Bot: "✅ Sent 5000 NGN (~$3.33 USDC) to Emeka"
 ```
 
+## Screenshots
+
+Below are quick demo screenshots (placeholders were generated from SVGs). Replace with real captures from your run for the marketing assets.
+
+- **Onboarding**
+
+   ![Onboarding screenshot](assets/screenshot_onboarding.png)
+
+- **Send payment (natural language)**
+
+   ![Send payment screenshot](assets/screenshot_send_payment.png)
+
+- **Invoice preview**
+
+   ![Invoice preview screenshot](assets/screenshot_invoice_preview.png)
+
+<!-- Trigger CI: whitespace tweak -->
+
+
 ### ON/OFF-Ramp Flow (Mainnet)
 
 ```
