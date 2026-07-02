@@ -40,7 +40,11 @@ async function transcribeVoice(buffer, mimeType = 'audio/ogg') {
   const clientOptions = { apiKey: process.env.OPENAI_API_KEY };
   if (process.env.OPENAI_BASE_URL) clientOptions.baseURL = process.env.OPENAI_BASE_URL;
   const client = new OpenAI(clientOptions);
-  const model  = process.env.OPENAI_TRANSCRIBE_MODEL || 'whisper-1';
+  const configuredModel = process.env.OPENAI_TRANSCRIBE_MODEL || 'whisper-1';
+  const modelCandidates = [configuredModel];
+  if (configuredModel.startsWith('nvidia/') && configuredModel !== 'whisper-1') {
+    modelCandidates.push('whisper-1');
+  }
 
   // Write a temp file so the SDK can stream from disk
   const tmpDir = os.tmpdir();
@@ -50,17 +54,28 @@ async function transcribeVoice(buffer, mimeType = 'audio/ogg') {
   try {
     await fs.promises.writeFile(tmpPath, buffer);
     const stream = fs.createReadStream(tmpPath);
-    // openai SDK: client.audio.transcriptions.create
-    const res = await client.audio.transcriptions.create({ file: stream, model });
-    // Remove file and return
-    try { await fs.promises.unlink(tmpPath); } catch (_) {}
-    console.log(`[voice_parser] Transcribed ${(buffer.length/1024).toFixed(1)}KB to ${(res.text || '').length} chars`);
-    return { text: res.text };
+
+    console.log(`[voice_parser] ASR provider=${provider} model=${configuredModel} baseURL=${process.env.OPENAI_BASE_URL || 'default'}`);
+
+    let lastErr = null;
+    for (const model of modelCandidates) {
+      try {
+        const res = await client.audio.transcriptions.create({ file: stream, model });
+        try { await fs.promises.unlink(tmpPath); } catch (_) {}
+        console.log(`[voice_parser] Transcribed ${(buffer.length/1024).toFixed(1)}KB using model=${model} to ${(res.text || '').length} chars`);
+        return { text: res.text };
+      } catch (err) {
+        lastErr = err;
+        console.warn(`[voice_parser] Model ${model} failed for transcription:`, err.message?.slice(0, 200) || String(err).slice(0, 200));
+        if (model === modelCandidates[modelCandidates.length - 1]) throw err;
+      }
+    }
+    throw lastErr;
   } catch (err) {
     try { await fs.promises.unlink(tmpPath); } catch (_) {}
     const status = err?.response?.status || null;
     const short = err.message?.slice(0, 200) || String(err).slice(0, 200);
-    console.error(`[voice_parser] Transcription failed (${model}):`, short);
+    console.error(`[voice_parser] Transcription failed:`, short);
     if (status === 429 || /quota|rate limit/i.test(short)) {
       return { error: 'quota_exceeded', message: 'Transcription service rate-limited or quota exceeded. Please try again later.' };
     }
