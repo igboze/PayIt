@@ -51,6 +51,7 @@ const { getSettlementDestination } = require("./agent/invoice_listener");
 
 const ARC_RPC_URL = process.env.ARC_RPC_URL || "https://rpc.testnet.arc.network";
 const ARC_CHAIN_ID = 5042002;
+const REFERRAL_BONUS_POINTS = 20;
 const arcProvider = new JsonRpcProvider(ARC_RPC_URL, ARC_CHAIN_ID);
 
 // ─── Startup checks ───────────────────────────────────────────────────────────
@@ -85,6 +86,75 @@ bot.use(async (ctx, next) => {
 const ADMIN_IDS = (process.env.ADMIN_TELEGRAM_IDS || "")
   .split(",").map(s => s.trim()).filter(Boolean);
 
+function notifyUser(telegramId, text, extra = {}) {
+  if (!telegramId) return null;
+  const botId = process.env.TELEGRAM_BOT_TOKEN;
+  if (!botId) return null;
+  return bot.telegram.sendMessage(telegramId, text, { parse_mode: extra.parseMode || "HTML", ...extra });
+}
+
+function parseAdminBroadcastArgs(text) {
+  const parts = String(text || "").trim().split(/\s+/);
+  if (parts.length < 2) return null;
+  const command = parts[0];
+  const message = parts.slice(1).join(" ");
+  return { command, message };
+}
+
+function getUserActivityFilters(query) {
+  const filters = {};
+  const parts = String(query || "").trim().split(/\s+/);
+  for (const part of parts) {
+    if (!part.includes("=")) continue;
+    const [key, rawValue] = part.split("=", 2);
+    const value = rawValue.trim();
+    if (!key || !value) continue;
+    filters[key.toLowerCase()] = value;
+  }
+  return filters;
+}
+
+function selectTargetUsers(filters = {}) {
+  const rows = db.db.prepare(`
+    SELECT telegram_id, created_at, points_balance FROM users
+    WHERE is_blocked = 0
+  `).all();
+
+  return rows.filter((row) => {
+    const createdAt = new Date(row.created_at);
+    const now = new Date();
+    const daysSinceSignup = (now - createdAt) / (24 * 60 * 60 * 1000);
+
+    if (filters.min_days && daysSinceSignup < Number(filters.min_days)) return false;
+    if (filters.max_days && daysSinceSignup > Number(filters.max_days)) return false;
+    if (filters.min_points && Number(row.points_balance || 0) < Number(filters.min_points)) return false;
+    if (filters.max_points && Number(row.points_balance || 0) > Number(filters.max_points)) return false;
+
+    const txCount = db.db.prepare(
+      "SELECT COUNT(*) AS count FROM transactions WHERE telegram_id = ?"
+    ).get(row.telegram_id).count;
+    if (filters.min_tx && txCount < Number(filters.min_tx)) return false;
+    if (filters.max_tx && txCount > Number(filters.max_tx)) return false;
+
+    const recentTxCount = db.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM transactions
+      WHERE telegram_id = ?
+        AND created_at >= datetime('now', '-${Number(filters.recent_days || 30)} days')
+    `).get(row.telegram_id).count;
+    if (filters.min_recent_tx && recentTxCount < Number(filters.min_recent_tx)) return false;
+    if (filters.max_recent_tx && recentTxCount > Number(filters.max_recent_tx)) return false;
+
+    const invoiceCount = db.db.prepare(
+      "SELECT COUNT(*) AS count FROM invoices WHERE owner_telegram_id = ?"
+    ).get(row.telegram_id).count;
+    if (filters.min_invoices && invoiceCount < Number(filters.min_invoices)) return false;
+    if (filters.max_invoices && invoiceCount > Number(filters.max_invoices)) return false;
+
+    return true;
+  });
+}
+
 bot.use(async (ctx, next) => {
   const userId = ctx.from?.id;
   if (!userId) return next();
@@ -118,6 +188,15 @@ setInterval(convState.purgeExpired, 60 * 60 * 1000);
 
 function getContext(userId) {
   return db.getUser(userId)?.active_context || "personal";
+}
+
+function normalizeMenuText(text) {
+  return String(text || "").trim().replace(/\uFE0F/g, "").replace(/\s+/g, " ").toLowerCase();
+}
+
+function isSettingsRequest(text) {
+  const normalized = normalizeMenuText(text);
+  return normalized === "settings" || normalized === "⚙ settings" || normalized === "⚙️ settings" || normalized.startsWith("settings") || normalized.includes("settings");
 }
 
 function isCancelPhrase(text) {
@@ -311,10 +390,24 @@ bot.start(async (ctx) => {
     );
   }
 
+  const startPayload = String(ctx.startPayload || ctx.message?.text?.split(" ")[1] || "").trim();
+  const referrer = startPayload ? db.getUserByReferralCode(startPayload) : null;
+  if (referrer) {
+    convState.setState(ctx.from.id, "pending_referral", { referrerId: referrer.telegram_id }, "personal");
+  }
+
   return ctx.reply(
     `👋 Welcome to PayIT.\n\n` +
     `Save in dollars. Spend in Naira.\n` +
     `Everything right here in Telegram.\n\n` +
+    `Earn points while you use PayIT:\n` +
+    `• 5 points for Cash Out\n` +
+    `• 4 points for sending money\n` +
+    `• 10 points for creating an invoice\n` +
+    `• 12 points for a business invoice\n` +
+    `• 5 points for saving to interest\n` +
+    `• 3 points for withdrawing savings\n` +
+    `• 20 points when a friend you refer earns their first point\n\n` +
     `Your money stays yours — PayIT never holds it for you.\n\n` +
     `How will you use PayIT?`,
     Markup.inlineKeyboard([
@@ -328,12 +421,15 @@ bot.start(async (ctx) => {
 
 bot.action("onboard_personal", async (ctx) => {
   await safeAnswerCbQuery(ctx);
+  const pending = convState.getState(ctx.from.id);
+  const referrerId = pending?.type === "pending_referral" ? pending.data.referrerId : null;
   const wallet = walletLib.generateUserWallet();
   convState.setState(ctx.from.id, "onboarding_pin", {
     accountType: "personal",
     address:     wallet.address,
     privateKey:  wallet.privateKey,
     username:    ctx.from.username,
+    referrerId,
   }, "personal");
   await ctx.reply(
     `👤 Personal account — great.\n\n` +
@@ -348,16 +444,24 @@ bot.action("onboard_personal", async (ctx) => {
 
 // ── Business onboarding path — collects full profile before PIN ───────────────
 
-bot.action("onboard_business", async (ctx) => {
-  await safeAnswerCbQuery(ctx);
+function startBusinessOnboarding(ctx, options = {}) {
+  const pending = convState.getState(ctx.from.id);
+  const referrerId = options.referrerId ?? (pending?.type === "pending_referral" ? pending.data.referrerId : null);
   convState.setState(ctx.from.id, "onboard_biz_name", {
     username: ctx.from.username,
+    referrerId,
+    source: options.source || "onboard",
   }, "business");
-  await ctx.reply(
+  return ctx.reply(
     `💼 Business account — let's set up your profile.\n\n` +
     `This appears on every invoice you create.\n\n` +
     `What's your business name?`
   );
+}
+
+bot.action("onboard_business", async (ctx) => {
+  await safeAnswerCbQuery(ctx);
+  return startBusinessOnboarding(ctx, { source: "onboard" });
 });
 
 // ─── Account switching ────────────────────────────────────────────────────────
@@ -385,11 +489,7 @@ bot.action("switch_business", async (ctx) => {
   if (!user) return;
 
   if (!user.business_deposit_address) {
-    convState.setState(ctx.from.id, "create_biz_wallet_pin", {}, "personal");
-    return ctx.reply(
-      `💼 Setting up your Business wallet.\n\nEnter your PIN to create it:`,
-      Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-    );
+    return startBusinessOnboarding(ctx, { source: "switch" });
   }
 
   db.setActiveContext(ctx.from.id, "business");
@@ -610,8 +710,38 @@ async function showSettings(ctx) {
       [Markup.button.callback("👛 Link External Wallet",        "setwallet_prompt")],
       [Markup.button.callback("📱 Verify Phone",                "verifyphone_prompt")],
       [Markup.button.callback("🏅 Rewards",                     "action_rewards")],
+      [Markup.button.callback("� Invite Friends",               "action_referral")],
       [Markup.button.callback("💼 Business Profile",            "biz_profile_menu")],
       [Markup.button.callback("🏠 Main Menu",                   "main_menu")],
+    ])
+  );
+}
+
+async function showReferralMenu(ctx) {
+  const user = requireUser(ctx);
+  if (!user) return;
+  const referralCode = user.referral_code || `ref${user.telegram_id}`;
+  const botUsername = process.env.BOT_USERNAME || bot.options.username || null;
+  const shareLink = botUsername
+    ? `https://t.me/${botUsername}?start=${referralCode}`
+    : `Share this code: ${referralCode}`;
+
+  await ctx.reply(
+    `👥 Invite Friends
+──────────────────────────
+` +
+    `Earn ${REFERRAL_BONUS_POINTS} points when a friend you refer registers and earns their first point.
+
+` +
+    `Your referral code: ${referralCode}
+` +
+    `${botUsername ? `Share this link:\n${shareLink}\n\n` : ``}` +
+    `Your friend should start PayIT with your code or link.
+` +
+    `Once they complete a point-earning action, you both win.`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("« Back", "action_settings")],
+      [Markup.button.callback("🏠 Main Menu", "main_menu")],
     ])
   );
 }
@@ -1389,7 +1519,8 @@ bot.action("action_receive",  (ctx) => { ctx.answerCbQuery(); return showReceive
 bot.action("action_history",  (ctx) => { ctx.answerCbQuery(); return showHistory(ctx); });
 bot.action("action_yields",   (ctx) => { ctx.answerCbQuery(); return showYields(ctx); });
 bot.action("action_my_yield", (ctx) => { ctx.answerCbQuery(); return showMyYield(ctx); });
-bot.action("action_settings", (ctx) => { ctx.answerCbQuery(); return showSettings(ctx); });
+bot.action("action_settings", (ctx) => { ctx.answerCbQuery(); convState.clearState(ctx.from.id); return showSettings(ctx); });
+bot.action("action_referral", (ctx) => { ctx.answerCbQuery(); return showReferralMenu(ctx); });
 bot.action("action_swap",     (ctx) => {
   ctx.answerCbQuery();
   return ctx.reply(
@@ -2206,7 +2337,9 @@ bot.hears("💰 My Money",         (ctx) => showBalance(ctx));
 bot.hears("💼 Business Balance", (ctx) => showBizBalance(ctx));
 bot.hears("📥 Add Money",        (ctx) => showReceive(ctx));
 bot.hears("📋 History",          (ctx) => showHistory(ctx));
-bot.hears("⚙️ Settings",         (ctx) => showSettings(ctx));
+bot.hears(/^(?:⚙️?|⚙)\s*settings$/i, (ctx) => { convState.clearState(ctx.from.id); return showSettings(ctx); });
+bot.hears(/^settings$/i,         (ctx) => { convState.clearState(ctx.from.id); return showSettings(ctx); });
+bot.hears(/settings/i,           (ctx) => { convState.clearState(ctx.from.id); return showSettings(ctx); });
 bot.hears("📖 Help",             (ctx) => showHelp(ctx));
 bot.hears("✨ What's New",       (ctx) => showFeatures(ctx));
 bot.hears("📈 Save & Earn",      (ctx) => showYields(ctx));
@@ -2335,7 +2468,7 @@ bot.command("menu",     (ctx) => ctx.reply("What would you like to do?", mainMen
 bot.command("help",     showHelp);
 bot.command("balance",  showBalance);
 bot.command("history",  showHistory);
-bot.command("settings", showSettings);
+bot.command("settings", (ctx) => { convState.clearState(ctx.from.id); return showSettings(ctx); });
 bot.command("lock",     async (ctx) => {
   const user = requireUser(ctx);
   if (!user) return;
@@ -2361,27 +2494,42 @@ bot.command("invoice",  (ctx) => {
   return ctx.reply("Describe your invoice:");
 });
 
-bot.command("admin", (ctx) => {
-  if (!ADMIN_IDS.includes(String(ctx.from.id))) return ctx.reply("Not authorised.");
-  const userCount   = db.db.prepare("SELECT COUNT(*) as c FROM users").get().c;
-  const positions   = db.db.prepare("SELECT COUNT(*) as c, COALESCE(SUM(amount_usdc),0) as t FROM yield_positions WHERE status='active'").get();
+async function showAdminMenu(ctx) {
+  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return ctx.reply("Not authorised.");
+  const userCount = db.db.prepare("SELECT COUNT(*) as c FROM users").get().c;
+  const positions = db.db.prepare("SELECT COUNT(*) as c, COALESCE(SUM(amount_usdc),0) as t FROM yield_positions WHERE status='active'").get();
   const invoiceCount = db.db.prepare("SELECT COUNT(*) as c FROM invoices").get().c;
-  const recentTx    = db.db.prepare("SELECT * FROM transactions ORDER BY id DESC LIMIT 8").all();
-  const dbPath      = db.resolveDbPath();
-  const txLines     = recentTx.map(t => `#${t.id} ${t.type} · user ${t.telegram_id} · [${t.status}]`).join("\n") || "none";
-  ctx.reply(
-    `🛠 Admin\n──────────────────────────\n` +
+  const recentTx = db.db.prepare("SELECT * FROM transactions ORDER BY id DESC LIMIT 8").all();
+  const dbPath = db.resolveDbPath();
+  const txLines = recentTx.map((t) => `#${t.id} ${t.type} · user ${t.telegram_id} · [${t.status}]`).join("\n") || "none";
+  return ctx.reply(
+    `🛠 Admin
+──────────────────────────\n` +
     `Users: ${userCount}\n` +
     `Active savings: ${positions.c} ($${Number(positions.t).toFixed(2)})\n` +
     `Invoices: ${invoiceCount}\n` +
     `DB path: ${dbPath}\n\n` +
-    `Recent transactions:\n${txLines}\n\n` +
-    `Commands:\n/export_points\n/blockuser <telegram_id>\n/unblockuser <telegram_id>`
+    `Recent transactions:\n${txLines}`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("📤 Export Points", "admin_export_points")],
+      [Markup.button.callback("📣 Broadcast", "admin_broadcast")],
+      [Markup.button.callback("🎁 Reward Notify", "admin_reward_notify")],
+      [Markup.button.callback("🔒 Block User", "admin_block_user")],
+      [Markup.button.callback("🔓 Unblock User", "admin_unblock_user")],
+    ])
   );
+}
+
+bot.command("admin", (ctx) => showAdminMenu(ctx));
+
+bot.action("admin_menu", (ctx) => {
+  ctx.answerCbQuery();
+  return showAdminMenu(ctx);
 });
 
-bot.command("export_points", async (ctx) => {
-  if (!ADMIN_IDS.includes(String(ctx.from.id))) return ctx.reply("Not authorised.");
+bot.action("admin_export_points", async (ctx) => {
+  ctx.answerCbQuery();
+  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return ctx.reply("Not authorised.");
   const rows = db.db.prepare(
     "SELECT telegram_id, username, points_balance, phone_number, active_context, is_blocked, created_at FROM users ORDER BY points_balance DESC, telegram_id ASC"
   ).all();
@@ -2398,30 +2546,41 @@ bot.command("export_points", async (ctx) => {
 
   const csv = csvLines.join("\n");
   await ctx.replyWithDocument({ source: Buffer.from(csv, "utf8"), filename: "payit_user_points.csv" });
+  return ctx.reply("Export complete.", Markup.inlineKeyboard([[Markup.button.callback("« Back", "admin_menu")]]));
 });
 
-bot.command("blockuser", async (ctx) => {
-  if (!ADMIN_IDS.includes(String(ctx.from.id))) return ctx.reply("Not authorised.");
-  const parts = ctx.message.text.trim().split(/\s+/);
-  const targetId = parts[1] ? Number(parts[1]) : NaN;
-  if (!Number.isInteger(targetId)) return ctx.reply("Usage: /blockuser <telegram_id>");
-  const user = db.getUser(targetId);
-  if (!user) return ctx.reply("User not found.");
-  if (user.is_blocked) return ctx.reply("User is already blocked.");
-  db.blockUser(targetId, `blocked by admin ${ctx.from.id}`);
-  return ctx.reply(`User ${targetId} has been blocked.`);
+bot.action("admin_block_user", (ctx) => {
+  ctx.answerCbQuery();
+  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return ctx.reply("Not authorised.");
+  convState.setState(ctx.from.id, "admin_block_user", {}, getContext(ctx.from.id));
+  return ctx.reply("Send the Telegram user ID to block:", Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "admin_menu")]]));
 });
 
-bot.command("unblockuser", async (ctx) => {
-  if (!ADMIN_IDS.includes(String(ctx.from.id))) return ctx.reply("Not authorised.");
-  const parts = ctx.message.text.trim().split(/\s+/);
-  const targetId = parts[1] ? Number(parts[1]) : NaN;
-  if (!Number.isInteger(targetId)) return ctx.reply("Usage: /unblockuser <telegram_id>");
-  const user = db.getUser(targetId);
-  if (!user) return ctx.reply("User not found.");
-  if (!user.is_blocked) return ctx.reply("User is not blocked.");
-  db.unblockUser(targetId);
-  return ctx.reply(`User ${targetId} has been unblocked.`);
+bot.action("admin_unblock_user", (ctx) => {
+  ctx.answerCbQuery();
+  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return ctx.reply("Not authorised.");
+  convState.setState(ctx.from.id, "admin_unblock_user", {}, getContext(ctx.from.id));
+  return ctx.reply("Send the Telegram user ID to unblock:", Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "admin_menu")]]));
+});
+
+bot.action("admin_broadcast", (ctx) => {
+  ctx.answerCbQuery();
+  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return ctx.reply("Not authorised.");
+  convState.setState(ctx.from.id, "admin_broadcast", {}, getContext(ctx.from.id));
+  return ctx.reply(
+    "Send the broadcast message. You can also add filters like min_days=30 min_points=10 min_tx=3 min_recent_tx=1 recent_days=30 min_invoices=1.",
+    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "admin_menu")]])
+  );
+});
+
+bot.action("admin_reward_notify", (ctx) => {
+  ctx.answerCbQuery();
+  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return ctx.reply("Not authorised.");
+  convState.setState(ctx.from.id, "admin_reward_notify", {}, getContext(ctx.from.id));
+  return ctx.reply(
+    "Send the reward notification message. You can also add filters like min_days=30 min_points=10 min_tx=3 min_recent_tx=1 recent_days=30 min_invoices=1.",
+    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "admin_menu")]])
+  );
 });
 
 // ─── Main text handler — intent router ───────────────────────────────────────
@@ -2433,6 +2592,11 @@ bot.on("text", async (ctx) => {
   const text  = ctx.message.text.trim();
   const userId = ctx.from.id;
 
+  if (isSettingsRequest(text)) {
+    convState.clearState(userId);
+    return showSettings(ctx);
+  }
+
   // ── Multi-step flow states ─────────────────────────────────────────────────
 
   if (state) {
@@ -2442,6 +2606,68 @@ bot.on("text", async (ctx) => {
     }
 
     convState.touchState(userId); // keep alive
+
+    if (state.type === "admin_block_user") {
+      const targetId = Number(text.trim());
+      if (!Number.isInteger(targetId)) return ctx.reply("Please send a valid Telegram user ID.");
+      const user = db.getUser(targetId);
+      if (!user) return ctx.reply("User not found.");
+      if (user.is_blocked) return ctx.reply("User is already blocked.");
+      db.blockUser(targetId, `blocked by admin ${ctx.from.id}`);
+      convState.clearState(userId);
+      return ctx.reply(`User ${targetId} has been blocked.`, Markup.inlineKeyboard([[Markup.button.callback("« Back", "admin_menu")]]));
+    }
+
+    if (state.type === "admin_unblock_user") {
+      const targetId = Number(text.trim());
+      if (!Number.isInteger(targetId)) return ctx.reply("Please send a valid Telegram user ID.");
+      const user = db.getUser(targetId);
+      if (!user) return ctx.reply("User not found.");
+      if (!user.is_blocked) return ctx.reply("User is not blocked.");
+      db.unblockUser(targetId);
+      convState.clearState(userId);
+      return ctx.reply(`User ${targetId} has been unblocked.`, Markup.inlineKeyboard([[Markup.button.callback("« Back", "admin_menu")]]));
+    }
+
+    if (state.type === "admin_broadcast") {
+      const args = parseAdminBroadcastArgs(text);
+      if (!args) return ctx.reply("Please provide a message and optional filters like min_days=30 min_points=10 min_tx=3 min_recent_tx=1 recent_days=30 min_invoices=1.");
+      const filters = getUserActivityFilters(args.message);
+      const message = args.message.replace(/\b(?:min_days|max_days|min_points|max_points)=\S+/g, "").trim();
+      if (!message) return ctx.reply("Broadcast message cannot be empty.");
+      const targets = selectTargetUsers(filters);
+      if (!targets.length) return ctx.reply("No eligible users found for that audience.");
+      let sent = 0;
+      let failed = 0;
+      for (const user of targets) {
+        try {
+          await notifyUser(user.telegram_id, message);
+          sent += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+      convState.clearState(userId);
+      return ctx.reply(`Broadcast sent to ${sent} users${failed ? ` (${failed} failed)` : ""}.`, Markup.inlineKeyboard([[Markup.button.callback("« Back", "admin_menu")]]));
+    }
+
+    if (state.type === "admin_reward_notify") {
+      const payload = text.trim();
+      if (!payload) return ctx.reply("Please send a notification message.");
+      const users = selectTargetUsers(getUserActivityFilters(payload));
+      if (!users.length) return ctx.reply("No eligible users found.");
+      let sent = 0;
+      for (const user of users) {
+        try {
+          await notifyUser(user.telegram_id, payload.replace(/\b(?:min_days|max_days|min_points|max_points)=\S+/g, "").trim());
+          sent += 1;
+        } catch {
+          // ignore per-user errors
+        }
+      }
+      convState.clearState(userId);
+      return ctx.reply(`Reward notification sent to ${sent} users.`, Markup.inlineKeyboard([[Markup.button.callback("« Back", "admin_menu")]]));
+    }
 
     // ── Business onboarding ──────────────────────────────────────────────────
 
@@ -2504,6 +2730,7 @@ bot.on("text", async (ctx) => {
           address:         d.businessAddress,
           defaultDueDays:  d.defaultDueDays,
         },
+        referrerId: d.referrerId || null,
       }, "business");
       return ctx.reply(
         `✅ Profile saved!\n\n` +

@@ -11,15 +11,28 @@
 // invoice is created, since invoicing is inherently a business action.
 
 const { DatabaseSync } = require("node:sqlite");
+const fs = require("node:fs");
 const path = require("path");
 const walletLib = require("./wallet");
 
 function resolveDbPath() {
-  return process.env.PAYIT_DB_PATH || path.join(__dirname, "..", "payit.db");
+  const rawPath = process.env.PAYIT_DB_PATH || path.join(__dirname, "..", "payit.db");
+  return path.resolve(rawPath);
 }
 
 const DB_PATH = resolveDbPath();
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+if (!process.env.PAYIT_DB_PATH) {
+  console.warn(
+    "WARNING: PAYIT_DB_PATH is not set. Using default database path:",
+    DB_PATH,
+    "This may be lost on ephemeral deploy environments. Set PAYIT_DB_PATH to a stable mounted path."
+  );
+} else {
+  console.log("PayIT database path:", DB_PATH);
+}
 const db = new DatabaseSync(DB_PATH);
+const REFERRAL_BONUS_POINTS = 20;
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
@@ -49,7 +62,11 @@ db.exec(`
     is_blocked         INTEGER NOT NULL DEFAULT 0,
     blocked_at         TEXT,
     blocked_reason     TEXT,
-    created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    referrer_telegram_id INTEGER,
+    referral_code        TEXT UNIQUE,
+    referred_at          TEXT,
+    referred_on_first_point INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS transactions (
@@ -81,6 +98,15 @@ db.exec(`
   -- vat_*/wht_* fields store the breakdown separately from the total, so
   -- the SME sees exactly what's owed vs. what's tax, rather than one
   -- opaque number.
+  CREATE TABLE IF NOT EXISTS points_history (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id   INTEGER NOT NULL,
+    points        INTEGER NOT NULL,
+    action        TEXT NOT NULL,
+    details       TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE TABLE IF NOT EXISTS invoices (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     invoice_number    TEXT NOT NULL UNIQUE,
@@ -117,6 +143,21 @@ function ensureUserSchema() {
   if (!columns.includes("blocked_reason")) {
     db.exec("ALTER TABLE users ADD COLUMN blocked_reason TEXT");
   }
+  if (!columns.includes("points_balance")) {
+    db.exec("ALTER TABLE users ADD COLUMN points_balance INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!columns.includes("referrer_telegram_id")) {
+    db.exec("ALTER TABLE users ADD COLUMN referrer_telegram_id INTEGER");
+  }
+  if (!columns.includes("referral_code")) {
+    db.exec("ALTER TABLE users ADD COLUMN referral_code TEXT UNIQUE");
+  }
+  if (!columns.includes("referred_at")) {
+    db.exec("ALTER TABLE users ADD COLUMN referred_at TEXT");
+  }
+  if (!columns.includes("referred_on_first_point")) {
+    db.exec("ALTER TABLE users ADD COLUMN referred_on_first_point INTEGER NOT NULL DEFAULT 0");
+  }
 }
 
 ensureUserSchema();
@@ -127,13 +168,19 @@ function getUser(telegramId) {
   return db.prepare("SELECT * FROM users WHERE telegram_id = ?").get(telegramId) || null;
 }
 
+function getUserByReferralCode(code) {
+  if (!code) return null;
+  return db.prepare("SELECT * FROM users WHERE referral_code = ?").get(code) || null;
+}
+
 /**
  * Create a new user with personal wallet (and optionally business wallet).
  * Encrypts both keys with the same PIN before writing.
  */
 function createUserWithWallet(
   telegramId, username, address, privateKey, pin,
-  businessAddress = null, businessPrivateKey = null
+  businessAddress = null, businessPrivateKey = null,
+  referrerId = null
 ) {
   // Encrypt personal key
   const enc = walletLib.encryptPrivateKey(privateKey, pin);
@@ -144,20 +191,28 @@ function createUserWithWallet(
     bizEnc = walletLib.encryptPrivateKey(businessPrivateKey, pin);
   }
 
+  const referralCode = `ref${telegramId}`;
+  const referredAt = referrerId ? new Date().toISOString() : null;
+
   db.prepare(`
     INSERT INTO users (
       telegram_id, username,
       deposit_address, encrypted_key, key_salt, key_iv, key_tag,
       business_deposit_address, biz_encrypted_key, biz_key_salt, biz_key_iv, biz_key_tag,
-      active_context
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      active_context,
+      referrer_telegram_id, referral_code, referred_at, referred_on_first_point
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     telegramId, username || null,
     address, enc.encryptedKey, enc.salt, enc.iv, enc.tag,
     businessAddress || null,
     bizEnc?.encryptedKey || null, bizEnc?.salt || null,
     bizEnc?.iv || null, bizEnc?.tag || null,
-    businessAddress ? "business" : "personal"
+    businessAddress ? "business" : "personal",
+    referrerId || null,
+    referralCode,
+    referredAt,
+    0
   );
 
   return getUser(telegramId);
@@ -262,6 +317,60 @@ function setPhoneNumber(telegramId, phone) {
 function setPhoneVerified(telegramId, verified) {
   db.prepare("UPDATE users SET phone_verified = ? WHERE telegram_id = ?").run(verified ? 1 : 0, telegramId);
 }
+
+function awardPoints(telegramId, points, action, details = null, options = {}) {
+  if (!Number.isInteger(points) || points === 0) return;
+  const normalized = Number(points);
+  if (normalized > 0 && !options.skipReferral) {
+    maybeAwardReferralBonus(telegramId, options.notify);
+  }
+  db.prepare("UPDATE users SET points_balance = points_balance + ? WHERE telegram_id = ?").run(normalized, telegramId);
+  db.prepare(
+    "INSERT INTO points_history (telegram_id, points, action, details) VALUES (?, ?, ?, ?)"
+  ).run(telegramId, normalized, action, details);
+
+  if (typeof options.notify === "function") {
+    options.notify({
+      telegramId,
+      action,
+      points: normalized,
+      details,
+      type: normalized > 0 ? "points_earned" : "points_spent",
+    });
+  }
+}
+
+function maybeAwardReferralBonus(telegramId, notify = null) {
+  const row = db.prepare(
+    "SELECT referrer_telegram_id, referred_on_first_point FROM users WHERE telegram_id = ?"
+  ).get(telegramId);
+  if (!row?.referrer_telegram_id || row.referred_on_first_point === 1) return;
+  if (row.referrer_telegram_id === telegramId) return;
+
+  const referrer = getUser(row.referrer_telegram_id);
+  if (!referrer) return;
+
+  db.prepare(
+    "UPDATE users SET referred_on_first_point = 1 WHERE telegram_id = ?"
+  ).run(telegramId);
+
+  awardPoints(referrer.telegram_id, REFERRAL_BONUS_POINTS, "referral_bonus", `Referral: ${telegramId}`, {
+    skipReferral: true,
+    notify,
+  });
+}
+
+function getPointsBalance(telegramId) {
+  const row = db.prepare("SELECT points_balance FROM users WHERE telegram_id = ?").get(telegramId);
+  return row ? Number(row.points_balance || 0) : 0;
+}
+
+function getPointsHistory(telegramId, limit = 20) {
+  return db.prepare(
+    "SELECT * FROM points_history WHERE telegram_id = ? ORDER BY id DESC LIMIT ?"
+  ).all(telegramId, limit);
+}
+
 function blockUser(telegramId, reason = null) {
   db.prepare(
     "UPDATE users SET is_blocked = 1, blocked_at = datetime('now'), blocked_reason = ? WHERE telegram_id = ?"
@@ -516,6 +625,7 @@ module.exports = {
   db,
   resolveDbPath,
   getUser,
+  getUserByReferralCode,
   createUserWithWallet,
   addBusinessWallet,
   setActiveContext,
@@ -529,6 +639,9 @@ module.exports = {
   blockUser,
   unblockUser,
   isBlocked,
+  awardPoints,
+  getPointsBalance,
+  getPointsHistory,
   recordTransaction,
   updateTransactionStatus,
   getTransactions,

@@ -60,7 +60,7 @@ This installs: telegraf, ethers, better-sqlite3, sharp, openai, @anthropic-ai/sd
    - `INVOICE_SETTLEMENT_MAX_FEE_USDC` — maximum fee size in USDC
    - `INVOICE_SETTLEMENT_CONTRACT_ADDRESS` — optional Arc contract to route settlement through
    - `DEPLOYER_PRIVATE_KEY` — optional key for contract deployment
-   - `PAYIT_DB_PATH` — use a persistent path such as `/app/payit.db` in hosted deployments
+   - `PAYIT_DB_PATH` — use a persistent path such as `/app/payit.db` in hosted deployments. This prevents wallets, points, and user state from resetting whenever the bot redeploys.
 
 Everything else is optional until you're ready to enable that feature:
 - `PAJCASH_OFFRAMP_ADDRESS` + `PAJCASH_API_KEY` — for real Naira cashout
