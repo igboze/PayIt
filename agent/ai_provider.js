@@ -24,8 +24,10 @@ function isSet(value) {
 }
 
 function getActiveProvider() {
-  if (isSet(process.env.GROQ_API_KEY)) return "groq";
+  // Prefer OpenAI-compatible providers when an OpenAI key is configured.
+  // This includes NVIDIA via OPENAI_BASE_URL as well as native OpenAI.
   if (isSet(process.env.OPENAI_API_KEY)) return "openai";
+  if (isSet(process.env.GROQ_API_KEY)) return "groq";
   if (isSet(process.env.GEMINI_API_KEY)) return "gemini";
   return null;
 }
