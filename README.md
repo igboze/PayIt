@@ -1,8 +1,19 @@
 # PayIT — Telegram Wallet for Local Fiat Operations on Stablecoins
 
-**A non-custodial Telegram bot that lets people and business owners transact in local fiat while holding their wealth in USD Coin (USDC) and Euro Coin (EURC), powered by AI-driven payment processing.**
+**PayIT is a Telegram-native digital wallet and finance tool built for African SMEs and individual users. It lets people send, receive, and store digital dollars (USDC) directly inside Telegram, without needing to leave the app or learn new software. On top of the wallet, PayIT gives small business owners a simple invoicing and bookkeeping layer, so they can issue invoices, track VAT and WHT, and manage their business finances in one place.
 
-> **Vision:** Bridge the gap between stablecoin wealth and local currency transactions. Hold dollars, spend in pesos. Issue invoices in pesos, get paid in USDC. No middleman. No currency conversion fees for transfers.
+PayIT is non-custodial. This means each user holds their own funds. PayIT never has access to a user's private keys or funds. The app only stores encrypted key material on the user's behalf and signs actions on the user's instruction.
+
+The product has two connected but distinct experiences:
+
+
+Personal Wallet – for individuals sending and receiving money.
+Business Wallet – for SMEs that need invoicing, ledgers, and tax support.
+
+> **Vision:** Vision
+To become the simplest way for African SMEs and everyday users to hold, send, and manage stablecoins, all inside an app they already use every day: Telegram.
+**Mission:**
+To give African SMEs a non-custodial, secure, and tax-compliant financial tool that removes the complexity of crypto and makes stablecoin payments and invoicing accessible to anyone with a Telegram account.
 
 ---
 
