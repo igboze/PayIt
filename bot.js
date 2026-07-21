@@ -3823,21 +3823,25 @@ bot.on("text", async (ctx) => {
         return ctx.reply(`❌ ${parsed.error}`, Markup.inlineKeyboard([[Markup.button.callback("Try Again", "main_menu")]]));
       }
 
-      const product = await searchForProduct(parsed.product_name);
+      const product = await searchForProduct(parsed.product_name, parsed.max_price);
+      if (product.error) {
+        return ctx.reply(`❌ ${product.error}`, Markup.inlineKeyboard([[Markup.button.callback("Try Again", "main_menu")]]));
+      }
+
       const context = state.context || "personal";
       convState.setState(userId, "confirm_shopping_purchase", { parsed, product }, context);
       
       return ctx.reply(
-        `🛒 **Found a match!**\n──────────────────────────\n\n` +
-        `📦 **Product**: ${product.name}\n` +
-        `🏷️ **Condition**: ${product.condition}\n\n` +
-        `📝 **Description**:\n${product.description}\n\n` +
-        `⚙️ **Specs**: ${product.specs}\n\n` +
-        `🏪 **Store**: ${product.store}\n` +
-        `🛡️ **Returns**: ${product.returnPolicy}\n\n` +
-        `💲 **Price**: $${product.price} ${product.currency}\n` +
-        `🚚 **Delivery**: ${product.delivery_time}\n\n` +
-        `📍 ` + (parsed.delivery_address ? `**Deliver to**: ${parsed.delivery_address}` : `**Deliver to**: your saved address`) + `\n\n──────────────────────────\n\n` +
+        `🛒 Found a match!\n──────────────────────────\n\n` +
+        `📦 Product: ${product.name}\n` +
+        `🏷️ Condition: ${product.condition}\n\n` +
+        `📝 Description:\n${product.description}\n\n` +
+        `⚙️ Specs: ${product.specs}\n\n` +
+        `🏪 Store: ${product.store}\n` +
+        `🛡️ Returns: ${product.returnPolicy}\n\n` +
+        `💲 Price: $${product.price} ${product.currency}\n` +
+        `🚚 Delivery: ${product.delivery_time}\n\n` +
+        `📍 ` + (parsed.delivery_address ? `Deliver to: ${parsed.delivery_address}` : `Deliver to: your saved address`) + `\n\n──────────────────────────\n\n` +
         `Would you like to buy this?`,
         Markup.inlineKeyboard([
           [Markup.button.callback("✅ Buy Now", "action_confirm_shopping")],

@@ -33,14 +33,23 @@ User context: ${JSON.stringify(userContext)}`;
 const axios = require("axios");
 
 // Fetches a live product from DummyJSON
-async function searchForProduct(productName) {
+async function searchForProduct(productName, maxPrice = null) {
   try {
-    const url = `https://dummyjson.com/products/search?q=${encodeURIComponent(productName)}&limit=1`;
+    const url = `https://dummyjson.com/products/search?q=${encodeURIComponent(productName)}&limit=10`;
     const response = await axios.get(url);
     const data = response.data;
 
     if (data && data.products && data.products.length > 0) {
-      const p = data.products[0];
+      // Find the first product that fits the budget if specified
+      let p = data.products.find(prod => maxPrice === null || prod.price <= maxPrice);
+      
+      if (!p && maxPrice !== null) {
+         // None found under budget
+         const cheapest = [...data.products].sort((a,b) => a.price - b.price)[0];
+         return { error: `I couldn't find a "${productName}" under $${maxPrice}. The cheapest one I found was $${cheapest.price}.` };
+      }
+      
+      p = p || data.products[0];
       const dimensions = p.dimensions ? `${p.dimensions.width}x${p.dimensions.height}x${p.dimensions.depth}cm` : null;
       const specs = [
         dimensions ? `Size: ${dimensions}` : null,
@@ -66,6 +75,7 @@ async function searchForProduct(productName) {
   }
 
   // Fallback if no product found or API fails
+  const fallbackPrice = maxPrice !== null ? (Math.random() * (maxPrice * 0.9)).toFixed(2) : (Math.random() * 100 + 10).toFixed(2);
   return {
     name: productName,
     description: `A highly rated ${productName} with excellent reviews.`,
@@ -73,7 +83,7 @@ async function searchForProduct(productName) {
     specs: "Standard configuration",
     returnPolicy: "30-day money-back guarantee",
     store: "MockAmazon (Fallback)",
-    price: (Math.random() * 100 + 10).toFixed(2),
+    price: fallbackPrice,
     currency: "USDC",
     delivery_time: "2-3 business days",
     seller_wallet: "0x1234567890abcdef1234567890abcdef12345678" // dummy seller address
