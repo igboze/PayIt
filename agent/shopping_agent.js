@@ -2,22 +2,23 @@ const { getJSONCompletion } = require("./ai_provider");
 
 async function parseShoppingIntent(userMessage, userContext) {
   const systemPrompt = `You are a Personal Shopper Agent for PayIT.
-The user wants to buy a product online.
+The user wants to buy a product online. Even if they say "search the web", treat it as a shopping request.
 Extract the relevant details to search for the product and initiate a purchase.
 
 Respond with ONLY a valid JSON object — no markdown, no explanation.
 
 {
   "product_name": "<Name of the product>",
-  "max_price": <Maximum price the user is willing to pay, or null if not specified>,
+  "max_price": <Maximum price the user is willing to pay as a number, or null if not specified>,
   "delivery_address": "<Address for delivery, or null if not specified>",
-  "currency": "<USDC | EURC — default USDC>"
+  "currency": "<Currency code (e.g., USDC, NGN) — default USDC>"
 }
 
 Rules:
-- Amounts must be positive numbers.
+- Amounts must be positive numbers (do not include commas or currency symbols like $, N, ₦).
+- If the user specifies Naira (N or ₦), set currency to "NGN".
 - If no specific currency is mentioned, assume USDC.
-- If the user intent is not about shopping, return {"error": "Not a shopping intent"}.
+- Only return {"error": "Not a shopping intent"} if it is clearly completely unrelated to buying or finding a product.
 
 User context: ${JSON.stringify(userContext)}`;
 
