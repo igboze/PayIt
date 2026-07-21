@@ -41,13 +41,23 @@ async function searchForProduct(productName) {
 
     if (data && data.products && data.products.length > 0) {
       const p = data.products[0];
+      const dimensions = p.dimensions ? `${p.dimensions.width}x${p.dimensions.height}x${p.dimensions.depth}cm` : null;
+      const specs = [
+        dimensions ? `Size: ${dimensions}` : null,
+        p.weight ? `Weight: ${p.weight}` : null,
+        p.warrantyInformation ? `Warranty: ${p.warrantyInformation}` : null
+      ].filter(Boolean).join(" | ") || "Not specified";
+
       return {
         name: p.title,
         description: p.description || "No description available.",
+        condition: "Brand New",
+        specs: specs,
+        returnPolicy: p.returnPolicy || "No return policy specified",
         store: "DummyJSON Marketplace",
         price: p.price.toFixed(2),
         currency: "USDC",
-        delivery_time: "2-3 business days",
+        delivery_time: p.shippingInformation || "2-3 business days",
         seller_wallet: "0x1234567890abcdef1234567890abcdef12345678" // dummy seller address
       };
     }
@@ -59,6 +69,9 @@ async function searchForProduct(productName) {
   return {
     name: productName,
     description: `A highly rated ${productName} with excellent reviews.`,
+    condition: "Brand New",
+    specs: "Standard configuration",
+    returnPolicy: "30-day money-back guarantee",
     store: "MockAmazon (Fallback)",
     price: (Math.random() * 100 + 10).toFixed(2),
     currency: "USDC",
