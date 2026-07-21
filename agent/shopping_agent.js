@@ -34,7 +34,7 @@ const axios = require("axios");
 // Fetches a live product from DummyJSON
 async function searchForProduct(productName) {
   try {
-    const url = \`https://dummyjson.com/products/search?q=\${encodeURIComponent(productName)}&limit=1\`;
+    const url = `https://dummyjson.com/products/search?q=${encodeURIComponent(productName)}&limit=1`;
     const response = await axios.get(url);
     const data = response.data;
 
