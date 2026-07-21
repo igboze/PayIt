@@ -1,5 +1,5 @@
 // bot.js
-// PayIT — non-custodial dollar wallet inside Telegram
+// PayIT — Agentic Stablecoins Payment Solution inside Telegram
 // Personal + Business accounts · dollar + euro wallets · Arc Testnet
 //
 // Architecture:
@@ -38,7 +38,8 @@ const { parsePaymentIntent }      = require("./agent/orchestrator");
 const { executePlan, executeOfframp, formatResults } = require("./agent/executor");
 const { startJob, cancelJob, reloadAll, describeSchedule } = require("./agent/scheduler");
 const { saveSchedule, removeSchedule, getUserSchedules }   = require("./agent/store");
-const { parseInvoiceIntent }      = require("./agent/invoice_parser");
+const { parseSmartInvoiceIntent } = require("./agent/smart_invoice_agent");
+const { parseShoppingIntent, searchForProduct } = require("./agent/shopping_agent");
 const { classifyIntent, getMissingQuestion, buildConfirmationText } = require("./agent/intent_router");
 const { parseImagePayment, formatExtractionPreview } = require("./agent/vision_parser");
 const { parsePdf, parseSpreadsheetFile, formatFilePreview, parsePptx, parseDocx, parseTextFile, buildFilePaymentPlan } = require("./agent/file_parser");
@@ -228,7 +229,7 @@ function requireUser(ctx) {
   const user = db.getUser(ctx.from?.id);
   if (!user) {
     ctx.reply(
-      "Welcome to PayIT!\n\nSend /start to set up your wallet in under a minute."
+      "Welcome to PayIT!\n\nSend /start to set up your Account in under a minute."
     );
     return null;
   }
@@ -325,7 +326,8 @@ function mainMenu(context) {
     ["💰 My Money",    "📤 Send Money",  "🔄 Swap"],
     ["📥 Add Money",   "📈 Save & Earn", "📋 History"],
     ["🤖 Auto-Pay",   "🧾 Invoice",     "👥 Contacts"],
-    ["🔁 Switch Account", "⚙️ Settings",   "📖 Help"],
+    ["🛒 Shop Online", "🔁 Switch Account"],
+    ["⚙️ Settings",   "📖 Help"],
   ]).resize();
 }
 
@@ -433,7 +435,7 @@ bot.action("onboard_personal", async (ctx) => {
   }, "personal");
   await ctx.reply(
     `👤 Personal account — great.\n\n` +
-    `We'll create your wallet now.\n\n` +
+    `We'll set up your Account now.\n\n` +
     `First, choose a 4-digit PIN. This is the only thing protecting your money — ` +
     `write it down somewhere safe.\n\n` +
     `⚠️ If you forget your PIN and haven't saved your security phrase, ` +
@@ -577,7 +579,7 @@ async function showBizBalance(ctx) {
   if (!user) return;
   if (!user.business_deposit_address) {
     return ctx.reply(
-      "No Business wallet found.",
+      "No Business account found.",
       Markup.inlineKeyboard([[Markup.button.callback("💼 Set up Business", "switch_business")]])
     );
   }
@@ -960,7 +962,7 @@ function showFeatures(ctx) {
   return ctx.reply(
     `✨ What's live on PayIT:\n\n` +
     `✅ Personal and Business accounts (one PIN)\n` +
-    `✅ Dollar and Euro wallets\n` +
+    `✅ Agentic Stablecoins Payment Solution\n` +
     `✅ Add money from Binance, Coinbase, MetaMask and more\n` +
     `✅ Cash out to Naira via bank transfer\n` +
     `✅ Earn interest on your dollar balance\n` +
@@ -1991,6 +1993,22 @@ bot.action("action_new_invoice", (ctx) => {
   );
 });
 
+bot.action("action_confirm_shopping", (ctx) => {
+  ctx.answerCbQuery();
+  const state = convState.getState(ctx.from.id);
+  if (!state || state.type !== "confirm_shopping_purchase") {
+    return ctx.reply("Session expired. Please start over.", backToMenu);
+  }
+  convState.setState(ctx.from.id, "confirm_shopping_pin", { product: state.data.product }, getContext(ctx.from.id));
+  return ctx.reply(
+    `💸 Confirm Purchase\n──────────────────────────\n` +
+    `Product: ${state.data.product.name}\n` +
+    `Total: $${state.data.product.price}\n\n` +
+    `Enter your PIN to execute payment:`,
+    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+  );
+});
+
 // ─── Photo handler — image / screenshot parsing ───────────────────────────────
 
 bot.on("photo", async (ctx) => {
@@ -2398,6 +2416,18 @@ bot.hears("🧾 Invoice", (ctx) => {
 });
 
 bot.hears("🧾 New Invoice", (ctx) => showBizInvoiceMenu(ctx));
+
+bot.hears("🛒 Shop Online", (ctx) => {
+  const context = getContext(ctx.from?.id);
+  convState.setState(ctx.from.id, "await_shopping_instruction", {}, context);
+  return ctx.reply(
+    `🛒 Personal Shopper\n──────────────────────────\nTell me what you're looking for:\n\n` +
+    `• "Find a Macbook Pro under $1000"\n` +
+    `• "Buy a new ergonomic office chair"\n\n` +
+    `What would you like to buy?`,
+    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+  );
+});
 bot.hears("📋 My Invoices", (ctx) => {
   const context = getContext(ctx.from?.id);
   if (context === "business") {
@@ -3720,7 +3750,7 @@ bot.on("text", async (ctx) => {
       await ctx.reply("⏳ Parsing your invoice...");
       const walletAddress = user.business_deposit_address || user.deposit_address;
       const profile       = bizProfile.getBizProfile(userId);
-      const parsed = await parseInvoiceIntent(text, {
+      const parsed = await parseSmartInvoiceIntent(text, {
         businessName:  profile?.business_name || ctx.from.username || `User ${userId}`,
         walletAddress,
       });
@@ -3755,7 +3785,7 @@ bot.on("text", async (ctx) => {
       const user = requireUser(ctx);
       if (!user) return;
       await ctx.reply("⏳ Parsing your invoice...");
-      const parsed = await parseInvoiceIntent(text, {
+      const parsed = await parseSmartInvoiceIntent(text, {
         businessName:  user.username || `User ${userId}`,
         walletAddress: user.deposit_address,
       });
@@ -3779,6 +3809,59 @@ bot.on("text", async (ctx) => {
           [Markup.button.callback("❌ Cancel",            "main_menu")],
         ])
       );
+    }
+
+    // ── Shopping instruction ─────────────────────────────────────────────────
+
+    if (state.type === "await_shopping_instruction") {
+      convState.clearState(userId);
+      const user = requireUser(ctx);
+      if (!user) return;
+      await ctx.reply("🛒 Searching for products...");
+      const parsed = await parseShoppingIntent(text, { username: user.username });
+      if (parsed.error) {
+        return ctx.reply(`❌ ${parsed.error}`, Markup.inlineKeyboard([[Markup.button.callback("Try Again", "main_menu")]]));
+      }
+
+      const product = await searchForProduct(parsed.product_name);
+      const context = state.context || "personal";
+      convState.setState(userId, "confirm_shopping_purchase", { parsed, product }, context);
+      
+      return ctx.reply(
+        `🛒 Found a match!\n──────────────────────────\n` +
+        `Product: ${product.name}\n` +
+        `Store: ${product.store}\n` +
+        `Price: $${product.price} ${product.currency}\n` +
+        `Delivery: ${product.delivery_time}\n\n` +
+        (parsed.delivery_address ? `Deliver to: ${parsed.delivery_address}\n\n` : `Deliver to: your saved address\n\n`) +
+        `Would you like to buy this?`,
+        Markup.inlineKeyboard([
+          [Markup.button.callback("✅ Buy Now", "action_confirm_shopping")],
+          [Markup.button.callback("❌ Cancel", "main_menu")],
+        ])
+      );
+    }
+
+    if (state.type === "confirm_shopping_pin") {
+      await deleteSensitiveMessage(ctx);
+      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
+      if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
+      const user = db.getUser(userId);
+      const { product } = state.data;
+      const context = state.context || "personal";
+      convState.clearState(userId);
+      
+      await ctx.reply("⏳ Processing payment...");
+      const plan = {
+        payments: [{
+          to: product.seller_wallet,
+          amount: parseFloat(product.price),
+          label: `Purchase: ${product.name}`,
+          currency: product.currency,
+        }],
+      };
+      const results = await executePlan(plan, text, user, context);
+      return ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
     }
 
     // ── Expense entry ────────────────────────────────────────────────────────
@@ -4137,7 +4220,7 @@ bot.on("text", async (ctx) => {
       // Parse directly here
       const walletAddress = getActiveWallet(user);
       const profile       = bizProfile.getBizProfile(userId);
-      const parsed = await parseInvoiceIntent(instruction, {
+      const parsed = await parseSmartInvoiceIntent(instruction, {
         businessName:  profile?.business_name || user.username || `User ${userId}`,
         walletAddress,
       });
