@@ -3830,6 +3830,7 @@ bot.on("text", async (ctx) => {
       return ctx.reply(
         `🛒 Found a match!\n──────────────────────────\n` +
         `Product: ${product.name}\n` +
+        `Description: ${product.description}\n` +
         `Store: ${product.store}\n` +
         `Price: $${product.price} ${product.currency}\n` +
         `Delivery: ${product.delivery_time}\n\n` +

@@ -43,6 +43,7 @@ async function searchForProduct(productName) {
       const p = data.products[0];
       return {
         name: p.title,
+        description: p.description || "No description available.",
         store: "DummyJSON Marketplace",
         price: p.price.toFixed(2),
         currency: "USDC",
@@ -57,6 +58,7 @@ async function searchForProduct(productName) {
   // Fallback if no product found or API fails
   return {
     name: productName,
+    description: `A highly rated ${productName} with excellent reviews.`,
     store: "MockAmazon (Fallback)",
     price: (Math.random() * 100 + 10).toFixed(2),
     currency: "USDC",
