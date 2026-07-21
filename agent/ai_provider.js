@@ -49,8 +49,10 @@ async function callGroq(systemPrompt, userMessage) {
     ],
   });
   const raw = response.choices[0].message.content.trim();
-  const clean = raw.replace(/^```json|^```|```$/gm, "").trim();
-  return JSON.parse(clean);
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start === -1 || end === -1) throw new Error("No JSON object found");
+  return JSON.parse(raw.substring(start, end + 1));
 }
 
 async function callOpenAI(systemPrompt, userMessage) {
@@ -73,8 +75,10 @@ async function callOpenAI(systemPrompt, userMessage) {
     ],
   });
   const raw   = response.choices[0].message.content.trim();
-  const clean = raw.replace(/^```json|^```|```$/gm, "").trim();
-  return JSON.parse(clean);
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start === -1 || end === -1) throw new Error("No JSON object found");
+  return JSON.parse(raw.substring(start, end + 1));
 }
 
 async function callGemini(systemPrompt, userMessage) {
@@ -90,8 +94,10 @@ async function callGemini(systemPrompt, userMessage) {
     `User message: ${userMessage}`;
   const result = await model.generateContent(fullPrompt);
   const raw = result.response.text().trim();
-  const clean = raw.replace(/^```json|^```|```$/gm, "").trim();
-  return JSON.parse(clean);
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start === -1 || end === -1) throw new Error("No JSON object found");
+  return JSON.parse(raw.substring(start, end + 1));
 }
 
 /**
