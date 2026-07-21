@@ -64,7 +64,10 @@ async function callOpenAI(systemPrompt, userMessage) {
     clientOptions.baseURL = process.env.OPENAI_BASE_URL;
   }
   const client = new OpenAI(clientOptions);
-  const model  = process.env.OPENAI_MODEL || "nvidia/llama-3.1-70b-instruct";
+  let model  = process.env.OPENAI_MODEL || "meta/llama-3.1-70b-instruct";
+  if (model === "nvidia/llama-3.1-70b-instruct") {
+    model = "meta/llama-3.1-70b-instruct";
+  }
 
   const response = await client.chat.completions.create({
     model,
