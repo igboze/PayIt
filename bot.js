@@ -3831,23 +3831,46 @@ bot.on("text", async (ctx) => {
       const context = state.context || "personal";
       convState.setState(userId, "confirm_shopping_purchase", { parsed, product }, context);
       
-      return ctx.reply(
-        `🛒 Found a match!\n──────────────────────────\n\n` +
+      const discountText = product.originalPrice && product.discountPercentage 
+        ? ` (${product.discountPercentage}% OFF — Original $${product.originalPrice})` 
+        : "";
+
+      const cardText = 
+        `🛒 Found a verified match!\n` +
+        `──────────────────────────\n\n` +
         `📦 Product: ${product.name}\n` +
+        `🏷️ Brand: ${product.brand} | Category: ${product.category}\n` +
+        `⭐ Rating: ${product.rating} / 5.0 (${product.reviewsCount} reviews)\n` +
+        `📊 Availability: ${product.stock}\n` +
         `🏷️ Condition: ${product.condition}\n\n` +
         `📝 Description:\n${product.description}\n\n` +
-        `⚙️ Specs: ${product.specs}\n\n` +
-        `🏪 Store: ${product.store}\n` +
-        `🛡️ Returns: ${product.returnPolicy}\n\n` +
-        `💲 Price: $${product.price} ${product.currency}\n` +
+        `⚙️ Specifications:\n${product.specs}\n\n` +
+        `🏪 Merchant: ${product.store} ${product.isVerified ? "✓" : ""}\n` +
+        `🛡️ Returns: ${product.returnPolicy}\n` +
+        `🔒 Protection: PayIT 100% Escrow Guarantee\n\n` +
+        `💲 Price: $${product.price} ${product.currency}${discountText}\n` +
         `🚚 Delivery: ${product.delivery_time}\n\n` +
-        `📍 ` + (parsed.delivery_address ? `Deliver to: ${parsed.delivery_address}` : `Deliver to: your saved address`) + `\n\n──────────────────────────\n\n` +
-        `Would you like to buy this?`,
-        Markup.inlineKeyboard([
-          [Markup.button.callback("✅ Buy Now", "action_confirm_shopping")],
-          [Markup.button.callback("❌ Cancel", "main_menu")],
-        ])
-      );
+        `📍 ` + (parsed.delivery_address ? `Deliver to: ${parsed.delivery_address}` : `Deliver to: your saved address`) + `\n\n` +
+        `──────────────────────────\n` +
+        `Would you like to buy this item?`;
+
+      const buttons = Markup.inlineKeyboard([
+        [Markup.button.callback("✅ Buy Now", "action_confirm_shopping")],
+        [Markup.button.callback("❌ Cancel", "main_menu")],
+      ]);
+
+      if (product.image) {
+        try {
+          return await ctx.replyWithPhoto(product.image, {
+            caption: cardText,
+            ...buttons
+          });
+        } catch (imgErr) {
+          console.error("[shopping_agent] Failed to send photo, falling back to text:", imgErr.message);
+        }
+      }
+
+      return ctx.reply(cardText, buttons);
     }
 
     if (state.type === "confirm_shopping_pin") {
