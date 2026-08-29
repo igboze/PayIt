@@ -1,6 +1,76 @@
 const { getJSONCompletion } = require("./ai_provider");
+const axios = require("axios");
 
-async function parseShoppingIntent(userMessage, userContext) {
+function parseShoppingHeuristic(userMessage) {
+  if (!userMessage || typeof userMessage !== "string") return null;
+  const raw = userMessage.trim();
+  if (!raw) return null;
+
+  let currency = "USDC";
+  if (/[\u20A6]|(?:\b(?:ngn|naira)\b)/i.test(raw)) {
+    currency = "NGN";
+  }
+
+  let text = raw;
+  let deliveryAddress = null;
+  const addressMatch = text.match(/(?:deliver(?:y)?|ship(?:ping)?)\s+(?:to|at)\s+(.+)$/i);
+  if (addressMatch) {
+    deliveryAddress = addressMatch[1].trim();
+    text = text.replace(addressMatch[0], " ").trim();
+  }
+
+  let maxPrice = null;
+  const priceMatch = text.match(/(?:under|below|less\s+than|max(?:imum)?(?:\s+price)?|budget(?:\s+of)?|for)\s+[\$₦]?\s*([\d,]+(?:\.\d+)?)/i) ||
+                     text.match(/[\$₦]\s*([\d,]+(?:\.\d+)?)\s*(?:max|budget)?/i);
+  if (priceMatch) {
+    const num = parseFloat(priceMatch[1].replace(/,/g, ""));
+    if (!isNaN(num) && num > 0) {
+      maxPrice = num;
+      text = text.replace(priceMatch[0], " ").trim();
+    }
+  }
+
+  // Clean leading verbs
+  let cleanName = text
+    .replace(/^(?:find|buy|search\s+for|search|get\s+me|get|order|shop\s+for|shop|purchase|look\s+for)\s+(?:an?\s+)?/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (cleanName.length > 0) {
+    return {
+      product_name: cleanName,
+      max_price: maxPrice,
+      delivery_address: deliveryAddress,
+      currency: currency
+    };
+  }
+  return null;
+}
+
+function normalizeShoppingParsed(parsed, rawUserMessage = "") {
+  if (!parsed || typeof parsed !== "object") return null;
+  if (parsed.error && parsed.error !== "Not a shopping intent") return parsed;
+
+  const productName = parsed.product_name || parsed.productName || parsed.product || parsed.item || null;
+  const maxPrice = parsed.max_price !== undefined ? (parsed.max_price !== null ? Number(parsed.max_price) : null) : (parsed.maxPrice !== undefined ? (parsed.maxPrice !== null ? Number(parsed.maxPrice) : null) : null);
+  const deliveryAddress = parsed.delivery_address || parsed.deliveryAddress || parsed.address || null;
+  const currency = parsed.currency || "USDC";
+
+  if (!productName || typeof productName !== "string" || !productName.trim()) {
+    const fallback = parseShoppingHeuristic(rawUserMessage);
+    if (fallback) return fallback;
+    return { error: "Could not understand the shopping request." };
+  }
+
+  return {
+    product_name: productName.trim(),
+    max_price: isNaN(maxPrice) ? null : maxPrice,
+    delivery_address: deliveryAddress,
+    currency
+  };
+}
+
+async function parseShoppingIntent(userMessage, userContext = {}) {
   const systemPrompt = `You are a Personal Shopper Agent for PayIT.
 The user wants to buy a product online. Even if they say "search the web", treat it as a shopping request.
 Extract the relevant details to search for the product and initiate a purchase.
@@ -23,14 +93,21 @@ Rules:
 User context: ${JSON.stringify(userContext)}`;
 
   try {
-    return await getJSONCompletion(systemPrompt, userMessage);
+    const rawParsed = await getJSONCompletion(systemPrompt, userMessage);
+    const normalized = normalizeShoppingParsed(rawParsed, userMessage);
+    if (normalized && !normalized.error) {
+      return normalized;
+    }
+    const fallback = parseShoppingHeuristic(userMessage);
+    if (fallback) return fallback;
+    return normalized || { error: "Could not understand the shopping request." };
   } catch (err) {
     console.error("[shopping_agent] Error:", err.message);
+    const fallback = parseShoppingHeuristic(userMessage);
+    if (fallback) return fallback;
     return { error: "Could not understand the shopping request." };
   }
 }
-
-const axios = require("axios");
 
 // Fetches a live product from DummyJSON
 async function searchForProduct(productName, maxPrice = null) {
@@ -99,7 +176,7 @@ async function searchForProduct(productName, maxPrice = null) {
     brand: "Verified Brand",
     category: "Electronics",
     sku: `SKU-${Math.floor(Math.random() * 9000 + 1000)}`,
-    image: "https://cdn.dummyjson.com/products/images/laptops/Apple%20MacBook%20Pro%2014%20Inch%20Space%20Grey/thumbnail.png",
+    image: "https://cdn.dummyjson.com/product-images/laptops/apple-macbook-pro-14-inch-space-grey/thumbnail.webp",
     rating: "4.8",
     reviewsCount: 42,
     stock: "In Stock (12 units available)",
@@ -118,4 +195,9 @@ async function searchForProduct(productName, maxPrice = null) {
   };
 }
 
-module.exports = { parseShoppingIntent, searchForProduct };
+module.exports = {
+  parseShoppingIntent,
+  parseShoppingHeuristic,
+  normalizeShoppingParsed,
+  searchForProduct
+};
