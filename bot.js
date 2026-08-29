@@ -32,6 +32,7 @@ const payeeBook     = require("./src/payee_book");
 const convState     = require("./src/conversation_state");
 const { generateInvoicePNG }   = require("./src/invoice_generator");
 const { generateReceiptPNG }   = require("./src/receipt_generator");
+const paymaster = require("./src/paymaster");
 
 // ── Agent modules ─────────────────────────────────────────────────────────────
 const { parsePaymentIntent }      = require("./agent/orchestrator");
@@ -692,6 +693,7 @@ async function showSettings(ctx) {
     ? `${user.phone_number} ${user.phone_verified ? "✅" : "⏳"}`
     : "not set";
   const points  = db.getPointsBalance(ctx.from.id);
+  const paymasterStatus = paymaster.isPaymasterActive() ? "Arc Paymaster (Sponsored ⛽)" : "Direct (Self-paid)";
 
   await ctx.reply(
     `⚙️ Settings\n──────────────────────────\n` +
@@ -699,6 +701,7 @@ async function showSettings(ctx) {
     `Personal account: ${user.deposit_address}\n` +
     `Business account: ${hasBiz ? user.business_deposit_address : "not set up yet"}\n` +
     `Linked account: ${user.external_wallet_address || "none"}\n` +
+    `Gas Sponsorship: ${paymasterStatus}\n` +
     `Phone: ${phone}\n` +
     `Rewards: ${points} points (${formatPointValue(points)})\n\n` +
     `PayIT never holds your money. Your PIN is the only key to your funds.`,
@@ -2522,6 +2525,21 @@ bot.command("invoice",  (ctx) => {
   if (context === "business") return showBizInvoiceMenu(ctx);
   convState.setState(ctx.from.id, "await_invoice_instruction", {}, context);
   return ctx.reply("Describe your invoice:");
+});
+bot.command("paymaster", (ctx) => {
+  const cfg = paymaster.getPaymasterConfig();
+  const active = paymaster.isPaymasterActive();
+  return ctx.reply(
+    `⛽ Arc Paymaster Status\n──────────────────────────\n` +
+    `Status: ${active ? "🟢 Active & Sponsoring Gas" : "🔴 Inactive (Direct Gas)"}\n` +
+    `Paymaster RPC: \`${cfg.paymasterUrl}\`\n` +
+    `Bundler RPC: \`${cfg.bundlerUrl}\`\n` +
+    `Policy ID: \`${cfg.policyId}\`\n` +
+    `EntryPoint: \`${cfg.entryPoint}\`\n` +
+    `Chain ID: \`${cfg.chainId}\`\n\n` +
+    `Transactions sent via PayIT are automatically gas-sponsored when active.`,
+    { parse_mode: "Markdown" }
+  );
 });
 
 async function showAdminMenu(ctx) {
