@@ -195,6 +195,14 @@ async function getJSONCompletion(systemPrompt, userMessage) {
         return { error: "Could not understand the invoice details. Please provide client name and amount." };
       }
 
+      // Shopping parsing prompt
+      if (/shopper/i.test(systemPrompt) || /shopping/i.test(systemPrompt)) {
+        const { parseShoppingHeuristic } = require("./shopping_agent");
+        const parsed = parseShoppingHeuristic(user);
+        if (parsed) return parsed;
+        return { error: "Could not understand the shopping request." };
+      }
+
       // Fallback for other prompts — return a generic unknown
       return {};
     } catch (err) {
