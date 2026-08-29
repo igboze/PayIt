@@ -64,13 +64,16 @@ async function executeOnchainPayment(userWallet, toAddress, amountUsdc, telegram
 
   try {
     let txHash;
+    let sponsored = false;
     if (currency === "EURC") {
       txHash = await tokens.sendEurc(userWallet, toAddress, amountMicro);
     } else {
-      txHash = await walletLib.sendFromWallet(userWallet, toAddress, amountMicro);
+      const sendResult = await walletLib.sendSponsoredOrDirectTransaction(userWallet, toAddress, amountMicro);
+      txHash = sendResult.txHash;
+      sponsored = Boolean(sendResult.sponsored);
     }
     db.updateTransactionStatus(txId, "confirmed");
-    return { success: true, txHash, amount: amountUsdc, to: toAddress, label, currency };
+    return { success: true, txHash, amount: amountUsdc, to: toAddress, label, currency, sponsored };
   } catch (err) {
     db.updateTransactionStatus(txId, "failed");
     return { success: false, error: err.message, label, amount: amountUsdc, to: toAddress, currency };
@@ -262,10 +265,12 @@ function formatResults(results) {
       const shortTx = r.txHash
         ? `\`${r.txHash.slice(0, 10)}...${r.txHash.slice(-8)}\``
         : "";
+      const sponsorBadge = r.sponsored ? `\n   ⛽ Gas: Sponsored by Arc Paymaster ($0.00)` : "";
       return (
         `✅ Sent ${r.amount} ${r.currency || "USDC"}\n` +
         `   → \`${r.to}\`\n` +
-        (shortTx ? `   Tx: ${shortTx}\n` : "") +
+        (shortTx ? `   Tx: ${shortTx}` : "") +
+        sponsorBadge + `\n` +
         `   (${r.label})`
       );
     }

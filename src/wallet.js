@@ -256,14 +256,14 @@ async function validateInvoicePayment(invoiceId, expectedAmountMicro, txHash, pa
   }
 }
 
-async function sendFromWallet(signer, toAddress, amountMicro) {
+async function sendDirectFromWallet(signer, toAddress, amountMicro, options = {}) {
   const tx = await signer.sendTransaction({
     to: toAddress,
     value: amountMicro,
   });
 
   const provider = signer.provider || getProvider();
-  if (provider && typeof provider.waitForTransaction === "function") {
+  if (provider && typeof provider.waitForTransaction === "function" && !options.skipWait && process.env.NODE_ENV !== "test") {
     provider.waitForTransaction(tx.hash, 1, 120000)
       .then((receipt) => {
         if (!receipt) {
@@ -279,6 +279,52 @@ async function sendFromWallet(signer, toAddress, amountMicro) {
 
   return tx.hash;
 }
+
+/**
+ * Send transaction with Arc Paymaster gas sponsorship if active,
+ * falling back gracefully to direct EOA transaction.
+ */
+async function sendSponsoredOrDirectTransaction(signer, toAddress, amountMicro, data = "0x", options = {}) {
+  let paymasterLib;
+  try {
+    paymasterLib = require("./paymaster");
+  } catch (e) {
+    paymasterLib = null;
+  }
+
+  if (paymasterLib && paymasterLib.isPaymasterActive()) {
+    try {
+      console.log(`[wallet] Attempting Arc Paymaster sponsorship for ${toAddress}...`);
+      const sponsoredResult = await paymasterLib.executeSponsoredTransaction(signer, toAddress, amountMicro, data, options);
+      if (sponsoredResult && sponsoredResult.txHash) {
+        console.log(`[wallet] Transaction sponsored successfully by Arc Paymaster: ${sponsoredResult.txHash}`);
+        return {
+          txHash: sponsoredResult.txHash,
+          sponsored: true,
+          userOpHash: sponsoredResult.userOpHash,
+          sponsor: "Arc Paymaster",
+        };
+      }
+    } catch (paymasterErr) {
+      console.warn(`[wallet] Arc Paymaster sponsorship failed/rejected (${paymasterErr.message}), falling back to direct send...`);
+    }
+  }
+
+  // Direct EOA fallback
+  const txHash = await sendDirectFromWallet(signer, toAddress, amountMicro);
+  return {
+    txHash,
+    sponsored: false,
+    userOpHash: null,
+    sponsor: null,
+  };
+}
+
+async function sendFromWallet(signer, toAddress, amountMicro) {
+  const result = await sendSponsoredOrDirectTransaction(signer, toAddress, amountMicro);
+  return result.txHash;
+}
+
 
 module.exports = {
   generateUserWallet,
@@ -297,4 +343,6 @@ module.exports = {
   getValidatedAddress,
 
   sendFromWallet,
+  sendDirectFromWallet,
+  sendSponsoredOrDirectTransaction,
 };

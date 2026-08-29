@@ -13,5 +13,6 @@ tmp*.db
 *.sqlite
 *.sqlite3
 *.out.json
-*.jsonl
 deployments/
+tmp-*/
+tmp-kits/
