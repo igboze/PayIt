@@ -98,31 +98,37 @@ test("Wallet: sendSponsoredOrDirectTransaction falls back to direct transaction 
 
   // Temporarily stub sendDirectFromWallet
   const originalSendDirect = walletLib.sendDirectFromWallet;
-  try {
-    // Force paymaster error by setting an invalid paymaster endpoint
+    const origEnabled = process.env.ARC_PAYMASTER_ENABLED;
     const origUrl = process.env.ARC_PAYMASTER_RPC_URL;
-    process.env.ARC_PAYMASTER_RPC_URL = "http://127.0.0.1:54321/invalid";
-    process.env.ARC_PAYMASTER_ENABLED = "true";
+    const origNodeEnv = process.env.NODE_ENV;
+    try {
+      process.env.NODE_ENV = "test";
+      process.env.ARC_PAYMASTER_RPC_URL = "http://127.0.0.1:54321/invalid";
+      process.env.ARC_PAYMASTER_ENABLED = "true";
 
-    const mockAmount = parseUnits("1", 18);
-    const mockTo = "0x3333333333333333333333333333333333333333";
-    const mockHash = "0x" + "a".repeat(64);
+      const mockAmount = parseUnits("1", 18);
+      const mockTo = "0x3333333333333333333333333333333333333333";
+      const mockHash = "0x" + "a".repeat(64);
 
-    // Mock direct signer sendTransaction
-    dummyWallet.sendTransaction = async (tx) => {
-      directSendCalled = true;
-      return { hash: mockHash };
-    };
+      // Mock direct signer sendTransaction
+      dummyWallet.sendTransaction = async (tx) => {
+        directSendCalled = true;
+        return { hash: mockHash };
+      };
 
-    const result = await walletLib.sendSponsoredOrDirectTransaction(dummyWallet, mockTo, mockAmount);
+      const result = await walletLib.sendSponsoredOrDirectTransaction(dummyWallet, mockTo, mockAmount);
 
-    assert.ok(result);
-    assert.equal(result.txHash, mockHash);
-    assert.equal(result.sponsored, false);
-    assert.equal(directSendCalled, true);
-
-    process.env.ARC_PAYMASTER_RPC_URL = origUrl;
-  } finally {
-    // Restore
-  }
+      assert.ok(result);
+      assert.equal(result.txHash, mockHash);
+      assert.equal(result.sponsored, false);
+      assert.equal(directSendCalled, true);
+    } finally {
+      process.env.ARC_PAYMASTER_RPC_URL = origUrl;
+      process.env.ARC_PAYMASTER_ENABLED = origEnabled;
+      if (origNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = origNodeEnv;
+      }
+    }
 });

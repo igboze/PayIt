@@ -64,7 +64,7 @@ async function callOpenAI(systemPrompt, userMessage) {
     clientOptions.baseURL = process.env.OPENAI_BASE_URL;
   }
   const client = new OpenAI(clientOptions);
-  let model  = process.env.OPENAI_MODEL || "meta/llama-3.1-70b-instruct";
+  let model  = process.env.OPENAI_MODEL || (process.env.OPENAI_BASE_URL ? "meta/llama-3.1-70b-instruct" : "gpt-4o-mini");
   if (model === "nvidia/llama-3.1-70b-instruct") {
     model = "meta/llama-3.1-70b-instruct";
   }
@@ -185,6 +185,14 @@ async function getJSONCompletion(systemPrompt, userMessage) {
           };
         }
         return { error: "Could not understand the payment instruction." };
+      }
+
+      // Invoice parsing prompt
+      if (/invoice/i.test(systemPrompt)) {
+        const { parseSmartInvoiceHeuristic } = require("./smart_invoice_agent");
+        const parsed = parseSmartInvoiceHeuristic(user);
+        if (parsed) return parsed;
+        return { error: "Could not understand the invoice details. Please provide client name and amount." };
       }
 
       // Fallback for other prompts — return a generic unknown
