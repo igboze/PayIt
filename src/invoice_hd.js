@@ -111,7 +111,7 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
       chain: "SOLANA",
       userExternalId: invoiceNumber,
       description: `Payment for Invoice #${invoiceNumber}`,
-      businessUSDCFee: 0.1,
+      businessUSDCFee: 0,
     });
 
     if (order && order.accountNumber) {
@@ -233,7 +233,7 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
       chain: "SOLANA",
       userExternalId: invoiceNumber,
       description: `Payment for Invoice #${invoiceNumber}`,
-      businessUSDCFee: 0.1,
+      businessUSDCFee: 0,
     });
 
     if (order && order.accountNumber) {

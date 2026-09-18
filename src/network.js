@@ -40,15 +40,42 @@ function getNetworkConfig() {
   const envChainId = process.env.ARC_CHAIN_ID;
 
   let baseKey = "mainnet";
-  if (envNet === "testnet" || envRpc.includes("testnet") || String(envChainId) === "5042002") {
+  if (envNet === "testnet") {
+    baseKey = "testnet";
+  } else if (!envNet && (envRpc.includes("testnet") || String(envChainId) === "5042002")) {
     baseKey = "testnet";
   }
 
   const base = NETWORKS[baseKey];
 
-  const chainId = envChainId ? parseInt(envChainId, 10) : base.chainId;
-  const rpcUrl = process.env.ARC_RPC_URL || base.rpcUrl;
-  const explorerUrl = (process.env.ARC_EXPLORER_URL || base.explorerUrl).replace(/\/+$/, "");
+  let chainId = base.chainId;
+  if (envChainId) {
+    const parsed = parseInt(envChainId, 10);
+    if (baseKey === "mainnet" && parsed === 5042002) {
+      chainId = 5042;
+    } else {
+      chainId = parsed;
+    }
+  }
+
+  let rpcUrl = base.rpcUrl;
+  if (process.env.ARC_RPC_URL) {
+    if (baseKey === "mainnet" && process.env.ARC_RPC_URL.includes("testnet")) {
+      rpcUrl = base.rpcUrl;
+    } else {
+      rpcUrl = process.env.ARC_RPC_URL;
+    }
+  }
+
+  let explorerUrl = base.explorerUrl;
+  if (process.env.ARC_EXPLORER_URL) {
+    if (baseKey === "mainnet" && process.env.ARC_EXPLORER_URL.includes("testnet")) {
+      explorerUrl = base.explorerUrl;
+    } else {
+      explorerUrl = process.env.ARC_EXPLORER_URL.replace(/\/+$/, "");
+    }
+  }
+
   const gatewayApiUrl = process.env.GATEWAY_API_URL || base.gatewayApiUrl;
   const usdcAddress = process.env.ARC_USDC_ADDRESS || base.usdcAddress;
   const eurcAddress = process.env.ARC_EURC_ADDRESS || base.eurcAddress;
