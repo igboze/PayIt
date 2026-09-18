@@ -340,11 +340,18 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
     // 2. Call depositForBurn targeting Solana (Domain 5)
     const tokenMessenger = new Contract(tokenMessengerAddress, TOKEN_MESSENGER_ABI, userWallet);
     const tx = await tokenMessenger.depositForBurn(amountUnits, CCTP_DOMAINS.SOLANA, mintRecipient, usdcAddress);
-    const receipt = await tx.wait();
+    
+    // Non-blocking receipt confirmation with timeout
+    if (tx && tx.wait) {
+      Promise.race([
+        tx.wait(1),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Confirmation timeout")), 12000))
+      ]).catch((wErr) => console.warn("[cctp_bridge:wait_note]", wErr.message));
+    }
 
     return {
       success: true,
-      txHash: receipt.hash,
+      txHash: tx.hash,
       recipientSolanaAddress,
       amountUsdc,
       sourceDomain: CCTP_DOMAINS.ARC,
