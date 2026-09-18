@@ -170,8 +170,41 @@ async function redeemOnArc({ userPrivateKey, attestation, signature, message }) 
 }
 
 /**
+ * Direct disbursement of native USDC on Arc Mainnet from Relayer Treasury.
+ * This guarantees instant 1-second funding to the user's Arc wallet for onramp deposits.
+ *
+ * @param {object} params
+ * @param {string} params.recipientArcAddress - Destination Arc address
+ * @param {number} params.amountUsdc - USDC amount to transfer
+ * @param {string} [params.signerPrivateKey] - Optional relayer key
+ * @returns {Promise<string>} - Transaction hash on Arc
+ */
+async function disburseDirectOnArc({ recipientArcAddress, amountUsdc, signerPrivateKey }) {
+  const net = getNetworkConfig();
+  const provider = new JsonRpcProvider(net.rpcUrl, net.chainId);
+
+  const signerKey = signerPrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
+  if (!signerKey) {
+    throw new Error("No relayer key configured to broadcast Arc transfer");
+  }
+
+  const { parseUnits } = require("ethers");
+  const relayerWallet = new Wallet(signerKey, provider);
+  const amountWei = parseUnits(amountUsdc.toString(), 18); // Arc native USDC is 18 decimals
+
+  console.log(`[cctp_bridge] Disbursing $${amountUsdc} native USDC on Arc to ${recipientArcAddress}...`);
+  const tx = await relayerWallet.sendTransaction({
+    to: recipientArcAddress,
+    value: amountWei,
+  });
+  const receipt = await tx.wait();
+  console.log(`[cctp_bridge] Direct Arc disbursement confirmed: ${receipt.hash}`);
+  return receipt.hash;
+}
+
+/**
  * Auto-Bridge Handler: Triggered when an onramp payment settles on Solana.
- * Automatically executes the cross-chain transition into Arc Mainnet via Circle CCTP.
+ * Automatically executes the cross-chain transition into Arc Mainnet via Circle CCTP or direct relayer disbursement.
  *
  * @param {object} params
  * @param {string} params.telegramId - User Telegram ID
@@ -197,26 +230,46 @@ async function autoBridgeSolanaToArc({
     throw new Error("Recipient Arc address required for auto-bridge");
   }
 
-  // Step 1: Query Circle Iris API for CCTP message
-  const msgDetails = await fetchCctpMessage(CCTP_DOMAINS.SOLANA, solanaTxSignature);
-
   let arcTxHash = null;
   let attestation = null;
+  let msgDetails = { message: null, messageHash: null };
 
-  // Step 2: If messageHash is found and polling is enabled, poll attestation
+  // Step 1: Query Circle Iris API for CCTP message if signature provided
+  if (solanaTxSignature) {
+    try {
+      msgDetails = await fetchCctpMessage(CCTP_DOMAINS.SOLANA, solanaTxSignature);
+    } catch (msgErr) {
+      console.warn(`[cctp_bridge] Fetch CCTP message warning:`, msgErr.message);
+    }
+  }
+
+  // Step 2: If messageHash is found and polling is enabled, try CCTP contract redeem
   if (msgDetails.messageHash && maxAttempts > 0) {
     try {
       const attResult = await pollCctpAttestation(msgDetails.messageHash, maxAttempts, intervalMs);
       attestation = attResult.attestation;
 
-      // Step 3: Redeem on Arc
       arcTxHash = await redeemOnArc({
         userPrivateKey: signerPrivateKey,
         attestation,
         message: msgDetails.message,
       });
     } catch (err) {
-      console.warn(`[cctp_bridge] Automatic redeem deferred (attestation pending or relayer busy):`, err.message);
+      console.warn(`[cctp_bridge] CCTP contract redeem deferred:`, err.message);
+    }
+  }
+
+  // Step 3: If not redeemed via CCTP contract, disburse directly on Arc via Relayer
+  const relayerKey = signerPrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
+  if (!arcTxHash && relayerKey) {
+    try {
+      arcTxHash = await disburseDirectOnArc({
+        recipientArcAddress,
+        amountUsdc,
+        signerPrivateKey: relayerKey,
+      });
+    } catch (disburseErr) {
+      console.warn(`[cctp_bridge] Direct Arc disbursement note:`, disburseErr.message);
     }
   }
 
@@ -242,5 +295,6 @@ module.exports = {
   fetchCctpMessage,
   pollCctpAttestation,
   redeemOnArc,
+  disburseDirectOnArc,
   autoBridgeSolanaToArc,
 };
