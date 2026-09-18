@@ -7,12 +7,15 @@ const webhookServer = require("../src/webhook_server");
 
 describe("Account Isolation & Multi-User Separation Suite", () => {
   it("guarantees unique addresses and complete isolation between Personal, Business, and different Users", () => {
+    const tgIdA = Math.floor(Math.random() * 800000) + 100000;
+    const tgIdB = Math.floor(Math.random() * 800000) + 100000;
+
     // 1. Create User A (Personal + Business)
     const walletA_Pers = Wallet.createRandom();
     const walletA_Biz  = Wallet.createRandom();
     const userA = db.createUserWithWallet(
-      888111,
-      "user_a",
+      tgIdA,
+      `user_a_${tgIdA}`,
       walletA_Pers.address,
       walletA_Pers.privateKey,
       "1234",
@@ -24,8 +27,8 @@ describe("Account Isolation & Multi-User Separation Suite", () => {
     const walletB_Pers = Wallet.createRandom();
     const walletB_Biz  = Wallet.createRandom();
     const userB = db.createUserWithWallet(
-      888222,
-      "user_b",
+      tgIdB,
+      `user_b_${tgIdB}`,
       walletB_Pers.address,
       walletB_Pers.privateKey,
       "5678",
@@ -55,15 +58,15 @@ describe("Account Isolation & Multi-User Separation Suite", () => {
 
     // Verify db lookup by Solana address correctly identifies the exact user and account
     const foundUserA_Pers = db.getUserBySolanaAddress(userA.solana_deposit_address);
-    assert.strictEqual(foundUserA_Pers.telegram_id, 888111);
+    assert.strictEqual(foundUserA_Pers.telegram_id, tgIdA);
 
     const foundUserA_Biz = db.getUserByBizSolanaAddress(userA.biz_solana_deposit_address);
-    assert.strictEqual(foundUserA_Biz.telegram_id, 888111);
+    assert.strictEqual(foundUserA_Biz.telegram_id, tgIdA);
 
     const foundUserB_Pers = db.getUserBySolanaAddress(userB.solana_deposit_address);
-    assert.strictEqual(foundUserB_Pers.telegram_id, 888222);
+    assert.strictEqual(foundUserB_Pers.telegram_id, tgIdB);
 
     const foundUserB_Biz = db.getUserByBizSolanaAddress(userB.biz_solana_deposit_address);
-    assert.strictEqual(foundUserB_Biz.telegram_id, 888222);
+    assert.strictEqual(foundUserB_Biz.telegram_id, tgIdB);
   });
 });

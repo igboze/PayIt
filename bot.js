@@ -640,21 +640,20 @@ async function showReceive(ctx) {
   const label   = context === "business" ? "Business" : "Personal";
 
   await ctx.reply(
-    `📥 Add Money — ${label}\n──────────────────────────\n` +
-    `Your PayIT account number (tap to copy):\n\n` +
-    `<code>${address}</code>\n\n` +
-    `Anyone can send you dollars or euros to this address from any compatible wallet.\n\n` +
-    `• 🇳🇬 <b>Deposit Naira</b>: Pay via bank transfer (Wema, GTB, Kuda) to get USDC directly.\n` +
-    `• 💳 <b>Buy USDC with Card</b>: Direct purchase with Visa, Mastercard, Apple Pay.\n` +
-    `• 🌍 <b>Add from Abroad</b>: Bridge in from Binance, Coinbase, MetaMask, etc.`,
+    `📥 <b>Add Money — ${label}</b>\n──────────────────────────\n` +
+    `Choose your preferred deposit method:\n\n` +
+    `• 🇳🇬 <b>Bank Transfer (Naira)</b>: Pay from your Nigerian bank app (Kuda, GTBank, Opay, PalmPay) to get Dollars.\n` +
+    `• 💳 <b>Card or Apple Pay</b>: Direct purchase with Visa, Mastercard, or Apple Pay.\n` +
+    `• 🌐 <b>Crypto & Web3 Deposit</b>: Send crypto directly from Binance, Coinbase, or any Web3 wallet.\n\n` +
+    `Your PayIT Account Number (tap to copy):\n<code>${address}</code>`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
         [Markup.button.callback("🇳🇬 Deposit Naira (Bank Transfer)", "action_paj_onramp")],
-        [Markup.button.callback("💳 Buy USDC (Card / Onramp)", "gateway_onramp")],
-        [Markup.button.callback("🌍 Add from Abroad (Gateway)", "action_gateway")],
-        [Markup.button.callback("💰 Check Balance", "action_balance")],
-        [Markup.button.callback("🏠 Main Menu",     "main_menu")],
+        [Markup.button.callback("💳 Pay with Card / Apple Pay",     "gateway_onramp")],
+        [Markup.button.callback("🌐 Crypto & Web3 Deposit",        "action_gateway")],
+        [Markup.button.callback("💰 Check Balance",                 "action_balance")],
+        [Markup.button.callback("🏠 Main Menu",                     "main_menu")],
       ]),
     }
   );
@@ -1093,8 +1092,8 @@ bot.action("toggle_auto_earn", async (ctx) => {
   db.updateAutoEarnSetting(ctx.from.id, nextVal);
   await ctx.reply(
     nextVal
-      ? "🟢 <b>Auto-Earn Enabled!</b>\n\nWhen your USDC sits idle on PayIT for 2+ hours, it automatically deposits into non-locking Morpho vaults to earn yield. PayIT takes a 10% cut on yield upon withdrawal, and your money is auto-withdrawn anytime you make a payment!"
-      : "⚪ <b>Auto-Earn Disabled.</b>\n\nYour idle funds will remain liquid in your wallet without earning yield.",
+      ? "🟢 <b>Auto-Earn Enabled!</b>\n\nWhen your dollars sit idle on PayIT for 2+ hours, they automatically earn interest in high-yield daily savings. You keep 90% of the interest earned upon withdrawal, and your money is always 100% available whenever you make a payment!"
+      : "⚪ <b>Auto-Earn Disabled.</b>\n\nYour funds will remain in your standard wallet balance without earning interest.",
     { parse_mode: "HTML" }
   );
   return showYields(ctx);
@@ -1494,10 +1493,10 @@ bot.action("action_paj_onramp", async (ctx) => {
     convState.setState(ctx.from.id, "await_paj_onramp_amount", { rate: onRampRate }, getContext(ctx.from.id));
 
     return ctx.reply(
-      `🇳🇬 <b>Deposit Naira to Get USDC</b>\n──────────────────────────\n` +
-      `Live rate: <b>1 USDC = ₦${Number(onRampRate).toLocaleString()}</b>\n\n` +
+      `🇳🇬 <b>Deposit Naira to Get Dollars ($)</b>\n──────────────────────────\n` +
+      `Live rate: <b>$1.00 = ₦${Number(onRampRate).toLocaleString()}</b>\n\n` +
       `How much Naira would you like to deposit? (e.g. <code>25000</code> or <code>50000</code>)\n` +
-      `<i>PayIT will generate a dedicated bank transfer invoice for you.</i>`,
+      `<i>PayIT will generate a dedicated bank transfer account for you.</i>`,
       {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]),
@@ -1510,7 +1509,7 @@ bot.action("action_paj_onramp", async (ctx) => {
 });
 
 bot.action(/^action_check_paj_onramp_(.+)$/, async (ctx) => {
-  ctx.answerCbQuery("Checking deposit status on Paj & Arc...");
+  ctx.answerCbQuery("Checking deposit status...");
   const orderId = ctx.match[1];
   const user = requireUser(ctx);
   if (!user) return;
@@ -1523,9 +1522,9 @@ bot.action(/^action_check_paj_onramp_(.+)$/, async (ctx) => {
   return ctx.reply(
     `🔄 <b>Deposit Status Check</b>\n` +
     `──────────────────────────\n` +
-    `Order ID: <code>${orderId}</code>\n` +
-    `Current Arc Balance: <b>$${balDisplay} USDC</b>\n\n` +
-    `<i>If you've just transferred from your banking app, NIBSS and Solana settlement takes ~30-90 seconds. Circle CCTP will auto-bridge the USDC directly into your Arc wallet!</i>`,
+    `Reference: <code>${orderId}</code>\n` +
+    `Current Balance: <b>$${balDisplay}</b>\n\n` +
+    `<i>Bank transfers typically credit in 30-90 seconds. Once confirmed, your balance updates automatically!</i>`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
@@ -1609,12 +1608,12 @@ bot.action("yield_withdraw_start", (ctx) => {
   const total   = parseFloat((position.amount_usdc + netYield).toFixed(4));
   convState.setState(ctx.from.id, "confirm_yield_withdraw", { position, accrued, devFee, netYield, total }, context);
   return ctx.reply(
-    `💵 <b>Withdraw ${context === "business" ? "Business" : "Personal"} Savings & Yield</b>\n──────────────────────────\n` +
-    `• <b>Principal:</b> $${position.amount_usdc.toFixed(2)} USDC\n` +
-    `• <b>Gross Interest:</b> +$${accrued.toFixed(4)} USDC\n` +
-    `• <b>PayIT Dev Fee (10%):</b> -$${devFee.toFixed(4)} USDC\n` +
-    `• <b>Net Payout to You:</b> $${total.toFixed(4)} USDC\n\n` +
-    `<i>At withdrawal, your principal and 90% net yield are returned to your ${context === "business" ? "business treasury" : "personal wallet"}, while the dev fee is automatically routed.</i>\n\n` +
+    `💵 <b>Withdraw ${context === "business" ? "Business" : "Personal"} Savings</b>\n──────────────────────────\n` +
+    `• <b>Principal:</b> $${position.amount_usdc.toFixed(2)}\n` +
+    `• <b>Interest Earned:</b> +$${accrued.toFixed(4)}\n` +
+    `• <b>Service Fee (10% on profit):</b> -$${devFee.toFixed(4)}\n` +
+    `• <b>Net Payout to You:</b> $${total.toFixed(4)}\n\n` +
+    `<i>Your principal and 90% of your earnings will be returned immediately to your ${context === "business" ? "business treasury" : "personal wallet"}.</i>\n\n` +
     `Enter your PIN to withdraw:`,
     {
       parse_mode: "HTML",
@@ -1710,16 +1709,16 @@ bot.action("action_swap", async (ctx) => {
   } catch {}
 
   return ctx.reply(
-    `🔄 <b>Arc Stablecoin Swap (FX)</b>\n──────────────────────────\n` +
-    `Swap between USDC (USD) and EURC (EUR) instantly on Arc.\n\n` +
+    `🔄 <b>Currency Converter</b>\n──────────────────────────\n` +
+    `Convert between US Dollars ($) and Euros (€) instantly at market rates.\n\n` +
     `<b>Your Balances:</b>\n` +
-    `• 💵 <b>USDC:</b> $${usdcBal.toFixed(2)}\n` +
-    `• 💶 <b>EURC:</b> €${eurcBal.toFixed(2)}\n` +
+    `• 💵 <b>Dollars:</b> $${usdcBal.toFixed(2)}\n` +
+    `• 💶 <b>Euros:</b> €${eurcBal.toFixed(2)}\n` +
     ratesInfo + `\n` +
-    `Select swap direction:`,
+    `Select conversion:`,
     Markup.inlineKeyboard([
-      [Markup.button.callback("💵 USDC ➔ 💶 EURC", "swap_start_usdc_eurc")],
-      [Markup.button.callback("💶 EURC ➔ 💵 USDC", "swap_start_eurc_usdc")],
+      [Markup.button.callback("💵 Convert Dollars ➔ Euros", "swap_start_usdc_eurc")],
+      [Markup.button.callback("💶 Convert Euros ➔ Dollars", "swap_start_eurc_usdc")],
       [Markup.button.callback("🏠 Main Menu",        "main_menu")],
     ])
   );
@@ -1738,8 +1737,8 @@ bot.action("swap_start_usdc_eurc", async (ctx) => {
 
   if (usdcBal <= 0) {
     return ctx.reply(
-      "You don't have any USDC to swap yet. Deposit or receive USDC first.",
-      Markup.inlineKeyboard([[Markup.button.callback("📥 Deposit", "action_receive")], [Markup.button.callback("🔄 Back", "action_swap")]])
+      "You don't have any dollars to convert yet. Add money first.",
+      Markup.inlineKeyboard([[Markup.button.callback("📥 Add Money", "action_receive")], [Markup.button.callback("🔄 Back", "action_swap")]])
     );
   }
 
@@ -1750,9 +1749,9 @@ bot.action("swap_start_usdc_eurc", async (ctx) => {
   }, getContext(ctx.from.id));
 
   return ctx.reply(
-    `🔄 <b>Swap USDC ➔ EURC</b>\n──────────────────────────\n` +
-    `Available: $${usdcBal.toFixed(2)} USDC\n\n` +
-    `How much USDC would you like to swap? (Min: $0.10)`,
+    `🔄 <b>Convert Dollars ➔ Euros</b>\n──────────────────────────\n` +
+    `Available: $${usdcBal.toFixed(2)}\n\n` +
+    `How many dollars would you like to convert? (e.g. 10)`,
     Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_swap")]])
   );
 });
@@ -1770,7 +1769,7 @@ bot.action("swap_start_eurc_usdc", async (ctx) => {
 
   if (eurcBal <= 0) {
     return ctx.reply(
-      "You don't have any EURC to swap yet.",
+      "You don't have any euros to convert yet.",
       Markup.inlineKeyboard([[Markup.button.callback("🔄 Back", "action_swap")]])
     );
   }
@@ -1782,9 +1781,9 @@ bot.action("swap_start_eurc_usdc", async (ctx) => {
   }, getContext(ctx.from.id));
 
   return ctx.reply(
-    `🔄 <b>Swap EURC ➔ USDC</b>\n──────────────────────────\n` +
-    `Available: €${eurcBal.toFixed(2)} EURC\n\n` +
-    `How much EURC would you like to swap? (Min: €0.10)`,
+    `🔄 <b>Convert Euros ➔ Dollars</b>\n──────────────────────────\n` +
+    `Available: €${eurcBal.toFixed(2)}\n\n` +
+    `How many euros would you like to convert? (e.g. 10)`,
     Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_swap")]])
   );
 });
@@ -3448,16 +3447,16 @@ bot.on("text", async (ctx) => {
         const tokenAmount = (fiatAmount / onRampRate).toFixed(2);
 
         return ctx.reply(
-          `🇳🇬 <b>Bank Transfer Invoice Created</b>\n` +
+          `🇳🇬 <b>Bank Transfer Instructions</b>\n` +
           `──────────────────────────\n` +
           `💼 <b>Account:</b> ${isBiz ? "Business Treasury" : "Personal Wallet"}\n` +
-          `🏦 <b>Bank:</b> ${order.bank || "PalmPay"}\n` +
+          `🏦 <b>Bank Name:</b> ${order.bank || "PalmPay"}\n` +
           `🔢 <b>Account Number:</b> <code>${order.accountNumber}</code> <i>(Tap to copy)</i>\n` +
           `👤 <b>Account Name:</b> ${order.accountName || "PayIT / Paj Settlement"}\n` +
           `💵 <b>Amount to Send:</b> <b>₦${Number(fiatAmount).toLocaleString()}</b>\n` +
-          `🪙 <b>USDC to Receive:</b> ~${tokenAmount} USDC\n\n` +
+          `💰 <b>Dollars to Receive:</b> ~$${tokenAmount}\n\n` +
           `⚠️ <i>Transfer the EXACT amount (<b>₦${Number(fiatAmount).toLocaleString()}</b>) from your banking app (Kuda, GTBank, Opay, PalmPay, etc.).\n` +
-          `Once payment is detected, USDC lands automatically in your ${isBiz ? "business treasury" : "personal wallet"} and bridges to Arc Mainnet!</i>`,
+          `Your dollar balance will be credited automatically once the transfer is confirmed!</i>`,
           {
             parse_mode: "HTML",
             ...Markup.inlineKeyboard([
@@ -3569,10 +3568,10 @@ bot.on("text", async (ctx) => {
       return ctx.reply(
         `💵 <b>Confirm Cash Out</b>\n` +
         `──────────────────────────\n` +
-        `<b>Amount:</b> $${state.data.amountUsdc.toFixed(2)} USDC\n` +
-        `<b>Bank:</b> ${resolvedBankName} (Code: <code>${resolvedBankCode}</code>)\n` +
+        `<b>Amount:</b> $${state.data.amountUsdc.toFixed(2)}\n` +
+        `<b>Bank:</b> ${resolvedBankName}\n` +
         `<b>Account Number:</b> <code>${acctNumber}</code>\n\n` +
-        `<i>Funds will be verified with NIBSS and paid out in Naira directly to this account.</i>\n\n` +
+        `<i>Funds will be sent directly in Naira to this bank account.</i>\n\n` +
         `Enter your 4-digit PIN to authorize:`,
         {
           parse_mode: "HTML",
@@ -3844,12 +3843,12 @@ bot.on("text", async (ctx) => {
       const explorerLink = depositTxHash ? `\n\n🔗 <a href="${netConfig.explorerUrl}/tx/${depositTxHash}">View Deposit on Arc Explorer</a>` : "";
 
       return ctx.reply(
-        `✅ <b>${context === "business" ? "Business" : "Personal"} Savings started!</b>\n──────────────────────────\n` +
+        `✅ <b>${context === "business" ? "Business" : "Personal"} Savings Started!</b>\n──────────────────────────\n` +
         `• <b>Account:</b> ${context === "business" ? "Business Treasury" : "Personal Wallet"}\n` +
-        `• <b>Amount:</b> $${state.data.amountUsdc.toFixed(2)} USDC\n` +
-        `• <b>Vault:</b> ${state.data.pool.project || "Arc Morpho Vault"}\n` +
-        `• <b>Earning APY:</b> ${state.data.pool.userApy}% per year\n` +
-        `• <b>Withdrawal:</b> Anytime from 📈 Save & Earn` +
+        `• <b>Amount:</b> $${state.data.amountUsdc.toFixed(2)}\n` +
+        `• <b>Savings Plan:</b> High-Yield Dollar Savings\n` +
+        `• <b>Earning Rate:</b> ${state.data.pool.userApy}% per year\n` +
+        `• <b>Withdrawal:</b> Anytime with zero penalty` +
         explorerLink,
         Markup.inlineKeyboard([
           [Markup.button.callback("📊 My Savings", "action_my_yield")],
@@ -3895,7 +3894,7 @@ bot.on("text", async (ctx) => {
         amount: state.data.total,
       });
 
-      await ctx.reply(`⏳ Withdrawing from Arc Earn vault (${context === "business" ? "Business Treasury" : "Personal Wallet"}) and routing PayIT dev fee...`);
+      await ctx.reply(`⏳ Withdrawing from savings (${context === "business" ? "Business Treasury" : "Personal Wallet"})...`);
 
       let pk;
       try {
@@ -3943,16 +3942,16 @@ bot.on("text", async (ctx) => {
         txLinks += `\n\n🔗 <a href="${netConfig.explorerUrl}/tx/${withdrawTx}">View Withdrawal on Arc Explorer</a>`;
       }
       if (feeTx) {
-        txLinks += `\n🔗 <a href="${netConfig.explorerUrl}/tx/${feeTx}">View PayIT Dev Fee on Arc Explorer</a>`;
+        txLinks += `\n🔗 <a href="${netConfig.explorerUrl}/tx/${feeTx}">View PayIT Service Fee on Arc Explorer</a>`;
       }
 
       return ctx.reply(
-        `✅ <b>${context === "business" ? "Business" : "Personal"} Savings & Yield Withdrawn!</b>\n──────────────────────────\n` +
+        `✅ <b>${context === "business" ? "Business" : "Personal"} Savings Withdrawn!</b>\n──────────────────────────\n` +
         `• <b>Account:</b> ${context === "business" ? "Business Treasury" : "Personal Wallet"}\n` +
-        `• <b>Principal Returned:</b> $${state.data.position.amount_usdc.toFixed(2)} USDC\n` +
-        `• <b>Gross Interest Earned:</b> +$${state.data.accrued.toFixed(4)} USDC\n` +
-        `• <b>PayIT Dev Fee (10% on yield):</b> -$${devFeeAmount.toFixed(4)} USDC\n` +
-        `• <b>Net Credited to Wallet:</b> $${netPaid.toFixed(4)} USDC` +
+        `• <b>Principal Returned:</b> $${state.data.position.amount_usdc.toFixed(2)}\n` +
+        `• <b>Interest Earned:</b> +$${state.data.accrued.toFixed(4)}\n` +
+        `• <b>Service Fee (10% on profit):</b> -$${devFeeAmount.toFixed(4)}\n` +
+        `• <b>Net Credited to Account:</b> $${netPaid.toFixed(4)}` +
         txLinks,
         {
           parse_mode: "HTML",
@@ -3966,13 +3965,14 @@ bot.on("text", async (ctx) => {
     if (state.type === "await_swap_amount") {
       const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
       if (isNaN(amount) || amount <= 0) {
-        return ctx.reply("Enter a valid amount to swap (e.g. 10).");
+        return ctx.reply("Enter a valid amount to convert (e.g. 10).");
       }
       if (amount > state.data.balance) {
-        return ctx.reply(`You only have ${state.data.balance.toFixed(2)} ${state.data.fromToken}. Enter a smaller amount:`);
+        const sym = state.data.fromToken === "USDC" ? "$" : "€";
+        return ctx.reply(`You only have ${sym}${state.data.balance.toFixed(2)}. Enter a smaller amount:`);
       }
 
-      await ctx.reply("Fetching live swap quote on Arc...");
+      await ctx.reply("Fetching live conversion rate...");
       const amountMicro = walletLib.parseToMicro(amount.toString());
       let quote = null;
       let estReceive = 0;
@@ -3980,7 +3980,9 @@ bot.on("text", async (ctx) => {
       try {
         quote = await swapLib.getSwapQuote(state.data.fromToken, state.data.toToken, amountMicro);
         estReceive = parseFloat(quote?.destinationAmount || quote?.amountOut || (amount * (state.data.fromToken === "USDC" ? 0.917 : 1.09)));
-        rateDisplay = `• Rate: 1 ${state.data.fromToken} ≈ ${(estReceive / amount).toFixed(4)} ${state.data.toToken}\n`;
+        const fromLabel = state.data.fromToken === "USDC" ? "Dollar" : "Euro";
+        const toSym = state.data.toToken === "USDC" ? "$" : "€";
+        rateDisplay = `• Rate: 1 ${fromLabel} ≈ ${toSym}${(estReceive / amount).toFixed(4)}\n`;
       } catch (err) {
         console.warn("[bot:swap_quote]", err.message);
         estReceive = amount * (state.data.fromToken === "USDC" ? 0.917 : 1.09);
@@ -3993,14 +3995,15 @@ bot.on("text", async (ctx) => {
         expectedOut: estReceive,
       }, state.context);
 
+      const payLabel = state.data.fromToken === "USDC" ? `$${amount.toFixed(2)} Dollars` : `€${amount.toFixed(2)} Euros`;
+      const recLabel = state.data.toToken === "USDC" ? `$${estReceive.toFixed(2)} Dollars` : `€${estReceive.toFixed(2)} Euros`;
+
       return ctx.reply(
-        `🔄 <b>Confirm Swap</b>\n──────────────────────────\n` +
-        `• Pay: <b>${amount.toFixed(2)} ${state.data.fromToken}</b>\n` +
-        `• Receive: ≈ <b>${estReceive.toFixed(2)} ${state.data.toToken}</b>\n` +
+        `🔄 <b>Confirm Currency Conversion</b>\n──────────────────────────\n` +
+        `• Pay: <b>${payLabel}</b>\n` +
+        `• Receive: ≈ <b>${recLabel}</b>\n` +
         rateDisplay +
-        `• Slippage Tolerance: 0.5%\n` +
-        `• Network: Arc Mainnet\n\n` +
-        `Enter your 4-digit PIN to execute swap:`,
+        `\nEnter your 4-digit PIN to convert:`,
         Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_swap")]])
       );
     }
@@ -4024,7 +4027,7 @@ bot.on("text", async (ctx) => {
 
       const user = db.getUser(userId);
       convState.clearState(userId);
-      await ctx.reply("⏳ Executing your swap on Arc...");
+      await ctx.reply("⏳ Converting currency...");
 
       let pk;
       try {
@@ -4057,11 +4060,13 @@ bot.on("text", async (ctx) => {
       } catch (e) {}
 
       const explorerLink = swapTxHash ? `\n\n🔗 <a href="${netConfig.explorerUrl}/tx/${swapTxHash}">View on Arc Explorer</a>` : "";
+      const soldLabel = state.data.fromToken === "USDC" ? `$${state.data.amountIn.toFixed(2)} Dollars` : `€${state.data.amountIn.toFixed(2)} Euros`;
+      const recLabel = state.data.toToken === "USDC" ? `$${state.data.expectedOut.toFixed(2)} Dollars` : `€${state.data.expectedOut.toFixed(2)} Euros`;
 
       return ctx.reply(
-        `✅ <b>Swap Successful!</b>\n──────────────────────────\n` +
-        `• Sold: <b>${state.data.amountIn.toFixed(2)} ${state.data.fromToken}</b>\n` +
-        `• Received: ≈ <b>${state.data.expectedOut.toFixed(2)} ${state.data.toToken}</b>\n` +
+        `✅ <b>Conversion Successful!</b>\n──────────────────────────\n` +
+        `• Converted: <b>${soldLabel}</b>\n` +
+        `• Received: ≈ <b>${recLabel}</b>\n` +
         `• Status: Confirmed` +
         explorerLink,
         afterPaymentButtons
@@ -4118,24 +4123,25 @@ bot.on("text", async (ctx) => {
           `🧾 <b>Invoice #${fullInvoice.invoiceNumber} Created!</b>\n` +
           `──────────────────────────\n` +
           `👤 <b>Client:</b> ${state.data.parsed.clientName}\n` +
-          `💵 <b>Amount:</b> $${fullInvoice.totalUsdc.toFixed(2)} USDC\n` +
+          `💵 <b>Amount:</b> $${fullInvoice.totalUsdc.toFixed(2)}\n` +
           (state.data.parsed.dueDate ? `📅 <b>Due Date:</b> ${state.data.parsed.dueDate}\n` : "");
 
         if (fullInvoice.fiatDetails) {
           caption +=
-            `\n🇳🇬 <b>Option 1: Nigerian Bank Transfer</b>\n` +
+            `\n🇳🇬 <b>Option 1: Nigerian Bank Transfer (Naira)</b>\n` +
             `• <b>Bank:</b> ${fullInvoice.fiatDetails.bankName}\n` +
             `• <b>Account No:</b> <code>${fullInvoice.fiatDetails.accountNumber}</code> (tap to copy)\n` +
             `• <b>Account Name:</b> ${fullInvoice.fiatDetails.accountName}\n` +
             `• <b>Exact Amount:</b> ₦${fullInvoice.fiatDetails.fiatAmount.toLocaleString()}\n` +
-            `<i>(Single-use dynamic account for this invoice alone)</i>\n`;
+            `<i>(Dedicated virtual account for this invoice alone)</i>\n`;
         }
 
         caption +=
-          `\n🌐 <b>Option 2: On-Chain Arc USDC</b>\n` +
-          `• <b>Address:</b> <code>${fullInvoice.paymentAddress}</code>\n` +
+          `\n🌐 <b>Option 2: Direct Crypto / Web3 Payment (USDC)</b>\n` +
+          `• <b>Deposit Address:</b> <code>${fullInvoice.paymentAddress}</code>\n` +
+          `• <b>Network:</b> Arc Mainnet\n` +
           `<i>(Dedicated single-invoice address · QR code on card)</i>\n\n` +
-          `⚡ <i>Payments settle automatically to your main account!</i>`;
+          `⚡ <i>Payments settle automatically to your account!</i>`;
 
         await ctx.replyWithPhoto({ source: fullInvoice.pngPath }, {
           caption,
@@ -4210,12 +4216,12 @@ bot.on("text", async (ctx) => {
           `──────────────────────────\n` +
           `🏢 <b>Business:</b> ${profile?.business_name || user.username || `Business`}\n` +
           `👤 <b>Client:</b> ${state.data.parsed.clientName}\n` +
-          `💵 <b>Total:</b> $${fullBizInvoice.totalUsdc.toFixed(2)} USDC\n` +
+          `💵 <b>Total:</b> $${fullBizInvoice.totalUsdc.toFixed(2)}\n` +
           (state.data.parsed.dueDate ? `📅 <b>Due Date:</b> ${state.data.parsed.dueDate}\n` : "");
 
         if (fullBizInvoice.fiatDetails) {
           caption +=
-            `\n🇳🇬 <b>Option 1: Nigerian Bank Transfer</b>\n` +
+            `\n🇳🇬 <b>Option 1: Nigerian Bank Transfer (Naira)</b>\n` +
             `• <b>Bank:</b> ${fullBizInvoice.fiatDetails.bankName}\n` +
             `• <b>Account No:</b> <code>${fullBizInvoice.fiatDetails.accountNumber}</code> (tap to copy)\n` +
             `• <b>Account Name:</b> ${fullBizInvoice.fiatDetails.accountName}\n` +
@@ -4224,8 +4230,9 @@ bot.on("text", async (ctx) => {
         }
 
         caption +=
-          `\n🌐 <b>Option 2: On-Chain Arc USDC</b>\n` +
-          `• <b>Address:</b> <code>${fullBizInvoice.paymentAddress}</code>\n` +
+          `\n🌐 <b>Option 2: Direct Crypto / Web3 Payment (USDC)</b>\n` +
+          `• <b>Deposit Address:</b> <code>${fullBizInvoice.paymentAddress}</code>\n` +
+          `• <b>Network:</b> Arc Mainnet\n` +
           `<i>(Dedicated address · QR code on invoice card)</i>\n` +
           goalNote +
           `\n⚡ <i>Payments settle directly into your main business account!</i>`;
