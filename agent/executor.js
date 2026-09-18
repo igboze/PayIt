@@ -216,25 +216,38 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
 
   const txId = db.recordTransaction(telegramId, "offramp", amountMicro, "pending", null, options.accountType || "personal");
 
-  // Step 1: Create offramp order via Paj v2 (validates bank details with NIBSS and gives dedicated funding address)
+  // Step 1: Create or reuse existing offramp order via Paj v2
   let result;
-  try {
-    result = await offramp.requestOfframp(telegramId, amountMicro, {
-      accountNumber: bankDetails.accountNumber || "0000000000",
-      bankCode:      bankDetails.bankCode      || "000013",
-      accountName:   bankDetails.accountName   || "PayIT User",
-      fiatAmount:    bankDetails.fiatAmount,
-      accountType:   options.accountType       || "personal",
-    });
-    if (!result.success) {
+  if (bankDetails && bankDetails.orderAddress && bankDetails.orderId) {
+    result = {
+      success: true,
+      reference: bankDetails.orderId,
+      address: bankDetails.orderAddress,
+      amount: amountUsdc,
+      fiatAmount: bankDetails.fiatAmount,
+      accountName: bankDetails.accountName,
+      rate: bankDetails.rate,
+      status: "pending",
+    };
+  } else {
+    try {
+      result = await offramp.requestOfframp(telegramId, amountMicro, {
+        accountNumber: bankDetails.accountNumber || "0000000000",
+        bankCode:      bankDetails.bankCode      || "000013",
+        accountName:   bankDetails.accountName   || "PayIT User",
+        fiatAmount:    bankDetails.fiatAmount,
+        accountType:   options.accountType       || "personal",
+      });
+      if (!result.success) {
+        db.updateTransactionStatus(txId, "failed");
+        idempotency.failOperationIdempotency(idempKey, result.error || "Could not create offramp order");
+        return { success: false, error: result.error || "Could not create offramp order", label, amount: amountUsdc, chain: "fiat" };
+      }
+    } catch (err) {
       db.updateTransactionStatus(txId, "failed");
-      idempotency.failOperationIdempotency(idempKey, result.error || "Could not create offramp order");
-      return { success: false, error: result.error || "Could not create offramp order", label, amount: amountUsdc, chain: "fiat" };
+      idempotency.failOperationIdempotency(idempKey, err.message);
+      return { success: false, error: "Offramp request failed: " + err.message, label, amount: amountUsdc, chain: "fiat" };
     }
-  } catch (err) {
-    db.updateTransactionStatus(txId, "failed");
-    idempotency.failOperationIdempotency(idempKey, err.message);
-    return { success: false, error: "Offramp request failed: " + err.message, label, amount: amountUsdc, chain: "fiat" };
   }
 
   // Step 2: On-chain send to offramp destination address
@@ -246,34 +259,29 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
   let txHash;
   try {
     if (isTargetSolana) {
-      // Direct Circle CCTP: Burn native USDC on Arc and mint SPL USDC directly to Paj's Solana deposit address.
-      // This requires ZERO project liquidity or relayer treasury USDC balance.
-      const cctpRes = await cctpBridge.executeArcToSolanaCctpBurn({
-        userWallet,
-        amountUsdc,
-        recipientSolanaAddress: result.address,
-      });
+      // 1. Debit user on Arc by transferring native USDC to PayIT Relayer / Treasury
+      const treasuryArcAddress = process.env.APP_FEE_RECIPIENT_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
+      
+      // Calculate send amount ensuring user leaves gas headroom if balance is close to amountMicro
+      let sendMicro = amountMicro;
+      if (balance <= amountMicro + 1000000000000000n && balance > 5000000000000000n) {
+        sendMicro = balance - 2000000000000000n; // Leave 0.002 USDC for gas on Arc
+      }
+      txHash = await walletLib.sendFromWallet(userWallet, treasuryArcAddress, sendMicro);
 
-      if (cctpRes && cctpRes.success && cctpRes.txHash) {
-        txHash = cctpRes.txHash;
-      } else {
-        // Fallback if CCTP burn encounters network issues: debit on Arc and attempt relayer bridge
-        const treasuryArcAddress = process.env.APP_FEE_RECIPIENT_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
-        txHash = await walletLib.sendFromWallet(userWallet, treasuryArcAddress, amountMicro);
-
-        const relayerKey = process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
-        if (relayerKey) {
-          try {
-            const derivedSol = multichain.deriveSolanaFromEvmKey(relayerKey);
-            await multichain.sendSolanaTransfer({
-              keypair: derivedSol.keypair,
-              recipientAddress: result.address,
-              amount: result.amount || amountUsdc,
-              currency: "USDC",
-            });
-          } catch (solErr) {
-            console.warn("[executor:solana_paj_settlement_note]", solErr.message);
-          }
+      // 2. Deliver SPL USDC on Solana to Paj's dynamic deposit address
+      const relayerKey = process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
+      if (relayerKey) {
+        try {
+          const derivedSol = multichain.deriveSolanaFromEvmKey(relayerKey);
+          await multichain.sendSolanaTransfer({
+            keypair: derivedSol.keypair,
+            recipientAddress: result.address,
+            amount: result.amount || amountUsdc,
+            currency: "USDC",
+          });
+        } catch (solErr) {
+          console.warn("[executor:solana_paj_settlement_note]", solErr.message);
         }
       }
     } else {

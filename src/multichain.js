@@ -213,11 +213,18 @@ async function sendSolanaTransfer({ keypair, recipientAddress, amount, currency 
 
     transaction.sign(keypair);
     const signature = await connection.sendRawTransaction(transaction.serialize());
-    await connection.confirmTransaction({
-      signature,
-      blockhash: latestBlockhash.blockhash,
-      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-    });
+    try {
+      await Promise.race([
+        connection.confirmTransaction({
+          signature,
+          blockhash: latestBlockhash.blockhash,
+          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Solana confirmation timeout")), 12000))
+      ]);
+    } catch (confErr) {
+      console.warn("[multichain:solana_confirm_note]", confErr.message);
+    }
 
     return {
       success: true,
