@@ -237,6 +237,32 @@ async function sendSolanaTransfer({ keypair, recipientAddress, amount, currency 
   }
 }
 
+/**
+ * Query SPL token balance for an address.
+ *
+ * @param {string} ownerAddress - Solana public key
+ * @param {PublicKey} [mint=SOLANA_USDC_MINT] - Token mint
+ * @returns {Promise<{ uiAmount: number, amountRaw: string, decimals: number }>}
+ */
+async function getSplTokenBalance(ownerAddress, mint = SOLANA_USDC_MINT) {
+  if (!isSolanaAddress(ownerAddress)) {
+    return { uiAmount: 0, amountRaw: "0", decimals: 6 };
+  }
+  try {
+    const connection = getSolanaConnection();
+    const ownerPubkey = new PublicKey(ownerAddress);
+    const ata = getAssociatedTokenAddress(ownerPubkey, mint);
+    const balanceRes = await connection.getTokenAccountBalance(ata);
+    return {
+      uiAmount: balanceRes?.value?.uiAmount || 0,
+      amountRaw: balanceRes?.value?.amount || "0",
+      decimals: balanceRes?.value?.decimals || 6,
+    };
+  } catch (err) {
+    return { uiAmount: 0, amountRaw: "0", decimals: 6 };
+  }
+}
+
 module.exports = {
   deriveSolanaFromEvmKey,
   isSolanaAddress,
@@ -245,6 +271,7 @@ module.exports = {
   createAssociatedTokenAccountInstruction,
   createSplTokenTransferInstruction,
   sendSolanaTransfer,
+  getSplTokenBalance,
   SOLANA_USDC_MINT,
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,

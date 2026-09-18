@@ -1514,17 +1514,51 @@ bot.action(/^action_check_paj_onramp_(.+)$/, async (ctx) => {
   const user = requireUser(ctx);
   if (!user) return;
 
+  const context = user.active_context || "personal";
+  const isBiz = context === "business";
   const addr = getActiveWallet(user);
+  const solAddr = isBiz && user.biz_solana_deposit_address
+    ? user.biz_solana_deposit_address
+    : user.solana_deposit_address;
+
+  // 1. Actively scan Solana deposit address for USDC funds from Paj
+  let bridgedAmount = 0;
+  if (solAddr) {
+    try {
+      const splBal = await multichain.getSplTokenBalance(solAddr);
+      if (splBal && splBal.uiAmount > 0) {
+        bridgedAmount = splBal.uiAmount;
+        console.log(`[paj_check] Detected $${bridgedAmount} USDC on Solana address ${solAddr}, bridging to Arc ${addr}...`);
+        await cctpBridge.autoBridgeSolanaToArc({
+          telegramId: user.telegram_id,
+          amountUsdc: bridgedAmount,
+          recipientArcAddress: addr,
+        });
+      }
+    } catch (err) {
+      console.warn("[paj_check_solana_sync_warn]", err.message);
+    }
+  }
+
   let balMicro = BigInt(0);
   try { balMicro = await walletLib.getNativeBalanceMicro(addr); } catch {}
   const balDisplay = walletLib.formatMicro(balMicro);
 
+  const syncText = bridgedAmount > 0
+    ? `🎉 <b>Payment Detected!</b>\n` +
+      `──────────────────────────\n` +
+      `💰 <b>Credited:</b> $${bridgedAmount.toFixed(2)}\n` +
+      `💼 <b>Account:</b> ${isBiz ? "Business Treasury" : "Personal Wallet"}\n` +
+      `Current Balance: <b>$${balDisplay}</b>\n\n` +
+      `<i>Your funds have been credited and are ready to use!</i>`
+    : `🔄 <b>Deposit Status Check</b>\n` +
+      `──────────────────────────\n` +
+      `Reference: <code>${orderId}</code>\n` +
+      `Current Balance: <b>$${balDisplay}</b>\n\n` +
+      `<i>Bank transfers typically credit in 30-90 seconds. Once confirmed, your balance updates automatically!</i>`;
+
   return ctx.reply(
-    `🔄 <b>Deposit Status Check</b>\n` +
-    `──────────────────────────\n` +
-    `Reference: <code>${orderId}</code>\n` +
-    `Current Balance: <b>$${balDisplay}</b>\n\n` +
-    `<i>Bank transfers typically credit in 30-90 seconds. Once confirmed, your balance updates automatically!</i>`,
+    syncText,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
@@ -3430,12 +3464,14 @@ bot.on("text", async (ctx) => {
         }
 
         const externalId = isBiz ? `${userId}-biz` : String(userId);
+        const webhookURL = process.env.PAJ_WEBHOOK_URL || (process.env.WEBHOOK_URL ? `${process.env.WEBHOOK_URL.replace(/\/$/, "")}/webhook/paj` : undefined);
         const order = await paj.createOnrampOrder({
           fiatAmount,
           currency: "NGN",
           recipient: solAddr,
           mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
           chain: "SOLANA",
+          webhookURL,
           userExternalId: externalId,
           businessUSDCFee: 0,
           metadata: { accountType: context },
