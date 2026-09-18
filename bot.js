@@ -39,6 +39,7 @@ const convState     = require("./src/conversation_state");
 const { generateInvoicePNG }   = require("./src/invoice_generator");
 const { generateReceiptPNG }   = require("./src/receipt_generator");
 const paymaster = require("./src/paymaster");
+const bankResolver = require("./src/bank_resolver");
 
 // ── Agent modules ─────────────────────────────────────────────────────────────
 const { parsePaymentIntent }      = require("./agent/orchestrator");
@@ -3640,68 +3641,78 @@ bot.on("text", async (ctx) => {
     }
 
     if (state.type === "await_withdraw_bank") {
-      // Parse "GTBank · 0123456789" or "0123456789 · GTBank"
-      const parts      = text.split(/[·\-,|]/).map(s => s.trim());
-      let bankName     = parts[0] || null;
-      let acctNumber   = parts[1]?.replace(/\D/g, "") || null;
-      let acctName     = parts[2] || null;
+      const parsed = await bankResolver.parseBankDetails(text);
 
-      // If user provided number first, swap
-      if (/^\d{10}$/.test(bankName) && !acctNumber) {
-        acctNumber = bankName;
-        bankName = parts[1] || "GTBank";
-      }
-
-      if (!acctNumber || acctNumber.length < 10) {
+      if (!parsed.accountNumber || parsed.accountNumber.length !== 10) {
         if (shouldReprocessConversationState("await_withdraw_bank", text)) {
           convState.clearState(userId);
           return bot.handleUpdate({ update_id: ctx.update.update_id, message: ctx.message });
         }
         return ctx.reply(
-          "Please enter your 10-digit Nigerian bank account number. Format:\nBank name · Account number\n\nFor example: GTBank · 0123456789",
-          Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+          `⚠️ <b>Please enter a valid 10-digit Nigerian bank account number.</b>\n\n` +
+          `Format: <b>Bank Name · Account Number</b>\n` +
+          `Example: <code>GTBank · 0123456789</code> or <code>Kuda · 2001234567</code>`,
+          {
+            parse_mode: "HTML",
+            ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]),
+          }
         );
       }
 
-      // Resolve bank code from Paj v2
-      let resolvedBankCode = "000013"; // GTBank default
-      let resolvedBankName = bankName || "Guaranty Trust Bank";
+      // Pre-validate with Paj v2 to get live account name if possible
+      let liveAccountName = parsed.accountName;
+      let orderReservation = null;
       try {
-        const banks = await paj.getBanks({ country: "NG" });
-        const query = (bankName || "").toLowerCase();
-        const match = banks.find(b =>
-          b.name.toLowerCase().includes(query) ||
-          b.code === query ||
-          (query.includes("gtb") && b.name.toLowerCase().includes("guaranty")) ||
-          (query.includes("kuda") && b.name.toLowerCase().includes("kuda")) ||
-          (query.includes("wema") && b.name.toLowerCase().includes("wema")) ||
-          (query.includes("opay") && b.name.toLowerCase().includes("opay")) ||
-          (query.includes("zenith") && b.name.toLowerCase().includes("zenith")) ||
-          (query.includes("access") && b.name.toLowerCase().includes("access"))
-        );
-        if (match) {
-          resolvedBankCode = match.code;
-          resolvedBankName = match.name;
+        orderReservation = await paj.createOfframpOrder({
+          accountNumber: parsed.accountNumber,
+          bankCode: parsed.bankCode,
+          amount: state.data.amountUsdc,
+        });
+        if (orderReservation && orderReservation.accountName) {
+          liveAccountName = orderReservation.accountName;
         }
-      } catch (err) {
-        console.warn("[paj_bank_lookup_warn]", err.message);
+      } catch (valErr) {
+        const msg = String(valErr.message || "");
+        if (msg.includes("Invalid account number") || msg.includes("400")) {
+          return ctx.reply(
+            `❌ <b>Could Not Verify Bank Account</b>\n──────────────────────────\n` +
+            `The banking network (NIBSS) could not find account <code>${parsed.accountNumber}</code> for <b>${parsed.bankName}</b>.\n\n` +
+            `Please double check that:\n` +
+            `1. The 10-digit account number is correct.\n` +
+            `2. The bank name matches where the account was opened.\n\n` +
+            `<i>Try typing it again (e.g. ${parsed.bankName} · ${parsed.accountNumber}):</i>`,
+            {
+              parse_mode: "HTML",
+              ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]),
+            }
+          );
+        }
+        console.warn("[bot:await_withdraw_bank:prevalidation_note]", valErr.message);
       }
 
       convState.setState(userId, "confirm_withdraw", {
         amountUsdc: state.data.amountUsdc,
-        bankName: resolvedBankName,
-        bankCode: resolvedBankCode,
-        accountNumber: acctNumber,
-        accountName: acctName,
+        bankName: parsed.bankName,
+        bankCode: parsed.bankCode,
+        accountNumber: parsed.accountNumber,
+        accountName: liveAccountName,
+        orderId: orderReservation?.id || null,
+        orderAddress: orderReservation?.address || null,
+        fiatAmount: orderReservation?.fiatAmount || null,
+        rate: orderReservation?.rate || null,
       }, state.context);
+
+      const acctNameLine = liveAccountName ? `👤 <b>Account Name:</b> ${liveAccountName}\n` : "";
+      const nairaEst = orderReservation?.fiatAmount ? ` (approx. ₦${Number(orderReservation.fiatAmount).toLocaleString()})` : "";
 
       return ctx.reply(
         `💵 <b>Confirm Cash Out</b>\n` +
         `──────────────────────────\n` +
-        `<b>Amount:</b> $${state.data.amountUsdc.toFixed(2)}\n` +
-        `<b>Bank:</b> ${resolvedBankName}\n` +
-        `<b>Account Number:</b> <code>${acctNumber}</code>\n\n` +
-        `<i>Funds will be sent directly in Naira to this bank account.</i>\n\n` +
+        `💰 <b>Amount:</b> $${state.data.amountUsdc.toFixed(2)}${nairaEst}\n` +
+        `🏦 <b>Bank:</b> ${parsed.bankName}\n` +
+        `🔢 <b>Account Number:</b> <code>${parsed.accountNumber}</code>\n` +
+        acctNameLine + `\n` +
+        `<i>Funds will be transferred directly in Naira to this bank account.</i>\n\n` +
         `Enter your 4-digit PIN to authorize:`,
         {
           parse_mode: "HTML",
