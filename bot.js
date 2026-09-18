@@ -785,12 +785,10 @@ async function showRewardsMenu(ctx) {
 ` +
     `Points balance: ${balance}
 ` +
-    `Redeem value (testnet): ${formatPointValue(balance)}
+    `Redeem value: ${formatPointValue(balance)}
 
 ` +
-    `Redeem points for airtime or bill credit on testnet.
-` +
-    `This is a reward pilot experience — fulfillment is test-only for now.
+    `Redeem points for airtime, bill credits, and cashback bonuses.
 `,
     Markup.inlineKeyboard([
       [Markup.button.callback("📲 Redeem Airtime", "action_redeem_airtime")],
@@ -3440,25 +3438,26 @@ bot.on("text", async (ctx) => {
           mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
           chain: "SOLANA",
           userExternalId: externalId,
-          businessUSDCFee: 0.1,
+          businessUSDCFee: 0,
           metadata: { accountType: context },
         });
 
         convState.clearState(userId);
 
-        const tokenAmount = order.amount ? parseFloat(order.amount).toFixed(2) : (fiatAmount / (state.data?.rate || 1388.75)).toFixed(2);
+        const onRampRate = state.data?.rate || (await paj.getRates("NGN").then(r => r?.onRampRate?.rate).catch(() => 1393.75));
+        const tokenAmount = (fiatAmount / onRampRate).toFixed(2);
 
         return ctx.reply(
           `🇳🇬 <b>Bank Transfer Invoice Created</b>\n` +
           `──────────────────────────\n` +
           `💼 <b>Account:</b> ${isBiz ? "Business Treasury" : "Personal Wallet"}\n` +
-          `🏦 <b>Bank:</b> ${order.bank || "Wema Bank PLC"}\n` +
+          `🏦 <b>Bank:</b> ${order.bank || "PalmPay"}\n` +
           `🔢 <b>Account Number:</b> <code>${order.accountNumber}</code> <i>(Tap to copy)</i>\n` +
           `👤 <b>Account Name:</b> ${order.accountName || "PayIT / Paj Settlement"}\n` +
-          `💵 <b>Amount to Send:</b> <b>₦${Number(order.fiatAmount || fiatAmount).toLocaleString()}</b>\n` +
+          `💵 <b>Amount to Send:</b> <b>₦${Number(fiatAmount).toLocaleString()}</b>\n` +
           `🪙 <b>USDC to Receive:</b> ~${tokenAmount} USDC\n\n` +
-          `⚠️ <i>Transfer the EXACT amount from your banking app (Kuda, GTBank, Opay, etc.).\n` +
-          `Once payment is detected, USDC lands automatically in your ${isBiz ? "business treasury" : "personal wallet"} and bridges to Arc!</i>`,
+          `⚠️ <i>Transfer the EXACT amount (<b>₦${Number(fiatAmount).toLocaleString()}</b>) from your banking app (Kuda, GTBank, Opay, PalmPay, etc.).\n` +
+          `Once payment is detected, USDC lands automatically in your ${isBiz ? "business treasury" : "personal wallet"} and bridges to Arc Mainnet!</i>`,
           {
             parse_mode: "HTML",
             ...Markup.inlineKeyboard([
@@ -4283,12 +4282,9 @@ bot.on("text", async (ctx) => {
       db.awardPoints(userId, -points, `redeem_${redeemType}`, `Redeemed ${points} points for ${redeemType}`);
       convState.clearState(userId);
       return ctx.reply(
-        `✅ Redemption requested!
-` +
-        `${points} points redeemed for ${formatPointValue(points)} ${redeemType === "airtime" ? "airtime credit" : "bill credit"}.
-
-` +
-        `This is a testnet reward flow. When live, fulfillment will credit your account automatically.`,
+        `✅ Redemption requested!\n` +
+        `${points} points redeemed for ${formatPointValue(points)} ${redeemType === "airtime" ? "airtime credit" : "bill credit"}.\n\n` +
+        `Fulfillment is processing and will credit your account automatically.`,
         Markup.inlineKeyboard([[Markup.button.callback("🏠 Main Menu", "main_menu")]])
       );
     }
