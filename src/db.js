@@ -301,6 +301,16 @@ function createUserWithWallet(
     console.warn("[db] Failed to derive Solana address during user creation:", err.message);
   }
 
+  let bizSolanaDepositAddress = null;
+  if (businessAddress && businessPrivateKey) {
+    try {
+      const derivedBizSol = multichain.deriveSolanaFromEvmKey(businessPrivateKey);
+      bizSolanaDepositAddress = derivedBizSol.solanaAddress;
+    } catch (err) {
+      console.warn("[db] Failed to derive Business Solana address:", err.message);
+    }
+  }
+
   db.prepare(`
     INSERT INTO users (
       telegram_id, username,
@@ -308,8 +318,8 @@ function createUserWithWallet(
       business_deposit_address, biz_encrypted_key, biz_key_salt, biz_key_iv, biz_key_tag,
       active_context,
       referrer_telegram_id, referral_code, referred_at, referred_on_first_point,
-      solana_deposit_address
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      solana_deposit_address, biz_solana_deposit_address
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     telegramId, username || null,
     address, enc.encryptedKey, enc.salt, enc.iv, enc.tag,
@@ -321,7 +331,8 @@ function createUserWithWallet(
     referralCode,
     referredAt,
     0,
-    solanaDepositAddress
+    solanaDepositAddress,
+    bizSolanaDepositAddress
   );
 
   return getUser(telegramId);
@@ -333,15 +344,25 @@ function createUserWithWallet(
  */
 function addBusinessWallet(telegramId, businessAddress, businessPrivateKey, pin) {
   const bizEnc = walletLib.encryptPrivateKey(businessPrivateKey, pin);
+  let bizSolanaDepositAddress = null;
+  try {
+    const derivedBizSol = multichain.deriveSolanaFromEvmKey(businessPrivateKey);
+    bizSolanaDepositAddress = derivedBizSol.solanaAddress;
+  } catch (err) {
+    console.warn("[db] Failed to derive Business Solana address on add:", err.message);
+  }
+
   db.prepare(`
     UPDATE users SET
       business_deposit_address = ?,
       biz_encrypted_key = ?, biz_key_salt = ?, biz_key_iv = ?, biz_key_tag = ?,
+      biz_solana_deposit_address = ?,
       active_context = 'business'
     WHERE telegram_id = ?
   `).run(
     businessAddress,
     bizEnc.encryptedKey, bizEnc.salt, bizEnc.iv, bizEnc.tag,
+    bizSolanaDepositAddress,
     telegramId
   );
 }
