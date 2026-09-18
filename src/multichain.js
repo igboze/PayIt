@@ -263,6 +263,123 @@ async function getSplTokenBalance(ownerAddress, mint = SOLANA_USDC_MINT) {
   }
 }
 
+// Solana CCTP Mainnet Program IDs
+const SOLANA_CCTP_TOKEN_MESSENGER = new PublicKey("CCTPmbSD7gX1bxKPAmg77w8oFzNFpaQiQUWD43TKaecd");
+const SOLANA_CCTP_MESSAGE_TRANSMITTER = new PublicKey("CCTPMmbNxLdtMRVhWeXiWryPnx3KitQTJqwLcxreVC55");
+
+/**
+ * Execute CCTP depositForBurn on Solana to burn SPL USDC for Arc Mainnet (Domain 26).
+ *
+ * @param {object} params
+ * @param {Keypair} params.userKeypair - User's derived Solana keypair
+ * @param {number} params.amountUsdc - Amount to burn
+ * @param {string} params.recipientArcAddress - Destination 0x... EVM address on Arc
+ * @param {Keypair} [params.feePayerKeypair] - Optional fee payer keypair (PayIT pays the $0.0008 fee)
+ * @returns {Promise<{ success: boolean, txSignature?: string, error?: string }>}
+ */
+async function executeSolanaCctpBurn({ userKeypair, amountUsdc, recipientArcAddress, feePayerKeypair }) {
+  if (!userKeypair) {
+    return { success: false, error: "User Solana keypair required for CCTP burn" };
+  }
+  const connection = getSolanaConnection();
+  const payer = feePayerKeypair || userKeypair;
+
+  try {
+    const mint = SOLANA_USDC_MINT;
+    const userAta = getAssociatedTokenAddress(userKeypair.publicKey, mint);
+
+    const [messageTransmitterPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("message_transmitter")],
+      SOLANA_CCTP_MESSAGE_TRANSMITTER
+    );
+
+    const [tokenMessengerPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("token_messenger")],
+      SOLANA_CCTP_TOKEN_MESSENGER
+    );
+
+    const [tokenMinterPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("token_minter")],
+      SOLANA_CCTP_TOKEN_MESSENGER
+    );
+
+    const [localTokenPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("local_token"), mint.toBuffer()],
+      SOLANA_CCTP_TOKEN_MESSENGER
+    );
+
+    const domainBuffer = Buffer.alloc(4);
+    domainBuffer.writeUInt32BE(26, 0); // Arc Mainnet domain = 26
+
+    const [remoteTokenMessengerPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("remote_token_messenger"), domainBuffer],
+      SOLANA_CCTP_TOKEN_MESSENGER
+    );
+
+    const [senderAuthorityPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("sender_authority")],
+      SOLANA_CCTP_TOKEN_MESSENGER
+    );
+
+    // Format 32-byte recipient: zero-padded EVM address
+    const cleanEvm = recipientArcAddress.replace(/^0x/, "").toLowerCase();
+    const recipientBuffer = Buffer.alloc(32);
+    Buffer.from(cleanEvm, "hex").copy(recipientBuffer, 12);
+
+    const discriminator = Buffer.from([198, 210, 137, 240, 109, 179, 135, 14]);
+    const amountBaseUnits = BigInt(Math.round(amountUsdc * 1e6));
+    const amountBuf = Buffer.alloc(8);
+    amountBuf.writeBigUInt64LE(amountBaseUnits, 0);
+
+    const destDomainBuf = Buffer.alloc(4);
+    destDomainBuf.writeUInt32LE(26, 0);
+
+    const data = Buffer.concat([discriminator, amountBuf, destDomainBuf, recipientBuffer]);
+
+    const keys = [
+      { pubkey: userKeypair.publicKey, isSigner: true, isWritable: false },
+      { pubkey: payer.publicKey, isSigner: true, isWritable: true },
+      { pubkey: senderAuthorityPda, isSigner: false, isWritable: false },
+      { pubkey: userAta, isSigner: false, isWritable: true },
+      { pubkey: messageTransmitterPda, isSigner: false, isWritable: false },
+      { pubkey: tokenMessengerPda, isSigner: false, isWritable: false },
+      { pubkey: remoteTokenMessengerPda, isSigner: false, isWritable: false },
+      { pubkey: tokenMinterPda, isSigner: false, isWritable: true },
+      { pubkey: localTokenPda, isSigner: false, isWritable: true },
+      { pubkey: mint, isSigner: false, isWritable: true },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: SOLANA_CCTP_MESSAGE_TRANSMITTER, isSigner: false, isWritable: false },
+      { pubkey: SOLANA_CCTP_TOKEN_MESSENGER, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ];
+
+    const instruction = new TransactionInstruction({
+      programId: SOLANA_CCTP_TOKEN_MESSENGER,
+      keys,
+      data,
+    });
+
+    const latestBlockhash = await connection.getLatestBlockhash();
+    const tx = new Transaction({
+      feePayer: payer.publicKey,
+      recentBlockhash: latestBlockhash.blockhash,
+    }).add(instruction);
+
+    const signers = [payer];
+    if (payer.publicKey.toBase58() !== userKeypair.publicKey.toBase58()) {
+      signers.push(userKeypair);
+    }
+
+    tx.sign(...signers);
+    const rawTx = tx.serialize();
+    const txSignature = await connection.sendRawTransaction(rawTx, { skipPreflight: false });
+    return { success: true, txSignature };
+  } catch (err) {
+    console.warn("[multichain:cctp_burn_error]", err.message);
+    return { success: false, error: err.message };
+  }
+}
+
 module.exports = {
   deriveSolanaFromEvmKey,
   isSolanaAddress,
@@ -272,6 +389,7 @@ module.exports = {
   createSplTokenTransferInstruction,
   sendSolanaTransfer,
   getSplTokenBalance,
+  executeSolanaCctpBurn,
   SOLANA_USDC_MINT,
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,

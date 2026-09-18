@@ -143,6 +143,22 @@ async function createOnrampOrder(params) {
 }
 
 /**
+ * Fetch status of an onramp order by ID.
+ * @param {string} orderId
+ * @returns {Promise<object|null>}
+ */
+async function getOnrampOrder(orderId) {
+  if (!orderId) return null;
+  const client = getClient();
+  try {
+    const response = await client.get(`/onramp/${orderId}`);
+    return response.data;
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
  * 4. Create an Offramp Order (On-chain Token -> Naira Bank Payout).
  * Pre-validates bank account with NIBSS and returns dynamic one-time funding address.
  * @param {object} params
@@ -270,6 +286,7 @@ module.exports = {
   getRates,
   getBanks,
   createOnrampOrder,
+  getOnrampOrder,
   createOfframpOrder,
   registerPermanentBankAccount,
   searchBankAccount,

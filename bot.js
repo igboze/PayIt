@@ -1719,6 +1719,100 @@ bot.action("action_yields",   (ctx) => { ctx.answerCbQuery(); return showYields(
 bot.action("action_my_yield", (ctx) => { ctx.answerCbQuery(); return showMyYield(ctx); });
 bot.action("action_settings", (ctx) => { ctx.answerCbQuery(); convState.clearState(ctx.from.id); return showSettings(ctx); });
 bot.action("action_referral", (ctx) => { ctx.answerCbQuery(); return showReferralMenu(ctx); });
+
+bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
+  safeAnswerCbQuery(ctx, "Checking onramp status...");
+  const user = requireUser(ctx);
+  if (!user) return;
+
+  const orderId = ctx.match[1];
+  const context = getContext(ctx.from?.id);
+  const isBiz = context === "business";
+  const solAddr = isBiz
+    ? (user.biz_solana_deposit_address || user.solana_deposit_address)
+    : (user.solana_deposit_address || user.biz_solana_deposit_address);
+  const arcAddr = getActiveWallet(user);
+
+  let pajOrder = null;
+  if (orderId) {
+    try {
+      pajOrder = await paj.getOnrampOrder(orderId);
+    } catch {}
+  }
+
+  // Check Solana SPL USDC balance
+  let solBalance = { uiAmount: 0 };
+  if (solAddr) {
+    try {
+      solBalance = await multichain.getSplTokenBalance(solAddr);
+    } catch {}
+  }
+
+  // Check Arc balance
+  let arcBal = 0;
+  try {
+    const raw = await walletLib.getNativeBalanceMicro(arcAddr);
+    arcBal = parseFloat(walletLib.formatMicro(raw));
+  } catch {}
+
+  // If SPL USDC is present on Solana or Paj reports completed, trigger CCTP auto-bridge
+  if (solBalance.uiAmount > 0 || pajOrder?.status === "completed" || pajOrder?.status === "successful") {
+    const amountToBridge = solBalance.uiAmount > 0 ? solBalance.uiAmount : (pajOrder?.amount || 0);
+    if (amountToBridge > 0 && arcAddr) {
+      try {
+        await cctpBridge.autoBridgeSolanaToArc({
+          telegramId: ctx.from.id,
+          solanaTxSignature: pajOrder?.txHash || null,
+          amountUsdc: amountToBridge,
+          recipientArcAddress: arcAddr,
+        });
+      } catch (bridgeErr) {
+        console.warn("[bot:action_check_paj_onramp] Bridge note:", bridgeErr.message);
+      }
+    }
+
+    // Refresh Arc balance
+    try {
+      const refreshed = await walletLib.getNativeBalanceMicro(arcAddr);
+      arcBal = parseFloat(walletLib.formatMicro(refreshed));
+    } catch {}
+
+    return ctx.reply(
+      `🎉 <b>Deposit Confirmed!</b>\n` +
+      `──────────────────────────\n` +
+      `💼 <b>Account:</b> ${isBiz ? "Business Treasury" : "Personal Wallet"}\n` +
+      `💰 <b>Current Balance:</b> <b>$${arcBal.toFixed(2)} USDC</b>\n` +
+      `🏛 <b>Network:</b> Arc Mainnet (Domain 26)\n\n` +
+      `<i>Your dollars have been credited and are ready to spend, save, or send!</i>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("💰 View Balance", "action_balance")],
+          [Markup.button.callback("🏠 Main Menu",    "main_menu")],
+        ]),
+      }
+    );
+  }
+
+  return ctx.reply(
+    `⏳ <b>Payment Status: Pending</b>\n` +
+    `──────────────────────────\n` +
+    `We are still awaiting confirmation from the banking network.\n\n` +
+    `• <b>Status:</b> ${pajOrder?.status || "Awaiting transfer"}\n` +
+    `• <b>Account:</b> ${isBiz ? "Business Treasury" : "Personal Wallet"}\n` +
+    `• <b>Current Arc Balance:</b> $${arcBal.toFixed(2)}\n\n` +
+    `<i>Once your bank transfer clears, your dollar balance updates automatically. You can check again in a few moments.</i>`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("🔄 Check Again", ctx.match[0])],
+        [Markup.button.callback("💰 View Balance", "action_balance")],
+        [Markup.button.callback("🏠 Main Menu",    "main_menu")],
+      ]),
+    }
+  );
+});
+
 bot.action("action_swap", async (ctx) => {
   ctx.answerCbQuery();
   const user = requireUser(ctx);
