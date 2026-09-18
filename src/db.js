@@ -250,7 +250,11 @@ function ensureYieldPositionsSchema() {
 function ensureTransactionsSchema() {
   const info = db.prepare("PRAGMA table_info(transactions)").all();
   const cols = info.map(c => c.name);
+  if (!cols.includes("tx_hash")) db.exec("ALTER TABLE transactions ADD COLUMN tx_hash TEXT");
   if (!cols.includes("account_type")) db.exec("ALTER TABLE transactions ADD COLUMN account_type TEXT DEFAULT 'personal'");
+  if (!cols.includes("amount_micro")) db.exec("ALTER TABLE transactions ADD COLUMN amount_micro TEXT");
+  if (!cols.includes("status")) db.exec("ALTER TABLE transactions ADD COLUMN status TEXT DEFAULT 'pending'");
+  if (!cols.includes("type")) db.exec("ALTER TABLE transactions ADD COLUMN type TEXT DEFAULT 'general'");
 }
 
 ensureUserSchema();
