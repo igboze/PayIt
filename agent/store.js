@@ -44,4 +44,8 @@ function getUserSchedules(userId) {
   return store[userId] || [];
 }
 
-module.exports = { saveSchedule, removeSchedule, getUserSchedules };
+function getAllSchedules() {
+  return loadStore();
+}
+
+module.exports = { saveSchedule, removeSchedule, getUserSchedules, getAllSchedules };
