@@ -289,6 +289,76 @@ async function autoBridgeSolanaToArc({
   };
 }
 
+/**
+ * Executes a CCTP depositForBurn on Arc Mainnet targeting a Solana recipient address.
+ * Burns native USDC on Arc and directs Circle to mint SPL USDC on Solana to recipient.
+ *
+ * @param {object} params
+ * @param {Wallet} params.userWallet - User's ethers Wallet on Arc
+ * @param {number} params.amountUsdc - Amount to burn
+ * @param {string} params.recipientSolanaAddress - Destination Solana address (Base58)
+ * @returns {Promise<{ success: boolean, txHash?: string, error?: string }>}
+ */
+async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSolanaAddress }) {
+  if (!userWallet) throw new Error("userWallet required for Arc CCTP burn");
+  if (!recipientSolanaAddress) throw new Error("recipientSolanaAddress required for Arc CCTP burn");
+
+  try {
+    const bs58 = require("bs58");
+    const bs58Decode = bs58.default ? bs58.default.decode : bs58.decode;
+    const solPubKeyBytes = bs58Decode(recipientSolanaAddress);
+    const mintRecipient = "0x" + Buffer.from(solPubKeyBytes).toString("hex");
+
+    const net = getNetworkConfig();
+    const tokenMessengerAddress = ARC_CCTP_CONTRACTS.TOKEN_MESSENGER;
+    const usdcAddress = net.usdcAddress || "0x3600000000000000000000000000000000000000";
+
+    const TOKEN_MESSENGER_ABI = [
+      "function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken) external returns (uint64 _nonce)",
+    ];
+
+    const ERC20_ABI = [
+      "function approve(address spender, uint256 amount) external returns (bool)",
+      "function allowance(address owner, address spender) external view returns (uint256)",
+    ];
+
+    const { parseUnits } = require("ethers");
+    const amountUnits = parseUnits(amountUsdc.toString(), 18);
+
+    // 1. Approve TokenMessenger if needed
+    try {
+      const usdcContract = new Contract(usdcAddress, ERC20_ABI, userWallet);
+      const allowance = await usdcContract.allowance(userWallet.address, tokenMessengerAddress);
+      if (allowance < amountUnits) {
+        const approveTx = await usdcContract.approve(tokenMessengerAddress, amountUnits);
+        await approveTx.wait();
+      }
+    } catch (appErr) {
+      console.warn("[cctp_bridge:approve_note]", appErr.message);
+    }
+
+    // 2. Call depositForBurn targeting Solana (Domain 5)
+    const tokenMessenger = new Contract(tokenMessengerAddress, TOKEN_MESSENGER_ABI, userWallet);
+    const tx = await tokenMessenger.depositForBurn(amountUnits, CCTP_DOMAINS.SOLANA, mintRecipient, usdcAddress);
+    const receipt = await tx.wait();
+
+    return {
+      success: true,
+      txHash: receipt.hash,
+      recipientSolanaAddress,
+      amountUsdc,
+      sourceDomain: CCTP_DOMAINS.ARC,
+      destinationDomain: CCTP_DOMAINS.SOLANA,
+    };
+  } catch (err) {
+    console.warn("[cctp_bridge:arc_to_sol_burn_error]", err.message);
+    return {
+      success: false,
+      error: err.message,
+    };
+  }
+}
+
 module.exports = {
   CCTP_DOMAINS,
   ARC_CCTP_CONTRACTS,
@@ -297,4 +367,5 @@ module.exports = {
   redeemOnArc,
   disburseDirectOnArc,
   autoBridgeSolanaToArc,
+  executeArcToSolanaCctpBurn,
 };

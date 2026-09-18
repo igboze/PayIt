@@ -20,6 +20,8 @@ const paj          = require("../src/paj");
 const multichain   = require("../src/multichain");
 const idempotency  = require("../src/idempotency");
 const bankResolver = require("../src/bank_resolver");
+const cctpBridge   = require("../src/cctp_bridge");
+
 
 // ─── Single on-chain payment (Arc EVM) ────────────────────────────────────────
 
@@ -244,23 +246,34 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
   let txHash;
   try {
     if (isTargetSolana) {
-      // 1. Debit user on Arc by transferring native USDC to PayIT Relayer / Treasury
-      const treasuryArcAddress = process.env.APP_FEE_RECIPIENT_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
-      txHash = await walletLib.sendFromWallet(userWallet, treasuryArcAddress, amountMicro);
+      // Direct Circle CCTP: Burn native USDC on Arc and mint SPL USDC directly to Paj's Solana deposit address.
+      // This requires ZERO project liquidity or relayer treasury USDC balance.
+      const cctpRes = await cctpBridge.executeArcToSolanaCctpBurn({
+        userWallet,
+        amountUsdc,
+        recipientSolanaAddress: result.address,
+      });
 
-      // 2. Deliver SPL USDC on Solana to Paj's dynamic deposit address
-      const relayerKey = process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
-      if (relayerKey) {
-        try {
-          const derivedSol = multichain.deriveSolanaFromEvmKey(relayerKey);
-          await multichain.sendSolanaTransfer({
-            keypair: derivedSol.keypair,
-            recipientAddress: result.address,
-            amount: result.amount || amountUsdc,
-            currency: "USDC",
-          });
-        } catch (solErr) {
-          console.warn("[executor:solana_paj_settlement_note]", solErr.message);
+      if (cctpRes && cctpRes.success && cctpRes.txHash) {
+        txHash = cctpRes.txHash;
+      } else {
+        // Fallback if CCTP burn encounters network issues: debit on Arc and attempt relayer bridge
+        const treasuryArcAddress = process.env.APP_FEE_RECIPIENT_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
+        txHash = await walletLib.sendFromWallet(userWallet, treasuryArcAddress, amountMicro);
+
+        const relayerKey = process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
+        if (relayerKey) {
+          try {
+            const derivedSol = multichain.deriveSolanaFromEvmKey(relayerKey);
+            await multichain.sendSolanaTransfer({
+              keypair: derivedSol.keypair,
+              recipientAddress: result.address,
+              amount: result.amount || amountUsdc,
+              currency: "USDC",
+            });
+          } catch (solErr) {
+            console.warn("[executor:solana_paj_settlement_note]", solErr.message);
+          }
         }
       }
     } else {
