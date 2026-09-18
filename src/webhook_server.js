@@ -110,9 +110,9 @@ async function processPajEvent(payload, bot) {
             `──────────────────────────\n` +
             `👤 <b>Client:</b> ${invoice.client_name}\n` +
             `💵 <b>Amount Paid:</b> ₦${fiatAmount ? fiatAmount.toLocaleString() : (invoice.fiat_amount ? invoice.fiat_amount.toLocaleString() : "...")}\n` +
-            `🪙 <b>Settled:</b> $${effectiveAmountUsdc.toFixed(2)} USDC\n` +
-            `🏦 <b>Channel:</b> Dedicated Virtual Account\n\n` +
-            `🌉 <i>Auto-bridging native USDC to your main account on Arc Mainnet...</i>`,
+            `💰 <b>Credited to Account:</b> $${effectiveAmountUsdc.toFixed(2)}\n` +
+            `🏦 <b>Payment Method:</b> Bank Transfer\n\n` +
+            `<i>Funds have been credited to your business balance and are ready to use.</i>`,
             { parse_mode: "HTML" }
           );
         } catch (err) {
@@ -130,21 +130,6 @@ async function processPajEvent(payload, bot) {
           });
 
           console.log(`[webhook_server] Invoice CCTP Auto-Bridge result:`, bridgeResult);
-
-          if (bot && merchantTelegramId && bridgeResult.success) {
-            const txText = bridgeResult.arcTxHash
-              ? `\n🔗 <b>Arc Explorer:</b> <code>${bridgeResult.arcTxHash}</code>`
-              : "";
-            await bot.telegram.sendMessage(
-              merchantTelegramId,
-              `✅ <b>Invoice #${invoice.invoice_number} Settled to Main Account!</b>\n` +
-              `──────────────────────────\n` +
-              `🪙 <b>Credited:</b> $${effectiveAmountUsdc.toFixed(2)} USDC\n` +
-              `👛 <b>Main Account:</b> <code>${mainSettlementAddress}</code>` +
-              txText,
-              { parse_mode: "HTML" }
-            );
-          }
         } catch (bridgeErr) {
           console.error(`[webhook_server] Invoice CCTP auto-bridge error:`, bridgeErr.message);
         }
@@ -173,17 +158,17 @@ async function processPajEvent(payload, bot) {
       ? (user ? (user.business_deposit_address || user.deposit_address) : data.destinationArcAddress)
       : (user ? user.deposit_address : data.destinationArcAddress);
 
-    // Send Telegram alert: Bank transfer detected with explicit account label
+    // Send Telegram alert: Bank transfer detected with clean, consumer-friendly grammar
     if (bot && targetTelegramId) {
       try {
         await bot.telegram.sendMessage(
           targetTelegramId,
-          `🎉 <b>Naira Deposit Confirmed (${accountLabel})!</b>\n` +
+          `🎉 <b>Deposit Received (${accountLabel})!</b>\n` +
           `──────────────────────────\n` +
-          `💵 <b>Amount:</b> ₦${fiatAmount ? fiatAmount.toLocaleString() : "..."}\n` +
-          `🪙 <b>Settled:</b> $${amountUsdc.toFixed(2)} USDC (Solana)\n` +
-          `💼 <b>Destination:</b> ${accountLabel}\n\n` +
-          `🌉 <i>Auto-bridging native USDC to Arc Mainnet via Circle CCTP...</i>`,
+          `💵 <b>Amount Deposited:</b> ₦${fiatAmount ? fiatAmount.toLocaleString() : "..."}\n` +
+          `💰 <b>Dollars Credited:</b> $${amountUsdc.toFixed(2)}\n` +
+          `💼 <b>Account:</b> ${accountLabel}\n\n` +
+          `<i>Your balance is updated and ready to spend, save, or send!</i>`,
           { parse_mode: "HTML" }
         );
       } catch (err) {
@@ -191,7 +176,7 @@ async function processPajEvent(payload, bot) {
       }
     }
 
-    // Trigger Circle CCTP Auto-Bridge to the specific isolated address (Personal vs Business)
+    // Trigger Circle CCTP Auto-Bridge in background to the specific isolated address (Personal vs Business)
     if (recipientArcAddress) {
       try {
         const bridgeResult = await cctpBridge.autoBridgeSolanaToArc({
@@ -202,21 +187,6 @@ async function processPajEvent(payload, bot) {
         });
 
         console.log(`[webhook_server] CCTP Auto-Bridge result:`, bridgeResult);
-
-        if (bot && targetTelegramId && bridgeResult.success) {
-          const txText = bridgeResult.arcTxHash
-            ? `\n🔗 <b>Arc Explorer:</b> <code>${bridgeResult.arcTxHash}</code>`
-            : "";
-          await bot.telegram.sendMessage(
-            targetTelegramId,
-            `✅ <b>USDC Arrived in ${accountLabel}!</b>\n` +
-            `──────────────────────────\n` +
-            `🪙 <b>Amount:</b> $${amountUsdc.toFixed(2)} USDC\n` +
-            `👛 <b>Recipient Address:</b> <code>${recipientArcAddress}</code>` +
-            txText,
-            { parse_mode: "HTML" }
-          );
-        }
       } catch (err) {
         console.error(`[webhook_server] CCTP Auto-bridge error:`, err);
       }
