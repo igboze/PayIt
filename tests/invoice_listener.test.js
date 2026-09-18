@@ -44,3 +44,22 @@ test("startInvoiceListener uses a single async poll loop instead of overlapping 
     invoiceListener.stopInvoiceListener();
   }
 });
+
+test("startInvoiceListener handles ethers v6 provider with getBlock", async () => {
+  invoiceListener.stopInvoiceListener();
+  const v6Provider = {
+    getBlockNumber: async () => 10,
+    getBlock: async (num, prefetch) => ({
+      prefetchedTransactions: [],
+      transactions: [],
+    }),
+    getBalance: async () => 0n,
+  };
+
+  await invoiceListener.startInvoiceListener(
+    { telegram: { sendMessage: async () => {} } },
+    v6Provider,
+    1000
+  );
+  invoiceListener.stopInvoiceListener();
+});

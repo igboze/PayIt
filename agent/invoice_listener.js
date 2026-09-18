@@ -270,16 +270,24 @@ function rebuildWatchList() {
  */
 async function getRecentTransactionsTo(provider, toAddress) {
   try {
+    if (!provider || !toAddress) return [];
     const currentBlock = await provider.getBlockNumber();
-    const blocksToCheck = 20; // scan the most recent blocks
+    const blocksToCheck = 10; // scan recent blocks
     const fromBlock = Math.max(0, currentBlock - blocksToCheck);
     const txs = [];
 
     for (let blockNumber = fromBlock; blockNumber <= currentBlock; blockNumber += 1) {
-      const block = await provider.getBlockWithTransactions(blockNumber);
-      if (!block || !Array.isArray(block.transactions)) continue;
-      for (const tx of block.transactions) {
-        if (tx.to && tx.to.toLowerCase() === toAddress.toLowerCase()) {
+      let block = null;
+      if (typeof provider.getBlockWithTransactions === "function") {
+        block = await provider.getBlockWithTransactions(blockNumber);
+      } else if (typeof provider.getBlock === "function") {
+        block = await provider.getBlock(blockNumber, true);
+      }
+
+      if (!block) continue;
+      const transactions = block.prefetchedTransactions || (Array.isArray(block.transactions) ? block.transactions : []);
+      for (const tx of transactions) {
+        if (typeof tx === "object" && tx !== null && tx.to && tx.to.toLowerCase() === toAddress.toLowerCase()) {
           txs.push(tx);
         }
       }
