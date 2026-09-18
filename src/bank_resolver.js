@@ -120,7 +120,68 @@ async function resolveBankCode(input) {
   return { bankCode: "000013", bankName: raw || "GTBank" };
 }
 
+/**
+ * Parse arbitrary user input for a 10-digit Nigerian account number and bank name.
+ * Handles diverse formats:
+ * - "GTBank · 0123456789 · John Doe"
+ * - "0123456789 GTBank"
+ * - "Kuda 2001234567"
+ * - "0123456789, Access Bank"
+ * - "Palmpay 8715461871"
+ *
+ * @param {string} text
+ * @returns {Promise<{ accountNumber: string|null, bankCode: string, bankName: string, accountName: string|null }>}
+ */
+async function parseBankDetails(text) {
+  if (!text || typeof text !== "string") {
+    return { accountNumber: null, bankCode: "000013", bankName: "Guaranty Trust Bank", accountName: null };
+  }
+
+  const raw = text.trim();
+
+  // Find 10-digit account number anywhere in string
+  const acctMatch = raw.match(/\b\d{10}\b/);
+  const accountNumber = acctMatch ? acctMatch[0] : null;
+
+  // Split by standard delimiters
+  const segments = raw.split(/[·\-,|\n]/).map(s => s.trim()).filter(Boolean);
+
+  let bankQuery = "";
+  let accountName = null;
+
+  if (segments.length >= 2) {
+    // Check segments for account number vs bank vs name
+    const remaining = [];
+    for (const seg of segments) {
+      if (seg.replace(/\D/g, "") === accountNumber) continue;
+      remaining.push(seg);
+    }
+    if (remaining.length >= 1) {
+      bankQuery = remaining[0];
+    }
+    if (remaining.length >= 2) {
+      accountName = remaining.slice(1).join(" ");
+    }
+  } else if (accountNumber) {
+    // Single segment containing account number and bank words
+    bankQuery = raw.replace(accountNumber, "").replace(/[^a-zA-Z0-9\s]/g, " ").trim();
+  } else {
+    bankQuery = raw;
+  }
+
+  const resolved = await resolveBankCode(bankQuery);
+
+  return {
+    accountNumber,
+    bankCode: resolved.bankCode,
+    bankName: resolved.bankName,
+    accountName: accountName || null,
+  };
+}
+
 module.exports = {
   resolveBankCode,
+  parseBankDetails,
   KNOWN_BANKS,
 };
+

@@ -236,13 +236,37 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
   }
 
   // Step 2: On-chain send to offramp destination address
-  const targetAddress = (result.address && walletLib.isValidAddress(result.address))
+  const isTargetSolana = result.address && multichain.isSolanaAddress(result.address);
+  const targetAddress = isTargetSolana
     ? result.address
-    : offrampAddress;
+    : (result.address && walletLib.isValidAddress(result.address) ? result.address : offrampAddress);
 
   let txHash;
   try {
-    txHash = await walletLib.sendFromWallet(userWallet, targetAddress, amountMicro);
+    if (isTargetSolana) {
+      // 1. Debit user on Arc by transferring native USDC to PayIT Relayer / Treasury
+      const treasuryArcAddress = process.env.APP_FEE_RECIPIENT_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
+      txHash = await walletLib.sendFromWallet(userWallet, treasuryArcAddress, amountMicro);
+
+      // 2. Deliver SPL USDC on Solana to Paj's dynamic deposit address
+      const relayerKey = process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
+      if (relayerKey) {
+        try {
+          const derivedSol = multichain.deriveSolanaFromEvmKey(relayerKey);
+          await multichain.sendSolanaTransfer({
+            keypair: derivedSol.keypair,
+            recipientAddress: result.address,
+            amount: result.amount || amountUsdc,
+            currency: "USDC",
+          });
+        } catch (solErr) {
+          console.warn("[executor:solana_paj_settlement_note]", solErr.message);
+        }
+      }
+    } else {
+      txHash = await walletLib.sendFromWallet(userWallet, targetAddress, amountMicro);
+    }
+
     db.updateTransactionStatus(txId, "submitted");
     const responsePayload = {
       reference: result.reference || result.id || null,
