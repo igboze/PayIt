@@ -258,8 +258,14 @@ async function processPajEvent(payload, bot) {
 /**
  * Creates the HTTP server instance without starting it.
  */
-function createWebhookServer({ bot } = {}) {
+function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
   const secret = process.env.PAJ_WEBHOOK_SECRET || process.env.PAJCASH_API_KEY || "";
+  const telegramCallback = (bot && typeof bot.webhookCallback === "function")
+    ? bot.webhookCallback(webhookPath)
+    : null;
+  const rootTelegramCallback = (bot && typeof bot.webhookCallback === "function")
+    ? bot.webhookCallback("/")
+    : null;
 
   const server = http.createServer(async (req, res) => {
     // 1. Health check
@@ -306,6 +312,20 @@ function createWebhookServer({ bot } = {}) {
       return;
     }
 
+    // 3. Telegram Webhook route (handles /webhook/telegram, /webhook/telegram/, and /)
+    if (req.method === "POST") {
+      if (telegramCallback && (req.url === webhookPath || req.url === `${webhookPath}/`)) {
+        return telegramCallback(req, res);
+      }
+      if (req.url === "/" || req.url === "") {
+        if (rootTelegramCallback) {
+          return rootTelegramCallback(req, res);
+        } else if (telegramCallback) {
+          return telegramCallback(req, res);
+        }
+      }
+    }
+
     // 404 for unknown paths
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Not found" }));
@@ -317,11 +337,11 @@ function createWebhookServer({ bot } = {}) {
 /**
  * Start listening on configured port.
  */
-function startWebhookServer({ bot, port = 3000 } = {}) {
+function startWebhookServer({ bot, port = 3000, webhookPath = "/webhook/telegram" } = {}) {
   if (_server) return _server;
-  _server = createWebhookServer({ bot });
+  _server = createWebhookServer({ bot, webhookPath });
   _server.listen(port, () => {
-    console.log(`[webhook_server] Listening on port ${port} (endpoints: /health, /webhook/paj)`);
+    console.log(`[webhook_server] Listening on port ${port} (endpoints: /health, /webhook/paj, ${webhookPath})`);
   });
   return _server;
 }

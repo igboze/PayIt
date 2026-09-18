@@ -5072,22 +5072,32 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const WEBHOOK_URL = process.env.WEBHOOK_URL?.replace(/\/$/, "");
 
 async function startBot() {
-  // Start background HTTP webhook server for live Paj v2 events and Circle CCTP auto-bridging
+  const webhookPath = "/webhook/telegram";
+
+  // Start unified background HTTP server on PORT (serves /health, /webhook/paj, and /webhook/telegram)
   try {
-    webhookServer.startWebhookServer({ bot, port: PORT });
+    webhookServer.startWebhookServer({ bot, port: PORT, webhookPath });
   } catch (err) {
     console.warn("[bot] Webhook server notice:", err.message);
   }
 
   if (WEBHOOK_URL) {
-    await bot.launch({
-      webhook: {
-        domain: WEBHOOK_URL,
-        port: PORT + 1,
-      },
-    });
-    console.log(`PayIT is running via webhook at ${WEBHOOK_URL}`);
+    const fullWebhookUrl = `${WEBHOOK_URL}${webhookPath}`;
+    try {
+      await bot.telegram.setWebhook(fullWebhookUrl);
+      console.log(`PayIT is running via webhook at ${fullWebhookUrl}`);
+    } catch (whErr) {
+      console.error("[bot] Failed to set webhook, falling back to polling:", whErr.message);
+      try {
+        await bot.telegram.deleteWebhook({ drop_pending_updates: false });
+      } catch {}
+      await bot.launch();
+      console.log("PayIT is running via polling fallback.");
+    }
   } else {
+    try {
+      await bot.telegram.deleteWebhook({ drop_pending_updates: false });
+    } catch {}
     await bot.launch();
     console.log("PayIT is running via polling.");
   }
