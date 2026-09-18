@@ -108,117 +108,138 @@ async function callGemini(systemPrompt, userMessage) {
  * @param {string} userMessage  - the actual user input to parse
  * @returns {Promise<object>} parsed JSON response
  */
-async function getJSONCompletion(systemPrompt, userMessage) {
-  // Mock mode for tests and offline demos
-  if (process.env.USE_MOCK_AI === '1') {
-    try {
-      // Simple heuristics to return predictable JSON for common prompts
-      const user = String(userMessage || "");
-      // Intent classifier prompt
-      if (/intent classifier/i.test(systemPrompt)) {
-        // rudimentary parse: 'send $50 to Emeka' or 'send 50 to 0x...'
-        const sendMatch = user.match(/send\s+\$?(\d+(?:\.\d+)?)\s+to\s+(.+)/i);
-        if (sendMatch) {
-          return {
-            intent: "transfer",
-            confidence: "high",
-            params: { recipients: [{ name_or_address: sendMatch[2].trim(), amount: Number(sendMatch[1]), currency: "USDC" }], schedule: {}, missing: null },
-            raw_summary: `Send $${sendMatch[1]} to ${sendMatch[2].trim()}`,
-          };
-        }
-        if (/balance|wetin i get|how much/i.test(user)) {
-          return { intent: "balance", confidence: "high", params: { recipients: [] , schedule: {}, missing: null }, raw_summary: "Check balance" };
-        }
-        return { intent: "unknown", confidence: "low", params: { recipients: [], schedule: {}, missing: null }, raw_summary: user };
-      }
+function runHeuristicFallback(systemPrompt, userMessage) {
+  const user = String(userMessage || "");
 
-      // File payment plan prompt
-      if (/payment planning assistant/i.test(systemPrompt) || /Rows:/i.test(user)) {
-        try {
-          const rowsMatch = user.match(/Rows:\s*(\[.*\])$/s);
-          const rows = rowsMatch ? JSON.parse(rowsMatch[1]) : [];
-          const lowerUser = String(user || '').toLowerCase();
-          const timeMatch = lowerUser.match(/at\s+(\d{1,2}:\d{2})/i);
-          const time = timeMatch ? timeMatch[1] : null;
-          const monthlyMatch = lowerUser.match(/every\s+(\d{1,2})(?:st|nd|rd|th)?\s+of\s+the\s+month/i);
-          const weeklyMatch = lowerUser.match(/every\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i);
-          const dailyMatch = lowerUser.match(/every\s+day/i);
-          const schedule = monthlyMatch
-            ? { frequency: "monthly", day: monthlyMatch[1], time: time || "08:00" }
-            : weeklyMatch
-              ? { frequency: "weekly", day: weeklyMatch[1].charAt(0).toUpperCase() + weeklyMatch[1].slice(1), time }
-              : dailyMatch
-                ? { frequency: "daily", day: null, time }
-                : { frequency: null, day: null, time: null };
-          const payments = rows.map((r) => ({
-            to: r.wallet_address || "__offramp__",
-            amount: Number(r.amount || 0),
-            label: r.description || r.name || "Payment",
-            bank_name: r.bank_name || null,
-            account_number: r.account_number || null,
-            account_name: r.account_name || null,
-            currency: r.currency || "USDC",
-          }));
-          return {
-            type: schedule.frequency ? "scheduled" : "bulk",
-            payments,
-            schedule,
-            summary: schedule.frequency
-              ? `Pay ${payments.length} recipient${payments.length !== 1 ? "s" : ""} ${lowerUser}.`
-              : `Process ${payments.length} recipient${payments.length !== 1 ? "s" : ""}.`,
-          };
-        } catch (err) {
-          return { error: "Could not understand the payment instruction." };
-        }
-      }
-
-      // Orchestrator payment parsing prompt
-      if (/payment orchestration agent/i.test(systemPrompt) || /payment plan/i.test(systemPrompt)) {
-        // reuse simple send pattern
-        const sendMatch = user.match(/send\s+\$?(\d+(?:\.\d+)?)\s+to\s+(.+)/i);
-        if (sendMatch) {
-          return {
-            type: "one_time",
-            payments: [{ to: sendMatch[2].trim().startsWith('0x') ? sendMatch[2].trim() : `__name__:${sendMatch[2].trim()}`, amount: Number(sendMatch[1]), label: `Payment to ${sendMatch[2].trim()}`, bank_name: null, account_number: null, account_name: null, currency: "USDC" }],
-            schedule: { frequency: null, day: null, time: null },
-            summary: `Send $${sendMatch[1]} to ${sendMatch[2].trim()}`,
-          };
-        }
-        return { error: "Could not understand the payment instruction." };
-      }
-
-      // Invoice parsing prompt
-      if (/invoice/i.test(systemPrompt)) {
-        const { parseSmartInvoiceHeuristic } = require("./smart_invoice_agent");
-        const parsed = parseSmartInvoiceHeuristic(user);
-        if (parsed) return parsed;
-        return { error: "Could not understand the invoice details. Please provide client name and amount." };
-      }
-
-      // Shopping parsing prompt
-      if (/shopper/i.test(systemPrompt) || /shopping/i.test(systemPrompt)) {
-        const { parseShoppingHeuristic } = require("./shopping_agent");
-        const parsed = parseShoppingHeuristic(user);
-        if (parsed) return parsed;
-        return { error: "Could not understand the shopping request." };
-      }
-
-      // Fallback for other prompts — return a generic unknown
-      return {};
-    } catch (err) {
-      throw err;
+  // Intent classifier prompt
+  if (/intent classifier/i.test(systemPrompt)) {
+    const sendMatch = user.match(/send\s+\$?(\d+(?:\.\d+)?)\s+to\s+(.+)/i);
+    if (sendMatch) {
+      return {
+        intent: "transfer",
+        confidence: "high",
+        params: { recipients: [{ name_or_address: sendMatch[2].trim(), amount: Number(sendMatch[1]), currency: "USDC" }], schedule: {}, missing: null },
+        raw_summary: `Send $${sendMatch[1]} to ${sendMatch[2].trim()}`,
+      };
     }
+    if (/balance|wetin i get|how much/i.test(user)) {
+      return { intent: "balance", confidence: "high", params: { recipients: [] , schedule: {}, missing: null }, raw_summary: "Check balance" };
+    }
+    return { intent: "unknown", confidence: "low", params: { recipients: [], schedule: {}, missing: null }, raw_summary: user };
+  }
+
+  // File payment plan prompt
+  if (/payment planning assistant/i.test(systemPrompt) || /Rows:/i.test(user)) {
+    try {
+      const rowsMatch = user.match(/Rows:\s*(\[.*\])$/s);
+      const rows = rowsMatch ? JSON.parse(rowsMatch[1]) : [];
+      const lowerUser = String(user || '').toLowerCase();
+      const timeMatch = lowerUser.match(/at\s+(\d{1,2}:\d{2})/i);
+      const time = timeMatch ? timeMatch[1] : null;
+      const monthlyMatch = lowerUser.match(/every\s+(\d{1,2}(?:st|nd|rd|th)?)\s+of\s+the\s+month/i);
+      const weeklyMatch = lowerUser.match(/every\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i);
+      const dailyMatch = lowerUser.match(/every\s+day/i);
+      const monthRawDay = monthlyMatch ? monthlyMatch[1] : null;
+      const monthNum = monthRawDay ? monthRawDay.replace(/(?:st|nd|rd|th)/i, "") : null;
+      const schedule = monthlyMatch
+        ? { frequency: "monthly", day: monthNum, time: time || "08:00" }
+        : weeklyMatch
+          ? { frequency: "weekly", day: weeklyMatch[1].charAt(0).toUpperCase() + weeklyMatch[1].slice(1), time }
+          : dailyMatch
+            ? { frequency: "daily", day: null, time }
+            : { frequency: null, day: null, time: null };
+      const payments = rows.map((r) => ({
+        to: r.wallet_address || "__offramp__",
+        amount: Number(r.amount || 0),
+        label: r.description || r.name || "Payment",
+        bank_name: r.bank_name || null,
+        bank_code: r.bank_code || null,
+        account_number: r.account_number || null,
+        account_name: r.account_name || null,
+        currency: r.currency || "USDC",
+        chain: r.chain || (r.wallet_address?.startsWith("0x") ? "arc" : (r.wallet_address ? "solana" : "fiat")),
+        method: r.method || (r.wallet_address?.startsWith("0x") ? "onchain_evm" : (r.wallet_address ? "onchain_solana" : "fiat_offramp")),
+        idempotency_key: r.idempotency_key || null,
+      }));
+      const dayName = schedule.day || "";
+      const timeStr = schedule.time ? ` at ${schedule.time}` : "";
+      const schedDesc = schedule.frequency === "weekly"
+        ? `every ${dayName}${timeStr}`
+        : schedule.frequency === "monthly"
+          ? `every ${monthRawDay || schedule.day} of the month${timeStr}`
+          : schedule.frequency === "daily"
+            ? `daily${timeStr}`
+            : "";
+
+      return {
+        type: schedule.frequency ? "scheduled" : "bulk",
+        payments,
+        schedule,
+        summary: schedDesc
+          ? `Pay ${payments.length} recipient${payments.length !== 1 ? "s" : ""} ${schedDesc}.`
+          : `Process ${payments.length} recipient${payments.length !== 1 ? "s" : ""}.`,
+      };
+    } catch {
+      return { error: "Could not understand the payment instruction." };
+    }
+  }
+
+  // Orchestrator payment parsing prompt
+  if (/payment orchestration agent/i.test(systemPrompt) || /payment plan/i.test(systemPrompt)) {
+    const sendMatch = user.match(/send\s+\$?(\d+(?:\.\d+)?)\s+to\s+(.+)/i);
+    if (sendMatch) {
+      return {
+        type: "one_time",
+        payments: [{ to: sendMatch[2].trim().startsWith('0x') ? sendMatch[2].trim() : `__name__:${sendMatch[2].trim()}`, amount: Number(sendMatch[1]), label: `Payment to ${sendMatch[2].trim()}`, bank_name: null, account_number: null, account_name: null, currency: "USDC" }],
+        schedule: { frequency: null, day: null, time: null },
+        summary: `Send $${sendMatch[1]} to ${sendMatch[2].trim()}`,
+      };
+    }
+    return { error: "Could not understand the payment instruction." };
+  }
+
+  // Invoice parsing prompt
+  if (/invoice/i.test(systemPrompt)) {
+    const { parseSmartInvoiceHeuristic } = require("./smart_invoice_agent");
+    const parsed = parseSmartInvoiceHeuristic(user);
+    if (parsed) return parsed;
+    return { error: "Could not understand the invoice details. Please provide client name and amount." };
+  }
+
+  // Shopping parsing prompt
+  if (/shopper/i.test(systemPrompt) || /shopping/i.test(systemPrompt)) {
+    const { parseShoppingHeuristic } = require("./shopping_agent");
+    const parsed = parseShoppingHeuristic(user);
+    if (parsed) return parsed;
+    return { error: "Could not understand the shopping request." };
+  }
+
+  return {};
+}
+
+/**
+ * @param {string} systemPrompt - instructions + desired JSON shape
+ * @param {string} userMessage  - the actual user input to parse
+ * @returns {Promise<object>} parsed JSON response
+ */
+async function getJSONCompletion(systemPrompt, userMessage) {
+  if (process.env.USE_MOCK_AI === '1') {
+    return runHeuristicFallback(systemPrompt, userMessage);
   }
 
   const provider = getActiveProvider();
   if (!provider) {
-    throw new Error(
-      "No AI provider configured - set GROQ_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY in .env"
-    );
+    return runHeuristicFallback(systemPrompt, userMessage);
   }
-  if (provider === "groq") return callGroq(systemPrompt, userMessage);
-  if (provider === "openai") return callOpenAI(systemPrompt, userMessage);
-  if (provider === "gemini") return callGemini(systemPrompt, userMessage);
+
+  try {
+    if (provider === "groq") return await callGroq(systemPrompt, userMessage);
+    if (provider === "openai") return await callOpenAI(systemPrompt, userMessage);
+    if (provider === "gemini") return await callGemini(systemPrompt, userMessage);
+  } catch (err) {
+    console.warn(`[ai_provider] Remote ${provider} call failed (${err.message}); falling back to local heuristic parser.`);
+    return runHeuristicFallback(systemPrompt, userMessage);
+  }
 }
 
 module.exports = { getJSONCompletion, getActiveProvider };

@@ -1,0 +1,341 @@
+// src/webhook_server.js
+// Production HTTP Webhook Server for Paj v2 & Circle CCTP Auto-Bridge Events
+// Validates cryptographic HMAC-SHA256 signatures and triggers real-time Telegram updates
+
+const http = require("node:http");
+const paj = require("./paj");
+const cctpBridge = require("./cctp_bridge");
+const db = require("./db");
+const idempotency = require("./idempotency");
+
+const invoiceDb = require("./invoice_db");
+const bizDb = require("./biz_db");
+
+let _server = null;
+
+/**
+ * Handle incoming Paj v2 webhook events.
+ *
+ * @param {object} payload - Parsed webhook payload
+ * @param {object} [bot] - Telegraf bot instance for user notifications
+ */
+async function processPajEvent(payload, bot) {
+  const event = payload.event || payload.type;
+  const data = payload.data || payload;
+
+  console.log(`[webhook_server] Received Paj v2 event: "${event}"`);
+
+  // 0. Strict Webhook Idempotency: Prevent replay attacks or duplicate processing
+  const eventId = data.id || payload.id || data.reference || data.txHash || `${event}_${Date.now()}`;
+  if (idempotency.isWebhookProcessed(eventId)) {
+    console.log(`[webhook_server] Webhook event ${eventId} already processed, ignoring duplicate.`);
+    return { success: true, duplicate: true };
+  }
+
+  // Detect onramp completion
+  if (
+    event === "order.successful" ||
+    event === "onramp.successful" ||
+    event === "onramp.completed" ||
+    event === "payment.successful" ||
+    data.status === "COMPLETED"
+  ) {
+    const telegramId = data.userExternalId || data.metadata?.telegramId;
+    const recipient = data.recipient || data.address;
+    const amountUsdc = Number(data.amount || data.tokenAmount || 0);
+    const fiatAmount = Number(data.fiatAmount || data.amountFiat || 0);
+    const solanaTxSignature = data.txHash || data.signature || data.hash || data.id;
+
+    // Check if this incoming payment matches a Personal or Business Invoice
+    const externalId = data.userExternalId || data.metadata?.invoiceNumber;
+    const fiatOrderId = data.id;
+
+    let invoice = null;
+    let isBizInvoice = false;
+
+    try {
+      if (externalId && typeof externalId === "string") {
+        if (externalId.startsWith("BIZ-")) {
+          invoice = bizDb.getBizInvoiceByNumber(externalId);
+          if (invoice) isBizInvoice = true;
+        } else if (externalId.startsWith("INV-")) {
+          invoice = invoiceDb.getInvoiceByNumber(externalId);
+          if (invoice) isBizInvoice = false;
+        }
+      }
+
+      if (!invoice && fiatOrderId) {
+        invoice = invoiceDb.getInvoiceByFiatOrderId(fiatOrderId);
+        if (invoice) {
+          isBizInvoice = false;
+        } else {
+          invoice = bizDb.getBizInvoiceByFiatOrderId(fiatOrderId);
+          if (invoice) isBizInvoice = true;
+        }
+      }
+
+      if (!invoice && externalId) {
+        invoice = invoiceDb.getInvoiceByNumber(externalId);
+        if (invoice) {
+          isBizInvoice = false;
+        } else {
+          invoice = bizDb.getBizInvoiceByNumber(externalId);
+          if (invoice) isBizInvoice = true;
+        }
+      }
+    } catch (dbErr) {
+      console.warn("[webhook_server] Invoice check warning:", dbErr.message);
+    }
+
+    // ── Invoice Payment Flow: Settles to user's main account ──
+    if (invoice) {
+      console.log(`[webhook_server] Matched ${isBizInvoice ? "business" : "personal"} invoice #${invoice.invoice_number} (ID: ${invoice.id})`);
+      const settlementTxHash = solanaTxSignature || `paj-fiat-${fiatOrderId}`;
+      if (isBizInvoice) {
+        bizDb.markBizInvoicePaidWithTxHash(invoice.id, settlementTxHash);
+      } else {
+        invoiceDb.markInvoicePaidWithTxHash(invoice.id, settlementTxHash);
+      }
+
+      const merchantTelegramId = invoice.telegram_id;
+      const merchant = db.getUser(merchantTelegramId);
+      const effectiveAmountUsdc = amountUsdc > 0 ? amountUsdc : invoice.total_usdc;
+      const mainSettlementAddress = invoice.wallet_address || (merchant ? (merchant.business_deposit_address || merchant.deposit_address) : null);
+
+      if (bot && merchantTelegramId) {
+        try {
+          await bot.telegram.sendMessage(
+            merchantTelegramId,
+            `🎉 <b>Invoice #${invoice.invoice_number} Paid!</b>\n` +
+            `──────────────────────────\n` +
+            `👤 <b>Client:</b> ${invoice.client_name}\n` +
+            `💵 <b>Amount Paid:</b> ₦${fiatAmount ? fiatAmount.toLocaleString() : (invoice.fiat_amount ? invoice.fiat_amount.toLocaleString() : "...")}\n` +
+            `🪙 <b>Settled:</b> $${effectiveAmountUsdc.toFixed(2)} USDC\n` +
+            `🏦 <b>Channel:</b> Dedicated Virtual Account\n\n` +
+            `🌉 <i>Auto-bridging native USDC to your main account on Arc Mainnet...</i>`,
+            { parse_mode: "HTML" }
+          );
+        } catch (err) {
+          console.warn(`[webhook_server] Failed to notify merchant TG:${merchantTelegramId}:`, err.message);
+        }
+      }
+
+      if (mainSettlementAddress) {
+        try {
+          const bridgeResult = await cctpBridge.autoBridgeSolanaToArc({
+            telegramId: merchantTelegramId,
+            solanaTxSignature,
+            amountUsdc: effectiveAmountUsdc,
+            recipientArcAddress: mainSettlementAddress,
+          });
+
+          console.log(`[webhook_server] Invoice CCTP Auto-Bridge result:`, bridgeResult);
+
+          if (bot && merchantTelegramId && bridgeResult.success) {
+            const txText = bridgeResult.arcTxHash
+              ? `\n🔗 <b>Arc Explorer:</b> <code>${bridgeResult.arcTxHash}</code>`
+              : "";
+            await bot.telegram.sendMessage(
+              merchantTelegramId,
+              `✅ <b>Invoice #${invoice.invoice_number} Settled to Main Account!</b>\n` +
+              `──────────────────────────\n` +
+              `🪙 <b>Credited:</b> $${effectiveAmountUsdc.toFixed(2)} USDC\n` +
+              `👛 <b>Main Account:</b> <code>${mainSettlementAddress}</code>` +
+              txText,
+              { parse_mode: "HTML" }
+            );
+          }
+        } catch (bridgeErr) {
+          console.error(`[webhook_server] Invoice CCTP auto-bridge error:`, bridgeErr.message);
+        }
+      }
+      idempotency.markWebhookProcessed(eventId, event, data.id);
+      return;
+    }
+
+    // Resolve user for standard onramp
+    let user = null;
+    if (telegramId) {
+      const parsedTgId = parseInt(String(telegramId).replace(/\D/g, ""));
+      if (!isNaN(parsedTgId)) user = db.getUser(parsedTgId);
+    }
+    if (!user && recipient) {
+      user = db.getUserBySolanaAddress ? db.getUserBySolanaAddress(recipient) : null;
+    }
+
+    // Determine whether this was a personal or business onramp
+    const externalIdStr = String(data.userExternalId || data.metadata?.telegramId || "");
+    const isBizAccount = data.accountType === "business" || data.metadata?.accountType === "business" || externalIdStr.endsWith("-biz");
+    const accountLabel = isBizAccount ? "Business Treasury" : "Personal Wallet";
+
+    const targetTelegramId = user ? user.telegram_id : telegramId;
+    const recipientArcAddress = isBizAccount
+      ? (user ? (user.business_deposit_address || user.deposit_address) : data.destinationArcAddress)
+      : (user ? user.deposit_address : data.destinationArcAddress);
+
+    // Send Telegram alert: Bank transfer detected with explicit account label
+    if (bot && targetTelegramId) {
+      try {
+        await bot.telegram.sendMessage(
+          targetTelegramId,
+          `🎉 <b>Naira Deposit Confirmed (${accountLabel})!</b>\n` +
+          `──────────────────────────\n` +
+          `💵 <b>Amount:</b> ₦${fiatAmount ? fiatAmount.toLocaleString() : "..."}\n` +
+          `🪙 <b>Settled:</b> $${amountUsdc.toFixed(2)} USDC (Solana)\n` +
+          `💼 <b>Destination:</b> ${accountLabel}\n\n` +
+          `🌉 <i>Auto-bridging native USDC to Arc Mainnet via Circle CCTP...</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch (err) {
+        console.warn(`[webhook_server] Failed to notify TG user ${targetTelegramId}:`, err.message);
+      }
+    }
+
+    // Trigger Circle CCTP Auto-Bridge to the specific isolated address (Personal vs Business)
+    if (recipientArcAddress) {
+      try {
+        const bridgeResult = await cctpBridge.autoBridgeSolanaToArc({
+          telegramId: targetTelegramId,
+          solanaTxSignature,
+          amountUsdc,
+          recipientArcAddress,
+        });
+
+        console.log(`[webhook_server] CCTP Auto-Bridge result:`, bridgeResult);
+
+        if (bot && targetTelegramId && bridgeResult.success) {
+          const txText = bridgeResult.arcTxHash
+            ? `\n🔗 <b>Arc Explorer:</b> <code>${bridgeResult.arcTxHash}</code>`
+            : "";
+          await bot.telegram.sendMessage(
+            targetTelegramId,
+            `✅ <b>USDC Arrived in ${accountLabel}!</b>\n` +
+            `──────────────────────────\n` +
+            `🪙 <b>Amount:</b> $${amountUsdc.toFixed(2)} USDC\n` +
+            `👛 <b>Recipient Address:</b> <code>${recipientArcAddress}</code>` +
+            txText,
+            { parse_mode: "HTML" }
+          );
+        }
+      } catch (err) {
+        console.error(`[webhook_server] CCTP Auto-bridge error:`, err);
+      }
+    }
+    idempotency.markWebhookProcessed(eventId, event, data.id);
+    return;
+  }
+
+  // Detect offramp payout completion
+  if (event === "offramp.successful" || event === "offramp.completed" || event === "payout.successful") {
+    const telegramId = data.userExternalId || data.metadata?.telegramId;
+    const fiatAmount = Number(data.fiatAmount || data.amountFiat || 0);
+    const bankName = data.bankName || data.bank?.name || "bank";
+    const accountNumber = data.accountNumber ? `...${String(data.accountNumber).slice(-4)}` : "";
+    const accountType = data.metadata?.accountType || "Personal";
+    const accountLabel = accountType === "business" ? "Business Account" : "Personal Wallet";
+
+    if (bot && telegramId) {
+      try {
+        await bot.telegram.sendMessage(
+          telegramId,
+          `✅ <b>Cash Out Complete (${accountLabel})!</b>\n` +
+          `──────────────────────────\n` +
+          `💵 <b>Delivered:</b> ₦${fiatAmount.toLocaleString()}\n` +
+          `🏦 <b>Destination:</b> ${bankName} ${accountNumber}\n` +
+          `💼 <b>Source:</b> ${accountLabel}\n` +
+          `🔖 <b>Ref:</b> <code>${data.id || "N/A"}</code>\n\n` +
+          `<i>Funds are now available in your local bank account.</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch (err) {
+        console.warn(`[webhook_server] Failed to notify TG user ${telegramId}:`, err.message);
+      }
+    }
+    idempotency.markWebhookProcessed(eventId, event, data.id);
+  }
+}
+
+/**
+ * Creates the HTTP server instance without starting it.
+ */
+function createWebhookServer({ bot } = {}) {
+  const secret = process.env.PAJ_WEBHOOK_SECRET || process.env.PAJCASH_API_KEY || "";
+
+  const server = http.createServer(async (req, res) => {
+    // 1. Health check
+    if (req.method === "GET" && req.url === "/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(
+        JSON.stringify({
+          status: "ok",
+          service: "PayIT Gateway & Paj Webhook Server",
+          time: new Date().toISOString(),
+          cctpDomain: 26,
+        })
+      );
+    }
+
+    // 2. Paj Webhook route
+    if (req.method === "POST" && (req.url === "/webhook/paj" || req.url === "/webhook/paj/")) {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", async () => {
+        const rawBody = Buffer.concat(chunks);
+
+        // Verify cryptographic signature
+        const isValid = paj.verifyWebhookSignature(rawBody, req.headers, secret);
+
+        if (!isValid) {
+          console.warn("[webhook_server] Rejected Paj webhook: Invalid HMAC signature");
+          res.writeHead(401, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ error: "Invalid webhook signature" }));
+        }
+
+        // Return 200 immediately
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ received: true }));
+
+        // Process event asynchronously
+        try {
+          const payload = JSON.parse(rawBody.toString("utf8"));
+          await processPajEvent(payload, bot);
+        } catch (err) {
+          console.error("[webhook_server] Error processing Paj event:", err.message);
+        }
+      });
+      return;
+    }
+
+    // 404 for unknown paths
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Not found" }));
+  });
+
+  return server;
+}
+
+/**
+ * Start listening on configured port.
+ */
+function startWebhookServer({ bot, port = 3000 } = {}) {
+  if (_server) return _server;
+  _server = createWebhookServer({ bot });
+  _server.listen(port, () => {
+    console.log(`[webhook_server] Listening on port ${port} (endpoints: /health, /webhook/paj)`);
+  });
+  return _server;
+}
+
+function stopWebhookServer() {
+  if (_server) {
+    _server.close();
+    _server = null;
+  }
+}
+
+module.exports = {
+  createWebhookServer,
+  startWebhookServer,
+  stopWebhookServer,
+  processPajEvent,
+};

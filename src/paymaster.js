@@ -5,21 +5,31 @@
 const { JsonRpcProvider, Contract, getAddress, keccak256, AbiCoder, toBeHex, getBytes } = require("ethers");
 const axios = require("axios");
 
+const { getNetworkConfig } = require("./network");
+
 // Default EntryPoint v0.7 address for Arc Network
 const DEFAULT_ENTRY_POINT = "0x0000000071727De22E5E9d8BAf0edAc6f37da032";
-const DEFAULT_CHAIN_ID = 5042002;
+const DEFAULT_CHAIN_ID = 5042;
 
 /**
  * Get the current Arc Paymaster and Bundler configuration from environment.
  */
 function getPaymasterConfig() {
+  const net = getNetworkConfig();
   const enabledEnv = process.env.ARC_PAYMASTER_ENABLED;
   const isEnabled = enabledEnv === undefined ? true : (enabledEnv === "true" || enabledEnv === "1");
-  const paymasterUrl = process.env.ARC_PAYMASTER_RPC_URL || "https://paymaster.testnet.arc.network/v1";
-  const bundlerUrl = process.env.ARC_BUNDLER_RPC_URL || process.env.ARC_RPC_URL || "https://bundler.testnet.arc.network/v1";
+  const defaultPaymasterUrl = net.isTestnet
+    ? "https://paymaster.testnet.arc.network/v1"
+    : "https://paymaster.arc.io/v1";
+  const defaultBundlerUrl = net.isTestnet
+    ? "https://bundler.testnet.arc.network/v1"
+    : "https://bundler.arc.io/v1";
+
+  const paymasterUrl = process.env.ARC_PAYMASTER_RPC_URL || defaultPaymasterUrl;
+  const bundlerUrl = process.env.ARC_BUNDLER_RPC_URL || process.env.ARC_RPC_URL || defaultBundlerUrl;
   const policyId = process.env.ARC_PAYMASTER_POLICY_ID || "payit-default-sponsorship";
   const entryPoint = process.env.ARC_ENTRY_POINT_ADDRESS || DEFAULT_ENTRY_POINT;
-  const chainId = parseInt(process.env.ARC_CHAIN_ID || DEFAULT_CHAIN_ID, 10);
+  const chainId = parseInt(process.env.ARC_CHAIN_ID || net.chainId, 10);
 
   return {
     enabled: isEnabled,

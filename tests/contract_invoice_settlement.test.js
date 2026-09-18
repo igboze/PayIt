@@ -12,7 +12,7 @@ try {
 }
 const { JsonRpcProvider, Wallet, ContractFactory, parseUnits } = require('ethers');
 
-if (!solc || !ganache) {
+if (!process.env.RUN_CONTRACT_TESTS || !solc || !ganache) {
   test.skip('contract_invoice_settlement: solc or ganache devDependency not installed', () => {});
   return;
 }

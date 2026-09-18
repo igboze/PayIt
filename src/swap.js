@@ -1,60 +1,86 @@
 // src/swap.js
-// Uniswap-V2-style swap logic for Arc testnet
-// SWAP_ROUTER_ADDRESS must be set in .env with a verified Arc DEX address before this is live.
-// Use: arc-canteen context sync → check ~/.arc-canteen/context/ for verified addresses.
+// Circle Stablecoin FX & Token Swaps on Arc via Circle SwapKit (@circle-fin/swap-kit)
+// Enables real-time, on-chain FX swaps between USDC and EURC on Arc
 
-const { Contract, parseUnits, formatUnits } = require("ethers");
-const walletLib = require("./wallet");
-const tokens    = require("./tokens");
+const { SwapKit, KitError } = require("@circle-fin/swap-kit");
+const { createEthersAdapterFromPrivateKey } = require("@circle-fin/adapter-ethers-v6");
+const { getNetworkConfig } = require("./network");
+const { formatUnits, parseUnits } = require("ethers");
 
-const ROUTER_ADDRESS = process.env.SWAP_ROUTER_ADDRESS || "";
-
-// Minimal Uniswap V2 Router ABI
-const ROUTER_ABI = [
-  "function getAmountsOut(uint amountIn, address[] memory path) view returns (uint[] memory amounts)",
-  "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) returns (uint[] memory amounts)",
-];
-
-// Slippage: 0.5% default
-const SLIPPAGE_BPS = 50;
-
-/**
- * Get a quote for swapping tokenIn → tokenOut.
- * Returns { amountOut, amountOutMin } in raw token units.
- */
-async function getSwapQuote(signerOrProvider, tokenInAddress, tokenOutAddress, amountInMicro) {
-  if (!ROUTER_ADDRESS) throw new Error("SWAP_ROUTER_ADDRESS not set — swap not live yet.");
-  const router = new Contract(ROUTER_ADDRESS, ROUTER_ABI, signerOrProvider);
-  const path   = [tokenInAddress, tokenOutAddress];
-  const amounts = await router.getAmountsOut(amountInMicro, path);
-  const amountOut    = amounts[1];
-  const amountOutMin = amountOut * BigInt(10000 - SLIPPAGE_BPS) / BigInt(10000);
-  return { amountOut, amountOutMin };
+let _swapKit = null;
+function getSwapKit() {
+  if (!_swapKit) _swapKit = new SwapKit();
+  return _swapKit;
 }
 
 /**
- * Execute a swap: USDC → EURC or EURC → USDC.
- * Requires signer wallet (decrypted with PIN in bot.js before calling).
+ * Get real-time FX exchange rates on Arc.
  */
-async function executeSwap(signerWallet, tokenIn, tokenOut, amountInMicro) {
-  if (!ROUTER_ADDRESS) throw new Error("SWAP_ROUTER_ADDRESS not set — swap not live yet.");
-
-  const tokenInAddress  = tokenIn  === "EURC" ? tokens.EURC_ADDRESS : tokens.USDC_ERC20_ADDRESS;
-  const tokenOutAddress = tokenOut === "EURC" ? tokens.EURC_ADDRESS : tokens.USDC_ERC20_ADDRESS;
-
-  // Approve router to spend tokenIn
-  await tokens.approveUsdcSpend(signerWallet, ROUTER_ADDRESS, amountInMicro);
-
-  const { amountOutMin } = await getSwapQuote(signerWallet, tokenInAddress, tokenOutAddress, amountInMicro);
-
-  const router   = new Contract(ROUTER_ADDRESS, ROUTER_ABI, signerWallet);
-  const deadline = Math.floor(Date.now() / 1000) + 300; // 5 min deadline
-  const tx = await router.swapExactTokensForTokens(
-    amountInMicro, amountOutMin, [tokenInAddress, tokenOutAddress],
-    await signerWallet.getAddress(), deadline
-  );
-  const receipt = await tx.wait();
-  return { txHash: receipt.hash, amountOutMin: formatUnits(amountOutMin, 18) };
+async function getFxRates() {
+  const kit = getSwapKit();
+  const net = getNetworkConfig();
+  const chain = net.isTestnet ? "Arc_Testnet" : "Arc";
+  const rates = await kit.getTokenRates({ chain });
+  return rates?.rates?.[chain] || {};
 }
 
-module.exports = { getSwapQuote, executeSwap };
+/**
+ * Get quote for swapping tokenIn -> tokenOut (USDC <-> EURC).
+ */
+async function getSwapQuote(tokenIn, tokenOut, amountInMicro, privateKey = null) {
+  const kit = getSwapKit();
+  const net = getNetworkConfig();
+  const chain = net.isTestnet ? "Arc_Testnet" : "Arc";
+  const apiKey = process.env.CIRCLE_KIT_KEY || process.env.ARC_API_KEY;
+
+  const pk = privateKey || "0x0123456789012345678901234567890123456789012345678901234567890123";
+  const adapter = createEthersAdapterFromPrivateKey({ privateKey: pk });
+  const humanAmount = formatUnits(BigInt(amountInMicro.toString()), 18);
+
+  const quote = await kit.estimate({
+    from: { adapter, chain },
+    tokenIn,
+    tokenOut,
+    amountIn: humanAmount,
+    ...(apiKey ? { config: { apiKey } } : {}),
+  });
+
+  const outAmount = quote?.estimatedOutput?.amount || quote?.estimatedOutput || "";
+  return {
+    ...quote,
+    amountOut: outAmount,
+    destinationAmount: outAmount,
+    tokenIn,
+    tokenOut,
+  };
+}
+
+/**
+ * Execute on-chain swap using user's privateKey.
+ */
+async function executeSwap(privateKey, tokenIn, tokenOut, amountInMicro) {
+  const kit = getSwapKit();
+  const net = getNetworkConfig();
+  const chain = net.isTestnet ? "Arc_Testnet" : "Arc";
+  const apiKey = process.env.CIRCLE_KIT_KEY || process.env.ARC_API_KEY;
+
+  const adapter = createEthersAdapterFromPrivateKey({ privateKey });
+  const humanAmount = formatUnits(BigInt(amountInMicro.toString()), 18);
+
+  const result = await kit.swap({
+    from: { adapter, chain },
+    tokenIn,
+    tokenOut,
+    amountIn: humanAmount,
+    ...(apiKey ? { config: { apiKey } } : {}),
+  });
+
+  return result;
+}
+
+module.exports = {
+  getSwapKit,
+  getFxRates,
+  getSwapQuote,
+  executeSwap,
+};

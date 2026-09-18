@@ -72,6 +72,9 @@ Intent types:
 - scheduled        : any payment with "every", "weekly", "monthly", "every Friday", etc.
 - balance          : "how much do I have", "check balance", "wetin I get"
 - history          : "show my transactions", "what did I spend", "last payments"
+- savings_view     : view yield/savings balance, check earn rates, "how much interest", "save and earn", "yield"
+- savings_deposit  : "deposit $50 to savings", "save 20 dollars", "start earning yield on $100"
+- savings_withdraw : "withdraw yield", "claim my yield", "withdraw savings", "cash out interest"
 - invoice_create   : "invoice [name] for [amount]", "bill TechCorp", "create invoice"
 - invoice_list     : "show my invoices", "list invoices", "unpaid invoices"
 - save_payee       : "save [address/account] as [name]", "add [name] to contacts"
@@ -86,6 +89,8 @@ Pidgin English hints:
   "wetin I get" / "how much I get" → balance
   "send am" / "pay am" → transfer (resolve "am" to context if possible)
   "cash am out" / "convert am" → offramp
+  "save am" / "make am earn" → savings_deposit
+  "withdraw my gain" / "collect my interest" → savings_withdraw
   "sharp sharp" → urgency, not an intent modifier
   "abeg" → polite request prefix, ignore for classification
 
@@ -126,6 +131,23 @@ async function classifyIntent(message, telegramId, userContext = {}) {
     }
     if (low === "contacts" || low === "payees" || low === "list payees") {
       return { intent: "list_payees", confidence: "high", params: { recipients: [], schedule: {}, missing: null }, raw_summary: "List contacts" };
+    }
+    if (low === "savings" || low === "earn" || low === "yield" || low === "save and earn" || low === "vaults") {
+      return { intent: "savings_view", confidence: "high", params: { recipients: [], schedule: {}, missing: null }, raw_summary: "View savings & yield" };
+    }
+    if (low.includes("withdraw yield") || low.includes("claim yield") || low.includes("withdraw savings") || low.includes("cash out yield") || low.includes("collect yield") || low.includes("withdraw interest")) {
+      return { intent: "savings_withdraw", confidence: "high", params: { recipients: [], schedule: {}, missing: null }, raw_summary: "Withdraw yield & savings" };
+    }
+
+    // Savings deposit shorthand: "save $50", "deposit $20 to savings"
+    const saveMatch = m.match(/^(?:save|deposit)\s+\$?(\d+(?:\.\d+)?)(?:\s*(?:to\s*savings|usdc|dollars?))?$/i);
+    if (saveMatch) {
+      return {
+        intent: "savings_deposit",
+        confidence: "high",
+        params: { recipients: [{ name_or_address: null, amount: Number(saveMatch[1]), currency: "USDC" }], schedule: {}, missing: null },
+        raw_summary: `Deposit $${saveMatch[1]} to savings`,
+      };
     }
 
     // 0x address alone -> transfer (recipient known, amount missing)
@@ -184,6 +206,15 @@ async function classifyIntent(message, telegramId, userContext = {}) {
 
   function shouldRejectPaymentIntent(parsedIntent, msg) {
     const lower = String(msg || "").toLowerCase();
+    if (parsedIntent === "savings_view") {
+      return !containsKeyword(lower, ["earn", "yield", "saving", "savings", "rate", "interest", "vault"]);
+    }
+    if (parsedIntent === "savings_deposit") {
+      return !containsKeyword(lower, ["save", "deposit", "earn", "yield"]);
+    }
+    if (parsedIntent === "savings_withdraw") {
+      return !containsKeyword(lower, ["withdraw", "claim", "cash out", "yield", "savings", "interest"]);
+    }
     if (parsedIntent === "offramp") {
       return !containsKeyword(lower, ["cash out", "withdraw", "naira", "bank", "account", "convert"]);
     }

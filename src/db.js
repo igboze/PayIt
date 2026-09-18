@@ -14,6 +14,7 @@ const { DatabaseSync } = require("node:sqlite");
 const fs = require("node:fs");
 const path = require("path");
 const walletLib = require("./wallet");
+const multichain = require("./multichain");
 
 function resolveDbPath() {
   const rawPath = process.env.PAYIT_DB_PATH || path.join(__dirname, "..", "payit.db");
@@ -130,6 +131,13 @@ db.exec(`
     created_at        TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS pin_security (
+    telegram_id       INTEGER PRIMARY KEY,
+    failed_attempts   INTEGER NOT NULL DEFAULT 0,
+    locked_until      INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `);
 
 function ensureUserSchema() {
@@ -200,6 +208,22 @@ function ensureUserSchema() {
   if (!columns.includes("referred_on_first_point")) {
     db.exec("ALTER TABLE users ADD COLUMN referred_on_first_point INTEGER NOT NULL DEFAULT 0");
   }
+  if (!columns.includes("solana_deposit_address")) {
+    db.exec("ALTER TABLE users ADD COLUMN solana_deposit_address TEXT");
+  }
+  if (!columns.includes("paj_permanent_offramp_address")) {
+    db.exec("ALTER TABLE users ADD COLUMN paj_permanent_offramp_address TEXT");
+  }
+  if (!columns.includes("biz_solana_deposit_address")) {
+    db.exec("ALTER TABLE users ADD COLUMN biz_solana_deposit_address TEXT");
+  }
+  if (!columns.includes("auto_earn_enabled")) {
+    db.exec("ALTER TABLE users ADD COLUMN auto_earn_enabled INTEGER DEFAULT 1");
+  }
+  if (!columns.includes("last_activity_at")) {
+    db.exec("ALTER TABLE users ADD COLUMN last_activity_at TEXT");
+    db.exec("UPDATE users SET last_activity_at = datetime('now') WHERE last_activity_at IS NULL");
+  }
 
   // SQLite does not allow adding a UNIQUE constraint directly on ALTER TABLE for an existing column,
   // so create a unique index if possible. If duplicates already exist, ignore the failure and keep
@@ -211,12 +235,36 @@ function ensureUserSchema() {
   }
 }
 
+function ensureYieldPositionsSchema() {
+  const info = db.prepare("PRAGMA table_info(yield_positions)").all();
+  const cols = info.map(c => c.name);
+  if (!cols.includes("vault_address")) db.exec("ALTER TABLE yield_positions ADD COLUMN vault_address TEXT");
+  if (!cols.includes("is_auto_earn")) db.exec("ALTER TABLE yield_positions ADD COLUMN is_auto_earn INTEGER DEFAULT 0");
+  if (!cols.includes("dev_fee_usdc")) db.exec("ALTER TABLE yield_positions ADD COLUMN dev_fee_usdc REAL DEFAULT 0");
+  if (!cols.includes("deposit_tx_hash")) db.exec("ALTER TABLE yield_positions ADD COLUMN deposit_tx_hash TEXT");
+  if (!cols.includes("withdraw_tx_hash")) db.exec("ALTER TABLE yield_positions ADD COLUMN withdraw_tx_hash TEXT");
+  if (!cols.includes("fee_tx_hash")) db.exec("ALTER TABLE yield_positions ADD COLUMN fee_tx_hash TEXT");
+  if (!cols.includes("account_type")) db.exec("ALTER TABLE yield_positions ADD COLUMN account_type TEXT DEFAULT 'personal'");
+}
+
+function ensureTransactionsSchema() {
+  const info = db.prepare("PRAGMA table_info(transactions)").all();
+  const cols = info.map(c => c.name);
+  if (!cols.includes("account_type")) db.exec("ALTER TABLE transactions ADD COLUMN account_type TEXT DEFAULT 'personal'");
+}
+
 ensureUserSchema();
+ensureYieldPositionsSchema();
+ensureTransactionsSchema();
 
 // ─── User helpers ─────────────────────────────────────────────────────────────
 
 function getUser(telegramId) {
   return db.prepare("SELECT * FROM users WHERE telegram_id = ?").get(telegramId) || null;
+}
+
+function getAllUsers() {
+  return db.prepare("SELECT * FROM users").all() || [];
 }
 
 function getUserByReferralCode(code) {
@@ -245,14 +293,23 @@ function createUserWithWallet(
   const referralCode = `ref${telegramId}`;
   const referredAt = referrerId ? new Date().toISOString() : null;
 
+  let solanaDepositAddress = null;
+  try {
+    const derivedSol = multichain.deriveSolanaFromEvmKey(privateKey);
+    solanaDepositAddress = derivedSol.solanaAddress;
+  } catch (err) {
+    console.warn("[db] Failed to derive Solana address during user creation:", err.message);
+  }
+
   db.prepare(`
     INSERT INTO users (
       telegram_id, username,
       deposit_address, encrypted_key, key_salt, key_iv, key_tag,
       business_deposit_address, biz_encrypted_key, biz_key_salt, biz_key_iv, biz_key_tag,
       active_context,
-      referrer_telegram_id, referral_code, referred_at, referred_on_first_point
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      referrer_telegram_id, referral_code, referred_at, referred_on_first_point,
+      solana_deposit_address
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     telegramId, username || null,
     address, enc.encryptedKey, enc.salt, enc.iv, enc.tag,
@@ -263,7 +320,8 @@ function createUserWithWallet(
     referrerId || null,
     referralCode,
     referredAt,
-    0
+    0,
+    solanaDepositAddress
   );
 
   return getUser(telegramId);
@@ -292,11 +350,91 @@ function setActiveContext(telegramId, context) {
   db.prepare("UPDATE users SET active_context = ? WHERE telegram_id = ?").run(context, telegramId);
 }
 
-// ─── PIN / key management ────────────────────────────────────────────────────
+// ─── PIN / key management & security ─────────────────────────────────────────
 
-function verifyPin(telegramId, pin) {
+const MAX_FAILED_PIN_ATTEMPTS = 5;
+const PIN_LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+
+function getPinSecurity(telegramId) {
+  try {
+    return db.prepare("SELECT * FROM pin_security WHERE telegram_id = ?").get(telegramId);
+  } catch {
+    return null;
+  }
+}
+
+function isPinLocked(telegramId) {
+  const sec = getPinSecurity(telegramId);
+  if (!sec || !sec.locked_until) return { locked: false, remainingSec: 0 };
+  const now = Date.now();
+  if (sec.locked_until > now) {
+    const remainingSec = Math.ceil((sec.locked_until - now) / 1000);
+    return { locked: true, remainingSec };
+  }
+  return { locked: false, remainingSec: 0 };
+}
+
+function recordFailedPinAttempt(telegramId) {
+  const sec = getPinSecurity(telegramId);
+  const now = Date.now();
+  let failed = (sec?.failed_attempts || 0) + 1;
+  let lockedUntil = 0;
+  if (failed >= MAX_FAILED_PIN_ATTEMPTS) {
+    lockedUntil = now + PIN_LOCKOUT_DURATION_MS;
+  }
+  try {
+    db.prepare(`
+      INSERT INTO pin_security (telegram_id, failed_attempts, locked_until, last_attempt_at)
+      VALUES (?, ?, ?, datetime('now'))
+      ON CONFLICT(telegram_id) DO UPDATE SET
+        failed_attempts = excluded.failed_attempts,
+        locked_until = excluded.locked_until,
+        last_attempt_at = excluded.last_attempt_at
+    `).run(telegramId, failed, lockedUntil);
+  } catch (err) {
+    console.error("[db] Error recording failed PIN attempt:", err.message);
+  }
+
+  const remainingAttempts = Math.max(0, MAX_FAILED_PIN_ATTEMPTS - failed);
+  const remainingSec = lockedUntil > now ? Math.ceil((lockedUntil - now) / 1000) : 0;
+  return {
+    locked: lockedUntil > now,
+    remainingAttempts,
+    remainingSec,
+  };
+}
+
+function resetPinLockout(telegramId) {
+  try {
+    db.prepare(`
+      INSERT INTO pin_security (telegram_id, failed_attempts, locked_until, last_attempt_at)
+      VALUES (?, 0, 0, datetime('now'))
+      ON CONFLICT(telegram_id) DO UPDATE SET
+        failed_attempts = 0,
+        locked_until = 0,
+        last_attempt_at = datetime('now')
+    `).run(telegramId);
+  } catch (err) {
+    console.error("[db] Error resetting PIN lockout:", err.message);
+  }
+}
+
+function verifyPinWithStatus(telegramId, pin) {
+  const lockStatus = isPinLocked(telegramId);
+  if (lockStatus.locked) {
+    return {
+      valid: false,
+      locked: true,
+      remainingAttempts: 0,
+      remainingSec: lockStatus.remainingSec,
+    };
+  }
+
   const user = getUser(telegramId);
-  if (!user) return false;
+  if (!user) {
+    return { valid: false, locked: false, remainingAttempts: 0, remainingSec: 0 };
+  }
+
   try {
     walletLib.decryptPrivateKey(pin, {
       encryptedKey: user.encrypted_key,
@@ -304,10 +442,22 @@ function verifyPin(telegramId, pin) {
       iv: user.key_iv,
       tag: user.key_tag,
     });
-    return true;
+    resetPinLockout(telegramId);
+    return { valid: true, locked: false, remainingAttempts: MAX_FAILED_PIN_ATTEMPTS, remainingSec: 0 };
   } catch {
-    return false;
+    const failResult = recordFailedPinAttempt(telegramId);
+    return {
+      valid: false,
+      locked: failResult.locked,
+      remainingAttempts: failResult.remainingAttempts,
+      remainingSec: failResult.remainingSec,
+    };
   }
+}
+
+function verifyPin(telegramId, pin) {
+  const result = verifyPinWithStatus(telegramId, pin);
+  return result.valid;
 }
 
 function decryptPrivateKey(pin, user) {
@@ -440,10 +590,10 @@ function isBlocked(telegramId) {
 }
 // ─── Transactions ─────────────────────────────────────────────────────────────
 
-function recordTransaction(telegramId, type, amountMicro, status, txHash) {
+function recordTransaction(telegramId, type, amountMicro, status, txHash, accountType = "personal") {
   const result = db.prepare(
-    "INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash) VALUES (?, ?, ?, ?, ?)"
-  ).run(telegramId, type, amountMicro.toString(), status, txHash || null);
+    "INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, account_type) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(telegramId, type, amountMicro.toString(), status, txHash || null, accountType);
   return result.lastInsertRowid;
 }
 
@@ -455,7 +605,12 @@ function updateTransactionStatus(txId, status, txHash = null) {
   }
 }
 
-function getTransactions(telegramId, limit = 10) {
+function getTransactions(telegramId, limit = 10, accountType = null) {
+  if (accountType) {
+    return db.prepare(
+      "SELECT * FROM transactions WHERE telegram_id = ? AND account_type = ? ORDER BY id DESC LIMIT ?"
+    ).all(telegramId, accountType, limit);
+  }
   return db.prepare(
     "SELECT * FROM transactions WHERE telegram_id = ? ORDER BY id DESC LIMIT ?"
   ).all(telegramId, limit);
@@ -463,24 +618,111 @@ function getTransactions(telegramId, limit = 10) {
 
 // ─── Yield positions ──────────────────────────────────────────────────────────
 
-function getOpenYieldPosition(telegramId) {
+function getOpenYieldPosition(telegramId, accountType = null) {
+  if (accountType) {
+    return db.prepare(
+      "SELECT * FROM yield_positions WHERE telegram_id = ? AND account_type = ? AND status = 'active' ORDER BY id DESC LIMIT 1"
+    ).get(telegramId, accountType) || null;
+  }
   return db.prepare(
     "SELECT * FROM yield_positions WHERE telegram_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1"
   ).get(telegramId) || null;
 }
 
-function openYieldPosition(telegramId, amountUsdc, pool) {
+function openYieldPosition(telegramId, amountUsdc, pool, options = {}) {
+  const vaultAddress = pool.vaultAddress || pool.address || null;
+  const isAutoEarn = options.isAutoEarn ? 1 : 0;
+  const depositTxHash = options.depositTxHash || null;
+  const accountType = options.accountType || "personal";
+  const apy = pool.userApy ?? pool.apy ?? 0;
+  const project = pool.project || "Arc Morpho Vault";
+  const symbol = pool.symbol || "USDC";
+  const chain = pool.chain || "arc";
+
   db.prepare(`
-    INSERT INTO yield_positions (telegram_id, amount_usdc, apy, project, symbol, chain)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(telegramId, amountUsdc, pool.userApy, pool.project, pool.symbol, pool.chain);
+    INSERT INTO yield_positions (
+      telegram_id, amount_usdc, apy, project, symbol, chain, vault_address, is_auto_earn, deposit_tx_hash, account_type
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    telegramId,
+    amountUsdc,
+    apy,
+    project,
+    symbol,
+    chain,
+    vaultAddress,
+    isAutoEarn,
+    depositTxHash,
+    accountType
+  );
 }
 
-function closeYieldPosition(telegramId, payout) {
+function closeYieldPosition(telegramId, payout, options = {}) {
+  const devFee = options.devFee || 0;
+  const withdrawTxHash = options.withdrawTxHash || null;
+  const feeTxHash = options.feeTxHash || null;
+  const positionId = options.positionId || null;
+  const accountType = options.accountType || null;
+
+  if (positionId) {
+    db.prepare(`
+      UPDATE yield_positions SET
+        status = 'closed',
+        closed_at = datetime('now'),
+        payout = ?,
+        dev_fee_usdc = ?,
+        withdraw_tx_hash = ?,
+        fee_tx_hash = ?
+      WHERE id = ? AND status = 'active'
+    `).run(payout, devFee, withdrawTxHash, feeTxHash, positionId);
+    return;
+  }
+
+  if (accountType) {
+    db.prepare(`
+      UPDATE yield_positions SET
+        status = 'closed',
+        closed_at = datetime('now'),
+        payout = ?,
+        dev_fee_usdc = ?,
+        withdraw_tx_hash = ?,
+        fee_tx_hash = ?
+      WHERE telegram_id = ? AND account_type = ? AND status = 'active'
+    `).run(payout, devFee, withdrawTxHash, feeTxHash, telegramId, accountType);
+    return;
+  }
+
   db.prepare(`
-    UPDATE yield_positions SET status = 'closed', closed_at = datetime('now'), payout = ?
+    UPDATE yield_positions SET
+      status = 'closed',
+      closed_at = datetime('now'),
+      payout = ?,
+      dev_fee_usdc = ?,
+      withdraw_tx_hash = ?,
+      fee_tx_hash = ?
     WHERE telegram_id = ? AND status = 'active'
-  `).run(payout, telegramId);
+  `).run(payout, devFee, withdrawTxHash, feeTxHash, telegramId);
+}
+
+function updateUserLastActivity(telegramId) {
+  try {
+    db.prepare("UPDATE users SET last_activity_at = datetime('now') WHERE telegram_id = ?").run(telegramId);
+  } catch {}
+}
+
+function updateAutoEarnSetting(telegramId, enabled) {
+  db.prepare("UPDATE users SET auto_earn_enabled = ? WHERE telegram_id = ?").run(enabled ? 1 : 0, telegramId);
+}
+
+function getIdleUsersForAutoEarn(idleHours = 2) {
+  return db.prepare(`
+    SELECT * FROM users 
+    WHERE auto_earn_enabled = 1 
+      AND datetime(last_activity_at) <= datetime('now', '-' || ? || ' hours')
+      AND telegram_id NOT IN (
+        SELECT telegram_id FROM yield_positions WHERE status = 'active'
+      )
+  `).all(idleHours);
 }
 
 // ─── Invoice ledger ───────────────────────────────────────────────────────────
@@ -672,15 +914,43 @@ function getFinancialSummary(ownerTelegramId) {
   };
 }
 
+function updateSolanaAddress(telegramId, solanaAddress) {
+  db.prepare("UPDATE users SET solana_deposit_address = ? WHERE telegram_id = ?").run(solanaAddress, telegramId);
+}
+
+function updateBizSolanaAddress(telegramId, solanaAddress) {
+  db.prepare("UPDATE users SET biz_solana_deposit_address = ? WHERE telegram_id = ?").run(solanaAddress, telegramId);
+}
+
+function updatePermanentOfframpAddress(telegramId, offrampAddress) {
+  db.prepare("UPDATE users SET paj_permanent_offramp_address = ? WHERE telegram_id = ?").run(offrampAddress, telegramId);
+}
+
+function getUserBySolanaAddress(solanaAddress) {
+  if (!solanaAddress) return null;
+  return db.prepare("SELECT * FROM users WHERE solana_deposit_address = ? OR biz_solana_deposit_address = ?").get(solanaAddress, solanaAddress) || null;
+}
+
+function getUserByBizSolanaAddress(solanaAddress) {
+  if (!solanaAddress) return null;
+  return db.prepare("SELECT * FROM users WHERE biz_solana_deposit_address = ?").get(solanaAddress) || null;
+}
+
 module.exports = {
   db,
   resolveDbPath,
   getUser,
+  getAllUsers,
+  getUserBySolanaAddress,
+  getUserByBizSolanaAddress,
   getUserByReferralCode,
   createUserWithWallet,
   addBusinessWallet,
   setActiveContext,
   verifyPin,
+  verifyPinWithStatus,
+  isPinLocked,
+  resetPinLockout,
   decryptPrivateKey,
   decryptBusinessPrivateKey,
   updatePin,
@@ -708,4 +978,13 @@ module.exports = {
   findMatchingOutstandingInvoice,
   sweepOverdueInvoices,
   getFinancialSummary,
+  updateSolanaAddress,
+  updateBizSolanaAddress,
+  updatePermanentOfframpAddress,
+  updateUserLastActivity,
+  updateAutoEarnSetting,
+  getIdleUsersForAutoEarn,
+  _db: db,
+  prepare: (...args) => db.prepare(...args),
+  exec: (...args) => db.exec(...args),
 };

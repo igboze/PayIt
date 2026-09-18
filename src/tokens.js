@@ -5,12 +5,7 @@
 
 const { JsonRpcProvider, Contract, parseUnits, formatUnits } = require("ethers");
 
-const ARC_RPC   = process.env.ARC_RPC_URL || "https://rpc.testnet.arc.network";
-const CHAIN_ID  = 5042002;
-
-// Confirmed Arc Testnet contract addresses
-const EURC_ADDRESS = "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a";
-const USDC_ERC20_ADDRESS = "0x3600000000000000000000000000000000000000"; // optional ERC-20 interface
+const { getNetworkConfig } = require("./network");
 
 // Minimal ERC-20 ABI — only what we need
 const ERC20_ABI = [
@@ -22,14 +17,22 @@ const ERC20_ABI = [
 
 let _provider = null;
 function getProvider() {
-  if (!_provider) _provider = new JsonRpcProvider(ARC_RPC, CHAIN_ID);
+  const net = getNetworkConfig();
+  if (!_provider || _provider._network?.chainId !== BigInt(net.chainId)) {
+    _provider = new JsonRpcProvider(net.rpcUrl, net.chainId);
+  }
   return _provider;
 }
 
-// ─── EURC ─────────────────────────────────────────────────────────────────────
+const EURC_ADDRESS = getNetworkConfig().eurcAddress;
+const USDC_ERC20_ADDRESS = getNetworkConfig().usdcAddress;
+
+function getEurcAddress() {
+  return getNetworkConfig().eurcAddress;
+}
 
 function getEurcContract(signerOrProvider) {
-  return new Contract(EURC_ADDRESS, ERC20_ABI, signerOrProvider || getProvider());
+  return new Contract(getEurcAddress(), ERC20_ABI, signerOrProvider || getProvider());
 }
 
 /**

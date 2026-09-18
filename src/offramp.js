@@ -1,49 +1,56 @@
 // src/offramp.js
-// Paj Cash Naira off-ramp integration
-// On-chain USDC transfer happens in bot.js (executeWithdraw) before this is called.
-// This file handles the Paj Cash API notification so they know to send Naira to the user.
-// Replace with real Paj Cash API docs/credentials when available.
+// Production Paj v2 Off-Ramp Wrapper for PayIT
+// Uses the official Paj v2 API (https://docs.paj.cash)
 
-const axios = require("axios");
+const paj = require("./paj");
 const walletLib = require("./wallet");
 
-const PAJCASH_API_BASE = process.env.PAJCASH_API_URL || "https://api.pajcash.com";
-const PAJCASH_API_KEY  = process.env.PAJCASH_API_KEY  || "";
-
 /**
- * Notify Paj Cash that USDC has been sent and Naira payout is requested.
- * @param {number} telegramId - user's Telegram ID (for reference)
- * @param {bigint} amountMicro - amount in 18-decimal micro format
- * @param {object} bankDetails - { accountNumber, bankCode, accountName }
+ * Request real Naira payout via Paj v2 offramp order.
+ *
+ * @param {number} telegramId - Telegram user ID
+ * @param {bigint} amountMicro - Amount in 18-decimal micro format
+ * @param {object} bankDetails - { accountNumber, bankCode, accountName, fiatAmount }
+ * @returns {Promise<object>}
  */
 async function requestOfframp(telegramId, amountMicro, bankDetails) {
   const amountUsdc = parseFloat(walletLib.formatMicro(amountMicro));
 
-  if (!PAJCASH_API_KEY) {
-    // No credentials configured — return a placeholder reference
-    console.warn("[offramp] PAJCASH_API_KEY not set — skipping real API call");
-    return { reference: `MOCK-${Date.now()}`, status: "pending" };
-  }
+  try {
+    const payload = {
+      accountNumber: bankDetails.accountNumber,
+      bankCode: bankDetails.bankCode || "000013", // Default to GTBank if unspecified
+      currency: "NGN",
+      description: `PayIT Cash Out - TG:${telegramId}`,
+    };
 
-  const response = await axios.post(
-    `${PAJCASH_API_BASE}/v1/offramp`,
-    {
-      amount: amountUsdc,
-      currency: "USDC",
-      destinationCurrency: "NGN",
-      bankDetails,
-      reference: `PAYIT-${telegramId}-${Date.now()}`,
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${PAJCASH_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      timeout: 10000,
+    if (bankDetails && bankDetails.fiatAmount) {
+      payload.fiatAmount = Number(bankDetails.fiatAmount);
+    } else {
+      payload.amount = amountUsdc;
     }
-  );
 
-  return response.data;
+    const order = await paj.createOfframpOrder(payload);
+
+    return {
+      success: true,
+      reference: order.id,
+      address: order.address,
+      amount: order.amount,
+      fiatAmount: order.fiatAmount,
+      accountName: order.accountName,
+      rate: order.rate,
+      status: order.status,
+      data: order,
+    };
+  } catch (err) {
+    console.error(`[offramp] Paj v2 Offramp creation failed:`, err.message);
+    return {
+      success: false,
+      error: err.message,
+      status: "failed",
+    };
+  }
 }
 
 module.exports = { requestOfframp };

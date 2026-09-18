@@ -76,6 +76,20 @@ function initBizTables() {
   try {
     db.exec("CREATE INDEX IF NOT EXISTS idx_biz_invoices_payment_address ON biz_invoices(payment_address);");
   } catch (e) {}
+  try { db.exec("ALTER TABLE biz_invoices ADD COLUMN fiat_account_number TEXT;"); } catch (e) {}
+  try { db.exec("ALTER TABLE biz_invoices ADD COLUMN fiat_bank_name TEXT;"); } catch (e) {}
+  try { db.exec("ALTER TABLE biz_invoices ADD COLUMN fiat_account_name TEXT;"); } catch (e) {}
+  try { db.exec("ALTER TABLE biz_invoices ADD COLUMN fiat_amount REAL;"); } catch (e) {}
+  try { db.exec("ALTER TABLE biz_invoices ADD COLUMN fiat_order_id TEXT;"); } catch (e) {}
+  try { db.exec("ALTER TABLE biz_invoices ADD COLUMN fiat_rate REAL;"); } catch (e) {}
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_biz_invoices_fiat_order_id ON biz_invoices(fiat_order_id);"); } catch (e) {}
+}
+
+// Auto-initialize tables
+try {
+  initBizTables();
+} catch (e) {
+  // Ignore
 }
 
 // ─── Invoice number sequencing ────────────────────────────────────────────────
@@ -303,6 +317,27 @@ function addToBizSavings(telegramId, amount) {
   `).run(telegramId, amount);
 }
 
+function getBizInvoiceByNumber(invoiceNumber) {
+  return db.prepare("SELECT * FROM biz_invoices WHERE invoice_number = ?").get(invoiceNumber) || null;
+}
+
+function getBizInvoiceByFiatOrderId(orderId) {
+  return db.prepare("SELECT * FROM biz_invoices WHERE fiat_order_id = ?").get(orderId) || null;
+}
+
+function updateBizInvoiceFiatDetails(invoiceId, { fiatAccountNumber, fiatBankName, fiatAccountName, fiatAmount, fiatOrderId, fiatRate }) {
+  db.prepare(`
+    UPDATE biz_invoices SET
+      fiat_account_number = ?,
+      fiat_bank_name = ?,
+      fiat_account_name = ?,
+      fiat_amount = ?,
+      fiat_order_id = ?,
+      fiat_rate = ?
+    WHERE id = ?
+  `).run(fiatAccountNumber, fiatBankName, fiatAccountName, fiatAmount, fiatOrderId, fiatRate, invoiceId);
+}
+
 module.exports = {
   initBizTables,
   getNextBizInvoiceNumber,
@@ -310,6 +345,9 @@ module.exports = {
   createBizInvoiceWithHDAddress,
   getBizInvoices,
   getBizInvoice,
+  getBizInvoiceByNumber,
+  getBizInvoiceByFiatOrderId,
+  updateBizInvoiceFiatDetails,
   getBizInvoiceByWalletAddress,
   markBizInvoicePaid,
   markBizInvoicePaidWithTxHash,
