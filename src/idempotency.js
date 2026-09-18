@@ -89,11 +89,19 @@ function markWebhookProcessed(eventId, eventType = "unknown", resourceId = null)
 
 /**
  * Check if a payment/offramp/yield operation with this idempotency key already exists.
+ * Automatically clears stale 'pending' locks older than lockTtlSeconds (default: 45s).
  */
-function checkOperationIdempotency(key) {
+function checkOperationIdempotency(key, lockTtlSeconds = 45) {
   if (!key) return null;
-  const row = db.prepare("SELECT * FROM universal_idempotency WHERE key = ?").get(String(key));
+  const row = db.prepare("SELECT *, (strftime('%s', 'now') - strftime('%s', created_at)) AS age_seconds FROM universal_idempotency WHERE key = ?").get(String(key));
   if (!row) return null;
+
+  // If operation was left in 'pending' for longer than TTL, release stale lock
+  if (row.status === "pending" && (row.age_seconds == null || row.age_seconds > lockTtlSeconds)) {
+    failOperationIdempotency(key, "Operation timed out or was interrupted");
+    return null;
+  }
+
   let parsedResponse = null;
   try {
     parsedResponse = row.response_data ? JSON.parse(row.response_data) : null;
@@ -109,6 +117,7 @@ function checkOperationIdempotency(key) {
     responseData: parsedResponse,
     createdAt: row.created_at,
     completedAt: row.completed_at,
+    ageSeconds: row.age_seconds,
   };
 }
 
