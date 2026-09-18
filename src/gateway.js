@@ -24,17 +24,25 @@ const {
   MaxUint256, randomBytes, zeroPadValue, getAddress,
 } = require("ethers");
 
-const GATEWAY_API_BASE = process.env.GATEWAY_API_URL || "https://gateway-api-testnet.circle.com/v1";
+const { getNetworkConfig } = require("./network");
+
+const netConfig = getNetworkConfig();
+const GATEWAY_API_BASE = process.env.GATEWAY_API_URL || netConfig.gatewayApiUrl;
 
 // ── Confirmed contract addresses (same on all supported chains) ────────────────
-const GATEWAY_WALLET_ADDRESS  = "0x0077777d7EBA4688BDeF3E311b846F25870A19B9";
-const GATEWAY_MINTER_ADDRESS  = "0x0022222ABE238Cc2C7Bb1f21003F0a260052475B";
-const ARC_USDC_ADDRESS        = "0x3600000000000000000000000000000000000000";
-const ARC_DOMAIN_ID           = 26; // confirmed via GET /v1/info (ARC Testnet)
+const GATEWAY_WALLET_ADDRESS  = netConfig.gatewayWalletAddress || "0x0077777d7EBA4688BDeF3E311b846F25870A19B9";
+const GATEWAY_MINTER_ADDRESS  = netConfig.gatewayMinterAddress || "0x0022222ABE238Cc2C7Bb1f21003F0a260052475B";
+const ARC_USDC_ADDRESS        = netConfig.usdcAddress || "0x3600000000000000000000000000000000000000";
+const ARC_DOMAIN_ID           = netConfig.domainId || 26;
 const MAX_TRANSFER_FEE        = parseUnits("2.01", 6);
 
-// ── USDC contract addresses per testnet chain ──────────────────────────────────
+// ── USDC contract addresses per chain ──────────────────────────────────────────
 const USDC_ADDRESSES = {
+  // Mainnet
+  "Ethereum":         "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+  "Base":             "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  "Avalanche":        "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+  // Testnet
   "Ethereum Sepolia": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
   "Base Sepolia":     "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
   "Avalanche Fuji":   "0x5425890298aed601595a70ab815c96711a31bc65",
@@ -42,6 +50,12 @@ const USDC_ADDRESSES = {
 
 // ── CCTP domain IDs ────────────────────────────────────────────────────────────
 const DOMAIN_IDS = {
+  // Mainnet
+  "Ethereum":         0,
+  "Avalanche":        1,
+  "Base":             6,
+  "Arc":              ARC_DOMAIN_ID,
+  // Testnet
   "Ethereum Sepolia": 0,
   "Avalanche Fuji":   1,
   "Base Sepolia":     6,
@@ -102,18 +116,31 @@ function friendlyGatewayError(err, chainName) {
 }
 
 // ── RPC endpoints for each source chain ───────────────────────────────────────
-// Public fallbacks; override via env if needed (e.g. SEPOLIA_RPC_URL).
+// Public fallbacks; override via env if needed (e.g. SEPOLIA_RPC_URL, ETHEREUM_RPC_URL).
 const CHAIN_RPCS = {
-  "Ethereum Sepolia": process.env.SEPOLIA_RPC_URL     || "https://ethereum-sepolia-rpc.publicnode.com",
+  // Mainnet
+  "Ethereum":         process.env.ETHEREUM_RPC_URL     || "https://ethereum-rpc.publicnode.com",
+  "Base":             process.env.BASE_RPC_URL         || "https://mainnet.base.org",
+  "Avalanche":        process.env.AVALANCHE_RPC_URL    || "https://api.avax.network/ext/bc/C/rpc",
+  // Testnet
+  "Ethereum Sepolia": process.env.SEPOLIA_RPC_URL      || "https://ethereum-sepolia-rpc.publicnode.com",
   "Base Sepolia":     process.env.BASE_SEPOLIA_RPC_URL || "https://base-sepolia-rpc.publicnode.com",
   "Avalanche Fuji":   process.env.FUJI_RPC_URL         || "https://api.avax-test.network/ext/bc/C/rpc",
 };
 
-const SUPPORTED_CHAINS = [
+const MAINNET_CHAINS = [
+  { name: "Ethereum",  chainId: 1,     symbol: "ETH",  domain: 0, explorer: "https://etherscan.io/tx/" },
+  { name: "Base",      chainId: 8453,  symbol: "ETH",  domain: 6, explorer: "https://basescan.org/tx/" },
+  { name: "Avalanche", chainId: 43114, symbol: "AVAX", domain: 1, explorer: "https://snowtrace.io/tx/" },
+];
+
+const TESTNET_CHAINS = [
   { name: "Ethereum Sepolia", chainId: 11155111, symbol: "ETH",  domain: 0, explorer: "https://sepolia.etherscan.io/tx/" },
   { name: "Base Sepolia",     chainId: 84532,    symbol: "BASE", domain: 6, explorer: "https://sepolia.basescan.org/tx/" },
   { name: "Avalanche Fuji",   chainId: 43113,    symbol: "AVAX", domain: 1, explorer: "https://testnet.snowtrace.io/tx/" },
 ];
+
+const SUPPORTED_CHAINS = netConfig.isTestnet ? TESTNET_CHAINS : MAINNET_CHAINS;
 
 // ── ABIs (minimal) ─────────────────────────────────────────────────────────────
 const ERC20_ABI = [
@@ -209,10 +236,14 @@ async function getDepositInfo(arcAddress) {
     chains: SUPPORTED_CHAINS,
     usdcAddresses: USDC_ADDRESSES,
     steps: [
-      `*Step 1 — Get testnet USDC*\nVisit https://faucet.circle.com, select your chain and request USDC.`,
+      netConfig.isTestnet
+        ? `*Step 1 — Get testnet USDC*\nVisit https://faucet.circle.com, select your chain and request USDC.`
+        : `*Step 1 — Ensure you have USDC*\nEnsure you have USDC on Ethereum, Base, or Avalanche. (Or use "Buy USDC with Card" directly via Circle Onramp!)`,
       `*Step 2 — Approve*\nIn your web3 wallet (MetaMask etc), approve the Gateway Wallet contract to spend your USDC:\nContract: \`${GATEWAY_WALLET_ADDRESS}\``,
       `*Step 3 — Deposit (NOT a plain send)*\nCall \`deposit(usdcAddress, amount)\` on the Gateway Wallet contract.\n⚠️ A plain USDC transfer to this address permanently loses your funds.`,
-      `*Step 4 — Wait for finality*\nSepolia: ~12 mins · Base Sepolia: ~2 mins · Avalanche Fuji: instant`,
+      netConfig.isTestnet
+        ? `*Step 4 — Wait for finality*\nSepolia: ~12 mins · Base Sepolia: ~2 mins · Avalanche Fuji: instant`
+        : `*Step 4 — Wait for finality*\nEthereum: ~15 mins · Base: ~2 mins · Avalanche: instant`,
       `*Step 5 — Transfer to Arc*\nOnce finalized, tap *Transfer to Arc* and sign the burn intent. Your USDC will appear on Arc in <500ms.`,
     ],
   };

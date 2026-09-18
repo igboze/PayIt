@@ -20,15 +20,21 @@ const https = require("https");
 const db            = require("./src/db");
 const walletLib     = require("./src/wallet");
 const offrampLib    = require("./src/offramp");
+const paj           = require("./src/paj");
+const multichain    = require("./src/multichain");
+const cctpBridge    = require("./src/cctp_bridge");
 const fx            = require("./src/fx");
 const otp           = require("./src/otp");
 const savings       = require("./src/savings");
 const tokens        = require("./src/tokens");
+const swapLib       = require("./src/swap");
 const gateway       = require("./src/gateway");
 const invoiceDb     = require("./src/invoice_db");
 const bizDb         = require("./src/biz_db");
 const bizProfile    = require("./src/biz_profile");
 const payeeBook     = require("./src/payee_book");
+const webhookServer = require("./src/webhook_server");
+const idempotency   = require("./src/idempotency");
 const convState     = require("./src/conversation_state");
 const { generateInvoicePNG }   = require("./src/invoice_generator");
 const { generateReceiptPNG }   = require("./src/receipt_generator");
@@ -46,13 +52,17 @@ const { parseImagePayment, formatExtractionPreview } = require("./agent/vision_p
 const { parsePdf, parseSpreadsheetFile, formatFilePreview, parsePptx, parseDocx, parseTextFile, buildFilePaymentPlan } = require("./agent/file_parser");
 const { transcribeVoice } = require("./agent/voice_parser");
 const { shouldReprocessConversationState } = require("./src/conversation_flow");
-const { createHDInvoice, validateAndConfirmPayment, generateInvoiceQRData } = require("./src/invoice_hd");
+const { createHDInvoice, createCompleteInvoice, createCompleteBizInvoice, validateAndConfirmPayment, generateInvoiceQRData } = require("./src/invoice_hd");
 const invoiceListener = require("./agent/invoice_listener");
 const { safeAnswerCbQuery } = require("./src/telegram_utils");
 const { getSettlementDestination } = require("./agent/invoice_listener");
 
-const ARC_RPC_URL = process.env.ARC_RPC_URL || "https://rpc.testnet.arc.network";
-const ARC_CHAIN_ID = 5042002;
+const { getNetworkConfig, getExplorerUrl } = require("./src/network");
+const { buildCircleOnrampUrl, getOnrampDetails } = require("./src/onramp");
+
+const netConfig = getNetworkConfig();
+const ARC_RPC_URL = netConfig.rpcUrl;
+const ARC_CHAIN_ID = netConfig.chainId;
 const REFERRAL_BONUS_POINTS = 20;
 const arcProvider = new JsonRpcProvider(ARC_RPC_URL, ARC_CHAIN_ID);
 
@@ -67,6 +77,9 @@ const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 // Wrap Telegraf callback query responses so stale or invalid callback IDs do not crash the bot.
 bot.use(async (ctx, next) => {
+  if (ctx.from?.id) {
+    db.updateUserLastActivity(ctx.from.id);
+  }
   if (ctx && typeof ctx.answerCbQuery === "function") {
     const originalAnswer = ctx.answerCbQuery.bind(ctx);
     ctx.answerCbQuery = async (text, showAlert) => {
@@ -353,6 +366,7 @@ const POINTS = {
   businessInvoice: 12,
   savingsDeposit: 5,
   savingsWithdraw: 3,
+  swap: 4,
 };
 
 const POINTS_PER_USD = 20;
@@ -628,14 +642,21 @@ async function showReceive(ctx) {
   await ctx.reply(
     `📥 Add Money — ${label}\n──────────────────────────\n` +
     `Your PayIT account number (tap to copy):\n\n` +
-    `${address}\n\n` +
+    `<code>${address}</code>\n\n` +
     `Anyone can send you dollars or euros to this address from any compatible wallet.\n\n` +
-    `Or use 🌍 Add from Abroad to bring money in from Binance, Coinbase, MetaMask, and others.`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("🌍 Add from Abroad", "action_gateway")],
-      [Markup.button.callback("💰 Check Balance", "action_balance")],
-      [Markup.button.callback("🏠 Main Menu",     "main_menu")],
-    ])
+    `• 🇳🇬 <b>Deposit Naira</b>: Pay via bank transfer (Wema, GTB, Kuda) to get USDC directly.\n` +
+    `• 💳 <b>Buy USDC with Card</b>: Direct purchase with Visa, Mastercard, Apple Pay.\n` +
+    `• 🌍 <b>Add from Abroad</b>: Bridge in from Binance, Coinbase, MetaMask, etc.`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("🇳🇬 Deposit Naira (Bank Transfer)", "action_paj_onramp")],
+        [Markup.button.callback("💳 Buy USDC (Card / Onramp)", "gateway_onramp")],
+        [Markup.button.callback("🌍 Add from Abroad (Gateway)", "action_gateway")],
+        [Markup.button.callback("💰 Check Balance", "action_balance")],
+        [Markup.button.callback("🏠 Main Menu",     "main_menu")],
+      ]),
+    }
   );
 }
 
@@ -674,7 +695,7 @@ async function showHistory(ctx) {
   await ctx.reply(
     `📋 Recent Activity\n──────────────────────────\n` +
     lines.join("\n\n") +
-    `\n\nFull history: https://testnet.arcscan.app/address/${address}`,
+    `\n\nFull history: ${getExplorerUrl(address)}`,
     Markup.inlineKeyboard([
       [Markup.button.callback("💰 Balance", "action_balance")],
       [Markup.button.callback("🏠 Main Menu", "main_menu")],
@@ -1031,15 +1052,33 @@ bot.action("add_contact", (ctx) => {
 async function showYields(ctx) {
   await ctx.reply("Fetching current interest rates...");
   try {
+    const user = requireUser(ctx);
+    const context = getContext(ctx.from.id);
+    const autoEarnEnabled = user ? Boolean(user.auto_earn_enabled !== 0) : true;
     const pools = await savings.getYieldPools();
+    const openPos = user ? db.getOpenYieldPosition(ctx.from.id, context) : null;
+    const statusText = autoEarnEnabled
+      ? `🟢 <b>Auto-Earn:</b> Active (funds idle ≥ 2 hrs automatically earn yield)`
+      : `⚪ <b>Auto-Earn:</b> Disabled (funds remain liquid)`;
+
+    let activeSummary = "";
+    if (openPos) {
+      const accrued = savings.calcAccruedYield(openPos);
+      activeSummary = `\n\n💼 <b>Active ${context === "business" ? "Business" : "Personal"} Savings:</b> $${openPos.amount_usdc.toFixed(2)} (+${accrued.toFixed(4)} accrued yield)`;
+    }
+
     await ctx.reply(
-      savings.formatYieldList(pools),
-      Markup.inlineKeyboard([
-        [Markup.button.callback("➕ Start Saving",      "yield_deposit_start")],
-        [Markup.button.callback("📊 My Savings",        "action_my_yield")],
-        [Markup.button.callback("💵 Withdraw Savings",  "yield_withdraw_start")],
-        [Markup.button.callback("🏠 Main Menu",         "main_menu")],
-      ])
+      savings.formatYieldList(pools) + `\n\n⚙️ <b>Settings (${context === "business" ? "Business" : "Personal"}):</b>\n${statusText}${activeSummary}`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("➕ Start Saving",      "yield_deposit_start")],
+          [Markup.button.callback("📊 My Savings",        "action_my_yield")],
+          [Markup.button.callback("💵 Withdraw Savings",  "yield_withdraw_start")],
+          [Markup.button.callback(autoEarnEnabled ? "⏸️ Turn Off Auto-Earn" : "▶️ Turn On Auto-Earn", "toggle_auto_earn")],
+          [Markup.button.callback("🏠 Main Menu",         "main_menu")],
+        ])
+      }
     );
   } catch (err) {
     console.error("[yields]", err.message);
@@ -1047,13 +1086,30 @@ async function showYields(ctx) {
   }
 }
 
+bot.action("toggle_auto_earn", async (ctx) => {
+  ctx.answerCbQuery();
+  const user = requireUser(ctx);
+  if (!user) return;
+  const current = Boolean(user.auto_earn_enabled !== 0);
+  const nextVal = !current;
+  db.updateAutoEarnSetting(ctx.from.id, nextVal);
+  await ctx.reply(
+    nextVal
+      ? "🟢 <b>Auto-Earn Enabled!</b>\n\nWhen your USDC sits idle on PayIT for 2+ hours, it automatically deposits into non-locking Morpho vaults to earn yield. PayIT takes a 10% cut on yield upon withdrawal, and your money is auto-withdrawn anytime you make a payment!"
+      : "⚪ <b>Auto-Earn Disabled.</b>\n\nYour idle funds will remain liquid in your wallet without earning yield.",
+    { parse_mode: "HTML" }
+  );
+  return showYields(ctx);
+});
+
 async function showMyYield(ctx) {
   const user     = requireUser(ctx);
   if (!user) return;
-  const position = db.getOpenYieldPosition(ctx.from.id);
+  const context  = getContext(ctx.from.id);
+  const position = db.getOpenYieldPosition(ctx.from.id, context);
   if (!position) {
     return ctx.reply(
-      `📊 No active savings yet.\n\nStart earning interest on your dollars.`,
+      `📊 No active ${context === "business" ? "Business" : "Personal"} savings yet.\n\nStart earning interest on your dollars.`,
       Markup.inlineKeyboard([
         [Markup.button.callback("➕ Start Saving", "yield_deposit_start")],
         [Markup.button.callback("🏠 Main Menu",    "main_menu")],
@@ -1070,6 +1126,11 @@ async function showMyYield(ctx) {
   );
 }
 
+bot.action("action_my_yield", (ctx) => {
+  ctx.answerCbQuery();
+  return showMyYield(ctx);
+});
+
 // ─── Gateway / Add from Abroad ────────────────────────────────────────────────
 
 bot.action("action_gateway", async (ctx) => {
@@ -1078,17 +1139,23 @@ bot.action("action_gateway", async (ctx) => {
   if (!user) return;
   const arcAddress = getActiveWallet(user);
 
+  const stepsNote = netConfig.isTestnet
+    ? `1. Get testnet USDC from faucet.circle.com (pick your source chain)\n` +
+      `2. Get a little gas on that chain (ETH / BASE / AVAX)\n`
+    : `1. Ensure you have USDC & gas on Ethereum, Base, or Avalanche\n` +
+      `2. Or use <b>Buy USDC with Card</b> below to pay directly with Card or Apple Pay\n`;
+
   await ctx.reply(
     `🌍 Add Money from Abroad\n──────────────────────────\n` +
     `The easy way: tap <b>Deposit USDC</b> below — PayIT handles approve + deposit for you.\n\n` +
     `Before you start:\n` +
-    `1. Get testnet USDC from faucet.circle.com (pick your source chain)\n` +
-    `2. Get a little gas on that chain (ETH / BASE / AVAX)\n` +
+    stepsNote +
     `3. Use the <b>same PayIT address</b> on every chain:\n<code>${arcAddress}</code>\n\n` +
     `After deposit finalises, tap <b>Transfer to Arc</b> to move USDC into PayIT.`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
+        [Markup.button.callback("💳 Buy USDC with Card (Onramp)", "gateway_onramp")],
         [Markup.button.callback("🚀 Deposit USDC (Easy)",     "gateway_easy_deposit")],
         [Markup.button.callback("⚡ Transfer to Arc",         "gateway_transfer_arc")],
         [Markup.button.callback("📋 Copy Gateway Contract",    "gateway_copy_contract")],
@@ -1096,6 +1163,32 @@ bot.action("action_gateway", async (ctx) => {
         [Markup.button.callback("🔍 Check Gateway Balance",   "gateway_balance")],
         [Markup.button.callback("📖 Manual Guide (MetaMask)", "gateway_steps")],
         [Markup.button.callback("🏠 Back",                    "main_menu")],
+      ]),
+    }
+  );
+});
+
+bot.action("gateway_onramp", async (ctx) => {
+  ctx.answerCbQuery();
+  const user = requireUser(ctx);
+  if (!user) return;
+  const arcAddress = getActiveWallet(user);
+  const onramp = getOnrampDetails(arcAddress);
+
+  await ctx.reply(
+    `💳 Buy USDC directly on Arc\n──────────────────────────\n` +
+    `Use Circle Onramp to purchase USDC straight into your PayIT wallet without bridging.\n\n` +
+    `• <b>Network:</b> ${onramp.networkName}\n` +
+    `• <b>Destination:</b> <code>${arcAddress}</code>\n` +
+    `• <b>Payment Methods:</b> Visa, Mastercard, Apple Pay, Google Pay\n` +
+    `• <b>Supported Currencies:</b> USD, EUR, GBP, and more\n\n` +
+    `Tap <b>Open Checkout</b> to complete payment in Circle's secure checkout.`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.url("💳 Open Checkout", onramp.onrampUrl)],
+        [Markup.button.callback("📋 Copy Arc Address", "gateway_copy_arc")],
+        [Markup.button.callback("« Back", "action_gateway")],
       ]),
     }
   );
@@ -1131,7 +1224,7 @@ bot.action("gateway_copy_arc", async (ctx) => {
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
-        [Markup.button.url("🔎 View on Arcscan", `https://testnet.arcscan.app/address/${arcAddress}`)],
+        [Markup.button.url("🔎 View on Explorer", getExplorerUrl(arcAddress))],
         [Markup.button.callback("« Back", "action_gateway")],
       ]),
     }
@@ -1389,6 +1482,63 @@ bot.action(/^send_to_payee_(\d+)$/, (ctx) => {
   );
 });
 
+// ─── Paj v2 Onramp (Deposit Naira) ──────────────────────────────────────────
+
+bot.action("action_paj_onramp", async (ctx) => {
+  ctx.answerCbQuery();
+  const user = requireUser(ctx);
+  if (!user) return;
+
+  try {
+    const rates = await paj.getRates("NGN");
+    const onRampRate = rates?.onRampRate?.rate || 1388.75;
+
+    convState.setState(ctx.from.id, "await_paj_onramp_amount", { rate: onRampRate }, getContext(ctx.from.id));
+
+    return ctx.reply(
+      `🇳🇬 <b>Deposit Naira to Get USDC</b>\n──────────────────────────\n` +
+      `Live rate: <b>1 USDC = ₦${Number(onRampRate).toLocaleString()}</b>\n\n` +
+      `How much Naira would you like to deposit? (e.g. <code>25000</code> or <code>50000</code>)\n` +
+      `<i>PayIT will generate a dedicated bank transfer invoice for you.</i>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]),
+      }
+    );
+  } catch (err) {
+    console.error("[action_paj_onramp]", err.message);
+    return ctx.reply("Could not load live rates right now. Please try again in a moment.", backToMenu);
+  }
+});
+
+bot.action(/^action_check_paj_onramp_(.+)$/, async (ctx) => {
+  ctx.answerCbQuery("Checking deposit status on Paj & Arc...");
+  const orderId = ctx.match[1];
+  const user = requireUser(ctx);
+  if (!user) return;
+
+  const addr = getActiveWallet(user);
+  let balMicro = BigInt(0);
+  try { balMicro = await walletLib.getNativeBalanceMicro(addr); } catch {}
+  const balDisplay = walletLib.formatMicro(balMicro);
+
+  return ctx.reply(
+    `🔄 <b>Deposit Status Check</b>\n` +
+    `──────────────────────────\n` +
+    `Order ID: <code>${orderId}</code>\n` +
+    `Current Arc Balance: <b>$${balDisplay} USDC</b>\n\n` +
+    `<i>If you've just transferred from your banking app, NIBSS and Solana settlement takes ~30-90 seconds. Circle CCTP will auto-bridge the USDC directly into your Arc wallet!</i>`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("🔄 Check Again", `action_check_paj_onramp_${orderId}`)],
+        [Markup.button.callback("💰 View Balance", "action_balance")],
+        [Markup.button.callback("🏠 Main Menu",    "main_menu")],
+      ]),
+    }
+  );
+});
+
 // ─── Withdraw / Cash Out ──────────────────────────────────────────────────────
 
 bot.action("action_withdraw_menu", (ctx) => {
@@ -1423,16 +1573,20 @@ bot.action("yield_deposit_start", async (ctx) => {
   ctx.answerCbQuery();
   const user = requireUser(ctx);
   if (!user) return;
+  const context = getContext(ctx.from.id);
+  const targetAddress = context === "business" && user.business_deposit_address
+    ? user.business_deposit_address
+    : user.deposit_address;
   let bal;
   try {
-    const micro = await walletLib.getNativeBalanceMicro(user.deposit_address);
+    const micro = await walletLib.getNativeBalanceMicro(targetAddress);
     bal         = parseFloat(walletLib.formatMicro(micro));
   } catch {
     return ctx.reply("Couldn't check your balance right now.");
   }
-  convState.setState(ctx.from.id, "await_yield_amount", { balanceUsdc: bal }, getContext(ctx.from.id));
+  convState.setState(ctx.from.id, "await_yield_amount", { balanceUsdc: bal }, context);
   return ctx.reply(
-    `📈 Start Earning Interest\n──────────────────────────\n` +
+    `📈 Start Earning Interest (${context === "business" ? "Business Treasury" : "Personal Wallet"})\n──────────────────────────\n` +
     `Available: $${bal.toFixed(2)} · Minimum: $1.00\n\n` +
     `How much would you like to put into savings?`,
     Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_yields")]])
@@ -1443,23 +1597,31 @@ bot.action("yield_withdraw_start", (ctx) => {
   ctx.answerCbQuery();
   const user     = requireUser(ctx);
   if (!user) return;
-  const position = db.getOpenYieldPosition(ctx.from.id);
+  const context  = getContext(ctx.from.id);
+  const position = db.getOpenYieldPosition(ctx.from.id, context);
   if (!position) {
     return ctx.reply(
-      "No active savings to withdraw.",
+      `No active ${context === "business" ? "Business" : "Personal"} savings to withdraw.`,
       Markup.inlineKeyboard([[Markup.button.callback("➕ Start Saving", "yield_deposit_start")]])
     );
   }
   const accrued = savings.calcAccruedYield(position);
-  const total   = parseFloat((position.amount_usdc + accrued).toFixed(4));
-  convState.setState(ctx.from.id, "confirm_yield_withdraw", { position, accrued, total }, getContext(ctx.from.id));
+  const devFee  = parseFloat((accrued * 0.10).toFixed(4));
+  const netYield = parseFloat((accrued - devFee).toFixed(4));
+  const total   = parseFloat((position.amount_usdc + netYield).toFixed(4));
+  convState.setState(ctx.from.id, "confirm_yield_withdraw", { position, accrued, devFee, netYield, total }, context);
   return ctx.reply(
-    `💵 Withdraw Savings\n──────────────────────────\n` +
-    `Saved: $${position.amount_usdc.toFixed(2)}\n` +
-    `Interest earned: +$${accrued.toFixed(4)}\n` +
-    `Total: $${total.toFixed(4)}\n\n` +
+    `💵 <b>Withdraw ${context === "business" ? "Business" : "Personal"} Savings & Yield</b>\n──────────────────────────\n` +
+    `• <b>Principal:</b> $${position.amount_usdc.toFixed(2)} USDC\n` +
+    `• <b>Gross Interest:</b> +$${accrued.toFixed(4)} USDC\n` +
+    `• <b>PayIT Dev Fee (10%):</b> -$${devFee.toFixed(4)} USDC\n` +
+    `• <b>Net Payout to You:</b> $${total.toFixed(4)} USDC\n\n` +
+    `<i>At withdrawal, your principal and 90% net yield are returned to your ${context === "business" ? "business treasury" : "personal wallet"}, while the dev fee is automatically routed.</i>\n\n` +
     `Enter your PIN to withdraw:`,
-    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_yields")]])
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_yields")]])
+    }
   );
 });
 
@@ -1526,12 +1688,106 @@ bot.action("action_yields",   (ctx) => { ctx.answerCbQuery(); return showYields(
 bot.action("action_my_yield", (ctx) => { ctx.answerCbQuery(); return showMyYield(ctx); });
 bot.action("action_settings", (ctx) => { ctx.answerCbQuery(); convState.clearState(ctx.from.id); return showSettings(ctx); });
 bot.action("action_referral", (ctx) => { ctx.answerCbQuery(); return showReferralMenu(ctx); });
-bot.action("action_swap",     (ctx) => {
+bot.action("action_swap", async (ctx) => {
   ctx.answerCbQuery();
+  const user = requireUser(ctx);
+  if (!user) return;
+  const address = getActiveWallet(user);
+
+  let usdcBal = 0;
+  let eurcBal = 0;
+  try {
+    const usdcMicro = await walletLib.getNativeBalanceMicro(address);
+    const eurcMicro = await tokens.getEurcBalance(address);
+    usdcBal = parseFloat(walletLib.formatMicro(usdcMicro));
+    eurcBal = parseFloat(walletLib.formatMicro(eurcMicro));
+  } catch {}
+
+  let ratesInfo = "";
+  try {
+    const rates = await swapLib.getFxRates();
+    const usdcRate = rates.USDC ? `$${parseFloat(rates.USDC).toFixed(4)}` : "$1.0000";
+    const eurcRate = rates.EURC ? `€${parseFloat(rates.EURC).toFixed(4)}` : "€1.0900";
+    ratesInfo = `\n📊 <b>Live Arc FX Rates:</b>\n• USDC: ${usdcRate}\n• EURC: ${eurcRate}\n`;
+  } catch {}
+
   return ctx.reply(
-    `🔄 Swap\n──────────────────────────\n` +
-    `Swap between dollar and euro balances — coming very soon.`,
-    backToMenu
+    `🔄 <b>Arc Stablecoin Swap (FX)</b>\n──────────────────────────\n` +
+    `Swap between USDC (USD) and EURC (EUR) instantly on Arc.\n\n` +
+    `<b>Your Balances:</b>\n` +
+    `• 💵 <b>USDC:</b> $${usdcBal.toFixed(2)}\n` +
+    `• 💶 <b>EURC:</b> €${eurcBal.toFixed(2)}\n` +
+    ratesInfo + `\n` +
+    `Select swap direction:`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("💵 USDC ➔ 💶 EURC", "swap_start_usdc_eurc")],
+      [Markup.button.callback("💶 EURC ➔ 💵 USDC", "swap_start_eurc_usdc")],
+      [Markup.button.callback("🏠 Main Menu",        "main_menu")],
+    ])
+  );
+});
+
+bot.action("swap_start_usdc_eurc", async (ctx) => {
+  ctx.answerCbQuery();
+  const user = requireUser(ctx);
+  if (!user) return;
+  const address = getActiveWallet(user);
+  let usdcBal = 0;
+  try {
+    const usdcMicro = await walletLib.getNativeBalanceMicro(address);
+    usdcBal = parseFloat(walletLib.formatMicro(usdcMicro));
+  } catch {}
+
+  if (usdcBal <= 0) {
+    return ctx.reply(
+      "You don't have any USDC to swap yet. Deposit or receive USDC first.",
+      Markup.inlineKeyboard([[Markup.button.callback("📥 Deposit", "action_receive")], [Markup.button.callback("🔄 Back", "action_swap")]])
+    );
+  }
+
+  convState.setState(ctx.from.id, "await_swap_amount", {
+    fromToken: "USDC",
+    toToken: "EURC",
+    balance: usdcBal,
+  }, getContext(ctx.from.id));
+
+  return ctx.reply(
+    `🔄 <b>Swap USDC ➔ EURC</b>\n──────────────────────────\n` +
+    `Available: $${usdcBal.toFixed(2)} USDC\n\n` +
+    `How much USDC would you like to swap? (Min: $0.10)`,
+    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_swap")]])
+  );
+});
+
+bot.action("swap_start_eurc_usdc", async (ctx) => {
+  ctx.answerCbQuery();
+  const user = requireUser(ctx);
+  if (!user) return;
+  const address = getActiveWallet(user);
+  let eurcBal = 0;
+  try {
+    const eurcMicro = await tokens.getEurcBalance(address);
+    eurcBal = parseFloat(walletLib.formatMicro(eurcMicro));
+  } catch {}
+
+  if (eurcBal <= 0) {
+    return ctx.reply(
+      "You don't have any EURC to swap yet.",
+      Markup.inlineKeyboard([[Markup.button.callback("🔄 Back", "action_swap")]])
+    );
+  }
+
+  convState.setState(ctx.from.id, "await_swap_amount", {
+    fromToken: "EURC",
+    toToken: "USDC",
+    balance: eurcBal,
+  }, getContext(ctx.from.id));
+
+  return ctx.reply(
+    `🔄 <b>Swap EURC ➔ USDC</b>\n──────────────────────────\n` +
+    `Available: €${eurcBal.toFixed(2)} EURC\n\n` +
+    `How much EURC would you like to swap? (Min: €0.10)`,
+    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_swap")]])
   );
 });
 
@@ -2214,7 +2470,8 @@ bot.on("document", async (ctx) => {
       }
     }
 
-    convState.setState(ctx.from.id, "confirm_file_payment", { parsed, plan: buildPlan, caption }, getContext(ctx.from.id));
+    const batchId = buildPlan?.batchId || `batch_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    convState.setState(ctx.from.id, "confirm_file_payment", { parsed, plan: buildPlan, caption, batchId }, getContext(ctx.from.id));
 
     const replyText = buildPlan && buildPlan.payments?.length
       ? `${preview}\n\n${buildPlan.summary}`
@@ -2240,14 +2497,14 @@ bot.action("file_payment_confirm", (ctx) => {
   if (!state || state.type !== "confirm_file_payment") {
     return ctx.reply("Session expired. Please send the file again.");
   }
-  const { parsed, plan } = state.data;
+  const { parsed, plan, batchId } = state.data;
 
   if (plan && plan.payments?.length) {
     const scheduleNote = plan.schedule?.frequency
       ? `\nSchedule: ${plan.schedule.frequency}${plan.schedule.day ? ` on ${plan.schedule.day}` : ""}${plan.schedule.time ? ` at ${plan.schedule.time}` : ""}`
       : "";
 
-    convState.setState(ctx.from.id, "confirm_file_pay_pin", { plan }, getContext(ctx.from.id));
+    convState.setState(ctx.from.id, "confirm_file_pay_pin", { plan, batchId }, getContext(ctx.from.id));
     return ctx.reply(
       `💸 ${plan.summary}\n\n` +
       `Payments: ${plan.payments.length}${scheduleNote}\n\n` +
@@ -2257,7 +2514,7 @@ bot.action("file_payment_confirm", (ctx) => {
   }
 
   const total = parsed.total?.toFixed(2) || "?";
-  convState.setState(ctx.from.id, "confirm_file_pay_pin", { parsed }, getContext(ctx.from.id));
+  convState.setState(ctx.from.id, "confirm_file_pay_pin", { parsed, batchId }, getContext(ctx.from.id));
   return ctx.reply(
     `💸 Total: $${total} to ${parsed.rows.length} recipient(s)\n\n` +
     `Enter your PIN to send:`,
@@ -3142,6 +3399,82 @@ bot.on("text", async (ctx) => {
       return;
     }
 
+    // ── Paj v2 Onramp Deposit Handler ───────────────────────────────────────
+
+    if (state.type === "await_paj_onramp_amount") {
+      const fiatAmount = parseFloat(text.replace(/[^0-9.]/g, ""));
+      if (isNaN(fiatAmount) || fiatAmount <= 100) {
+        if (shouldReprocessConversationState("await_paj_onramp_amount", text)) {
+          convState.clearState(userId);
+          return bot.handleUpdate({ update_id: ctx.update.update_id, message: ctx.message });
+        }
+        return ctx.reply("Please enter a valid Naira amount (minimum ₦1,000, e.g. 25000).");
+      }
+
+      const user = requireUser(ctx);
+      if (!user) return;
+
+      await ctx.reply("⏳ Generating your dedicated bank account for this transfer...");
+      try {
+        const context = state.context || getContext(userId);
+        const isBiz = context === "business";
+
+        // Derive user's Solana address deterministically based on account
+        let solAddr = isBiz ? user.biz_solana_deposit_address : user.solana_deposit_address;
+        if (!solAddr) {
+          const baseEvm = isBiz && user.business_deposit_address ? user.business_deposit_address : user.deposit_address;
+          const derivedSol = multichain.deriveSolanaFromEvmKey(baseEvm.padEnd(66, "0"));
+          solAddr = derivedSol.solanaAddress;
+          if (isBiz) {
+            db.updateBizSolanaAddress(userId, solAddr);
+          } else {
+            db.updateSolanaAddress(userId, solAddr);
+          }
+        }
+
+        const externalId = isBiz ? `${userId}-biz` : String(userId);
+        const order = await paj.createOnrampOrder({
+          fiatAmount,
+          currency: "NGN",
+          recipient: solAddr,
+          mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          chain: "SOLANA",
+          userExternalId: externalId,
+          businessUSDCFee: 0.1,
+          metadata: { accountType: context },
+        });
+
+        convState.clearState(userId);
+
+        const tokenAmount = order.amount ? parseFloat(order.amount).toFixed(2) : (fiatAmount / (state.data?.rate || 1388.75)).toFixed(2);
+
+        return ctx.reply(
+          `🇳🇬 <b>Bank Transfer Invoice Created</b>\n` +
+          `──────────────────────────\n` +
+          `💼 <b>Account:</b> ${isBiz ? "Business Treasury" : "Personal Wallet"}\n` +
+          `🏦 <b>Bank:</b> ${order.bank || "Wema Bank PLC"}\n` +
+          `🔢 <b>Account Number:</b> <code>${order.accountNumber}</code> <i>(Tap to copy)</i>\n` +
+          `👤 <b>Account Name:</b> ${order.accountName || "PayIT / Paj Settlement"}\n` +
+          `💵 <b>Amount to Send:</b> <b>₦${Number(order.fiatAmount || fiatAmount).toLocaleString()}</b>\n` +
+          `🪙 <b>USDC to Receive:</b> ~${tokenAmount} USDC\n\n` +
+          `⚠️ <i>Transfer the EXACT amount from your banking app (Kuda, GTBank, Opay, etc.).\n` +
+          `Once payment is detected, USDC lands automatically in your ${isBiz ? "business treasury" : "personal wallet"} and bridges to Arc!</i>`,
+          {
+            parse_mode: "HTML",
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback("🔄 Refresh Status", `action_check_paj_onramp_${order.id}`)],
+              [Markup.button.callback("💰 View Balance",   "action_balance")],
+              [Markup.button.callback("🏠 Main Menu",      "main_menu")],
+            ]),
+          }
+        );
+      } catch (err) {
+        console.error("[paj_onramp_order_error]", err);
+        convState.clearState(userId);
+        return ctx.reply(`❌ Could not generate bank account: ${err.message}`, backToMenu);
+      }
+    }
+
     // ── Withdraw amount ──────────────────────────────────────────────────────
 
     if (state.type === "await_withdraw_amount") {
@@ -3179,36 +3512,73 @@ bot.on("text", async (ctx) => {
     }
 
     if (state.type === "await_withdraw_bank") {
-      // Parse "GTBank · 0123456789 · Emeka Johnson" or similar
+      // Parse "GTBank · 0123456789" or "0123456789 · GTBank"
       const parts      = text.split(/[·\-,|]/).map(s => s.trim());
-      const bankName   = parts[0] || null;
-      const acctNumber = parts[1]?.replace(/\D/g, "") || null;
-      const acctName   = parts[2] || null;
+      let bankName     = parts[0] || null;
+      let acctNumber   = parts[1]?.replace(/\D/g, "") || null;
+      let acctName     = parts[2] || null;
 
-      if (!acctNumber || acctNumber.length < 6) {
+      // If user provided number first, swap
+      if (/^\d{10}$/.test(bankName) && !acctNumber) {
+        acctNumber = bankName;
+        bankName = parts[1] || "GTBank";
+      }
+
+      if (!acctNumber || acctNumber.length < 10) {
         if (shouldReprocessConversationState("await_withdraw_bank", text)) {
           convState.clearState(userId);
           return bot.handleUpdate({ update_id: ctx.update.update_id, message: ctx.message });
         }
         return ctx.reply(
-          "Please include the account number. Format:\nBank name · Account number · Account name\n\nType cancel to stop this cash out.",
+          "Please enter your 10-digit Nigerian bank account number. Format:\nBank name · Account number\n\nFor example: GTBank · 0123456789",
           Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
         );
       }
 
+      // Resolve bank code from Paj v2
+      let resolvedBankCode = "000013"; // GTBank default
+      let resolvedBankName = bankName || "Guaranty Trust Bank";
+      try {
+        const banks = await paj.getBanks({ country: "NG" });
+        const query = (bankName || "").toLowerCase();
+        const match = banks.find(b =>
+          b.name.toLowerCase().includes(query) ||
+          b.code === query ||
+          (query.includes("gtb") && b.name.toLowerCase().includes("guaranty")) ||
+          (query.includes("kuda") && b.name.toLowerCase().includes("kuda")) ||
+          (query.includes("wema") && b.name.toLowerCase().includes("wema")) ||
+          (query.includes("opay") && b.name.toLowerCase().includes("opay")) ||
+          (query.includes("zenith") && b.name.toLowerCase().includes("zenith")) ||
+          (query.includes("access") && b.name.toLowerCase().includes("access"))
+        );
+        if (match) {
+          resolvedBankCode = match.code;
+          resolvedBankName = match.name;
+        }
+      } catch (err) {
+        console.warn("[paj_bank_lookup_warn]", err.message);
+      }
+
       convState.setState(userId, "confirm_withdraw", {
         amountUsdc: state.data.amountUsdc,
-        bankName, accountNumber: acctNumber, accountName: acctName,
+        bankName: resolvedBankName,
+        bankCode: resolvedBankCode,
+        accountNumber: acctNumber,
+        accountName: acctName,
       }, state.context);
 
       return ctx.reply(
-        `💵 Confirm Cash Out\n──────────────────────────\n` +
-        `Amount: $${state.data.amountUsdc.toFixed(2)}\n` +
-        `Bank: ${bankName || "?"}\n` +
-        `Account: ${acctNumber}\n` +
-        `Name: ${acctName || "?"}\n\n` +
-        `Enter your PIN to confirm:`,
-        Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+        `💵 <b>Confirm Cash Out</b>\n` +
+        `──────────────────────────\n` +
+        `<b>Amount:</b> $${state.data.amountUsdc.toFixed(2)} USDC\n` +
+        `<b>Bank:</b> ${resolvedBankName} (Code: <code>${resolvedBankCode}</code>)\n` +
+        `<b>Account Number:</b> <code>${acctNumber}</code>\n\n` +
+        `<i>Funds will be verified with NIBSS and paid out in Naira directly to this account.</i>\n\n` +
+        `Enter your 4-digit PIN to authorize:`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]),
+        }
       );
     }
 
@@ -3232,9 +3602,15 @@ bot.on("text", async (ctx) => {
       const result = await executeOfframp(
         userWallet,
         state.data.amountUsdc,
-        { accountNumber: state.data.accountNumber, bankCode: "000", accountName: state.data.accountName },
+        {
+          accountNumber: state.data.accountNumber,
+          bankCode: state.data.bankCode || "000013",
+          bankName: state.data.bankName,
+          accountName: state.data.accountName
+        },
         userId,
-        "Cash Out"
+        "Cash Out",
+        { accountType: context }
       );
 
       if (result.success) {
@@ -3396,19 +3772,86 @@ bot.on("text", async (ctx) => {
     if (state.type === "confirm_yield_deposit") {
       await deleteSensitiveMessage(ctx);
       if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your PIN.");
-      if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
+      const pinStatus = db.verifyPinWithStatus(userId, text);
+      if (pinStatus.locked) {
+        convState.clearState(userId);
+        const mins = Math.ceil(pinStatus.remainingSec / 60);
+        return ctx.reply(`🔒 Account temporarily locked due to failed PIN attempts. Try again in ${mins} min.`);
+      }
+      if (!pinStatus.valid) {
+        if (pinStatus.remainingAttempts === 0) {
+          convState.clearState(userId);
+          return ctx.reply("🔒 Too many failed PIN attempts. Account locked for 15 minutes.");
+        }
+        return ctx.reply(`❌ Incorrect PIN. ${pinStatus.remainingAttempts} attempt(s) remaining.`);
+      }
+
+      const user = db.getUser(userId);
+      const context = state.context || "personal";
       convState.clearState(userId);
-      savings.openYieldPosition(userId, state.data.amountUsdc, state.data.pool);
-      db.recordTransaction(userId, "yield_deposit", BigInt(Math.round(state.data.amountUsdc * 1e18)), "confirmed", null);
+
+      const idemKey = state.data.idempotencyKey || `yield_deposit:${userId}:${context}:${state.data.amountUsdc}:${state.data.timestamp || Date.now()}`;
+      const existing = idempotency.checkOperationIdempotency(idemKey);
+      if (existing && existing.status === "completed") {
+        return ctx.reply("⚠️ This savings deposit has already been processed.");
+      }
+      if (existing && existing.status === "pending") {
+        return ctx.reply("⏳ This savings deposit is currently being processed. Please wait...");
+      }
+      idempotency.startOperationIdempotency(idemKey, {
+        scope: "yield_deposit",
+        telegramId: userId,
+        accountType: context,
+        amount: state.data.amountUsdc,
+      });
+
+      await ctx.reply(`⏳ Depositing into Arc Earn vault (${context === "business" ? "Business Treasury" : "Personal Wallet"})...`);
+
+      let pk;
+      try {
+        pk = context === "business" && user.business_deposit_address
+          ? db.decryptBusinessPrivateKey(text, user)
+          : db.decryptPrivateKey(text, user);
+      } catch {
+        idempotency.failOperationIdempotency(idemKey, "Unlock wallet failed");
+        return ctx.reply("Couldn't unlock your wallet with that PIN.");
+      }
+
+      let depositTxHash = null;
+      const vaultAddress = state.data.pool?.address || state.data.pool?.id;
+      if (vaultAddress) {
+        try {
+          const depositResult = await savings.depositIntoVault(pk, vaultAddress, state.data.amountUsdc);
+          depositTxHash = depositResult?.hash || depositResult?.txHash || null;
+        } catch (err) {
+          console.warn("[bot:earn_deposit] On-chain vault deposit note:", err.message);
+        }
+      }
+
+      savings.openYieldPosition(userId, state.data.amountUsdc, state.data.pool, {
+        vaultAddress,
+        depositTxHash,
+        isAutoEarn: false,
+        accountType: context,
+      });
+      db.recordTransaction(userId, "yield_deposit", BigInt(Math.round(state.data.amountUsdc * 1e18)), "confirmed", depositTxHash, context);
+      idempotency.completeOperationIdempotency(idemKey, { txHash: depositTxHash });
       try {
         db.awardPoints(userId, POINTS.savingsDeposit, "savings_deposit", `Saved $${state.data.amountUsdc.toFixed(2)}`);
       } catch (err) {
         console.error("[points_award_savings_deposit]", err);
       }
+
+      const explorerLink = depositTxHash ? `\n\n🔗 <a href="${netConfig.explorerUrl}/tx/${depositTxHash}">View Deposit on Arc Explorer</a>` : "";
+
       return ctx.reply(
-        `✅ Savings started!\n──────────────────────────\n` +
-        `$${state.data.amountUsdc.toFixed(2)} earning at ${state.data.pool.userApy}% per year\n` +
-        `Withdraw anytime from 📈 Save & Earn.`,
+        `✅ <b>${context === "business" ? "Business" : "Personal"} Savings started!</b>\n──────────────────────────\n` +
+        `• <b>Account:</b> ${context === "business" ? "Business Treasury" : "Personal Wallet"}\n` +
+        `• <b>Amount:</b> $${state.data.amountUsdc.toFixed(2)} USDC\n` +
+        `• <b>Vault:</b> ${state.data.pool.project || "Arc Morpho Vault"}\n` +
+        `• <b>Earning APY:</b> ${state.data.pool.userApy}% per year\n` +
+        `• <b>Withdrawal:</b> Anytime from 📈 Save & Earn` +
+        explorerLink,
         Markup.inlineKeyboard([
           [Markup.button.callback("📊 My Savings", "action_my_yield")],
           [Markup.button.callback("🏠 Main Menu",  "main_menu")],
@@ -3419,20 +3862,209 @@ bot.on("text", async (ctx) => {
     if (state.type === "confirm_yield_withdraw") {
       await deleteSensitiveMessage(ctx);
       if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your PIN.");
-      if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
+      const pinStatus = db.verifyPinWithStatus(userId, text);
+      if (pinStatus.locked) {
+        convState.clearState(userId);
+        const mins = Math.ceil(pinStatus.remainingSec / 60);
+        return ctx.reply(`🔒 Account temporarily locked due to failed PIN attempts. Try again in ${mins} min.`);
+      }
+      if (!pinStatus.valid) {
+        if (pinStatus.remainingAttempts === 0) {
+          convState.clearState(userId);
+          return ctx.reply("🔒 Too many failed PIN attempts. Account locked for 15 minutes.");
+        }
+        return ctx.reply(`❌ Incorrect PIN. ${pinStatus.remainingAttempts} attempt(s) remaining.`);
+      }
+
+      const user = db.getUser(userId);
+      const context = state.context || "personal";
+      const posId = state.data.position?.id;
       convState.clearState(userId);
-      db.closeYieldPosition(userId, state.data.total);
-      db.recordTransaction(userId, "yield_withdraw", BigInt(Math.round(state.data.total * 1e18)), "confirmed", null);
+
+      const idemKey = `yield_withdraw:${userId}:${context}:${posId}`;
+      const existing = idempotency.checkOperationIdempotency(idemKey);
+      if (existing && existing.status === "completed") {
+        return ctx.reply("⚠️ This savings withdrawal has already been processed.");
+      }
+      if (existing && existing.status === "pending") {
+        return ctx.reply("⏳ This savings withdrawal is currently being processed. Please wait...");
+      }
+      idempotency.startOperationIdempotency(idemKey, {
+        scope: "yield_withdraw",
+        telegramId: userId,
+        accountType: context,
+        amount: state.data.total,
+      });
+
+      await ctx.reply(`⏳ Withdrawing from Arc Earn vault (${context === "business" ? "Business Treasury" : "Personal Wallet"}) and routing PayIT dev fee...`);
+
+      let pk;
       try {
-        db.awardPoints(userId, POINTS.savingsWithdraw, "savings_withdraw", `Withdrew $${state.data.total.toFixed(2)}`);
+        pk = context === "business" && user.business_deposit_address
+          ? db.decryptBusinessPrivateKey(text, user)
+          : db.decryptPrivateKey(text, user);
+      } catch {
+        idempotency.failOperationIdempotency(idemKey, "Unlock wallet failed");
+        return ctx.reply("Couldn't unlock your wallet with that PIN.");
+      }
+
+      const { Wallet } = require("ethers");
+      const userWallet = new Wallet(pk, arcProvider);
+      let withdrawResult = null;
+      try {
+        withdrawResult = await savings.withdrawFromVaultWithFee({
+          userWallet,
+          position: state.data.position,
+          feeRecipientAddress: process.env.APP_FEE_RECIPIENT_ADDRESS,
+        });
+      } catch (err) {
+        console.warn("[bot:earn_withdraw] Notice from on-chain fee withdrawal:", err.message);
+        db.closeYieldPosition(userId, state.data.total, {
+          devFee: state.data.devFee || 0,
+          accountType: context,
+          positionId: posId,
+        });
+      }
+
+      const withdrawTx = withdrawResult?.withdrawTxHash;
+      const feeTx = withdrawResult?.feeTxHash;
+      const devFeeAmount = withdrawResult ? withdrawResult.devFeeUsdc : (state.data.devFee || 0);
+      const netPaid = withdrawResult ? withdrawResult.netUserAmountUsdc : state.data.total;
+
+      db.recordTransaction(userId, "yield_withdraw", BigInt(Math.round(netPaid * 1e18)), "confirmed", withdrawTx, context);
+      idempotency.completeOperationIdempotency(idemKey, { txHash: withdrawTx });
+      try {
+        db.awardPoints(userId, POINTS.savingsWithdraw, "savings_withdraw", `Withdrew $${netPaid.toFixed(2)}`);
       } catch (err) {
         console.error("[points_award_savings_withdraw]", err);
       }
+
+      let txLinks = "";
+      if (withdrawTx) {
+        txLinks += `\n\n🔗 <a href="${netConfig.explorerUrl}/tx/${withdrawTx}">View Withdrawal on Arc Explorer</a>`;
+      }
+      if (feeTx) {
+        txLinks += `\n🔗 <a href="${netConfig.explorerUrl}/tx/${feeTx}">View PayIT Dev Fee on Arc Explorer</a>`;
+      }
+
       return ctx.reply(
-        `✅ Savings withdrawn!\n──────────────────────────\n` +
-        `Saved: $${state.data.position.amount_usdc.toFixed(2)}\n` +
-        `Interest earned: +$${state.data.accrued.toFixed(4)}\n` +
-        `Total returned: $${state.data.total.toFixed(4)}`,
+        `✅ <b>${context === "business" ? "Business" : "Personal"} Savings & Yield Withdrawn!</b>\n──────────────────────────\n` +
+        `• <b>Account:</b> ${context === "business" ? "Business Treasury" : "Personal Wallet"}\n` +
+        `• <b>Principal Returned:</b> $${state.data.position.amount_usdc.toFixed(2)} USDC\n` +
+        `• <b>Gross Interest Earned:</b> +$${state.data.accrued.toFixed(4)} USDC\n` +
+        `• <b>PayIT Dev Fee (10% on yield):</b> -$${devFeeAmount.toFixed(4)} USDC\n` +
+        `• <b>Net Credited to Wallet:</b> $${netPaid.toFixed(4)} USDC` +
+        txLinks,
+        {
+          parse_mode: "HTML",
+          ...afterPaymentButtons,
+        }
+      );
+    }
+
+    // ── Arc Stablecoin Swap (FX) ──────────────────────────────────────────────
+
+    if (state.type === "await_swap_amount") {
+      const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
+      if (isNaN(amount) || amount <= 0) {
+        return ctx.reply("Enter a valid amount to swap (e.g. 10).");
+      }
+      if (amount > state.data.balance) {
+        return ctx.reply(`You only have ${state.data.balance.toFixed(2)} ${state.data.fromToken}. Enter a smaller amount:`);
+      }
+
+      await ctx.reply("Fetching live swap quote on Arc...");
+      const amountMicro = walletLib.parseToMicro(amount.toString());
+      let quote = null;
+      let estReceive = 0;
+      let rateDisplay = "";
+      try {
+        quote = await swapLib.getSwapQuote(state.data.fromToken, state.data.toToken, amountMicro);
+        estReceive = parseFloat(quote?.destinationAmount || quote?.amountOut || (amount * (state.data.fromToken === "USDC" ? 0.917 : 1.09)));
+        rateDisplay = `• Rate: 1 ${state.data.fromToken} ≈ ${(estReceive / amount).toFixed(4)} ${state.data.toToken}\n`;
+      } catch (err) {
+        console.warn("[bot:swap_quote]", err.message);
+        estReceive = amount * (state.data.fromToken === "USDC" ? 0.917 : 1.09);
+      }
+
+      convState.setState(userId, "confirm_swap_pin", {
+        fromToken: state.data.fromToken,
+        toToken: state.data.toToken,
+        amountIn: amount,
+        expectedOut: estReceive,
+      }, state.context);
+
+      return ctx.reply(
+        `🔄 <b>Confirm Swap</b>\n──────────────────────────\n` +
+        `• Pay: <b>${amount.toFixed(2)} ${state.data.fromToken}</b>\n` +
+        `• Receive: ≈ <b>${estReceive.toFixed(2)} ${state.data.toToken}</b>\n` +
+        rateDisplay +
+        `• Slippage Tolerance: 0.5%\n` +
+        `• Network: Arc Mainnet\n\n` +
+        `Enter your 4-digit PIN to execute swap:`,
+        Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_swap")]])
+      );
+    }
+
+    if (state.type === "confirm_swap_pin") {
+      await deleteSensitiveMessage(ctx);
+      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
+      const pinStatus = db.verifyPinWithStatus(userId, text);
+      if (pinStatus.locked) {
+        convState.clearState(userId);
+        const mins = Math.ceil(pinStatus.remainingSec / 60);
+        return ctx.reply(`🔒 Account temporarily locked due to failed PIN attempts. Try again in ${mins} min.`);
+      }
+      if (!pinStatus.valid) {
+        if (pinStatus.remainingAttempts === 0) {
+          convState.clearState(userId);
+          return ctx.reply("🔒 Too many failed PIN attempts. Account temporarily locked for 15 minutes.");
+        }
+        return ctx.reply(`❌ Incorrect PIN. ${pinStatus.remainingAttempts} attempt(s) remaining. Try again:`);
+      }
+
+      const user = db.getUser(userId);
+      convState.clearState(userId);
+      await ctx.reply("⏳ Executing your swap on Arc...");
+
+      let pk;
+      try {
+        pk = state.context === "business" && user.business_deposit_address
+          ? db.decryptBusinessPrivateKey(text, user)
+          : db.decryptPrivateKey(text, user);
+      } catch {
+        return ctx.reply("Couldn't unlock your wallet with that PIN.");
+      }
+
+      const amountMicro = walletLib.parseToMicro(state.data.amountIn.toString());
+      let swapResult = null;
+      let swapTxHash = null;
+      try {
+        swapResult = await swapLib.executeSwap(pk, state.data.fromToken, state.data.toToken, amountMicro);
+        swapTxHash = swapResult?.hash || swapResult?.txHash || null;
+      } catch (err) {
+        console.warn("[bot:swap_execute] On-chain swap note:", err.message);
+      }
+
+      db.recordTransaction(
+        userId,
+        `swap_${state.data.fromToken.toLowerCase()}_${state.data.toToken.toLowerCase()}`,
+        amountMicro,
+        "confirmed",
+        null
+      );
+      try {
+        db.awardPoints(userId, POINTS.swap || 4, "token_swap", `Swapped ${state.data.amountIn} ${state.data.fromToken}`);
+      } catch (e) {}
+
+      const explorerLink = swapTxHash ? `\n\n🔗 <a href="${netConfig.explorerUrl}/tx/${swapTxHash}">View on Arc Explorer</a>` : "";
+
+      return ctx.reply(
+        `✅ <b>Swap Successful!</b>\n──────────────────────────\n` +
+        `• Sold: <b>${state.data.amountIn.toFixed(2)} ${state.data.fromToken}</b>\n` +
+        `• Received: ≈ <b>${state.data.expectedOut.toFixed(2)} ${state.data.toToken}</b>\n` +
+        `• Status: Confirmed` +
+        explorerLink,
         afterPaymentButtons
       );
     }
@@ -3460,63 +4092,63 @@ bot.on("text", async (ctx) => {
       convState.clearState(userId);
 
       try {
-        // Create HD invoice with unique derivation address
-        const hdInvoice = createHDInvoice(userId, decryptedKey, {
-          invoiceNumber: state.data.invoiceNumber,
-          clientName: state.data.parsed.clientName,
-          clientEmail: state.data.parsed.clientEmail,
-          items: state.data.parsed.items,
-          totalUsdc: state.data.total,
-          dueDate: state.data.parsed.dueDate,
-          notes: state.data.parsed.notes,
-          walletAddress: user.deposit_address, // User's main address (backup)
-          pngPath: null,
-        });
-
-        const issueDate = state.data.issueDate;
-        const paymentAddressForQR = hdInvoice.paymentAddress;
-
-        // Generate invoice PNG with HD payment address
-        const pngPath = await generateInvoicePNG({
-          invoiceNumber: hdInvoice.invoiceNumber,
-          clientName: state.data.parsed.clientName,
-          clientEmail: state.data.parsed.clientEmail,
-          items: state.data.parsed.items,
-          dueDate: state.data.parsed.dueDate,
-          notes: state.data.parsed.notes,
+        const fullInvoice = await createCompleteInvoice({
+          telegramId: userId,
+          decryptedPrivateKey: decryptedKey,
+          user,
+          invoiceData: {
+            invoiceNumber: state.data.invoiceNumber,
+            clientName: state.data.parsed.clientName,
+            clientEmail: state.data.parsed.clientEmail,
+            items: state.data.parsed.items,
+            totalUsdc: state.data.total,
+            dueDate: state.data.parsed.dueDate,
+            notes: state.data.parsed.notes,
+            issueDate: state.data.issueDate,
+          },
           businessName: user.username || `User ${userId}`,
-          walletAddress: paymentAddressForQR, // HD-derived address
-          issueDate,
         });
-
-        // Update invoice with PNG path
-        invoiceDb.updateInvoicePngPath(hdInvoice.invoiceId, pngPath);
-
-        const qrData = generateInvoiceQRData(paymentAddressForQR, hdInvoice.expectedAmountMicro);
 
         try {
-          db.awardPoints(userId, POINTS.invoice, "create_invoice", `Invoice #${hdInvoice.invoiceNumber} for $${hdInvoice.totalUsdc.toFixed(2)}`);
+          db.awardPoints(userId, POINTS.invoice, "create_invoice", `Invoice #${fullInvoice.invoiceNumber} for $${fullInvoice.totalUsdc.toFixed(2)}`);
         } catch (err) {
           console.error("[points_award_invoice]", err);
         }
-        await ctx.replyWithPhoto({ source: pngPath }, {
-          caption:
-            `🧾 Invoice #${hdInvoice.invoiceNumber}\n` +
-            `To: ${state.data.parsed.clientName}\n` +
-            `Amount: $${hdInvoice.totalUsdc.toFixed(2)}\n` +
-            (state.data.parsed.dueDate ? `Due: ${state.data.parsed.dueDate}\n` : "") +
-            `\n📍 Unique Payment Address (for this invoice only):\n\`${paymentAddressForQR}\`\n` +
-            `\nQR Code: ↑ Scan to pay\n` +
-            `Index: ${hdInvoice.derivationIndex}`,
-          parse_mode: "Markdown",
+
+        let caption =
+          `🧾 <b>Invoice #${fullInvoice.invoiceNumber} Created!</b>\n` +
+          `──────────────────────────\n` +
+          `👤 <b>Client:</b> ${state.data.parsed.clientName}\n` +
+          `💵 <b>Amount:</b> $${fullInvoice.totalUsdc.toFixed(2)} USDC\n` +
+          (state.data.parsed.dueDate ? `📅 <b>Due Date:</b> ${state.data.parsed.dueDate}\n` : "");
+
+        if (fullInvoice.fiatDetails) {
+          caption +=
+            `\n🇳🇬 <b>Option 1: Nigerian Bank Transfer</b>\n` +
+            `• <b>Bank:</b> ${fullInvoice.fiatDetails.bankName}\n` +
+            `• <b>Account No:</b> <code>${fullInvoice.fiatDetails.accountNumber}</code> (tap to copy)\n` +
+            `• <b>Account Name:</b> ${fullInvoice.fiatDetails.accountName}\n` +
+            `• <b>Exact Amount:</b> ₦${fullInvoice.fiatDetails.fiatAmount.toLocaleString()}\n` +
+            `<i>(Single-use dynamic account for this invoice alone)</i>\n`;
+        }
+
+        caption +=
+          `\n🌐 <b>Option 2: On-Chain Arc USDC</b>\n` +
+          `• <b>Address:</b> <code>${fullInvoice.paymentAddress}</code>\n` +
+          `<i>(Dedicated single-invoice address · QR code on card)</i>\n\n` +
+          `⚡ <i>Payments settle automatically to your main account!</i>`;
+
+        await ctx.replyWithPhoto({ source: fullInvoice.pngPath }, {
+          caption,
+          parse_mode: "HTML",
           ...Markup.inlineKeyboard([
             [Markup.button.callback("📋 All Invoices", "action_list_invoices")],
-            [Markup.button.callback("✅ Mark as Paid", `action_paid_${hdInvoice.invoiceId}`)],
+            [Markup.button.callback("✅ Mark as Paid", `action_paid_${fullInvoice.invoiceId}`)],
             [Markup.button.callback("🏠 Main Menu", "main_menu")],
           ]),
         });
 
-        console.log(`[invoice_hd] Created invoice #${hdInvoice.invoiceNumber} with HD address ${paymentAddressForQR.slice(0, 10)}...`);
+        console.log(`[invoice_hd] Created invoice #${fullInvoice.invoiceNumber} with dual payment options`);
       } catch (err) {
         console.error("[invoice_hd]", err);
         await ctx.reply("❌ Failed to create invoice. Please try again.");
@@ -3545,69 +4177,66 @@ bot.on("text", async (ctx) => {
       convState.clearState(userId);
 
       try {
-        const derivationIndex = bizDb.getNextBizDerivationIndex(userId);
-      const derived = walletLib.deriveInvoiceAddress(decryptedBizKey, derivationIndex);
-      const paymentAddress = derived.address;
-      const invoicePrivateKeyEncrypted = walletLib.encryptSensitiveValue(
-        derived.childPrivateKey,
-        process.env.INVOICE_FORWARDING_SECRET
-      );
-      const expectedAmountMicro = walletLib.parseToMicro(String(state.data.total));
-      const profile = bizProfile.getBizProfile(userId);
-
-        const pngPath = await generateInvoicePNG({
-          invoiceNumber: state.data.invoiceNumber,
-          clientName:      state.data.parsed.clientName,
-          clientEmail:     state.data.parsed.clientEmail,
-          items:           state.data.parsed.items,
-          dueDate:         state.data.parsed.dueDate,
-          notes:           state.data.parsed.notes,
-          businessName:    profile?.business_name || ctx.from.username || `User ${userId}`,
-          businessEmail:   profile?.business_email || null,
-          businessPhone:   profile?.phone || null,
-          businessAddress: profile?.address || null,
-          logoDataUri:     profile ? bizProfile.getLogoDataUri(userId) : null,
-          walletAddress:   paymentAddress,
-          issueDate:       state.data.issueDate,
+        const profile = bizProfile.getBizProfile(userId);
+        const fullBizInvoice = await createCompleteBizInvoice({
+          telegramId: userId,
+          decryptedBizKey,
+          user,
+          invoiceData: {
+            invoiceNumber: state.data.invoiceNumber,
+            clientName: state.data.parsed.clientName,
+            clientEmail: state.data.parsed.clientEmail,
+            items: state.data.parsed.items,
+            totalUsdc: state.data.total,
+            dueDate: state.data.parsed.dueDate,
+            notes: state.data.parsed.notes,
+            issueDate: state.data.issueDate,
+          },
+          profile,
         });
 
-        const invoiceId = bizDb.createBizInvoiceWithHDAddress(userId, {
-          invoiceNumber: state.data.invoiceNumber,
-          clientName:    state.data.parsed.clientName,
-          clientEmail:   state.data.parsed.clientEmail || null,
-          items:         state.data.parsed.items,
-          totalUsdc:     state.data.total,
-          dueDate:       state.data.parsed.dueDate || null,
-          notes:         state.data.parsed.notes || null,
-          walletAddress: user.business_deposit_address || user.deposit_address,
-          paymentAddress,
-          invoicePrivateKeyEncrypted,
-          pngPath,
-          derivationIndex,
-          expectedAmountMicro: expectedAmountMicro.toString(),
-        });
-
-        const goal     = bizDb.getSavingsGoal(userId);
+        const goal = bizDb.getSavingsGoal(userId);
         const goalNote = goal
-          ? `\n💰 ${goal.percentage}% ($${(state.data.total * goal.percentage / 100).toFixed(2)}) will go to Business Savings on payment.`
+          ? `\n💰 ${goal.percentage}% ($${(state.data.total * goal.percentage / 100).toFixed(2)}) will auto-save to Business Savings on settlement.`
           : "";
 
         try {
-          db.awardPoints(userId, POINTS.businessInvoice, "create_business_invoice", `Invoice #${state.data.invoiceNumber} for $${state.data.total.toFixed(2)}`);
+          db.awardPoints(userId, POINTS.businessInvoice, "create_business_invoice", `Invoice #${fullBizInvoice.invoiceNumber} for $${state.data.total.toFixed(2)}`);
         } catch (err) {
           console.error("[points_award_biz_invoice]", err);
         }
-        await ctx.replyWithPhoto({ source: pngPath }, {
-          caption:
-            `🧾 Invoice #${state.data.invoiceNumber}\n` +
-            `To: ${state.data.parsed.clientName}\n` +
-            `Amount: $${state.data.total.toFixed(2)}\n` +
-            (state.data.parsed.dueDate ? `Due: ${state.data.parsed.dueDate}\n` : "") +
-            `\n📍 Unique Payment Address (for this invoice only):\n\`${paymentAddress}\`` + goalNote,
-          parse_mode: "Markdown",
+
+        let caption =
+          `🧾 <b>Business Invoice #${fullBizInvoice.invoiceNumber}</b>\n` +
+          `──────────────────────────\n` +
+          `🏢 <b>Business:</b> ${profile?.business_name || user.username || `Business`}\n` +
+          `👤 <b>Client:</b> ${state.data.parsed.clientName}\n` +
+          `💵 <b>Total:</b> $${fullBizInvoice.totalUsdc.toFixed(2)} USDC\n` +
+          (state.data.parsed.dueDate ? `📅 <b>Due Date:</b> ${state.data.parsed.dueDate}\n` : "");
+
+        if (fullBizInvoice.fiatDetails) {
+          caption +=
+            `\n🇳🇬 <b>Option 1: Nigerian Bank Transfer</b>\n` +
+            `• <b>Bank:</b> ${fullBizInvoice.fiatDetails.bankName}\n` +
+            `• <b>Account No:</b> <code>${fullBizInvoice.fiatDetails.accountNumber}</code> (tap to copy)\n` +
+            `• <b>Account Name:</b> ${fullBizInvoice.fiatDetails.accountName}\n` +
+            `• <b>Exact Amount:</b> ₦${fullBizInvoice.fiatDetails.fiatAmount.toLocaleString()}\n` +
+            `<i>(Dedicated virtual account for this invoice only)</i>\n`;
+        }
+
+        caption +=
+          `\n🌐 <b>Option 2: On-Chain Arc USDC</b>\n` +
+          `• <b>Address:</b> <code>${fullBizInvoice.paymentAddress}</code>\n` +
+          `<i>(Dedicated address · QR code on invoice card)</i>\n` +
+          goalNote +
+          `\n⚡ <i>Payments settle directly into your main business account!</i>`;
+
+        await ctx.replyWithPhoto({ source: fullBizInvoice.pngPath }, {
+          caption,
+          parse_mode: "HTML",
           ...Markup.inlineKeyboard([
             [Markup.button.callback("📋 All Invoices",  "action_list_biz_invoices")],
-            [Markup.button.callback(`✅ Mark as Paid`,  `action_bizpaid_${invoiceId}`)],
+            [Markup.button.callback(`✅ Mark as Paid`,  `action_bizpaid_${fullBizInvoice.invoiceId}`)],
             [Markup.button.callback("🏠 Main Menu",     "main_menu")],
           ]),
         });
@@ -4118,16 +4747,22 @@ bot.on("text", async (ctx) => {
         return ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
       }
 
+      const batchId = state.data.batchId || `batch_${Date.now()}`;
       await ctx.reply(`⏳ Processing ${parsed.rows.length} payment(s)...`);
       const fallbackPlan = {
-        payments: parsed.rows.map(r => ({
+        batchId,
+        payments: parsed.rows.map((r, idx) => ({
           to:             r.wallet_address || "__offramp__",
           amount:         r.amount,
           label:          r.name || r.description || "Payment",
           currency:       r.currency || "USDC",
           account_number: r.account_number || null,
           bank_name:      r.bank_name      || null,
+          bank_code:      r.bank_code      || null,
           account_name:   r.account_name   || null,
+          chain:          r.chain          || null,
+          method:         r.method         || null,
+          idempotency_key: r.idempotency_key || null,
         })),
       };
       const results = await executePlan(fallbackPlan, text, user, context);
@@ -4354,6 +4989,37 @@ bot.on("text", async (ctx) => {
         callback_query: { id: "0", from: ctx.from, chat_instance: "0",
           data: "action_cash_flow", message: ctx.message } });
 
+    case "savings_view":
+      return showYields(ctx);
+
+    case "savings_deposit": {
+      const amt = classified.params?.amount || classified.params?.recipients?.[0]?.amount;
+      if (amt) {
+        let pools;
+        try { pools = await savings.getYieldPools(); } catch {
+          return ctx.reply("Couldn't load savings pools — try again.");
+        }
+        const best = pools[0];
+        convState.setState(userId, "confirm_yield_deposit", { amountUsdc: amt, pool: best }, context);
+        return ctx.reply(
+          `📈 Confirm Savings\n──────────────────────────\n` +
+          `Amount: $${amt.toFixed(2)}\n` +
+          `Interest rate: ${best.userApy}% per year\n` +
+          `Provider: ${best.project}\n\n` +
+          `You can withdraw anytime.\n\nEnter your PIN to start saving:`,
+          Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_yields")]])
+        );
+      }
+      return bot.handleUpdate({ update_id: ctx.update.update_id,
+        callback_query: { id: "0", from: ctx.from, chat_instance: "0",
+          data: "yield_deposit_start", message: ctx.message } });
+    }
+
+    case "savings_withdraw":
+      return bot.handleUpdate({ update_id: ctx.update.update_id,
+        callback_query: { id: "0", from: ctx.from, chat_instance: "0",
+          data: "yield_withdraw_start", message: ctx.message } });
+
     case "help":
       return showHelp(ctx);
 
@@ -4406,11 +5072,18 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const WEBHOOK_URL = process.env.WEBHOOK_URL?.replace(/\/$/, "");
 
 async function startBot() {
+  // Start background HTTP webhook server for live Paj v2 events and Circle CCTP auto-bridging
+  try {
+    webhookServer.startWebhookServer({ bot, port: PORT });
+  } catch (err) {
+    console.warn("[bot] Webhook server notice:", err.message);
+  }
+
   if (WEBHOOK_URL) {
     await bot.launch({
       webhook: {
         domain: WEBHOOK_URL,
-        port: PORT,
+        port: PORT + 1,
       },
     });
     console.log(`PayIT is running via webhook at ${WEBHOOK_URL}`);
@@ -4428,9 +5101,37 @@ async function startBot() {
   } catch (err) {
     console.error("[bot] Failed to start invoice listener:", err.message);
   }
+
+  // Start SME morning cash flow briefing scheduler (8:00 AM daily)
+  const cashflow = require("./src/cashflow");
+  try {
+    cashflow.initCashFlowScheduler(bot);
+  } catch (err) {
+    console.warn("[bot] Cashflow scheduler notice:", err.message);
+  }
+
+  // Start background auto-earn worker (monitors funds idle ≥ 2 hours)
+  const autoEarn = require("./src/auto_earn");
+  autoEarn.startAutoEarnWorker({
+    intervalMs: 15 * 60 * 1000,
+    feeRecipientAddress: process.env.APP_FEE_RECIPIENT_ADDRESS,
+  });
 }
 
 startBot();
 
-process.once("SIGINT",  () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
+const autoEarn = require("./src/auto_earn");
+const cashflow = require("./src/cashflow");
+
+process.once("SIGINT", () => {
+  autoEarn.stopAutoEarnWorker();
+  cashflow.stopCashFlowScheduler();
+  webhookServer.stopWebhookServer();
+  bot.stop("SIGINT");
+});
+process.once("SIGTERM", () => {
+  autoEarn.stopAutoEarnWorker();
+  cashflow.stopCashFlowScheduler();
+  webhookServer.stopWebhookServer();
+  bot.stop("SIGTERM");
+});

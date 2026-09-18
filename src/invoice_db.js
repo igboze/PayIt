@@ -60,10 +60,40 @@ try {
   // Ignore if already exists.
 }
 
+try { db.exec("ALTER TABLE invoices ADD COLUMN telegram_id INTEGER;"); } catch (e) {}
+try { db.exec("ALTER TABLE invoices ADD COLUMN owner_telegram_id INTEGER;"); } catch (e) {}
+try { db.exec("ALTER TABLE invoices ADD COLUMN wallet_address TEXT;"); } catch (e) {}
+try { db.exec("ALTER TABLE invoices ADD COLUMN items_json TEXT;"); } catch (e) {}
+try { db.exec("ALTER TABLE invoices ADD COLUMN items TEXT;"); } catch (e) {}
+try { db.exec("ALTER TABLE invoices ADD COLUMN total_usdc REAL;"); } catch (e) {}
+try { db.exec("ALTER TABLE invoices ADD COLUMN total REAL;"); } catch (e) {}
+try { db.exec("ALTER TABLE invoices ADD COLUMN subtotal REAL;"); } catch (e) {}
+try { db.exec("ALTER TABLE invoices ADD COLUMN png_path TEXT;"); } catch (e) {}
+
+try { db.exec("ALTER TABLE invoices ADD COLUMN derivation_index INTEGER;"); } catch (e) {}
+try { db.exec("ALTER TABLE invoices ADD COLUMN payment_address TEXT;"); } catch (e) {}
+try { db.exec("ALTER TABLE invoices ADD COLUMN expected_amount_micro BIGINT;"); } catch (e) {}
+try { db.exec("ALTER TABLE invoices ADD COLUMN paid_tx_hash TEXT;"); } catch (e) {}
+
+try { db.exec("ALTER TABLE invoices ADD COLUMN fiat_account_number TEXT;"); } catch (e) {}
+try { db.exec("ALTER TABLE invoices ADD COLUMN fiat_bank_name TEXT;"); } catch (e) {}
+try { db.exec("ALTER TABLE invoices ADD COLUMN fiat_account_name TEXT;"); } catch (e) {}
+try { db.exec("ALTER TABLE invoices ADD COLUMN fiat_amount REAL;"); } catch (e) {}
+try { db.exec("ALTER TABLE invoices ADD COLUMN fiat_order_id TEXT;"); } catch (e) {}
+try { db.exec("ALTER TABLE invoices ADD COLUMN fiat_rate REAL;"); } catch (e) {}
+try { db.exec("CREATE INDEX IF NOT EXISTS idx_invoices_fiat_order_id ON invoices(fiat_order_id);"); } catch (e) {}
+
+// Auto-initialize tables
+try {
+  initInvoiceTables();
+} catch (e) {
+  // Ignore
+}
+
 function getNextInvoiceNumber(telegramId) {
   const last = db.prepare(
-    "SELECT invoice_number FROM invoices WHERE telegram_id = ? ORDER BY id DESC LIMIT 1"
-  ).get(telegramId);
+    "SELECT invoice_number FROM invoices WHERE telegram_id = ? OR owner_telegram_id = ? ORDER BY id DESC LIMIT 1"
+  ).get(telegramId, telegramId);
   if (!last) return "INV-0001";
   const num = parseInt(last.invoice_number.replace("INV-", "")) + 1;
   return `INV-${String(num).padStart(4, "0")}`;
@@ -75,8 +105,8 @@ function getNextInvoiceNumber(telegramId) {
  */
 function getNextDerivationIndex(telegramId) {
   const last = db.prepare(
-    "SELECT MAX(derivation_index) as maxIndex FROM invoices WHERE telegram_id = ?"
-  ).get(telegramId);
+    "SELECT MAX(derivation_index) as maxIndex FROM invoices WHERE telegram_id = ? OR owner_telegram_id = ?"
+  ).get(telegramId, telegramId);
   return (last?.maxIndex ?? -1) + 1;
 }
 
@@ -102,20 +132,25 @@ function createInvoiceWithHDAddress(
     invoicePrivateKeyEncrypted,
   }
 ) {
+  const itemsJson = JSON.stringify(items);
   const result = db.prepare(`
     INSERT INTO invoices
       (
-        telegram_id, invoice_number, client_name, client_email, 
-        items_json, total_usdc, due_date, notes, wallet_address, 
+        telegram_id, owner_telegram_id, invoice_number, client_name, client_email, 
+        items_json, items, total_usdc, total, subtotal, due_date, notes, wallet_address, 
         png_path, payment_address, derivation_index, expected_amount_micro, invoice_private_key_encrypted, status
       )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
+    telegramId,
     telegramId,
     invoiceNumber,
     clientName,
     clientEmail || null,
-    JSON.stringify(items),
+    itemsJson,
+    itemsJson,
+    totalUsdc,
+    totalUsdc,
     totalUsdc,
     dueDate || null,
     notes || null,
@@ -132,22 +167,55 @@ function createInvoiceWithHDAddress(
 }
 
 function createInvoice(telegramId, { invoiceNumber, clientName, clientEmail, items, totalUsdc, dueDate, notes, walletAddress, pngPath }) {
+  const itemsJson = JSON.stringify(items);
   const result = db.prepare(`
     INSERT INTO invoices
-      (telegram_id, invoice_number, client_name, client_email, items_json, total_usdc, due_date, notes, wallet_address, png_path, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(telegramId, invoiceNumber, clientName, clientEmail || null, JSON.stringify(items), totalUsdc, dueDate || null, notes || null, walletAddress, pngPath || null, "unpaid");
+      (
+        telegram_id, owner_telegram_id, invoice_number, client_name, client_email, 
+        items_json, items, total_usdc, total, subtotal, due_date, notes, wallet_address, png_path, status
+      )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    telegramId,
+    telegramId,
+    invoiceNumber,
+    clientName,
+    clientEmail || null,
+    itemsJson,
+    itemsJson,
+    totalUsdc,
+    totalUsdc,
+    totalUsdc,
+    dueDate || null,
+    notes || null,
+    walletAddress,
+    pngPath || null,
+    "unpaid"
+  );
   return result.lastInsertRowid;
 }
 
 function getUserInvoices(telegramId, limit = 20) {
-  return db.prepare(
-    "SELECT * FROM invoices WHERE telegram_id = ? ORDER BY id DESC LIMIT ?"
-  ).all(telegramId, limit);
+  const rows = db.prepare(
+    "SELECT * FROM invoices WHERE telegram_id = ? OR owner_telegram_id = ? ORDER BY id DESC LIMIT ?"
+  ).all(telegramId, telegramId, limit);
+  return rows.map((r) => ({
+    ...r,
+    telegram_id: r.telegram_id ?? r.owner_telegram_id,
+    total_usdc: r.total_usdc ?? r.total,
+    items_json: r.items_json ?? r.items,
+  }));
 }
 
 function getInvoice(invoiceId) {
-  return db.prepare("SELECT * FROM invoices WHERE id = ?").get(invoiceId) || null;
+  const row = db.prepare("SELECT * FROM invoices WHERE id = ?").get(invoiceId);
+  if (!row) return null;
+  return {
+    ...row,
+    telegram_id: row.telegram_id ?? row.owner_telegram_id,
+    total_usdc: row.total_usdc ?? row.total,
+    items_json: row.items_json ?? row.items,
+  };
 }
 
 /**
@@ -194,6 +262,27 @@ function updateInvoicePngPath(invoiceId, pngPath) {
   ).run(pngPath, invoiceId);
 }
 
+function getInvoiceByNumber(invoiceNumber) {
+  return db.prepare("SELECT * FROM invoices WHERE invoice_number = ?").get(invoiceNumber) || null;
+}
+
+function getInvoiceByFiatOrderId(orderId) {
+  return db.prepare("SELECT * FROM invoices WHERE fiat_order_id = ?").get(orderId) || null;
+}
+
+function updateInvoiceFiatDetails(invoiceId, { fiatAccountNumber, fiatBankName, fiatAccountName, fiatAmount, fiatOrderId, fiatRate }) {
+  db.prepare(`
+    UPDATE invoices SET
+      fiat_account_number = ?,
+      fiat_bank_name = ?,
+      fiat_account_name = ?,
+      fiat_amount = ?,
+      fiat_order_id = ?,
+      fiat_rate = ?
+    WHERE id = ?
+  `).run(fiatAccountNumber, fiatBankName, fiatAccountName, fiatAmount, fiatOrderId, fiatRate, invoiceId);
+}
+
 module.exports = { 
   initInvoiceTables, 
   getNextInvoiceNumber,
@@ -202,6 +291,9 @@ module.exports = {
   createInvoiceWithHDAddress,  // NEW: HD wallet creation
   getUserInvoices, 
   getInvoice,
+  getInvoiceByNumber,
+  getInvoiceByFiatOrderId,
+  updateInvoiceFiatDetails,
   getUnpaidPersonalInvoices,
   getInvoiceByPaymentAddress,  // NEW: payment validation
   markInvoicePaid,

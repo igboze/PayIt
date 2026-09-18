@@ -3,15 +3,17 @@ const path = require("path");
 const { ethers } = require("ethers");
 require("dotenv").config();
 
+const ARC_MAINNET_CHAIN_ID = 5042;
 const ARC_TESTNET_CHAIN_ID = 5042002;
-const ARC_TESTNET_RPC_URLS = ["https://rpc.testnet.arc.network", "https://rpc-canonical.testnet.arc.network"];
+const SUPPORTED_CHAIN_IDS = [ARC_MAINNET_CHAIN_ID, ARC_TESTNET_CHAIN_ID];
+const ARC_VALID_RPC_SUBSTRINGS = ["arc.network", "arc.io", "127.0.0.1", "localhost"];
 
 function validateDeploymentConfig({ rpcUrl, privateKey, feeRecipient, tokenAddress, chainId, signerAddress }) {
   const errors = [];
 
   if (!rpcUrl) {
     errors.push("RPC URL is required.");
-  } else if (!ARC_TESTNET_RPC_URLS.includes(rpcUrl) && !rpcUrl.includes("arc.network")) {
+  } else if (!ARC_VALID_RPC_SUBSTRINGS.some(s => rpcUrl.includes(s))) {
     errors.push("RPC URL must point to an Arc network endpoint.");
   }
 
@@ -29,8 +31,8 @@ function validateDeploymentConfig({ rpcUrl, privateKey, feeRecipient, tokenAddre
     errors.push("SETTLEMENT_TOKEN_ADDRESS must be a valid address.");
   }
 
-  if (chainId && Number(chainId) !== ARC_TESTNET_CHAIN_ID) {
-    errors.push(`Arc testnet deployment requires chain ID ${ARC_TESTNET_CHAIN_ID}.`);
+  if (chainId && !SUPPORTED_CHAIN_IDS.includes(Number(chainId))) {
+    errors.push(`Arc deployment requires chain ID ${ARC_MAINNET_CHAIN_ID} (mainnet) or ${ARC_TESTNET_CHAIN_ID} (testnet).`);
   }
 
   if (!signerAddress || !ethers.isAddress(signerAddress)) {

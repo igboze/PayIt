@@ -1,30 +1,19 @@
 // agent/file_parser.js
 // Extracts payment data from PDF, PPTX, DOCX, Excel/CSV and plain text files.
-//
-// PDF:   text extracted via pdf-parse, then sent to the LLM for structuring
-// PPTX:  slide text extracted from XML and structured by the LLM
-// DOCX:  document text extracted from XML and structured by the LLM
-// TXT:   raw text sent to the LLM for structuring
-// Excel: parsed via xlsx, rows mapped to payment records directly (no LLM needed
-//        if columns are recognisable), LLM fallback if structure is ambiguous
-// CSV:   parsed via xlsx from text, then mapped to payment rows
-//
-// Expected output shape (always):
-// {
-//   type: "bulk_payment" | "invoice" | "payroll" | "expense_list" | "unknown",
-//   rows: [{ name, wallet_address, bank_name, account_number, amount, currency, description }],
-//   total: <sum of all amounts>,
-//   currency: <dominant currency>,
-//   error: null | "<message>"
-// }
+// Handles multi-rail payroll: NGN bank transfers, Arc EVM on-chain, and Solana on-chain.
+// Attaches deterministic idempotency keys to each payment record to prevent duplicate payouts.
 
 require("dotenv").config();
+const crypto = require("crypto");
 const { getJSONCompletion } = require("./ai_provider");
+const { resolveBankCode } = require("../src/bank_resolver");
+const { isSolanaAddress } = require("../src/multichain");
+const { generateIdempotencyKey } = require("../src/idempotency");
 
 function parseAmountValue(value) {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string') {
-    const cleaned = value.replace(/[,₦$]/g, '').trim();
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const cleaned = value.replace(/[,₦$€]/g, "").trim();
     const parsed = Number(cleaned);
     return Number.isFinite(parsed) ? parsed : 0;
   }
@@ -32,88 +21,118 @@ function parseAmountValue(value) {
 }
 
 function parseScheduleFromInstruction(instruction) {
-  const text = String(instruction || '').trim().toLowerCase();
+  const text = String(instruction || "").trim().toLowerCase();
   const timeMatch = text.match(/at\s+(\d{1,2}:\d{2})/i);
   const time = timeMatch ? timeMatch[1] : null;
 
   const monthlyMatch = text.match(/every\s+(\d{1,2})(?:st|nd|rd|th)?\s+of\s+the\s+month/i);
   if (monthlyMatch) {
-    return { frequency: 'monthly', day: monthlyMatch[1], time: time || '08:00' };
+    return { frequency: "monthly", day: monthlyMatch[1], time: time || "08:00" };
   }
 
   const weeklyMatch = text.match(/every\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i);
   if (weeklyMatch) {
     const day = weeklyMatch[1].charAt(0).toUpperCase() + weeklyMatch[1].slice(1);
-    return { frequency: 'weekly', day, time: time || null };
+    return { frequency: "weekly", day, time: time || null };
   }
 
   const dailyMatch = text.match(/every\s+day/i);
   if (dailyMatch) {
-    return { frequency: 'daily', day: null, time: time || null };
+    return { frequency: "daily", day: null, time: time || null };
   }
 
   return { frequency: null, day: null, time: null };
 }
 
-function buildLocalPaymentPlan(rows, instruction) {
+function buildLocalPaymentPlan(rows, instruction, options = {}) {
   const schedule = parseScheduleFromInstruction(instruction);
-  const payments = (rows || []).map((r) => ({
-    to: r.wallet_address || '__offramp__',
-    amount: parseAmountValue(r.amount),
-    label: r.description || r.name || 'Payment',
-    bank_name: r.bank_name || null,
-    account_number: r.account_number || null,
-    account_name: r.account_name || null,
-    currency: r.currency || 'USDC',
-  })).filter((payment) => payment.amount > 0);
+  const batchId = options.batchId || `batch_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
 
-  const type = schedule.frequency ? 'scheduled' : (payments.length === 1 ? 'one_time' : 'bulk');
+  const payments = (rows || []).map((r, index) => {
+    const isSolana = r.chain === "solana" || (r.wallet_address && isSolanaAddress(r.wallet_address));
+    const isEvm = (r.wallet_address && r.wallet_address.startsWith("0x")) || r.chain === "arc" || r.chain === "evm";
+    const isOfframp = r.method === "fiat_offramp" || (!isSolana && !isEvm && (r.account_number || r.bank_name || r.currency === "NGN"));
+
+    let method = "onchain_evm";
+    let chain = "arc";
+    let to = r.wallet_address;
+
+    if (isOfframp) {
+      method = "fiat_offramp";
+      chain = "fiat";
+      to = "__offramp__";
+    } else if (isSolana) {
+      method = "onchain_solana";
+      chain = "solana";
+      to = r.wallet_address;
+    } else {
+      method = "onchain_evm";
+      chain = r.chain || "arc";
+      to = r.wallet_address || "__offramp__";
+    }
+
+    const item = {
+      to,
+      amount: parseAmountValue(r.amount),
+      label: r.description || r.name || "Payment",
+      bank_name: r.bank_name || null,
+      bank_code: r.bank_code || null,
+      account_number: r.account_number || null,
+      account_name: r.account_name || r.name || null,
+      currency: r.currency || (isOfframp ? "NGN" : "USDC"),
+      method,
+      chain,
+      id: r.id || null,
+    };
+
+    item.idempotency_key = r.idempotency_key || generateIdempotencyKey(batchId, index, item);
+    return item;
+  }).filter((payment) => payment.amount > 0);
+
+  const type = schedule.frequency ? "scheduled" : (payments.length === 1 ? "one_time" : "bulk");
   const summary = schedule.frequency
-    ? `Pay ${payments.length} recipient${payments.length !== 1 ? 's' : ''} ${schedule.day ? `on ${schedule.day}` : ''}${schedule.time ? ` at ${schedule.time}` : ''}.`
-    : `Process ${payments.length} recipient${payments.length !== 1 ? 's' : ''}.`;
+    ? `Pay ${payments.length} recipient${payments.length !== 1 ? "s" : ""} ${schedule.day ? `on ${schedule.day}` : ""}${schedule.time ? ` at ${schedule.time}` : ""}.`
+    : `Process ${payments.length} recipient${payments.length !== 1 ? "s" : ""}.`;
 
-  return { type, payments, schedule, summary };
+  return { type, payments, schedule, summary, batchId };
 }
 
 // ─── PPTX extraction (slide text) ───────────────────────────────────────────
 async function parsePptx(buffer) {
   try {
-    const JSZip = require('jszip');
+    const JSZip = require("jszip");
     const zip = await JSZip.loadAsync(buffer);
     const slideFiles = Object.keys(zip.files).filter(f => f.match(/^ppt\/slides\/slide[0-9]+\.xml$/i)).sort();
     const slides = [];
     for (const sf of slideFiles) {
-      const content = await zip.files[sf].async('string');
-      // extract text nodes `<a:t>...</a:t>` which hold slide text
+      const content = await zip.files[sf].async("string");
       const texts = [];
       const re = /<a:t[^>]*>(.*?)<\/a:t>/gms;
       let m;
       while ((m = re.exec(content)) !== null) texts.push(m[1]);
-      slides.push(texts.join(' '));
+      slides.push(texts.join(" "));
     }
-    const raw = slides.join('\n\n');
+    const raw = slides.join("\n\n");
     if (!raw || raw.trim().length < 20) {
-      return { type: 'unknown', rows: [], total: 0, currency: null, error: 'PPTX appears empty or contains images only.' };
+      return { type: "unknown", rows: [], total: 0, currency: null, error: "PPTX appears empty or contains images only." };
     }
-    // Use the LLM structuring fallback to interpret slides as a payment document
-    const result = await structureWithLLM(raw, 'pptx');
-    return result;
+    return await structureWithLLM(raw, "pptx");
   } catch (err) {
-    console.error('[file_parser/pptx]', err.message || err);
-    return { type: 'unknown', rows: [], total: 0, currency: null, error: 'Could not read the PPTX file.' };
+    console.error("[file_parser/pptx]", err.message || err);
+    return { type: "unknown", rows: [], total: 0, currency: null, error: "Could not read the PPTX file." };
   }
 }
 
 async function parseDocx(buffer) {
   try {
-    const JSZip = require('jszip');
+    const JSZip = require("jszip");
     const zip = await JSZip.loadAsync(buffer);
-    const documentXml = zip.file('word/document.xml');
+    const documentXml = zip.file("word/document.xml");
     if (!documentXml) {
-      return { type: 'unknown', rows: [], total: 0, currency: null, error: 'DOCX appears empty or unsupported.' };
+      return { type: "unknown", rows: [], total: 0, currency: null, error: "DOCX appears empty or unsupported." };
     }
 
-    const content = await documentXml.async('string');
+    const content = await documentXml.async("string");
     const texts = [];
     const re = /<w:t[^>]*>(.*?)<\/w:t>/gms;
     let match;
@@ -121,66 +140,70 @@ async function parseDocx(buffer) {
       texts.push(match[1]);
     }
 
-    const raw = texts.join(' ');
+    const raw = texts.join(" ");
     if (!raw || raw.trim().length < 20) {
-      return { type: 'unknown', rows: [], total: 0, currency: null, error: 'DOCX appears empty or contains non-text content.' };
+      return { type: "unknown", rows: [], total: 0, currency: null, error: "DOCX appears empty or contains non-text content." };
     }
 
-    return await structureWithLLM(raw, 'DOCX');
+    return await structureWithLLM(raw, "DOCX");
   } catch (err) {
-    console.error('[file_parser/docx]', err.message || err);
-    return { type: 'unknown', rows: [], total: 0, currency: null, error: 'Could not read the DOCX file.' };
+    console.error("[file_parser/docx]", err.message || err);
+    return { type: "unknown", rows: [], total: 0, currency: null, error: "Could not read the DOCX file." };
   }
 }
 
 async function parseTextFile(buffer) {
   try {
-    const raw = buffer.toString('utf8');
+    const raw = buffer.toString("utf8");
     if (!raw || raw.trim().length < 20) {
-      return { type: 'unknown', rows: [], total: 0, currency: null, error: 'Text file appears empty.' };
+      return { type: "unknown", rows: [], total: 0, currency: null, error: "Text file appears empty." };
     }
-    return await structureWithLLM(raw, 'text file');
+    return await structureWithLLM(raw, "text file");
   } catch (err) {
-    console.error('[file_parser/text]', err.message || err);
-    return { type: 'unknown', rows: [], total: 0, currency: null, error: 'Could not read the text file.' };
+    console.error("[file_parser/text]", err.message || err);
+    return { type: "unknown", rows: [], total: 0, currency: null, error: "Could not read the text file." };
   }
 }
 
 async function buildFilePaymentPlan(rows, instruction, userContext = {}) {
-  const trimmed = String(instruction || '').trim();
+  const trimmed = String(instruction || "").trim();
   if (!trimmed || !rows || rows.length === 0) {
     return null;
   }
 
-  const systemPrompt = `You are a payment planning assistant for PayIT, a Nigerian dollar wallet bot.
+  const batchId = userContext.batchId || `batch_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
 
-Users may attach a spreadsheet, PDF, PPTX, or text file containing payment rows and add a caption or instruction about how those payments should be executed.
+  const systemPrompt = `You are a payment planning assistant for PayIT, a Nigerian multi-chain and fiat wallet bot.
+
+Users attach files containing payroll/payment rows and instructions.
+Each row can specify payment in Nigerian Naira (NGN bank transfer) or on-chain (Arc EVM USDC/EURC or Solana USDC).
 
 Your job is to return a structured payment plan in JSON only, no markdown, no explanation.
 
-Rows are payment records with name, wallet_address, bank_name, account_number, account_name, amount, currency, and description.
+Rows have: name, wallet_address, bank_name, bank_code, account_number, account_name, amount, currency, description, chain, method.
 
 Rules:
-- If a row has a wallet_address, set "to" to that address.
-- If a row has no wallet_address but has bank details, set "to" to "__offramp__" and include account_number, bank_name, account_name.
-- Keep currency from the row when present; otherwise default to "USDC".
-- If the instruction is a recurring payroll/salary payment, set schedule.frequency to "monthly" or the closest match, and set schedule.day/time when the instruction specifies it.
-- If the instruction says "every 30th of the month", use { "frequency": "monthly", "day": "30", "time": "08:00" } unless a time is specified.
-- If no schedule is required, set schedule.frequency, schedule.day, and schedule.time to null.
-- Use "bulk" for multiple recipients and "one_time" for a single immediate payment.
-- Do not invent amounts or recipients; use the provided rows.
+- If a row has an EVM 0x wallet address, set "to" to that address, "chain" to "arc", and "method" to "onchain_evm".
+- If a row has a Solana Base58 address, set "to" to that address, "chain" to "solana", and "method" to "onchain_solana".
+- If a row has bank details (account_number, bank_name) or currency is NGN, set "to" to "__offramp__", "chain" to "fiat", and "method" to "fiat_offramp".
+- Keep currency from the row (NGN, USDC, EURC).
+- If the instruction is a recurring payment, set schedule.frequency to "monthly", "weekly", or "daily" and set schedule.day/time when specified.
+- If the instruction says "every 30th of the month", use { "frequency": "monthly", "day": "30", "time": "08:00" } unless another time is specified.
 - Return exactly this JSON schema:
 {
   "type": "one_time" | "scheduled" | "split" | "bulk" | "offramp" | "scheduled_offramp",
   "payments": [
     {
-      "to": "<0x address or __offramp__>",
+      "to": "<0x address, Solana address, or __offramp__>",
       "amount": <number>,
       "label": "<short description>",
       "bank_name": "<bank name or null>",
+      "bank_code": "<6-digit NIBSS code or null>",
       "account_number": "<account number or null>",
       "account_name": "<beneficiary name or null>",
-      "currency": "<USDC | EURC | NGN | USD | EUR | null>"
+      "currency": "<USDC | EURC | NGN | USD | EUR>",
+      "method": "<onchain_evm | onchain_solana | fiat_offramp>",
+      "chain": "<arc | solana | fiat>"
     }
   ],
   "schedule": {
@@ -195,22 +218,31 @@ Rules:
     name: r.name || null,
     wallet_address: r.wallet_address || null,
     bank_name: r.bank_name || null,
+    bank_code: r.bank_code || null,
     account_number: r.account_number || null,
     account_name: r.account_name || null,
-    amount: typeof r.amount === 'string' ? Number(r.amount.replace(/[,₦$]/g, '')) : r.amount,
+    amount: parseAmountValue(r.amount),
     currency: r.currency || null,
+    chain: r.chain || null,
+    method: r.method || null,
     description: r.description || null,
   })), null, 2);
 
   try {
     const plan = await getJSONCompletion(systemPrompt, `Instruction: ${trimmed}\n\nRows: ${rowsText}`);
     if (plan && Array.isArray(plan.payments) && plan.payments.length >= 0) {
+      plan.batchId = batchId;
+      plan.payments = plan.payments.map((p, idx) => {
+        const item = { ...p };
+        item.idempotency_key = item.idempotency_key || generateIdempotencyKey(batchId, idx, item);
+        return item;
+      });
       return plan;
     }
-    return buildLocalPaymentPlan(rows, instruction);
+    return buildLocalPaymentPlan(rows, instruction, { batchId });
   } catch (err) {
-    console.error('[file_parser/buildFilePaymentPlan]', err.message || err);
-    return buildLocalPaymentPlan(rows, instruction);
+    console.error("[file_parser/buildFilePaymentPlan]", err.message || err);
+    return buildLocalPaymentPlan(rows, instruction, { batchId });
   }
 }
 
@@ -218,129 +250,204 @@ Rules:
 
 async function extractPdfText(buffer) {
   const pdfParse = require("pdf-parse");
-  const data     = await pdfParse(buffer);
+  const data = await pdfParse(buffer);
   return data.text;
 }
 
 // ─── Excel / CSV extraction ───────────────────────────────────────────────────
 
-/**
- * Parse an Excel or CSV buffer into row objects.
- * Returns { headers, rows } where rows is an array of plain objects.
- * Uses xlsx for broad spreadsheet and CSV compatibility.
- */
 async function parseSpreadsheet(buffer, isCSV = false) {
-  const XLSX = require('xlsx');
+  const XLSX = require("xlsx");
   try {
-    const input = isCSV ? buffer.toString('utf8') : buffer;
-    const workbook = XLSX.read(input, { type: isCSV ? 'string' : 'buffer', raw: false, cellDates: true });
+    const input = isCSV ? buffer.toString("utf8") : buffer;
+    const workbook = XLSX.read(input, { type: isCSV ? "string" : "buffer", raw: false, cellDates: true });
     const sheetName = workbook.SheetNames[0];
     if (!sheetName) return { headers: [], rows: [] };
 
     const worksheet = workbook.Sheets[sheetName];
-    const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+    const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
     if (!rawRows || rawRows.length === 0) return { headers: [], rows: [] };
 
-    const headerRow = rawRows[0].map((v) => String(v || ''));
+    const headerRow = rawRows[0].map((v) => String(v || ""));
     const rows = [];
 
     for (let rowIndex = 1; rowIndex < rawRows.length; rowIndex += 1) {
       const row = rawRows[rowIndex];
       const obj = {};
       headerRow.forEach((header, colIndex) => {
-        obj[header] = String(row[colIndex] || '');
+        obj[header] = String(row[colIndex] || "");
       });
       if (Object.keys(obj).some((k) => obj[k])) rows.push(obj);
     }
 
     return { headers: headerRow, rows };
   } catch (err) {
-    console.error('[file_parser/spreadsheet] error:', err.message);
+    console.error("[file_parser/spreadsheet] error:", err.message);
     throw err;
   }
 }
 
 /**
- * Try to map spreadsheet rows to payment records using common column name
- * heuristics before falling back to the LLM.
- *
- * Recognised column aliases:
- *   name/recipient/payee/employee → name
- *   wallet/address/0x → wallet_address
- *   bank → bank_name
- *   account/acct/account_number → account_number
- *   account_name/acct_name → account_name
- *   amount/usdc/value/pay/salary → amount
- *   currency/token → currency
- *   description/note/reason/for → description
+ * Maps spreadsheet rows to payment records using column name heuristics.
+ * Understands preferred payout rails: NGN bank transfers, Arc EVM, and Solana.
  */
 function mapSpreadsheetRows(rows) {
   const normalise = (s) => String(s).toLowerCase().replace(/[\s_-]/g, "");
 
   const ALIASES = {
-    name:           ["name", "recipient", "payee", "employee", "staff", "to"],
-    wallet_address: ["wallet", "address", "walletaddress", "0x"],
-    bank_name:      ["bank", "bankname"],
-    account_number: ["account", "acct", "accountnumber", "acctnumber", "nuban"],
-    account_name:   ["accountname", "acctname", "beneficiary"],
-    amount:         ["amount", "usdc", "value", "pay", "salary", "sum", "total"],
-    currency:       ["currency", "token", "ccy"],
-    description:    ["description", "note", "reason", "for", "purpose", "memo"],
+    name:           ["name", "recipient", "payee", "employee", "staff", "to", "beneficiary"],
+    wallet_address: ["wallet", "address", "walletaddress", "0x", "pubkey", "publickey", "cryptoaddress", "destination", "payoutdetail"],
+    bank_name:      ["bank", "bankname", "institution"],
+    account_number: ["account", "acct", "accountnumber", "acctnumber", "nuban", "accountno", "acctno"],
+    account_name:   ["accountname", "acctname", "accountholder"],
+    amount:         ["amount", "usdc", "value", "pay", "salary", "sum", "total", "netpay", "net"],
+    currency:       ["currency", "token", "ccy", "curr"],
+    description:    ["description", "note", "reason", "for", "purpose", "memo", "dept", "department", "role"],
+    chain:          ["chain", "network", "blockchain", "rail"],
+    method:         ["method", "payoutmethod", "type", "paymentmethod", "channel", "mode", "preferred"],
+    bank_code:      ["bankcode", "sortcode", "nibss"],
+    id:             ["id", "employeeid", "ref", "reference", "staffid"],
+    idempotency_key:["idempotencykey", "idemp"],
   };
 
-  // Build column → field mapping from first row headers
+  if (!rows || rows.length === 0) return null;
+
+  // Collect all unique column headers across rows
+  const allCols = new Set();
+  rows.forEach((r) => Object.keys(r).forEach((k) => allCols.add(k)));
+
   const colMap = {};
-  if (rows.length === 0) return null;
-  Object.keys(rows[0]).forEach(col => {
+  // Pass 1: exact matches
+  allCols.forEach((col) => {
     const n = normalise(col);
     for (const [field, aliases] of Object.entries(ALIASES)) {
-      if (aliases.some(a => n.includes(a))) {
+      if (aliases.some((a) => n === a)) {
         colMap[col] = field;
         break;
       }
     }
   });
 
-  // Need at least name + amount to consider this a match
+  // Pass 2: substring matches for unmapped columns
+  allCols.forEach((col) => {
+    if (colMap[col]) return;
+    const n = normalise(col);
+    for (const [field, aliases] of Object.entries(ALIASES)) {
+      if (aliases.some((a) => a.length >= 4 && n.includes(a))) {
+        colMap[col] = field;
+        break;
+      }
+    }
+  });
+
   const mappedFields = new Set(Object.values(colMap));
   if (!mappedFields.has("name") || !mappedFields.has("amount")) return null;
 
-  return rows.map(row => {
+  return rows.map((row) => {
     const record = {
-      name: "", wallet_address: null, bank_name: null,
-      account_number: null, account_name: null,
-      amount: 0, currency: "USDC", description: null,
+      name: "",
+      wallet_address: null,
+      bank_name: null,
+      bank_code: null,
+      account_number: null,
+      account_name: null,
+      amount: 0,
+      currency: "USDC",
+      chain: null,
+      method: null,
+      description: null,
+      id: null,
+      idempotency_key: null,
     };
+
     for (const [col, field] of Object.entries(colMap)) {
       const val = row[col];
       if (val === "" || val === undefined || val === null) continue;
-      if (field === "amount") record.amount = parseFloat(String(val).replace(/[,₦$]/g, "")) || 0;
-      else record[field] = String(val).trim();
+      const strVal = String(val).trim();
+
+      if (field === "amount") {
+        record.amount = parseAmountValue(strVal);
+        if (strVal.includes("₦") || strVal.toUpperCase().includes("NGN")) {
+          record.currency = "NGN";
+        } else if (strVal.includes("€") || strVal.toUpperCase().includes("EUR")) {
+          record.currency = "EURC";
+        }
+      } else if (field === "currency") {
+        const c = strVal.toUpperCase();
+        if (c.includes("NGN") || c.includes("NAIRA") || c === "₦") record.currency = "NGN";
+        else if (c.includes("EUR")) record.currency = "EURC";
+        else if (c.includes("USDC") || c.includes("USD") || c === "$") record.currency = "USDC";
+        else record.currency = c;
+      } else {
+        record[field] = strVal;
+      }
     }
+
+    // Auto-detect destination details if user passed an address or account
+    const candidateDest = record.wallet_address;
+    if (candidateDest) {
+      if (candidateDest.startsWith("0x") && candidateDest.length === 42) {
+        record.chain = "arc";
+        record.method = "onchain_evm";
+      } else if (isSolanaAddress(candidateDest)) {
+        record.chain = "solana";
+        record.method = "onchain_solana";
+      } else if (/^\d{10}$/.test(candidateDest)) {
+        record.account_number = candidateDest;
+        record.wallet_address = null;
+        record.chain = "fiat";
+        record.method = "fiat_offramp";
+      }
+    }
+
+    // Classify rail if specified in method or chain columns
+    const normMethod = (record.method || "").toLowerCase();
+    const normChain = (record.chain || "").toLowerCase();
+
+    if (normChain.includes("sol") || normMethod.includes("sol")) {
+      record.chain = "solana";
+      record.method = "onchain_solana";
+    } else if (normChain.includes("arc") || normChain.includes("evm") || normChain.includes("eth") || normChain.includes("onchain") || normMethod.includes("onchain")) {
+      record.chain = "arc";
+      record.method = "onchain_evm";
+    } else if (normMethod.includes("bank") || normMethod.includes("fiat") || normMethod.includes("naira") || normChain.includes("fiat") || normChain.includes("bank") || record.currency === "NGN") {
+      record.chain = "fiat";
+      record.method = "fiat_offramp";
+    }
+
+    // If destination has bank details and no on-chain address
+    if (!record.wallet_address && (record.account_number || record.bank_name)) {
+      record.chain = "fiat";
+      record.method = "fiat_offramp";
+    }
+
     return record;
-  }).filter(r => r.name && r.amount > 0);
+  }).filter((r) => r.name && r.amount > 0);
 }
 
 // ─── LLM structuring fallback ─────────────────────────────────────────────────
 
 async function structureWithLLM(rawText, fileType) {
-  const systemPrompt = `You are a payment data extraction assistant for PayIT, a Nigerian dollar wallet.
-
+  const systemPrompt = `You are a payroll and bulk payment extraction assistant for PayIT.
 Extract payment records from the following ${fileType} content.
+Supports multi-rail payments: Nigerian Bank (NGN), Arc EVM (USDC/EURC), and Solana (USDC).
 
-Return ONLY valid JSON — no markdown, no explanation:
+Return ONLY valid JSON:
 {
-  "type": "bulk_payment" | "invoice" | "payroll" | "expense_list" | "unknown",
+  "type": "payroll" | "bulk_payment" | "invoice" | "expense_list" | "unknown",
   "rows": [
     {
       "name": "<recipient name>",
-      "wallet_address": "<0x address or null>",
+      "wallet_address": "<0x address or Solana Base58 address or null>",
       "bank_name": "<bank name or null>",
+      "bank_code": "<6-digit NIBSS code or null>",
       "account_number": "<account number or null>",
       "account_name": "<account holder name or null>",
       "amount": <numeric>,
-      "currency": "<USDC | NGN | USD | EUR | null>",
-      "description": "<what this payment is for or null>"
+      "currency": "<NGN | USDC | EURC | USD>",
+      "chain": "<arc | solana | fiat | null>",
+      "method": "<onchain_evm | onchain_solana | fiat_offramp | null>",
+      "description": "<role or note or null>"
     }
   ],
   "total": <sum of all amounts>,
@@ -349,43 +456,29 @@ Return ONLY valid JSON — no markdown, no explanation:
 }
 
 Rules:
-- Each payable person or line item becomes one row.
-- If currency is ambiguous, default to USDC.
-- Ignore header rows, totals rows, and non-payment data.
+- If a row contains a Solana address, set chain to "solana" and method to "onchain_solana".
+- If a row contains a 0x EVM address, set chain to "arc" and method to "onchain_evm".
+- If a row contains a bank account or NGN amount, set chain to "fiat" and method to "fiat_offramp".
 - If no payment data is found, return { "type": "unknown", "rows": [], "total": 0, "currency": null, "error": "No payment records found." }`;
 
-  return await getJSONCompletion(systemPrompt, rawText.slice(0, 8000)); // cap at 8k chars
+  return await getJSONCompletion(systemPrompt, rawText.slice(0, 8000));
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-/**
- * Parse a PDF buffer and return structured payment records.
- *
- * @param {Buffer} buffer
- * @returns {Promise<object>}
- */
 async function parsePdf(buffer) {
   try {
     const text = await extractPdfText(buffer);
     if (!text || text.trim().length < 20) {
-      return { type: "unknown", rows: [], total: 0, currency: null, error: "PDF appears to be empty or image-only. Try sending a clearer scan." };
+      return { type: "unknown", rows: [], total: 0, currency: null, error: "PDF appears to be empty or image-only." };
     }
-    const result = await structureWithLLM(text, "PDF");
-    return result;
+    return await structureWithLLM(text, "PDF");
   } catch (err) {
     console.error("[file_parser/pdf]", err.message);
-    return { type: "unknown", rows: [], total: 0, currency: null, error: "Could not read the PDF. Please try again or type the details manually." };
+    return { type: "unknown", rows: [], total: 0, currency: null, error: "Could not read the PDF." };
   }
 }
 
-/**
- * Parse an Excel or CSV buffer and return structured payment records.
- *
- * @param {Buffer} buffer
- * @param {boolean} isCSV
- * @returns {Promise<object>}
- */
 async function parseSpreadsheetFile(buffer, isCSV = false) {
   try {
     const { headers, rows } = await parseSpreadsheet(buffer, isCSV);
@@ -393,66 +486,96 @@ async function parseSpreadsheetFile(buffer, isCSV = false) {
       return { type: "unknown", rows: [], total: 0, currency: null, error: "The spreadsheet appears to be empty." };
     }
 
-    // Try heuristic mapping first (faster, no LLM cost)
     const mapped = mapSpreadsheetRows(rows);
     if (mapped && mapped.length > 0) {
-      const total    = mapped.reduce((s, r) => s + r.amount, 0);
+      const total = mapped.reduce((s, r) => s + r.amount, 0);
       const currency = mapped[0].currency || "USDC";
-      return { type: "bulk_payment", rows: mapped, total, currency, error: null };
+      return { type: "payroll", rows: mapped, total, currency, error: null };
     }
 
-    // Heuristic failed — send first 50 rows as JSON text to LLM
     const sample = rows.slice(0, 50);
-    const text   = `Headers: ${headers.join(", ")}\n\nData:\n${JSON.stringify(sample, null, 2)}`;
-    const result = await structureWithLLM(text, "spreadsheet");
-    return result;
-
+    const text = `Headers: ${headers.join(", ")}\n\nData:\n${JSON.stringify(sample, null, 2)}`;
+    return await structureWithLLM(text, "spreadsheet");
   } catch (err) {
     console.error("[file_parser/xlsx]", err.message);
-    return { type: "unknown", rows: [], total: 0, currency: null, error: "Could not read the spreadsheet. Please check the file format." };
+    return { type: "unknown", rows: [], total: 0, currency: null, error: "Could not read the spreadsheet." };
   }
 }
 
 /**
- * Format the parsed file result as a Telegram confirmation message.
- *
- * @param {object} parsed
- * @param {number} [maxPreviewRows=8]
- * @returns {string}
+ * Format the parsed file result as a Telegram confirmation message with multi-rail breakdown.
  */
 function formatFilePreview(parsed, maxPreviewRows = 8) {
-  if (parsed.error && parsed.rows.length === 0) {
+  if (parsed.error && (!parsed.rows || parsed.rows.length === 0)) {
     return `❌ ${parsed.error}`;
   }
 
   const typeLabel = {
+    payroll:       "👥 Multi-Rail Payroll",
     bulk_payment:  "💸 Bulk Payment",
-    payroll:       "👥 Payroll",
     invoice:       "🧾 Invoice",
     expense_list:  "📋 Expense List",
     unknown:       "📎 Document",
-  }[parsed.type] || "📎 Document";
+  }[parsed.type] || "👥 Multi-Rail Payroll";
+
+  // Categorize rows by preferred rail
+  const ngnRows = parsed.rows.filter(
+    (r) => r.currency === "NGN" || r.method === "fiat_offramp" || (!r.wallet_address && r.account_number)
+  );
+  const solanaRows = parsed.rows.filter(
+    (r) => r.chain === "solana" || r.method === "onchain_solana" || (r.wallet_address && isSolanaAddress(r.wallet_address))
+  );
+  const evmRows = parsed.rows.filter(
+    (r) => !ngnRows.includes(r) && !solanaRows.includes(r)
+  );
 
   const preview = parsed.rows.slice(0, maxPreviewRows).map((r, i) => {
-    const dest = r.wallet_address
-      ? `\`${r.wallet_address.slice(0, 8)}...\``
-      : r.account_number
-      ? `${r.bank_name || "Bank"} · ${r.account_number}`
-      : "—";
-    return `${i + 1}. ${r.name} — ${r.amount} ${r.currency || "USDC"}\n   → ${dest}${r.description ? "\n   " + r.description : ""}`;
+    let railBadge = "⚡ Arc EVM";
+    let dest = r.wallet_address ? `\`${r.wallet_address.slice(0, 6)}...${r.wallet_address.slice(-4)}\`` : "—";
+
+    if (r.chain === "solana" || (r.wallet_address && isSolanaAddress(r.wallet_address))) {
+      railBadge = "🟣 Solana";
+      dest = `\`${r.wallet_address.slice(0, 6)}...${r.wallet_address.slice(-4)}\``;
+    } else if (r.currency === "NGN" || r.account_number || r.method === "fiat_offramp") {
+      railBadge = "🏦 Bank (NGN)";
+      dest = `${r.bank_name || "Bank"} · \`${r.account_number || "—"}\``;
+    }
+
+    const formattedAmount = r.currency === "NGN"
+      ? `₦${Number(r.amount).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} NGN`
+      : `${Number(r.amount).toFixed(2)} ${r.currency || "USDC"}`;
+
+    return `${i + 1}. *${r.name}* — ${formattedAmount}\n   ${railBadge} → ${dest}${r.description ? `\n   _${r.description}_` : ""}`;
   }).join("\n\n");
 
   const more = parsed.rows.length > maxPreviewRows
     ? `\n\n...and ${parsed.rows.length - maxPreviewRows} more recipients.`
     : "";
 
+  // Summary breakdown
+  const railSummary = [];
+  if (ngnRows.length > 0) {
+    const sumNgn = ngnRows.reduce((acc, r) => acc + (r.currency === "NGN" ? r.amount : 0), 0);
+    railSummary.push(`🏦 Bank (NGN): ${ngnRows.length} recipients · ₦${sumNgn.toLocaleString("en-NG", { minimumFractionDigits: 2 })}`);
+  }
+  if (evmRows.length > 0) {
+    const sumEvm = evmRows.reduce((acc, r) => acc + r.amount, 0);
+    railSummary.push(`⚡ Arc EVM: ${evmRows.length} recipients · ${sumEvm.toFixed(2)} USDC`);
+  }
+  if (solanaRows.length > 0) {
+    const sumSol = solanaRows.reduce((acc, r) => acc + r.amount, 0);
+    railSummary.push(`🟣 Solana: ${solanaRows.length} recipients · ${sumSol.toFixed(2)} USDC`);
+  }
+
   return (
-    `${typeLabel} detected\n` +
+    `*${typeLabel} Detected*\n` +
     `──────────────────────────\n` +
-    `${parsed.rows.length} recipient${parsed.rows.length !== 1 ? "s" : ""} · ` +
-    `Total: ${parsed.total.toFixed(2)} ${parsed.currency || "USDC"}\n\n` +
+    `Total: ${parsed.rows.length} recipient${parsed.rows.length !== 1 ? "s" : ""}\n` +
+    (railSummary.length > 0 ? `${railSummary.join("\n")}\n` : "") +
+    `──────────────────────────\n\n` +
     `${preview}${more}\n\n` +
-    `Does this look right?`
+    `*Idempotency & Replay Protection:* Enabled\n` +
+    `Confirm to execute payout across all preferred chains & accounts.`
   );
 }
 
@@ -463,7 +586,7 @@ module.exports = {
   parseDocx,
   parseTextFile,
   buildFilePaymentPlan,
+  buildLocalPaymentPlan,
   formatFilePreview,
   mapSpreadsheetRows,
 };
-

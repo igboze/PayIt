@@ -1,86 +1,105 @@
 // agent/voice_parser.js
 // Transcribes voice notes (Telegram OGG/Voice or audio files) to text
-// Uses OpenAI speech-to-text when `OPENAI_API_KEY` is set.
+// Supports OpenAI Whisper, Groq Whisper (ultra-fast), and Google Gemini (native audio understanding).
 
-require('dotenv').config();
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const { getActiveProvider } = require('./ai_provider');
+require("dotenv").config();
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { getActiveProvider } = require("./ai_provider");
 
-async function transcribeVoice(buffer, mimeType = 'audio/ogg') {
+async function transcribeVoice(buffer, mimeType = "audio/ogg") {
   // Mock transcription for offline tests
-  if (process.env.USE_MOCK_AI === '1') {
-    return { text: 'send $50 to Emeka' };
+  if (process.env.USE_MOCK_AI === "1") {
+    return { text: "send $50 to Emeka" };
   }
 
-  // Decide which AI provider is configured (OpenAI, Groq, Gemini)
   const provider = getActiveProvider();
   if (!provider) {
-    console.warn('[voice_parser] No ASR provider configured');
-    return { error: 'no_asr_provider', message: 'Voice transcription requires an AI provider (set OPENAI_API_KEY or compatible). Type your message instead.' };
+    console.warn("[voice_parser] No AI provider configured");
+    return {
+      error: "no_asr_provider",
+      message: "Voice transcription requires an AI provider (OPENAI_API_KEY, GROQ_API_KEY, or GEMINI_API_KEY). Type your message instead.",
+    };
   }
 
-  // Allow using OpenAI-compatible endpoints (NVIDIA) even when another
-  // provider API key is present. If OPENAI_API_KEY is set (and optionally
-  // OPENAI_BASE_URL), prefer that for ASR since ASR implementation uses
-  // the OpenAI-style audio.transcriptions API.
-  let useOpenAI = false;
-  if (provider === 'openai') useOpenAI = true;
-  if (!useOpenAI && process.env.OPENAI_API_KEY && process.env.OPENAI_BASE_URL) {
-    useOpenAI = true;
-    console.warn('[voice_parser] Using OPENAI-compatible base URL for ASR');
-  }
-  if (!useOpenAI) {
-    console.warn(`[voice_parser] ASR provider ${provider} not implemented`);
-    return { error: 'no_asr_provider', message: `Voice transcription not supported for provider: ${provider}. Type your message instead.` };
-  }
+  // ── 1. Groq Whisper (Ultra-fast speech-to-text) ──
+  if (provider === "groq" || (process.env.GROQ_API_KEY && !process.env.OPENAI_API_KEY)) {
+    try {
+      const Groq = require("groq-sdk");
+      const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+      const tmpDir = os.tmpdir();
+      const ext = mimeType.includes("ogg") ? "ogg" : mimeType.includes("mp3") ? "mp3" : "m4a";
+      const tmpPath = path.join(tmpDir, `payit_voice_groq_${Date.now()}.${ext}`);
 
-  const OpenAI = require('openai');
-  const clientOptions = { apiKey: process.env.OPENAI_API_KEY };
-  if (process.env.OPENAI_BASE_URL) clientOptions.baseURL = process.env.OPENAI_BASE_URL;
-  const client = new OpenAI(clientOptions);
-  const configuredModel = process.env.OPENAI_TRANSCRIBE_MODEL || 'whisper-1';
-  const modelCandidates = [configuredModel];
-  if (configuredModel.startsWith('nvidia/') && configuredModel !== 'whisper-1') {
-    modelCandidates.push('whisper-1');
-  }
+      await fs.promises.writeFile(tmpPath, buffer);
+      const stream = fs.createReadStream(tmpPath);
 
-  // Write a temp file so the SDK can stream from disk
-  const tmpDir = os.tmpdir();
-  const ext = mimeType.includes('ogg') ? 'ogg' : mimeType.includes('mp3') ? 'mp3' : 'm4a';
-  const tmpPath = path.join(tmpDir, `payit_voice_${Date.now()}.${ext}`);
+      const translation = await groq.audio.transcriptions.create({
+        file: stream,
+        model: "whisper-large-v3",
+      });
 
-  try {
-    await fs.promises.writeFile(tmpPath, buffer);
-    const stream = fs.createReadStream(tmpPath);
-
-    console.log(`[voice_parser] ASR provider=${provider} model=${configuredModel} baseURL=${process.env.OPENAI_BASE_URL || 'default'}`);
-
-    let lastErr = null;
-    for (const model of modelCandidates) {
-      try {
-        const res = await client.audio.transcriptions.create({ file: stream, model });
-        try { await fs.promises.unlink(tmpPath); } catch (_) {}
-        console.log(`[voice_parser] Transcribed ${(buffer.length/1024).toFixed(1)}KB using model=${model} to ${(res.text || '').length} chars`);
-        return { text: res.text };
-      } catch (err) {
-        lastErr = err;
-        console.warn(`[voice_parser] Model ${model} failed for transcription:`, err.message?.slice(0, 200) || String(err).slice(0, 200));
-        if (model === modelCandidates[modelCandidates.length - 1]) throw err;
-      }
+      try { await fs.promises.unlink(tmpPath); } catch (_) {}
+      console.log(`[voice_parser] Groq Whisper transcribed to ${translation.text?.length || 0} chars`);
+      return { text: translation.text || "" };
+    } catch (groqErr) {
+      console.warn("[voice_parser] Groq transcription error:", groqErr.message);
     }
-    throw lastErr;
-  } catch (err) {
-    try { await fs.promises.unlink(tmpPath); } catch (_) {}
-    const status = err?.response?.status || null;
-    const short = err.message?.slice(0, 200) || String(err).slice(0, 200);
-    console.error(`[voice_parser] Transcription failed:`, short);
-    if (status === 429 || /quota|rate limit/i.test(short)) {
-      return { error: 'quota_exceeded', message: 'Transcription service rate-limited or quota exceeded. Please try again later.' };
-    }
-    return { error: 'transcription_failed', message: `Could not transcribe audio. Please try again or type the message manually.` };
   }
+
+  // ── 2. Google Gemini Native Audio Understanding ──
+  if (provider === "gemini" || (process.env.GEMINI_API_KEY && !process.env.OPENAI_API_KEY)) {
+    try {
+      const { GoogleGenerativeAI } = require("@google/generative-ai");
+      const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+      const audioPart = {
+        inlineData: {
+          data: buffer.toString("base64"),
+          mimeType: mimeType || "audio/ogg",
+        },
+      };
+
+      const prompt = "Transcribe the spoken audio message verbatim. Return only the plain transcribed text without markdown formatting or introductory commentary.";
+      const result = await model.generateContent([prompt, audioPart]);
+      const text = result.response.text().trim();
+      console.log(`[voice_parser] Gemini transcribed to ${text.length} chars`);
+      return { text };
+    } catch (geminiErr) {
+      console.warn("[voice_parser] Gemini transcription error:", geminiErr.message);
+    }
+  }
+
+  // ── 3. OpenAI / NVIDIA Whisper ──
+  if (process.env.OPENAI_API_KEY) {
+    const OpenAI = require("openai");
+    const clientOptions = { apiKey: process.env.OPENAI_API_KEY };
+    if (process.env.OPENAI_BASE_URL) clientOptions.baseURL = process.env.OPENAI_BASE_URL;
+    const client = new OpenAI(clientOptions);
+    const configuredModel = process.env.OPENAI_TRANSCRIBE_MODEL || "whisper-1";
+
+    const tmpDir = os.tmpdir();
+    const ext = mimeType.includes("ogg") ? "ogg" : mimeType.includes("mp3") ? "mp3" : "m4a";
+    const tmpPath = path.join(tmpDir, `payit_voice_openai_${Date.now()}.${ext}`);
+
+    try {
+      await fs.promises.writeFile(tmpPath, buffer);
+      const stream = fs.createReadStream(tmpPath);
+      const res = await client.audio.transcriptions.create({ file: stream, model: configuredModel });
+      try { await fs.promises.unlink(tmpPath); } catch (_) {}
+      return { text: res.text || "" };
+    } catch (err) {
+      try { await fs.promises.unlink(tmpPath); } catch (_) {}
+      console.error("[voice_parser] OpenAI transcription error:", err.message);
+    }
+  }
+
+  return {
+    error: "transcription_failed",
+    message: "Could not transcribe audio with configured AI providers. Please type the message manually.",
+  };
 }
 
 module.exports = { transcribeVoice };

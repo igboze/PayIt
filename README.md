@@ -943,36 +943,29 @@ Encrypted blob stored in database
 
 ---
 
-## Arc Testnet Details
+## Arc Network Details
 
 ### Network Information
 
-| Parameter | Value |
-|-----------|-------|
-| **Name** | Arc (Circle's EVM L1) |
-| **Status** | Public testnet (no mainnet yet as of Jun 2026) |
-| **Chain ID** | 5042002 |
-| **RPC** | `https://rpc.testnet.arc.network` |
-| **Explorer** | `https://testnet.arcscan.app` |
-| **Native Gas** | USDC (1:1 USD pegged) |
-| **Faucet** | `https://faucet.circle.com` (select "Arc Testnet") |
+| Parameter | Arc Mainnet | Arc Testnet |
+|---|---|---|
+| **Name** | Arc Mainnet | Arc Testnet |
+| **Status** | Live (Launched Sept 16, 2026) | Public Testnet |
+| **Chain ID** | `5042` | `5042002` |
+| **RPC** | `https://rpc.mainnet.arc.io` | `https://rpc.testnet.arc.network` |
+| **Explorer** | `https://explorer.arc.io` | `https://testnet.arcscan.app` |
+| **Native Gas** | USDC (1:1 USD pegged) | USDC (Testing only) |
+| **Gateway API**| `https://gateway-api.circle.com/v1` | `https://gateway-api-testnet.circle.com/v1` |
+| **Fiat Onramp**| Circle Onramp (`https://onramp.circle.com`) | Circle Test Faucet (`https://faucet.circle.com`) |
 
-### Testnet Characteristics
+### Mainnet Characteristics
 
-- ⚙️ **Reset frequency:** Testnet can reset; no permanent data
-- 💵 **Token value:** USDC on testnet = 0 real value (testing only)
-- ⚡ **Block time:** ~2 seconds
-- 📊 **TX cost:** ~0.0001 USDC per transaction
-- 🔗 **Blockchain:** EVM-compatible (Ethereum-like RPC)
-
-### Getting Testnet USDC
-
-1. Visit [faucet.circle.com](https://faucet.circle.com)
-2. Select **Arc Testnet**
-3. Paste your Arc wallet address (from `/receive` in bot)
-4. Click "Get USDC"
-5. Wait ~2 seconds
-6. Check balance in bot: `/balance`
+- ⚡ **Consensus & Speed:** Sub-second deterministic finality (Malachite engine)
+- 💵 **Native Gas Token:** Arc uses **USDC directly as gas** — no volatile gas tokens needed
+- 💳 **Fiat Onramp:** Direct purchase via Debit/Credit Card, Apple Pay, and Google Pay through Circle Onramp
+- 🌉 **Cross-Chain Inflow:** Circle Gateway for instant cross-chain liquidity + CCTP burn-and-mint
+- ⛽ **Account Abstraction:** Gas sponsorship enabled via Arc Paymaster (ERC-4337)
+- 🔗 **Blockchain:** EVM-compatible (standard JSON-RPC)
 
 ### Why Testnet Only?
 

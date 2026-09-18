@@ -9,12 +9,14 @@
 const { Wallet, JsonRpcProvider, Contract, parseUnits, formatUnits } = require("ethers");
 const crypto = require("crypto");
 
-const ARC_RPC  = process.env.ARC_RPC_URL || "https://rpc.testnet.arc.network";
-const CHAIN_ID = 5042002;
+const { getNetworkConfig } = require("./network");
 
 let _provider = null;
 function getProvider() {
-  if (!_provider) _provider = new JsonRpcProvider(ARC_RPC, CHAIN_ID);
+  const net = getNetworkConfig();
+  if (!_provider || _provider._network?.chainId !== BigInt(net.chainId)) {
+    _provider = new JsonRpcProvider(net.rpcUrl, net.chainId);
+  }
   return _provider;
 }
 

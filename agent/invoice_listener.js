@@ -75,12 +75,19 @@ async function startInvoiceListener(bot, arcProvider, pollIntervalMs = 10000) {
   scheduleNextPoll(bot, arcProvider, pollIntervalMs);
 }
 
+let consecutiveErrors = 0;
+const MAX_BACKOFF_MS = 60000;
+
 function scheduleNextPoll(bot, arcProvider, pollIntervalMs) {
   if (!listenerActive) return;
 
   if (pollTimer) {
     clearTimeout(pollTimer);
   }
+
+  const delayMs = consecutiveErrors > 0
+    ? Math.min(Math.round(pollIntervalMs * Math.pow(1.5, Math.min(consecutiveErrors, 5))), MAX_BACKOFF_MS)
+    : pollIntervalMs;
 
   pollTimer = setTimeout(async () => {
     if (!listenerActive || pollInFlight) {
@@ -91,15 +98,17 @@ function scheduleNextPoll(bot, arcProvider, pollIntervalMs) {
     pollInFlight = true;
     try {
       await pollInvoices(bot, arcProvider);
+      consecutiveErrors = 0; // Reset backoff on success
     } catch (err) {
-      console.error("[invoice_listener] Polling error:", err.message);
+      consecutiveErrors++;
+      console.error(`[invoice_listener] Polling error (consecutive: ${consecutiveErrors}, next retry in ${delayMs}ms):`, err.message);
     } finally {
       pollInFlight = false;
       if (listenerActive) {
         scheduleNextPoll(bot, arcProvider, pollIntervalMs);
       }
     }
-  }, pollIntervalMs);
+  }, delayMs);
 }
 
 async function pollInvoices(bot, arcProvider) {

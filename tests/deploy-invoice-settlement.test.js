@@ -4,7 +4,7 @@ const { validateDeploymentConfig } = require('../scripts/deploy-invoice-settleme
 
 test('validateDeploymentConfig rejects unsupported chain IDs', () => {
   const result = validateDeploymentConfig({
-    rpcUrl: 'https://rpc.testnet.arc.network',
+    rpcUrl: 'https://rpc.mainnet.arc.io',
     privateKey: '0x' + '11'.repeat(32),
     feeRecipient: '0x1111111111111111111111111111111111111111',
     tokenAddress: '0x3600000000000000000000000000000000000000',
@@ -13,7 +13,21 @@ test('validateDeploymentConfig rejects unsupported chain IDs', () => {
   });
 
   assert.equal(result.ok, false);
-  assert.match(result.errors.join('\n'), /Arc testnet deployment requires chain ID/i);
+  assert.match(result.errors.join('\n'), /Arc deployment requires chain ID/i);
+});
+
+test('validateDeploymentConfig accepts Arc mainnet settings', () => {
+  const result = validateDeploymentConfig({
+    rpcUrl: 'https://rpc.mainnet.arc.io',
+    privateKey: '0x' + '11'.repeat(32),
+    feeRecipient: '0x1111111111111111111111111111111111111111',
+    tokenAddress: '0x3600000000000000000000000000000000000000',
+    chainId: 5042,
+    signerAddress: '0x2222222222222222222222222222222222222222',
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.errors, []);
 });
 
 test('validateDeploymentConfig accepts Arc testnet settings', () => {

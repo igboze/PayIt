@@ -157,9 +157,7 @@ async function searchForProduct(productName, maxPrice = null) {
         price: p.price.toFixed(2),
         originalPrice: originalPrice,
         discountPercentage: p.discountPercentage ? p.discountPercentage.toFixed(0) : null,
-        currency: "USDC",
-        delivery_time: p.shippingInformation || "2-3 business days",
-        seller_wallet: "0x1234567890abcdef1234567890abcdef12345678" // dummy seller address
+        seller_wallet: process.env.SHOPPING_MERCHANT_ESCROW_WALLET || process.env.APP_FEE_RECIPIENT_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359"
       };
     }
   } catch (error) {
@@ -191,7 +189,7 @@ async function searchForProduct(productName, maxPrice = null) {
     discountPercentage: "13",
     currency: "USDC",
     delivery_time: "2-3 business days",
-    seller_wallet: "0x1234567890abcdef1234567890abcdef12345678" // dummy seller address
+    seller_wallet: process.env.SHOPPING_MERCHANT_ESCROW_WALLET || process.env.APP_FEE_RECIPIENT_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359"
   };
 }
 
