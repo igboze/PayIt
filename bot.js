@@ -3738,49 +3738,59 @@ bot.on("text", async (ctx) => {
       } catch {
         return ctx.reply("Couldn't unlock your wallet with that PIN.");
       }
-      const result = await executeOfframp(
-        userWallet,
-        state.data.amountUsdc,
-        {
-          accountNumber: state.data.accountNumber,
-          bankCode: state.data.bankCode || "000013",
-          bankName: state.data.bankName,
-          accountName: state.data.accountName
-        },
-        userId,
-        "Cash Out",
-        { accountType: context }
-      );
 
-      if (result.success) {
-        try {
-          db.awardPoints(ctx.from.id, POINTS.cashout, "cashout", `Cash out $${state.data.amountUsdc.toFixed(2)}`);
-        } catch (err) {
-          console.error("[points_award_cashout]", err);
+      try {
+        const result = await executeOfframp(
+          userWallet,
+          state.data.amountUsdc,
+          {
+            accountNumber: state.data.accountNumber,
+            bankCode: state.data.bankCode || "000013",
+            bankName: state.data.bankName,
+            accountName: state.data.accountName,
+            orderAddress: state.data.orderAddress,
+            orderId: state.data.orderId,
+            fiatAmount: state.data.fiatAmount,
+            rate: state.data.rate,
+          },
+          userId,
+          "Cash Out",
+          { accountType: context }
+        );
+
+        if (result.success) {
+          try {
+            db.awardPoints(ctx.from.id, POINTS.cashout, "cashout", `Cash out $${state.data.amountUsdc.toFixed(2)}`);
+          } catch (err) {
+            console.error("[points_award_cashout]", err);
+          }
+          try {
+            const receiptPath = await generateReceiptPNG({
+              receiptId:        result.reference || result.txHash?.slice(0, 10) || `CO-${Date.now()}`,
+              senderName:       "PayIT Wallet",
+              senderAddress:    getActiveWallet(user),
+              recipientName:    state.data.accountName || state.data.bankName || "Bank Account",
+              recipientAddress: state.data.accountNumber,
+              amountUsdc:       state.data.amountUsdc,
+              token:            "USDC",
+              type:             "Cash Out",
+              timestamp:        new Date().toISOString(),
+              status:           "Confirmed",
+              txHash:           result.txHash || null,
+            });
+            await ctx.replyWithPhoto({ source: receiptPath }, {
+              caption: result.warning || `✅ Cash out submitted! Naira arrives in ~10 minutes.`,
+              ...afterPaymentButtons,
+            });
+          } catch {
+            await ctx.reply(result.warning || `✅ Cash out submitted! Naira arrives in ~10 minutes.`, afterPaymentButtons);
+          }
+        } else {
+          await ctx.reply(`❌ ${result.error}`, backToMenu);
         }
-        try {
-          const receiptPath = await generateReceiptPNG({
-            receiptId:        result.reference || result.txHash?.slice(0, 10) || `CO-${Date.now()}`,
-            senderName:       "PayIT Wallet",
-            senderAddress:    getActiveWallet(user),
-            recipientName:    state.data.accountName || state.data.bankName || "Bank Account",
-            recipientAddress: state.data.accountNumber,
-            amountUsdc:       state.data.amountUsdc,
-            token:            "USDC",
-            type:             "Cash Out",
-            timestamp:        new Date().toISOString(),
-            status:           "Confirmed",
-            txHash:           result.txHash || null,
-          });
-          await ctx.replyWithPhoto({ source: receiptPath }, {
-            caption: result.warning || `✅ Cash out submitted! Naira arrives in ~10 minutes.`,
-            ...afterPaymentButtons,
-          });
-        } catch {
-          await ctx.reply(result.warning || `✅ Cash out submitted! Naira arrives in ~10 minutes.`, afterPaymentButtons);
-        }
-      } else {
-        await ctx.reply(`❌ ${result.error}`, backToMenu);
+      } catch (offrampErr) {
+        console.error("[bot:confirm_withdraw:error]", offrampErr);
+        await ctx.reply(`❌ Cash out could not be completed: ${offrampErr.message || "An unexpected error occurred"}`, backToMenu);
       }
       return;
     }
