@@ -119,12 +119,12 @@ function friendlyGatewayError(err, chainName) {
 // Public fallbacks; override via env if needed (e.g. SEPOLIA_RPC_URL, ETHEREUM_RPC_URL).
 const CHAIN_RPCS = {
   // Mainnet
-  "Ethereum":         process.env.ETHEREUM_RPC_URL     || "https://ethereum-rpc.publicnode.com",
-  "Base":             process.env.BASE_RPC_URL         || "https://mainnet.base.org",
+  "Ethereum":         process.env.ETHEREUM_RPC_URL     || (process.env.ALCHEMY_API_KEY ? `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}` : "https://ethereum-rpc.publicnode.com"),
+  "Base":             process.env.BASE_RPC_URL         || (process.env.ALCHEMY_API_KEY ? `https://base-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}` : "https://mainnet.base.org"),
   "Avalanche":        process.env.AVALANCHE_RPC_URL    || "https://api.avax.network/ext/bc/C/rpc",
   // Testnet
-  "Ethereum Sepolia": process.env.SEPOLIA_RPC_URL      || "https://ethereum-sepolia-rpc.publicnode.com",
-  "Base Sepolia":     process.env.BASE_SEPOLIA_RPC_URL || "https://base-sepolia-rpc.publicnode.com",
+  "Ethereum Sepolia": process.env.SEPOLIA_RPC_URL      || (process.env.ALCHEMY_API_KEY ? `https://eth-sepolia.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}` : "https://ethereum-sepolia-rpc.publicnode.com"),
+  "Base Sepolia":     process.env.BASE_SEPOLIA_RPC_URL || (process.env.ALCHEMY_API_KEY ? `https://base-sepolia.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}` : "https://base-sepolia-rpc.publicnode.com"),
   "Avalanche Fuji":   process.env.FUJI_RPC_URL         || "https://api.avax-test.network/ext/bc/C/rpc",
 };
 

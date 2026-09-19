@@ -12,6 +12,21 @@ const invoiceDb = require("./invoice_db");
 const bizDb = require("./biz_db");
 const evmDepositSweeper = require("./evm_deposit_sweeper");
 
+function verifyAlchemySignature(rawBody, headers, signingKey) {
+  if (!signingKey) return true;
+  const signature = headers["x-alchemy-signature"] || headers["X-Alchemy-Signature"];
+  if (!signature) return true;
+  try {
+    const crypto = require("crypto");
+    const hmac = crypto.createHmac("sha256", signingKey);
+    hmac.update(rawBody);
+    const digest = hmac.digest("hex");
+    return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(signature));
+  } catch {
+    return false;
+  }
+}
+
 let _server = null;
 
 /**
@@ -300,6 +315,20 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
       req.on("end", async () => {
         const rawBody = Buffer.concat(chunks);
 
+        // Verify Alchemy HMAC signature if coming into /webhook/alchemy and signing key is configured
+        if (req.url.includes("alchemy")) {
+          const signingKey = process.env.ALCHEMY_WEBHOOK_SIGNING_KEY || process.env.ALCHEMY_API_KEY;
+          if (signingKey && (req.headers["x-alchemy-signature"] || req.headers["X-Alchemy-Signature"])) {
+            const isValid = verifyAlchemySignature(rawBody, req.headers, signingKey);
+            if (!isValid) {
+              console.warn("[webhook_server] Alchemy webhook HMAC signature mismatch.");
+              res.writeHead(401, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "Invalid signature" }));
+              return;
+            }
+          }
+        }
+
         // Acknowledge webhook provider immediately
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ received: true, status: "queued" }));
@@ -381,5 +410,6 @@ module.exports = {
   startWebhookServer,
   stopWebhookServer,
   processPajEvent,
+  verifyAlchemySignature,
   evmDepositSweeper,
 };

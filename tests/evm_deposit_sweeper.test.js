@@ -243,6 +243,26 @@ test("Automated EVM Cross-Chain Deposit Engine Test Suite", async (t) => {
     }
   });
 
+  await t.test("9. Security: Alchemy Webhook HMAC-SHA256 signature verification", () => {
+    const { verifyAlchemySignature } = require("../src/webhook_server");
+    const crypto = require("crypto");
+    const signingKey = "alch_test_key_123456";
+    const body = Buffer.from(JSON.stringify({ event: { network: "ETH_MAINNET", activity: [] } }));
+    const validSig = crypto.createHmac("sha256", signingKey).update(body).digest("hex");
+
+    // Correct signature
+    const validResult = verifyAlchemySignature(body, { "x-alchemy-signature": validSig }, signingKey);
+    assert.equal(validResult, true, "Signature must validate successfully with correct key");
+
+    // Tampered body
+    const tamperedResult = verifyAlchemySignature(Buffer.from("tampered"), { "x-alchemy-signature": validSig }, signingKey);
+    assert.equal(tamperedResult, false, "Signature must fail with tampered body");
+
+    // Wrong signature
+    const wrongResult = verifyAlchemySignature(body, { "x-alchemy-signature": "0000000000000000000000000000000000000000000000000000000000000000" }, signingKey);
+    assert.equal(wrongResult, false, "Signature must fail with invalid digest");
+  });
+
   // Final cleanup
   db.db.prepare("DELETE FROM users WHERE telegram_id = ?").run(testUserId);
   db.db.prepare("DELETE FROM transactions WHERE telegram_id = ?").run(testUserId);
