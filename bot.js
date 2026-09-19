@@ -4032,6 +4032,8 @@ bot.on("text", async (ctx) => {
         `You can withdraw anytime.\n\nEnter your PIN to start saving:`,
         Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_yields")]])
       );
+    }
+
     if (state.type === "sweep_auth_pin") {
       await deleteSensitiveMessage(ctx);
       if (!/^\d{4}$/.test(text)) return ctx.reply("Please enter your 4-digit PIN.");
