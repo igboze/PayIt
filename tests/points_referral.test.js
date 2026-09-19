@@ -31,3 +31,42 @@ test('awardPoints notifies the user and referral bonus recipient', () => {
   );
   assert.equal(notifications[0].telegramId, referrer.telegram_id);
 });
+
+test('getUserByReferralCode handles direct, case-insensitive, and numeric fallbacks', () => {
+  const db = loadDb();
+  const user = db.createUserWithWallet(3001, 'alice', '0xaaa', 'privaaa', '1234');
+
+  // Direct match
+  const matchDirect = db.getUserByReferralCode('ref3001');
+  assert.ok(matchDirect);
+  assert.equal(matchDirect.telegram_id, 3001);
+
+  // Case-insensitive match
+  const matchCase = db.getUserByReferralCode('REF3001');
+  assert.ok(matchCase);
+  assert.equal(matchCase.telegram_id, 3001);
+
+  // Numeric fallback match
+  const matchNum = db.getUserByReferralCode('3001');
+  assert.ok(matchNum);
+  assert.equal(matchNum.telegram_id, 3001);
+
+  // Non-existent
+  assert.equal(db.getUserByReferralCode('ref999999999'), null);
+});
+
+test('referral bonus is awarded only once on first point', () => {
+  const db = loadDb();
+  const referrer = db.createUserWithWallet(4001, 'bob', '0xbob', 'privbob', '1111');
+  const referred = db.createUserWithWallet(4002, 'charlie', '0xcha', 'privcha', '2222', null, null, referrer.telegram_id);
+
+  // First point transaction -> awards 20 pts to referrer
+  db.awardPoints(referred.telegram_id, 5, 'cashout', 'first tx');
+  assert.equal(db.getPointsBalance(referrer.telegram_id), 20);
+  assert.equal(db.getPointsBalance(referred.telegram_id), 5);
+
+  // Second point transaction -> does NOT award referral bonus again
+  db.awardPoints(referred.telegram_id, 10, 'invoice', 'second tx');
+  assert.equal(db.getPointsBalance(referrer.telegram_id), 20); // still 20
+  assert.equal(db.getPointsBalance(referred.telegram_id), 15);
+});

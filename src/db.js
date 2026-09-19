@@ -202,6 +202,11 @@ function ensureUserSchema() {
   if (!columns.includes("referral_code")) {
     db.exec("ALTER TABLE users ADD COLUMN referral_code TEXT");
   }
+  try {
+    db.exec("UPDATE users SET referral_code = 'ref' || telegram_id WHERE referral_code IS NULL OR referral_code = ''");
+  } catch (err) {
+    console.warn("Could not backfill referral_code:", err?.message || err);
+  }
   if (!columns.includes("referred_at")) {
     db.exec("ALTER TABLE users ADD COLUMN referred_at TEXT");
   }
@@ -273,7 +278,33 @@ function getAllUsers() {
 
 function getUserByReferralCode(code) {
   if (!code) return null;
-  return db.prepare("SELECT * FROM users WHERE referral_code = ?").get(code) || null;
+  const cleanCode = String(code).trim();
+  const direct = db.prepare("SELECT * FROM users WHERE LOWER(referral_code) = LOWER(?)").get(cleanCode);
+  if (direct) return direct;
+
+  // Fallback: check if cleanCode matches 'ref<id>' or numeric '<id>'
+  let candidateId = null;
+  if (/^ref\d+$/i.test(cleanCode)) {
+    candidateId = Number(cleanCode.replace(/^ref/i, ""));
+  } else if (/^\d+$/.test(cleanCode)) {
+    candidateId = Number(cleanCode);
+  }
+
+  if (candidateId && Number.isSafeInteger(candidateId)) {
+    const user = getUser(candidateId);
+    if (user) {
+      if (!user.referral_code) {
+        const standardCode = `ref${candidateId}`;
+        try {
+          db.prepare("UPDATE users SET referral_code = ? WHERE telegram_id = ?").run(standardCode, candidateId);
+          user.referral_code = standardCode;
+        } catch {}
+      }
+      return user;
+    }
+  }
+
+  return null;
 }
 
 /**

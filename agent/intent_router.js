@@ -138,6 +138,14 @@ async function classifyIntent(message, telegramId, userContext = {}) {
     if (low.includes("withdraw yield") || low.includes("claim yield") || low.includes("withdraw savings") || low.includes("cash out yield") || low.includes("collect yield") || low.includes("withdraw interest")) {
       return { intent: "savings_withdraw", confidence: "high", params: { recipients: [], schedule: {}, missing: null }, raw_summary: "Withdraw yield & savings" };
     }
+    if (
+      low === "referral" || low === "referral link" || low === "referrals" ||
+      low === "invite" || low === "invite friends" || low === "invite link" ||
+      low === "share link" || low === "my referral link" || low === "refer" ||
+      low.includes("referral link") || low.includes("invite link") || low.includes("invite friend")
+    ) {
+      return { intent: "referral", confidence: "high", params: { recipients: [], schedule: {}, missing: null }, raw_summary: "Show referral link & rewards" };
+    }
 
     // Savings deposit shorthand: "save $50", "deposit $20 to savings"
     const saveMatch = m.match(/^(?:save|deposit)\s+\$?(\d+(?:\.\d+)?)(?:\s*(?:to\s*savings|usdc|dollars?))?$/i);
