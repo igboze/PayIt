@@ -222,9 +222,28 @@ async function swapNativeToUsdc({ signer, chainConfig, amountInWei }) {
 
     // 1. Try Uniswap V3 SwapRouter
     if (chainConfig.chainId !== 43114) {
-      const router = new Contract(chainConfig.routerAddress, UNISWAP_V3_ROUTER_ABI, signer);
+      // Wrap native token (ETH/POL) to canonical WETH/WPOL first and approve router
+      const WETH_ABI = [
+        "function deposit() payable external",
+        "function approve(address spender, uint256 amount) external returns (bool)",
+        "function allowance(address owner, address spender) external view returns (uint256)",
+        "function balanceOf(address owner) external view returns (uint256)",
+      ];
+      const wethContract = new Contract(chainConfig.wethAddress, WETH_ABI, signer);
 
       try {
+        console.log(`[evm_sweeper] Wrapping ${formatUnits(amountInWei, 18)} ${chainConfig.nativeSymbol} into WETH...`);
+        const wrapTx = await wethContract.deposit({ value: amountInWei });
+        await wrapTx.wait(1);
+
+        const routerAddr = chainConfig.routerAddress;
+        const allowance = await wethContract.allowance(signer.address, routerAddr);
+        if (allowance < amountInWei) {
+          const appTx = await wethContract.approve(routerAddr, amountInWei);
+          await appTx.wait(1);
+        }
+
+        const router = new Contract(routerAddr, UNISWAP_V3_ROUTER_ABI, signer);
         const paramsV3 = {
           tokenIn: chainConfig.wethAddress,
           tokenOut: chainConfig.usdcAddress,
@@ -236,7 +255,7 @@ async function swapNativeToUsdc({ signer, chainConfig, amountInWei }) {
           sqrtPriceLimitX96: 0n,
         };
 
-        const tx = await router.exactInputSingle(paramsV3, { value: amountInWei });
+        const tx = await router.exactInputSingle(paramsV3);
         const receipt = await tx.wait(1);
         const balanceAfter = await usdcContract.balanceOf(signer.address);
         const received = balanceAfter - balanceBefore;
@@ -249,6 +268,9 @@ async function swapNativeToUsdc({ signer, chainConfig, amountInWei }) {
         // Try fallback router if available
         if (chainConfig.fallbackRouter && chainConfig.fallbackRouter !== chainConfig.routerAddress) {
           const fallbackRouter = new Contract(chainConfig.fallbackRouter, UNISWAP_V3_ROUTER_ABI, signer);
+          const appTx = await wethContract.approve(chainConfig.fallbackRouter, amountInWei);
+          await appTx.wait(1);
+
           const paramsV3 = {
             tokenIn: chainConfig.wethAddress,
             tokenOut: chainConfig.usdcAddress,
@@ -259,7 +281,7 @@ async function swapNativeToUsdc({ signer, chainConfig, amountInWei }) {
             amountOutMinimum: 0n,
             sqrtPriceLimitX96: 0n,
           };
-          const tx = await fallbackRouter.exactInputSingle(paramsV3, { value: amountInWei });
+          const tx = await fallbackRouter.exactInputSingle(paramsV3);
           const receipt = await tx.wait(1);
           const balanceAfter = await usdcContract.balanceOf(signer.address);
           const usdcReceived = parseFloat(formatUnits(balanceAfter - balanceBefore, 6));
@@ -340,6 +362,21 @@ async function processEvmDeposit(payload, bot) {
     userPrivateKey = db.getSystemDecryptedPrivateKey(user, accountType);
   } catch (keyErr) {
     console.warn(`[evm_sweeper] Could not decrypt system key for user ${user.telegram_id}:`, keyErr.message);
+  }
+
+  if (!userPrivateKey && !user.system_encrypted_key && bot && targetTelegramId) {
+    try {
+      await bot.telegram.sendMessage(
+        targetTelegramId,
+        `🔔 <b>Deposit Received!</b>\n` +
+        `──────────────────────────\n` +
+        `We detected an incoming deposit of <b>${rawAmount} ${token}</b> on <b>${cctpConfig.name}</b>.\n\n` +
+        `To authorize automated conversion and bridging to your Arc USDC balance, please tap <b>[🔄 Scan & Sweep Deposits]</b> in the deposit menu and enter your PIN once.`,
+        { parse_mode: "HTML" }
+      );
+    } catch (msgErr) {
+      console.warn(`[evm_sweeper] Failed to notify user TG:${targetTelegramId}:`, msgErr.message);
+    }
   }
 
   const provider = new JsonRpcProvider(cctpConfig.rpcUrl, cctpConfig.chainId);
