@@ -30,13 +30,28 @@ const ARC_CCTP_CONTRACTS = {
   GATEWAY_MINTER: "0x0022222ABE238Cc2C7Bb1f21003F0a260052475B",
 };
 
+function getAlchemyRpcUrl(network, fallback) {
+  const key = process.env.ALCHEMY_API_KEY;
+  if (!key) return fallback;
+  const map = {
+    ethereum: `https://eth-mainnet.g.alchemy.com/v2/${key}`,
+    base: `https://base-mainnet.g.alchemy.com/v2/${key}`,
+    arbitrum: `https://arb-mainnet.g.alchemy.com/v2/${key}`,
+    optimism: `https://opt-mainnet.g.alchemy.com/v2/${key}`,
+    polygon: `https://polygon-mainnet.g.alchemy.com/v2/${key}`,
+    sepolia: `https://eth-sepolia.g.alchemy.com/v2/${key}`,
+    base_sepolia: `https://base-sepolia.g.alchemy.com/v2/${key}`,
+  };
+  return map[network] || fallback;
+}
+
 // Supported EVM source chains for CCTP V2 burns into Arc (Domain 26)
 const EVM_CCTP_CONTRACTS = {
   BASE: {
     name: "Base",
     domain: 6,
     chainId: 8453,
-    rpcUrl: process.env.BASE_RPC_URL || "https://mainnet.base.org",
+    rpcUrl: process.env.BASE_RPC_URL || getAlchemyRpcUrl("base", "https://mainnet.base.org"),
     tokenMessenger: "0x1682Ae6375C4E4A97e4B583BC394c36577037E7e",
     messageTransmitter: "0xAD09780d193884d503182aD4588450C416D6F9D4",
     usdc: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
@@ -46,7 +61,7 @@ const EVM_CCTP_CONTRACTS = {
     name: "Arbitrum",
     domain: 3,
     chainId: 42161,
-    rpcUrl: process.env.ARBITRUM_RPC_URL || "https://arb1.arbitrum.io/rpc",
+    rpcUrl: process.env.ARBITRUM_RPC_URL || getAlchemyRpcUrl("arbitrum", "https://arb1.arbitrum.io/rpc"),
     tokenMessenger: "0x19330d10D9Cc8751218eaf51E8885D058642E08A",
     messageTransmitter: "0xC30362313FBBA5cf9163F0bb16a0e01f01A896ca",
     usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
@@ -56,7 +71,7 @@ const EVM_CCTP_CONTRACTS = {
     name: "Ethereum",
     domain: 0,
     chainId: 1,
-    rpcUrl: process.env.ETHEREUM_RPC_URL || "https://ethereum-rpc.publicnode.com",
+    rpcUrl: process.env.ETHEREUM_RPC_URL || getAlchemyRpcUrl("ethereum", "https://ethereum-rpc.publicnode.com"),
     tokenMessenger: "0xbd3fa81b58ba92a82136038b25adec70f7840391",
     messageTransmitter: "0x0a992d191DEeC32aFe36203Ad87D7d289a738F81",
     usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
@@ -76,7 +91,7 @@ const EVM_CCTP_CONTRACTS = {
     name: "Optimism",
     domain: 2,
     chainId: 10,
-    rpcUrl: process.env.OPTIMISM_RPC_URL || "https://mainnet.optimism.io",
+    rpcUrl: process.env.OPTIMISM_RPC_URL || getAlchemyRpcUrl("optimism", "https://mainnet.optimism.io"),
     tokenMessenger: "0x2B4069517957735bE00ceE0fadAE88a26365528f",
     messageTransmitter: "0x4d41f22c5a0e5c74309c3004aacc57891885502c",
     usdc: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
@@ -86,7 +101,7 @@ const EVM_CCTP_CONTRACTS = {
     name: "Polygon",
     domain: 7,
     chainId: 137,
-    rpcUrl: process.env.POLYGON_RPC_URL || "https://polygon-rpc.com",
+    rpcUrl: process.env.POLYGON_RPC_URL || getAlchemyRpcUrl("polygon", "https://polygon-rpc.com"),
     tokenMessenger: "0x9daF8257e601854c302288a7B6d8C110d7E91108",
     messageTransmitter: "0xF3be9355363857F3e001be68856A2f96b4C39Ba9",
     usdc: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
@@ -97,7 +112,7 @@ const EVM_CCTP_CONTRACTS = {
     name: "Base Sepolia",
     domain: 6,
     chainId: 84532,
-    rpcUrl: process.env.BASE_SEPOLIA_RPC_URL || "https://base-sepolia-rpc.publicnode.com",
+    rpcUrl: process.env.BASE_SEPOLIA_RPC_URL || getAlchemyRpcUrl("base_sepolia", "https://base-sepolia-rpc.publicnode.com"),
     tokenMessenger: "0x9f3B8679c73C2Fef8b59B4f3444d4e156fb70AA5",
     messageTransmitter: "0x7865fAfC2db2093669d92c0F33AQ974B302666c4",
     usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
@@ -107,7 +122,7 @@ const EVM_CCTP_CONTRACTS = {
     name: "Ethereum Sepolia",
     domain: 0,
     chainId: 11155111,
-    rpcUrl: process.env.SEPOLIA_RPC_URL || "https://ethereum-sepolia-rpc.publicnode.com",
+    rpcUrl: process.env.SEPOLIA_RPC_URL || getAlchemyRpcUrl("sepolia", "https://ethereum-sepolia-rpc.publicnode.com"),
     tokenMessenger: "0x9f3B8679c73C2Fef8b59B4f3444d4e156fb70AA5",
     messageTransmitter: "0x7865fAfC2db2093669d92c0F33AQ974B302666c4",
     usdc: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
