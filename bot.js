@@ -736,7 +736,7 @@ async function showSettings(ctx) {
       [Markup.button.callback("👛 Link External Wallet",        "setwallet_prompt")],
       [Markup.button.callback("📱 Verify Phone",                "verifyphone_prompt")],
       [Markup.button.callback("🏅 Rewards",                     "action_rewards")],
-      [Markup.button.callback("� Invite Friends",               "action_referral")],
+      [Markup.button.callback("👥 Invite Friends",               "action_referral")],
       [Markup.button.callback("💼 Business Profile",            "biz_profile_menu")],
       [Markup.button.callback("🏠 Main Menu",                   "main_menu")],
     ])
@@ -747,25 +747,22 @@ async function showReferralMenu(ctx) {
   const user = requireUser(ctx);
   if (!user) return;
   const referralCode = user.referral_code || `ref${user.telegram_id}`;
-  const botUsername = process.env.BOT_USERNAME || bot.options.username || null;
-  const shareLink = botUsername
-    ? `https://t.me/${botUsername}?start=${referralCode}`
-    : `Share this code: ${referralCode}`;
+  const botUsername = ctx.botInfo?.username || bot.botInfo?.username || process.env.BOT_USERNAME || "payeetbot";
+  const shareLink = `https://t.me/${botUsername}?start=${referralCode}`;
+  const shareText = `Join me on PayIT! Save in USD and spend in Naira directly on Telegram.`;
+  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(shareLink)}&text=${encodeURIComponent(shareText)}`;
 
   await ctx.reply(
-    `👥 Invite Friends
-──────────────────────────
-` +
-    `Earn ${REFERRAL_BONUS_POINTS} points when a friend you refer registers and earns their first point.
-
-` +
-    `Your referral code: ${referralCode}
-` +
-    `${botUsername ? `Share this link:\n${shareLink}\n\n` : ``}` +
-    `Your friend should start PayIT with your code or link.
-` +
-    `Once they complete a point-earning action, you both win.`,
+    `👥 Invite Friends\n` +
+    `──────────────────────────\n` +
+    `Earn ${REFERRAL_BONUS_POINTS} points (${formatPointValue(REFERRAL_BONUS_POINTS)}) when a friend you refer registers and earns their first point!\n\n` +
+    `Your Referral Code:\n` +
+    `${referralCode}\n\n` +
+    `Your Referral Link:\n` +
+    `${shareLink}\n\n` +
+    `Tap "📤 Share Invite Link" below to send it to your friends or groups on Telegram, or copy the link above. Once they join and complete their first transaction, your bonus is credited automatically!`,
     Markup.inlineKeyboard([
+      [Markup.button.url("📤 Share Invite Link", shareUrl)],
       [Markup.button.callback("« Back", "action_settings")],
       [Markup.button.callback("🏠 Main Menu", "main_menu")],
     ])
@@ -793,6 +790,7 @@ async function showRewardsMenu(ctx) {
     Markup.inlineKeyboard([
       [Markup.button.callback("📲 Redeem Airtime", "action_redeem_airtime")],
       [Markup.button.callback("🏦 Pay Bills",       "action_redeem_bills")],
+      [Markup.button.callback("👥 Invite Friends",  "action_referral")],
       [Markup.button.callback("📜 Points History",  "action_rewards_history")],
       [Markup.button.callback("🏠 Main Menu",       "main_menu")],
     ])
@@ -862,7 +860,10 @@ bot.action("action_redeem_bills", async (ctx) => {
 });
 
 bot.command("rewards", async (ctx) => showRewardsMenu(ctx));
+bot.command("referral", async (ctx) => showReferralMenu(ctx));
+bot.command("invite", async (ctx) => showReferralMenu(ctx));
 bot.hears("🏅 Rewards", (ctx) => showRewardsMenu(ctx));
+bot.hears("👥 Invite Friends", (ctx) => showReferralMenu(ctx));
 
 // ─── Business Profile Menu ────────────────────────────────────────────────────
 
