@@ -1201,16 +1201,35 @@ bot.action("action_gateway", async (ctx) => {
   if (!user) return;
   const arcAddress = getActiveWallet(user);
 
+  let solAddress = user.solana_deposit_address;
+  if (!solAddress && user.deposit_address) {
+    try {
+      const derived = multichain.deriveSolanaFromEvmKey(user.deposit_address.padEnd(66, "0"));
+      solAddress = derived.solanaAddress;
+      db.updateSolanaAddress(user.telegram_id, solAddress);
+    } catch (_) {}
+  }
+
   await ctx.reply(
     `🌐 <b>Crypto & Web3 Deposit (Multi-Chain)</b>\n` +
     `──────────────────────────\n` +
     `Deposit crypto from Robinhood, Binance, Coinbase, Bybit, OKX, or any Web3 wallet directly into your PayIT balance.\n\n` +
-    `<b>Your Unified Deposit Address (tap to copy):</b>\n` +
-    `<code>${arcAddress}</code>\n\n` +
-    `⚡ <b>Automated Instant Conversion to Arc USDC:</b>\n` +
-    `• <b>Supported Networks:</b> Base, Arbitrum, Robinhood Chain, Ethereum, Avalanche, Polygon, Optimism\n` +
-    `• <b>Accepted Assets:</b> Native tokens (ETH, AVAX, POL/MATIC) and USDC\n` +
-    `• <b>Zero Bridge Hassle:</b> Native tokens are automatically swapped to USDC and bridged to Arc Mainnet with <b>zero user gas or signing required</b>!\n` +
+    `<b>Your Unified EVM Deposit Address (tap to copy):</b>\n` +
+    `<code>${arcAddress}</code>\n` +
+    (solAddress ? `\n<b>Your Solana Deposit Address (tap to copy):</b>\n<code>${solAddress}</code>\n` : "") +
+    `\n⚡ <b>Automated Instant Conversion to Arc USDC:</b>\n` +
+    `• <b>Supported Networks:</b>\n` +
+    `  ▫️ <b>Arc Mainnet</b> (Native — Direct USDC & EURC)\n` +
+    `  ▫️ <b>Robinhood Chain</b> (Native ETH & USDG)\n` +
+    `  ▫️ <b>Base</b> (Native ETH & USDC)\n` +
+    `  ▫️ <b>Arbitrum One</b> (Native ETH & USDC)\n` +
+    `  ▫️ <b>Ethereum Mainnet</b> (Native ETH & USDC)\n` +
+    `  ▫️ <b>Optimism</b> (Native ETH & USDC)\n` +
+    `  ▫️ <b>Polygon PoS</b> (Native POL/MATIC & USDC)\n` +
+    `  ▫️ <b>Avalanche C-Chain</b> (Native AVAX & USDC)\n` +
+    (solAddress ? `  ▫️ <b>Solana</b> (SPL USDC & SOL)\n` : "") +
+    `• <b>Accepted Assets:</b> Native tokens (ETH, AVAX, POL/MATIC${solAddress ? ", SOL" : ""}), USDG, and USDC/EURC\n` +
+    `• <b>Zero Bridge Hassle:</b> Native tokens and cross-chain assets are automatically swapped to USDC and bridged to Arc Mainnet with <b>zero user gas or signing required</b>!\n` +
     `• <b>Instant Settlement:</b> Native USDC is credited to your PayIT balance automatically.\n\n` +
     `<i>Send any amount to your address above, or tap below to scan for recent transfers.</i>`,
     {
@@ -1243,7 +1262,7 @@ bot.action("action_sweep_deposits", async (ctx) => {
     );
   }
 
-  await ctx.reply("🔍 Scanning Base, Arbitrum, Robinhood Chain, Ethereum, Avalanche, Polygon, and Optimism for deposits...");
+  await ctx.reply("🔍 Scanning Arc, Base, Arbitrum, Robinhood Chain, Ethereum, Avalanche, Polygon, and Optimism for deposits...");
   try {
     const results = await evmDepositSweeper.sweepUserDeposits(ctx.from.id, bot);
     if (!results || results.length === 0) {
@@ -4182,7 +4201,7 @@ bot.on("text", async (ctx) => {
       }
 
       convState.clearState(userId);
-      await ctx.reply("🔍 PIN verified! Scanning Base, Arbitrum, Robinhood Chain, Ethereum, Avalanche, Polygon, and Optimism for deposits...");
+      await ctx.reply("🔍 PIN verified! Scanning Arc, Base, Arbitrum, Robinhood Chain, Ethereum, Avalanche, Polygon, and Optimism for deposits...");
       try {
         const results = await evmDepositSweeper.sweepUserDeposits(userId, bot);
         if (!results || results.length === 0) {
