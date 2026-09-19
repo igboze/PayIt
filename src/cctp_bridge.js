@@ -714,11 +714,12 @@ async function executeEvmCctpBurn({
     "function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken) external returns (uint64 _nonce)",
   ];
 
-  // Check gas balance; sponsor microscopic gas from relayer if needed
+  // Check gas balance; sponsor gas only if relayer sponsorship is explicitly enabled
   try {
     const gasBal = await provider.getBalance(signer.address);
     const minGas = parseUnits("0.0001", 18);
-    if (gasBal < minGas) {
+    const enableRelayerSponsorship = process.env.ENABLE_RELAYER_SPONSORSHIP === "true";
+    if (gasBal < minGas && enableRelayerSponsorship) {
       const relayerKey = signerPrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
       if (relayerKey) {
         console.log(`[cctp_bridge] Sponsoring gas for ${signer.address} on ${chainConfig.name}...`);
@@ -781,22 +782,27 @@ async function executeEvmCctpBurn({
     console.warn("[cctp_bridge:evm_burn_wait_note]", waitErr.message);
   }
 
-  // 3. Automated Arc completion & instant credit
+  // 3. Automated Arc completion (Pure self-sustaining mode: zero relayer capital required)
   let instantDisburseHash = null;
   if (autoCompleteOnArc) {
-    // Instant 1-second credit to user's Arc wallet
-    disburseDirectOnArc({
-      recipientArcAddress,
-      amountUsdc,
-      signerPrivateKey,
-    }).then((hash) => {
-      instantDisburseHash = hash;
-      console.log(`[cctp_bridge] Instant credit disbursed on Arc ✓ tx=${hash}`);
-    }).catch((disErr) => {
-      console.warn("[cctp_bridge:instant_disburse_warn]", disErr.message);
-    });
+    const enableRelayerFronting = process.env.ENABLE_RELAYER_FRONTING === "true";
+    if (enableRelayerFronting) {
+      // Optional: Instant credit from relayer treasury if enabled by project
+      disburseDirectOnArc({
+        recipientArcAddress,
+        amountUsdc,
+        signerPrivateKey,
+      }).then((hash) => {
+        instantDisburseHash = hash;
+        console.log(`[cctp_bridge] Instant credit disbursed on Arc ✓ tx=${hash}`);
+      }).catch((disErr) => {
+        console.warn("[cctp_bridge:instant_disburse_warn]", disErr.message);
+      });
+    }
 
-    // Background Iris attestation polling & Arc MessageTransmitter receiveMessage
+    // Pure self-sustaining CCTP Intent Fulfillment:
+    // Once depositForBurn is broadcasted on source chain, poll Iris attestation (free)
+    // and submit receiveMessage on Arc MessageTransmitter to mint Circle USDC directly to user.
     if (messageHash || tx.hash) {
       (async () => {
         try {
@@ -810,12 +816,12 @@ async function executeEvmCctpBurn({
           if (attHash) {
             console.log(`[cctp_bridge] Polling Iris attestation for ${attHash}...`);
             const { attestation } = await pollCctpAttestation(attHash, 90, 5000);
-            await redeemOnArc({
+            const mintTxHash = await redeemOnArc({
               attestation,
               message: attMessage,
               userPrivateKey: signerPrivateKey,
             });
-            console.log(`[cctp_bridge] EVM CCTP burn successfully redeemed on Arc MessageTransmitter ✓`);
+            console.log(`[cctp_bridge] EVM CCTP burn successfully redeemed on Arc MessageTransmitter ✓ tx=${mintTxHash}`);
           }
         } catch (pollErr) {
           console.warn("[cctp_bridge:evm_arc_redeem_warn]", pollErr.message);
