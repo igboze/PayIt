@@ -39,6 +39,7 @@ function getAlchemyRpcUrl(network, fallback) {
     arbitrum: `https://arb-mainnet.g.alchemy.com/v2/${key}`,
     optimism: `https://opt-mainnet.g.alchemy.com/v2/${key}`,
     polygon: `https://polygon-mainnet.g.alchemy.com/v2/${key}`,
+    arc: `https://arc-mainnet.g.alchemy.com/v2/${key}`,
     sepolia: `https://eth-sepolia.g.alchemy.com/v2/${key}`,
     base_sepolia: `https://base-sepolia.g.alchemy.com/v2/${key}`,
   };
