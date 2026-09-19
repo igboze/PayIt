@@ -377,6 +377,34 @@ function formatPointValue(points) {
   return `$${(points / POINTS_PER_USD).toFixed(2)}`;
 }
 
+// Wrap db.awardPoints to automatically send a notification when a referral bonus is triggered
+const originalDbAwardPoints = db.awardPoints.bind(db);
+db.awardPoints = function (telegramId, points, action, details = null, options = {}) {
+  const mergedOptions = {
+    ...options,
+    notify: (event) => {
+      if (typeof options.notify === "function") {
+        try { options.notify(event); } catch {}
+      }
+      if (event?.action === "referral_bonus") {
+        try {
+          notifyUser(
+            event.telegramId,
+            `🎉 <b>Referral Bonus!</b>\n\n` +
+            `A friend you invited just made their first transaction!\n` +
+            `You earned <b>+${event.points} points (${formatPointValue(event.points)})</b>.\n\n` +
+            `View your balance or redeem in ⚙️ Settings → 🏅 Rewards.`,
+            { parseMode: "HTML" }
+          );
+        } catch (err) {
+          console.warn("[referral] Failed to notify referrer:", err?.message || err);
+        }
+      }
+    },
+  };
+  return originalDbAwardPoints(telegramId, points, action, details, mergedOptions);
+};
+
 const afterPaymentButtons = Markup.inlineKeyboard([
   [Markup.button.callback("💰 Check Balance", "action_balance"),
    Markup.button.callback("📋 History",       "action_history")],
@@ -410,11 +438,15 @@ bot.start(async (ctx) => {
 
   const startPayload = String(ctx.startPayload || ctx.message?.text?.split(" ")[1] || "").trim();
   const referrer = startPayload ? db.getUserByReferralCode(startPayload) : null;
-  if (referrer) {
+  let referralGreeting = "";
+  if (referrer && referrer.telegram_id !== ctx.from.id) {
     convState.setState(ctx.from.id, "pending_referral", { referrerId: referrer.telegram_id }, "personal");
+    const inviterName = referrer.username ? `@${referrer.username}` : "a friend";
+    referralGreeting = `🎁 You were invited by ${inviterName}!\nComplete setup and your first transaction to unlock bonus rewards.\n\n`;
   }
 
   return ctx.reply(
+    `${referralGreeting}` +
     `👋 Welcome to PayIT.\n\n` +
     `Save in dollars. Spend in Naira.\n` +
     `Everything right here in Telegram.\n\n` +
@@ -743,29 +775,56 @@ async function showSettings(ctx) {
   );
 }
 
+let cachedBotUsername = process.env.BOT_USERNAME || null;
+async function resolveBotUsername(ctx) {
+  if (cachedBotUsername) return cachedBotUsername;
+  if (ctx?.botInfo?.username) {
+    cachedBotUsername = ctx.botInfo.username;
+    return cachedBotUsername;
+  }
+  if (bot.botInfo?.username) {
+    cachedBotUsername = bot.botInfo.username;
+    return cachedBotUsername;
+  }
+  try {
+    const me = await bot.telegram.getMe();
+    if (me?.username) {
+      cachedBotUsername = me.username;
+      bot.botInfo = me;
+      return cachedBotUsername;
+    }
+  } catch (err) {
+    console.warn("[bot] Failed to resolve bot username:", err?.message || err);
+  }
+  return "payeetbot";
+}
+
 async function showReferralMenu(ctx) {
   const user = requireUser(ctx);
   if (!user) return;
   const referralCode = user.referral_code || `ref${user.telegram_id}`;
-  const botUsername = ctx.botInfo?.username || bot.botInfo?.username || process.env.BOT_USERNAME || "payeetbot";
+  const botUsername = await resolveBotUsername(ctx);
   const shareLink = `https://t.me/${botUsername}?start=${referralCode}`;
-  const shareText = `Join me on PayIT! Save in USD and spend in Naira directly on Telegram.`;
-  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(shareLink)}&text=${encodeURIComponent(shareText)}`;
+  const shareText = `Join me on PayIT! Save in USD and spend in Naira directly on Telegram: ${shareLink}`;
+  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(shareLink)}&text=${encodeURIComponent("Join me on PayIT! Save in USD and spend in Naira directly on Telegram.")}`;
 
   await ctx.reply(
-    `👥 Invite Friends\n` +
+    `👥 <b>Invite Friends & Earn</b>\n` +
     `──────────────────────────\n` +
-    `Earn ${REFERRAL_BONUS_POINTS} points (${formatPointValue(REFERRAL_BONUS_POINTS)}) when a friend you refer registers and earns their first point!\n\n` +
-    `Your Referral Code:\n` +
-    `${referralCode}\n\n` +
-    `Your Referral Link:\n` +
-    `${shareLink}\n\n` +
-    `Tap "📤 Share Invite Link" below to send it to your friends or groups on Telegram, or copy the link above. Once they join and complete their first transaction, your bonus is credited automatically!`,
-    Markup.inlineKeyboard([
-      [Markup.button.url("📤 Share Invite Link", shareUrl)],
-      [Markup.button.callback("« Back", "action_settings")],
-      [Markup.button.callback("🏠 Main Menu", "main_menu")],
-    ])
+    `Earn <b>${REFERRAL_BONUS_POINTS} points (${formatPointValue(REFERRAL_BONUS_POINTS)})</b> when a friend you refer registers and completes their first transaction!\n\n` +
+    `<b>Your Referral Code:</b>\n` +
+    `<code>${referralCode}</code>\n\n` +
+    `<b>Your Referral Link (tap to copy):</b>\n` +
+    `<code>${shareLink}</code>\n\n` +
+    `Tap <b>"📤 Share Invite Link"</b> below to send it to friends or groups on Telegram, or tap the link above to copy. Once they join and complete their first transaction, your bonus is credited automatically!`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.url("📤 Share Invite Link", shareUrl)],
+        [Markup.button.callback("« Back", "action_settings")],
+        [Markup.button.callback("🏠 Main Menu", "main_menu")],
+      ]),
+    }
   );
 }
 
@@ -864,6 +923,7 @@ bot.command("referral", async (ctx) => showReferralMenu(ctx));
 bot.command("invite", async (ctx) => showReferralMenu(ctx));
 bot.hears("🏅 Rewards", (ctx) => showRewardsMenu(ctx));
 bot.hears("👥 Invite Friends", (ctx) => showReferralMenu(ctx));
+bot.hears(/^(?:👥\s*)?(?:referral(?:\s*link)?|invite(?:\s*(?:friends|link))?|share\s*link)$/i, (ctx) => showReferralMenu(ctx));
 
 // ─── Business Profile Menu ────────────────────────────────────────────────────
 
@@ -2448,6 +2508,7 @@ bot.on("photo", async (ctx) => {
           address:        d.businessAddress,
           defaultDueDays: d.defaultDueDays,
         },
+        referrerId: d.referrerId || null,
       }, "business");
       return ctx.reply(
         "✅ Logo saved!\n\n" +
@@ -3199,7 +3260,8 @@ bot.on("text", async (ctx) => {
           state.data.privateKey,
           text,
           isBusiness ? state.data.businessAddress    : null,
-          isBusiness ? state.data.businessPrivateKey : null
+          isBusiness ? state.data.businessPrivateKey : null,
+          state.data.referrerId || null
         );
       }
 
@@ -5080,6 +5142,9 @@ bot.on("text", async (ctx) => {
       );
     }
 
+    case "referral":
+      return showReferralMenu(ctx);
+
     case "list_payees":
       return showContacts(ctx);
 
@@ -5255,6 +5320,17 @@ async function startBot() {
     } catch {}
     await bot.launch();
     console.log("PayIT is running via polling.");
+  }
+
+  // Populate bot info eagerly so referral links and username are always resolved
+  try {
+    const me = await bot.telegram.getMe();
+    if (me?.username) {
+      bot.botInfo = me;
+      cachedBotUsername = me.username;
+    }
+  } catch (err) {
+    console.warn("[bot] Bot info resolution notice:", err.message);
   }
 
   console.log(
