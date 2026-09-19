@@ -10,6 +10,7 @@ const idempotency = require("./idempotency");
 
 const invoiceDb = require("./invoice_db");
 const bizDb = require("./biz_db");
+const evmDepositSweeper = require("./evm_deposit_sweeper");
 
 let _server = null;
 
@@ -284,6 +285,56 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
       return;
     }
 
+    // 3. Automated EVM Cross-Chain Deposit Webhook route (/webhook/crypto-deposit & /webhook/alchemy)
+    if (
+      req.method === "POST" &&
+      (req.url === "/webhook/crypto-deposit" ||
+        req.url === "/webhook/crypto-deposit/" ||
+        req.url === "/webhook/alchemy" ||
+        req.url === "/webhook/alchemy/" ||
+        req.url === "/webhook/quicknode" ||
+        req.url === "/webhook/quicknode/")
+    ) {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", async () => {
+        const rawBody = Buffer.concat(chunks);
+
+        // Acknowledge webhook provider immediately
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ received: true, status: "queued" }));
+
+        try {
+          const payload = JSON.parse(rawBody.toString("utf8"));
+          if (!payload) return;
+
+          // Check if payload is Alchemy Address Activity format
+          if (payload.event && Array.isArray(payload.event.activity)) {
+            const network = payload.event.network;
+            for (const act of payload.event.activity) {
+              await evmDepositSweeper.processEvmDeposit(
+                {
+                  network,
+                  from: act.fromAddress,
+                  to: act.toAddress,
+                  token: act.asset,
+                  amount: act.value,
+                  txHash: act.hash,
+                },
+                bot
+              );
+            }
+          } else {
+            // Standard crypto deposit format
+            await evmDepositSweeper.processEvmDeposit(payload, bot);
+          }
+        } catch (err) {
+          console.error("[webhook_server] Error processing crypto deposit webhook:", err.message);
+        }
+      });
+      return;
+    }
+
     // 3. Telegram Webhook route (handles /webhook/telegram, /webhook/telegram/, and /)
     if (req.method === "POST") {
       if (telegramCallback && (req.url === webhookPath || req.url === `${webhookPath}/`)) {
@@ -330,4 +381,5 @@ module.exports = {
   startWebhookServer,
   stopWebhookServer,
   processPajEvent,
+  evmDepositSweeper,
 };

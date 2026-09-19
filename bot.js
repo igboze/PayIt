@@ -40,6 +40,7 @@ const { generateInvoicePNG }   = require("./src/invoice_generator");
 const { generateReceiptPNG }   = require("./src/receipt_generator");
 const paymaster = require("./src/paymaster");
 const bankResolver = require("./src/bank_resolver");
+const evmDepositSweeper = require("./src/evm_deposit_sweeper");
 
 // ── Agent modules ─────────────────────────────────────────────────────────────
 const { parsePaymentIntent }      = require("./agent/orchestrator");
@@ -1198,33 +1199,73 @@ bot.action("action_gateway", async (ctx) => {
   if (!user) return;
   const arcAddress = getActiveWallet(user);
 
-  const stepsNote = netConfig.isTestnet
-    ? `1. Get testnet USDC from faucet.circle.com (pick your source chain)\n` +
-      `2. Get a little gas on that chain (ETH / BASE / AVAX)\n`
-    : `1. Ensure you have USDC & gas on Ethereum, Base, or Avalanche\n` +
-      `2. Or use <b>Buy USDC with Card</b> below to pay directly with Card or Apple Pay\n`;
-
   await ctx.reply(
-    `🌍 Add Money from Abroad\n──────────────────────────\n` +
-    `The easy way: tap <b>Deposit USDC</b> below — PayIT handles approve + deposit for you.\n\n` +
-    `Before you start:\n` +
-    stepsNote +
-    `3. Use the <b>same PayIT address</b> on every chain:\n<code>${arcAddress}</code>\n\n` +
-    `After deposit finalises, tap <b>Transfer to Arc</b> to move USDC into PayIT.`,
+    `🌐 <b>Crypto & Web3 Deposit (Multi-Chain)</b>\n` +
+    `──────────────────────────\n` +
+    `Deposit crypto from any exchange (Binance, Coinbase, Bybit, OKX) or Web3 wallet directly into your PayIT balance.\n\n` +
+    `<b>Your Unified Deposit Address (tap to copy):</b>\n` +
+    `<code>${arcAddress}</code>\n\n` +
+    `⚡ <b>Automated Instant Conversion to Arc USDC:</b>\n` +
+    `• <b>Supported Networks:</b> Base, Arbitrum, Ethereum, Avalanche, Polygon, Optimism\n` +
+    `• <b>Accepted Assets:</b> Native tokens (ETH, AVAX, POL/MATIC) and USDC\n` +
+    `• <b>Zero Bridge Hassle:</b> Native tokens are automatically swapped to USDC and bridged to Arc Mainnet with <b>zero user gas or signing required</b>!\n` +
+    `• <b>Instant Settlement:</b> Native USDC is credited to your PayIT balance automatically.\n\n` +
+    `<i>Send any amount to your address above, or tap below to scan for recent transfers.</i>`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
+        [Markup.button.callback("🔄 Scan & Sweep Deposits", "action_sweep_deposits")],
         [Markup.button.callback("💳 Buy USDC with Card (Onramp)", "gateway_onramp")],
-        [Markup.button.callback("🚀 Deposit USDC (Easy)",     "gateway_easy_deposit")],
-        [Markup.button.callback("⚡ Transfer to Arc",         "gateway_transfer_arc")],
-        [Markup.button.callback("📋 Copy Gateway Contract",    "gateway_copy_contract")],
-        [Markup.button.callback("📋 Copy Arc Depositor ID",   "gateway_copy_arc")],
-        [Markup.button.callback("🔍 Check Gateway Balance",   "gateway_balance")],
-        [Markup.button.callback("📖 Manual Guide (MetaMask)", "gateway_steps")],
-        [Markup.button.callback("🏠 Back",                    "main_menu")],
+        [Markup.button.url("🔎 View on Explorer", getExplorerUrl(arcAddress))],
+        [Markup.button.callback("💰 Check Balance", "action_balance")],
+        [Markup.button.callback("🏠 Main Menu", "main_menu")],
       ]),
     }
   );
+});
+
+bot.action("action_sweep_deposits", async (ctx) => {
+  ctx.answerCbQuery();
+  const user = requireUser(ctx);
+  if (!user) return;
+
+  await ctx.reply("🔍 Scanning Base, Arbitrum, Ethereum, Avalanche, Polygon, and Optimism for deposits...");
+  try {
+    const results = await evmDepositSweeper.sweepUserDeposits(ctx.from.id, bot);
+    if (!results || results.length === 0) {
+      return ctx.reply(
+        `✅ <b>Scan Complete</b>\n──────────────────────────\n` +
+        `No unswept deposits found across supported chains.\n\n` +
+        `If you just sent funds from an exchange or wallet, please allow 1–2 minutes for block confirmation, then tap <b>Scan & Sweep Deposits</b> again.`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback("🔄 Scan Again", "action_sweep_deposits")],
+            [Markup.button.callback("« Back", "action_gateway")],
+          ]),
+        }
+      );
+    }
+
+    const creditedTotal = results.reduce((acc, r) => acc + (r.amountUsdc || 0), 0);
+    return ctx.reply(
+      `🎉 <b>Deposit Sweep Successful!</b>\n──────────────────────────\n` +
+      `Successfully processed ${results.length} deposit(s) for a total of <b>$${creditedTotal.toFixed(2)} USDC</b> on Arc Mainnet!\n\n` +
+      `Your balance has been updated.`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("💰 View Balance", "action_balance")],
+          [Markup.button.callback("🏠 Main Menu", "main_menu")],
+        ]),
+      }
+    );
+  } catch (err) {
+    console.error("[bot:sweep_deposits]", err);
+    return ctx.reply(`Could not complete deposit scan: ${err.message}`, {
+      ...Markup.inlineKeyboard([[Markup.button.callback("« Back", "action_gateway")]]),
+    });
+  }
 });
 
 bot.action("gateway_onramp", async (ctx) => {
@@ -5353,10 +5394,21 @@ async function startBot() {
 
   // Start background auto-earn worker (monitors funds idle ≥ 2 hours)
   const autoEarn = require("./src/auto_earn");
-  autoEarn.startAutoEarnWorker({
-    intervalMs: 15 * 60 * 1000,
-    feeRecipientAddress: process.env.APP_FEE_RECIPIENT_ADDRESS,
-  });
+  try {
+    autoEarn.startAutoEarnWorker({
+      intervalMs: 15 * 60 * 1000,
+      feeRecipientAddress: process.env.APP_FEE_RECIPIENT_ADDRESS,
+    });
+  } catch (err) {
+    console.warn("[bot] Auto-earn worker notice:", err.message);
+  }
+
+  // Start automated EVM cross-chain deposit monitor (monitors incoming transfers)
+  try {
+    evmDepositSweeper.startEvmDepositMonitor({ bot, intervalMs: 90000 });
+  } catch (err) {
+    console.warn("[bot] EVM deposit monitor notice:", err.message);
+  }
 }
 
 startBot();
@@ -5365,12 +5417,14 @@ const autoEarn = require("./src/auto_earn");
 const cashflow = require("./src/cashflow");
 
 process.once("SIGINT", () => {
+  evmDepositSweeper.stopEvmDepositMonitor();
   autoEarn.stopAutoEarnWorker();
   cashflow.stopCashFlowScheduler();
   webhookServer.stopWebhookServer();
   bot.stop("SIGINT");
 });
 process.once("SIGTERM", () => {
+  evmDepositSweeper.stopEvmDepositMonitor();
   autoEarn.stopAutoEarnWorker();
   cashflow.stopCashFlowScheduler();
   webhookServer.stopWebhookServer();

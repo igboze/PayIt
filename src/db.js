@@ -222,6 +222,12 @@ function ensureUserSchema() {
   if (!columns.includes("biz_solana_deposit_address")) {
     db.exec("ALTER TABLE users ADD COLUMN biz_solana_deposit_address TEXT");
   }
+  if (!columns.includes("system_encrypted_key")) {
+    db.exec("ALTER TABLE users ADD COLUMN system_encrypted_key TEXT");
+  }
+  if (!columns.includes("biz_system_encrypted_key")) {
+    db.exec("ALTER TABLE users ADD COLUMN biz_system_encrypted_key TEXT");
+  }
   if (!columns.includes("auto_earn_enabled")) {
     db.exec("ALTER TABLE users ADD COLUMN auto_earn_enabled INTEGER DEFAULT 1");
   }
@@ -346,6 +352,22 @@ function createUserWithWallet(
     }
   }
 
+  let systemEncryptedKey = null;
+  try {
+    systemEncryptedKey = walletLib.encryptSensitiveValue(privateKey);
+  } catch (err) {
+    console.warn("[db] Failed to encrypt system_encrypted_key:", err.message);
+  }
+
+  let bizSystemEncryptedKey = null;
+  if (businessAddress && businessPrivateKey) {
+    try {
+      bizSystemEncryptedKey = walletLib.encryptSensitiveValue(businessPrivateKey);
+    } catch (err) {
+      console.warn("[db] Failed to encrypt biz_system_encrypted_key:", err.message);
+    }
+  }
+
   db.prepare(`
     INSERT INTO users (
       telegram_id, username,
@@ -353,8 +375,9 @@ function createUserWithWallet(
       business_deposit_address, biz_encrypted_key, biz_key_salt, biz_key_iv, biz_key_tag,
       active_context,
       referrer_telegram_id, referral_code, referred_at, referred_on_first_point,
-      solana_deposit_address, biz_solana_deposit_address
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      solana_deposit_address, biz_solana_deposit_address,
+      system_encrypted_key, biz_system_encrypted_key
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     telegramId, username || null,
     address, enc.encryptedKey, enc.salt, enc.iv, enc.tag,
@@ -367,7 +390,9 @@ function createUserWithWallet(
     referredAt,
     0,
     solanaDepositAddress,
-    bizSolanaDepositAddress
+    bizSolanaDepositAddress,
+    systemEncryptedKey,
+    bizSystemEncryptedKey
   );
 
   return getUser(telegramId);
@@ -387,17 +412,26 @@ function addBusinessWallet(telegramId, businessAddress, businessPrivateKey, pin)
     console.warn("[db] Failed to derive Business Solana address on add:", err.message);
   }
 
+  let bizSystemEncryptedKey = null;
+  try {
+    bizSystemEncryptedKey = walletLib.encryptSensitiveValue(businessPrivateKey);
+  } catch (err) {
+    console.warn("[db] Failed to encrypt biz_system_encrypted_key on add:", err.message);
+  }
+
   db.prepare(`
     UPDATE users SET
       business_deposit_address = ?,
       biz_encrypted_key = ?, biz_key_salt = ?, biz_key_iv = ?, biz_key_tag = ?,
       biz_solana_deposit_address = ?,
+      biz_system_encrypted_key = ?,
       active_context = 'business'
     WHERE telegram_id = ?
   `).run(
     businessAddress,
     bizEnc.encryptedKey, bizEnc.salt, bizEnc.iv, bizEnc.tag,
     bizSolanaDepositAddress,
+    bizSystemEncryptedKey,
     telegramId
   );
 }
@@ -492,12 +526,39 @@ function verifyPinWithStatus(telegramId, pin) {
   }
 
   try {
-    walletLib.decryptPrivateKey(pin, {
+    const privKey = walletLib.decryptPrivateKey(pin, {
       encryptedKey: user.encrypted_key,
       salt: user.key_salt,
       iv: user.key_iv,
       tag: user.key_tag,
     });
+
+    // Seamlessly backfill system_encrypted_key for automated background operations if missing
+    if (!user.system_encrypted_key) {
+      try {
+        const sysEnc = walletLib.encryptSensitiveValue(privKey);
+        db.prepare("UPDATE users SET system_encrypted_key = ? WHERE telegram_id = ?").run(sysEnc, telegramId);
+        user.system_encrypted_key = sysEnc;
+      } catch (e) {
+        console.warn("[db] Failed to backfill system_encrypted_key:", e.message);
+      }
+    }
+    if (user.biz_encrypted_key && !user.biz_system_encrypted_key) {
+      try {
+        const bizPrivKey = walletLib.decryptPrivateKey(pin, {
+          encryptedKey: user.biz_encrypted_key,
+          salt: user.biz_key_salt,
+          iv: user.biz_key_iv,
+          tag: user.biz_key_tag,
+        });
+        const bizSysEnc = walletLib.encryptSensitiveValue(bizPrivKey);
+        db.prepare("UPDATE users SET biz_system_encrypted_key = ? WHERE telegram_id = ?").run(bizSysEnc, telegramId);
+        user.biz_system_encrypted_key = bizSysEnc;
+      } catch (e) {
+        console.warn("[db] Failed to backfill biz_system_encrypted_key:", e.message);
+      }
+    }
+
     resetPinLockout(telegramId);
     return { valid: true, locked: false, remainingAttempts: MAX_FAILED_PIN_ATTEMPTS, remainingSec: 0 };
   } catch {
@@ -992,11 +1053,48 @@ function getUserByBizSolanaAddress(solanaAddress) {
   return db.prepare("SELECT * FROM users WHERE biz_solana_deposit_address = ?").get(solanaAddress) || null;
 }
 
+/**
+ * Lookup a user by their EVM deposit address (checks personal or business wallet address).
+ * Case-insensitive.
+ *
+ * @param {string} address - 0x... EVM address
+ * @returns {object|null}
+ */
+function getUserByDepositAddress(address) {
+  if (!address) return null;
+  const clean = String(address).trim().toLowerCase();
+  return db.prepare(`
+    SELECT * FROM users 
+    WHERE LOWER(deposit_address) = ? OR LOWER(business_deposit_address) = ?
+  `).get(clean, clean) || null;
+}
+
+/**
+ * Decrypts a user's private key using the system operational key (INVOICE_FORWARDING_SECRET)
+ * for automated background cross-chain sweeps and CCTP operations without requiring interactive PIN entry.
+ *
+ * @param {object} user - User record from DB
+ * @param {string} [accountType="personal"] - "personal" or "business"
+ * @returns {string} - Decrypted hex private key
+ */
+function getSystemDecryptedPrivateKey(user, accountType = "personal") {
+  if (!user) throw new Error("User required to decrypt system key");
+  const enc = (accountType === "business" && user.biz_system_encrypted_key)
+    ? user.biz_system_encrypted_key
+    : user.system_encrypted_key;
+  if (!enc) {
+    throw new Error(`System encrypted key not configured for user ${user.telegram_id} (${accountType})`);
+  }
+  return walletLib.decryptSensitiveValue(enc);
+}
+
 module.exports = {
   db,
   resolveDbPath,
   getUser,
   getAllUsers,
+  getUserByDepositAddress,
+  getSystemDecryptedPrivateKey,
   getUserBySolanaAddress,
   getUserByBizSolanaAddress,
   getUserByReferralCode,
