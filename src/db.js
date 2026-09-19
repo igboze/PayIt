@@ -1088,6 +1088,83 @@ function getSystemDecryptedPrivateKey(user, accountType = "personal") {
   return walletLib.decryptSensitiveValue(enc);
 }
 
+/**
+ * Platform-wide volume stats for the admin dashboard.
+ * Returns totals for each major flow over today, 7d, 30d, and all-time.
+ * amount_micro is stored as a BigInt-compatible string (18-decimal USDC on Arc).
+ */
+function getVolumeStats() {
+  const MICRO = 1e18; // Arc uses 18-decimal USDC natively
+
+  function sumForTypes(types, since) {
+    const placeholders = types.map(() => "?").join(", ");
+    const sinceClause = since ? `AND created_at >= datetime('now', '${since}')` : "";
+    const row = db.prepare(`
+      SELECT COALESCE(SUM(CAST(amount_micro AS REAL)), 0) AS total,
+             COUNT(*) AS count
+      FROM transactions
+      WHERE type IN (${placeholders}) AND status = 'confirmed'
+      ${sinceClause}
+    `).get(...types);
+    return { count: row.count, usdc: row.total / MICRO };
+  }
+
+  function txBreakdown(types) {
+    return {
+      today:    sumForTypes(types, "-1 day"),
+      week:     sumForTypes(types, "-7 days"),
+      month:    sumForTypes(types, "-30 days"),
+      allTime:  sumForTypes(types, null),
+    };
+  }
+
+  const onramp   = txBreakdown(["deposit_naira", "onramp"]);
+  const crypto   = txBreakdown(["deposit_crosschain"]);
+  const offramp  = txBreakdown(["offramp", "offramp_request"]);
+  const sends    = txBreakdown(["send_usdc", "send_eurc", "autopay"]);
+  const savings  = txBreakdown(["yield_deposit"]);
+
+  // All-time totals across every confirmed tx (any type)
+  const totalAll = db.prepare(`
+    SELECT COALESCE(SUM(CAST(amount_micro AS REAL)), 0) AS total, COUNT(*) AS count
+    FROM transactions WHERE status = 'confirmed'
+  `).get();
+
+  // User growth
+  const users = db.prepare(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN created_at >= datetime('now', '-1 day')  THEN 1 ELSE 0 END) AS today,
+      SUM(CASE WHEN created_at >= datetime('now', '-7 days') THEN 1 ELSE 0 END) AS week,
+      SUM(CASE WHEN created_at >= datetime('now', '-30 days') THEN 1 ELSE 0 END) AS month
+    FROM users
+  `).get();
+
+  // Top 5 users by volume (all-time)
+  const topUsers = db.prepare(`
+    SELECT telegram_id, username,
+           COALESCE(SUM(CAST(amount_micro AS REAL)), 0) AS vol,
+           COUNT(*) AS tx_count
+    FROM transactions
+    WHERE status = 'confirmed'
+    GROUP BY telegram_id
+    ORDER BY vol DESC LIMIT 5
+  `).all().map(r => ({
+    telegram_id: r.telegram_id,
+    username: r.username || `user_${r.telegram_id}`,
+    usdc: r.vol / MICRO,
+    tx_count: r.tx_count,
+  }));
+
+  // Join usernames from users table
+  for (const row of topUsers) {
+    const u = getUser(row.telegram_id);
+    if (u?.username) row.username = `@${u.username}`;
+  }
+
+  return { onramp, crypto, offramp, sends, savings, totalAll: { count: totalAll.count, usdc: totalAll.total / MICRO }, users, topUsers };
+}
+
 module.exports = {
   db,
   resolveDbPath,
@@ -1138,6 +1215,7 @@ module.exports = {
   updateUserLastActivity,
   updateAutoEarnSetting,
   getIdleUsersForAutoEarn,
+  getVolumeStats,
   _db: db,
   prepare: (...args) => db.prepare(...args),
   exec: (...args) => db.exec(...args),
