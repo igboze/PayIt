@@ -6,6 +6,7 @@ const axios = require("axios");
 const { JsonRpcProvider, Contract, Wallet, keccak256, getAddress, zeroPadValue } = require("ethers");
 const { getNetworkConfig, getExplorerUrl } = require("./network");
 const gateway = require("./gateway");
+const { receiveCctpMessageOnSolana } = require("./multichain");
 
 const CIRCLE_IRIS_API_V2 = "https://iris-api.circle.com/v2";
 const CIRCLE_IRIS_API_V1 = "https://iris-api.circle.com/v1";
@@ -293,13 +294,20 @@ async function autoBridgeSolanaToArc({
  * Executes a CCTP depositForBurn on Arc Mainnet targeting a Solana recipient address.
  * Burns native USDC on Arc and directs Circle to mint SPL USDC on Solana to recipient.
  *
+ * After the burn is confirmed, this function optionally fires `completeCctpWithdrawalOnSolana`
+ * in the background so the full Arc→Solana bridge completes automatically without any
+ * funded relayer treasury.  PayIT's backend Solana wallet acts as the sole fee-payer
+ * (~$0.001 per withdrawal) via the SOLANA_FEE_PAYER_KEY env variable.
+ *
  * @param {object} params
- * @param {Wallet} params.userWallet - User's ethers Wallet on Arc
- * @param {number} params.amountUsdc - Amount to burn
+ * @param {Wallet} params.userWallet             - User's ethers Wallet on Arc
+ * @param {number} params.amountUsdc             - Amount to burn
  * @param {string} params.recipientSolanaAddress - Destination Solana address (Base58)
+ * @param {boolean} [params.autoCompleteOnSolana=true] - Fire background completion automatically
+ * @param {string}  [params.feePayerKey]         - Base58 Solana fee-payer key (fallback: env)
  * @returns {Promise<{ success: boolean, txHash?: string, error?: string }>}
  */
-async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSolanaAddress }) {
+async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSolanaAddress, autoCompleteOnSolana = true, feePayerKey }) {
   if (!userWallet) throw new Error("userWallet required for Arc CCTP burn");
   if (!recipientSolanaAddress) throw new Error("recipientSolanaAddress required for Arc CCTP burn");
 
@@ -322,8 +330,8 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
       "function allowance(address owner, address spender) external view returns (uint256)",
     ];
 
-    const { parseUnits } = require("ethers");
-    const amountUnits = parseUnits(amountUsdc.toString(), 18);
+    const { parseUnits, Interface, keccak256 } = require("ethers");
+    const amountUnits = parseUnits(amountUsdc.toString(), 6);
 
     // 1. Approve TokenMessenger if needed
     try {
@@ -340,22 +348,60 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
     // 2. Call depositForBurn targeting Solana (Domain 5)
     const tokenMessenger = new Contract(tokenMessengerAddress, TOKEN_MESSENGER_ABI, userWallet);
     const tx = await tokenMessenger.depositForBurn(amountUnits, CCTP_DOMAINS.SOLANA, mintRecipient, usdcAddress);
-    
-    // Non-blocking receipt confirmation with timeout
+
+    let arcTxHash = tx.hash;
+    let rawCctpMessage = null;
+    let messageHash = null;
+
+    // Wait for receipt to extract the raw CCTP message from logs
     if (tx && tx.wait) {
-      Promise.race([
-        tx.wait(1),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Confirmation timeout")), 12000))
-      ]).catch((wErr) => console.warn("[cctp_bridge:wait_note]", wErr.message));
+      try {
+        const receipt = await Promise.race([
+          tx.wait(1),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Confirmation timeout")), 15000))
+        ]);
+        if (receipt && receipt.logs) {
+          const msgIface = new Interface(["event MessageSent(bytes message)"]);
+          for (const log of receipt.logs) {
+            try {
+              const parsed = msgIface.parseLog(log);
+              if (parsed && parsed.args && parsed.args.message) {
+                rawCctpMessage = parsed.args.message;
+                messageHash = keccak256(rawCctpMessage);
+                console.log(`[cctp_bridge] Extracted CCTP message from Arc receipt ✓ hash=${messageHash}`);
+                break;
+              }
+            } catch {}
+          }
+        }
+      } catch (wErr) {
+        console.warn("[cctp_bridge:wait_note]", wErr.message);
+      }
+    }
+
+    // 3. Fire background completion: poll attestation + receiveMessage on Solana
+    if (autoCompleteOnSolana) {
+      completeCctpWithdrawalOnSolana({
+        arcTxHash,
+        messageHex: rawCctpMessage,
+        messageHash,
+        feePayerKey,
+        // Use generous polling for mainnet: up to 90 attempts × 5s = 7.5 min
+        maxAttempts: 90,
+        intervalMs: 5000,
+      }).catch((err) => {
+        console.warn(`[cctp_bridge:auto_complete_note] Background CCTP completion failed for ${arcTxHash}:`, err.message);
+      });
     }
 
     return {
       success: true,
-      txHash: tx.hash,
+      txHash: arcTxHash,
       recipientSolanaAddress,
       amountUsdc,
       sourceDomain: CCTP_DOMAINS.ARC,
       destinationDomain: CCTP_DOMAINS.SOLANA,
+      autoCompleteOnSolana,
     };
   } catch (err) {
     console.warn("[cctp_bridge:arc_to_sol_burn_error]", err.message);
@@ -364,6 +410,120 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
       error: err.message,
     };
   }
+}
+
+/**
+ * Complete an Arc→Solana CCTP withdrawal end-to-end after the Arc burn tx.
+ *
+ * Steps:
+ *   1. Fetch the CCTP message from Arc receipt logs or Circle Iris (domain = ARC = 26)
+ *   2. Poll Circle Iris until attestation is complete (~20s on mainnet)
+ *   3. Submit receiveMessage on Solana — PayIT's backend wallet pays ~$0.001 SOL
+ *   4. USDC is minted to the recipient's Solana token account
+ *
+ * The recipient (user or Paj offramp address) needs ZERO SOL at any point.
+ *
+ * @param {object} params
+ * @param {string} params.arcTxHash     - Arc depositForBurn transaction hash
+ * @param {string} [params.messageHex]  - Pre-extracted raw CCTP message bytes
+ * @param {string} [params.messageHash] - Pre-computed keccak256 message hash
+ * @param {string} [params.feePayerKey] - Base58 Solana key (fallback: SOLANA_FEE_PAYER_KEY env)
+ * @param {number} [params.maxAttempts=90]  - Max attestation polling attempts
+ * @param {number} [params.intervalMs=5000] - Polling interval in ms
+ * @returns {Promise<{ success, arcTxHash, solanaTxSignature, messageHash }>}
+ */
+async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHash, feePayerKey, maxAttempts = 90, intervalMs = 5000 }) {
+  const bs58Key = feePayerKey || process.env.SOLANA_FEE_PAYER_KEY;
+  if (!bs58Key) {
+    throw new Error(
+      "SOLANA_FEE_PAYER_KEY is not set. Add a Solana wallet with ~0.1 SOL to your .env to " +
+      "enable gasless CCTP withdrawals. Cost: ~$0.001 per withdrawal."
+    );
+  }
+
+  const bs58 = require("bs58");
+  const { Keypair } = require("@solana/web3.js");
+  const bs58Decode = bs58.default ? bs58.default.decode : bs58.decode;
+  const feePayerKeypair = Keypair.fromSecretKey(bs58Decode(bs58Key));
+
+  console.log(`[cctp_bridge:complete] Starting Arc→Solana CCTP completion for arc tx: ${arcTxHash}`);
+  console.log(`[cctp_bridge:complete] Fee-payer: ${feePayerKeypair.publicKey.toBase58()}`);
+
+  // Step 1: Resolve the CCTP message & hash (receipt logs first, Iris API fallback)
+  let msgDetails = (messageHex && messageHash) ? { message: messageHex, messageHash } : null;
+
+  if (!msgDetails) {
+    try {
+      const { JsonRpcProvider, Interface, keccak256 } = require("ethers");
+      const net = getNetworkConfig();
+      const provider = new JsonRpcProvider(net.rpcUrl, net.chainId);
+      const receipt = await provider.getTransactionReceipt(arcTxHash);
+      if (receipt && receipt.logs) {
+        const msgIface = new Interface(["event MessageSent(bytes message)"]);
+        for (const log of receipt.logs) {
+          try {
+            const parsed = msgIface.parseLog(log);
+            if (parsed && parsed.args && parsed.args.message) {
+              msgDetails = {
+                message: parsed.args.message,
+                messageHash: keccak256(parsed.args.message),
+              };
+              console.log(`[cctp_bridge:complete] Found message in receipt ✓ hash=${msgDetails.messageHash}`);
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch (rcptErr) {
+      console.warn("[cctp_bridge:complete_rcpt_warn]", rcptErr.message);
+    }
+  }
+
+  if (!msgDetails?.message) {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        msgDetails = await fetchCctpMessage(CCTP_DOMAINS.ARC, arcTxHash);
+        if (msgDetails.message && msgDetails.messageHash) break;
+      } catch (e) {
+        // Circle may not have indexed the tx yet — retry
+      }
+      console.log(`[cctp_bridge:complete] Message not indexed yet, retrying (${attempt + 1}/5)...`);
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+
+  if (!msgDetails?.message) {
+    throw new Error(`CCTP message not found for Arc tx ${arcTxHash}. ` +
+      "The tx may not be confirmed yet or CCTP isn't registered for this token.");
+  }
+
+  console.log(`[cctp_bridge:complete] Message hash: ${msgDetails.messageHash}`);
+
+  // Step 2: Poll Circle for attestation
+  console.log(`[cctp_bridge:complete] Polling Circle for attestation (max ${maxAttempts} attempts)...`);
+  const { attestation } = await pollCctpAttestation(msgDetails.messageHash, maxAttempts, intervalMs);
+  console.log(`[cctp_bridge:complete] Attestation received ✓`);
+
+  // Step 3: Submit receiveMessage on Solana (fee payer pays ~$0.001 SOL)
+  const result = await receiveCctpMessageOnSolana({
+    messageHex: msgDetails.message,
+    attestationHex: attestation,
+    feePayerKeypair,
+    sourceDomainOverride: CCTP_DOMAINS.ARC,
+  });
+
+  if (!result.success) {
+    throw new Error(`Solana receiveMessage failed: ${result.error}`);
+  }
+
+  console.log(`[cctp_bridge:complete] USDC minted on Solana ✓ tx=${result.txSignature}`);
+
+  return {
+    success: true,
+    arcTxHash,
+    solanaTxSignature: result.txSignature,
+    messageHash: msgDetails.messageHash,
+  };
 }
 
 module.exports = {
@@ -375,4 +535,5 @@ module.exports = {
   disburseDirectOnArc,
   autoBridgeSolanaToArc,
   executeArcToSolanaCctpBurn,
+  completeCctpWithdrawalOnSolana,
 };
