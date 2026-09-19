@@ -3,6 +3,8 @@
 // Arc Mainnet (EVM) + Solana.
 // Derives deterministic Solana Keypair from the same root secret / private key.
 // Supports native SOL and SPL USDC transfers with automatic ATA creation.
+// Also provides receiveCctpMessageOnSolana() to complete Arc→Solana CCTP withdrawals
+// using PayIT's backend as the Solana fee-payer (~$0.001 per withdrawal, no user SOL needed).
 
 const crypto = require("crypto");
 const {
@@ -14,11 +16,14 @@ const {
   SystemProgram,
   SYSVAR_RENT_PUBKEY,
 } = require("@solana/web3.js");
+const {
+  TOKEN_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  getAssociatedTokenAddressSync,
+  createAssociatedTokenAccountInstruction: createAtaInstruction,
+} = require("@solana/spl-token");
 const bs58 = require("bs58");
 const tweetnacl = require("tweetnacl");
-
-const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 
 // Solana USDC Mint (Mainnet default)
 const SOLANA_USDC_MINT_MAINNET = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -98,30 +103,16 @@ function getSolanaConnection() {
  * @returns {PublicKey}
  */
 function getAssociatedTokenAddress(owner, mint = SOLANA_USDC_MINT) {
-  const [ata] = PublicKey.findProgramAddressSync(
-    [owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
-    ASSOCIATED_TOKEN_PROGRAM_ID
-  );
-  return ata;
+  // Delegate to the trusted @solana/spl-token implementation
+  return getAssociatedTokenAddressSync(mint, owner, true /* allowOwnerOffCurve */);
 }
 
 /**
  * Creates an instruction to create an Associated Token Account.
+ * Delegates to @solana/spl-token for correctness.
  */
 function createAssociatedTokenAccountInstruction(payer, ata, owner, mint) {
-  return new TransactionInstruction({
-    keys: [
-      { pubkey: payer, isSigner: true, isWritable: true },
-      { pubkey: ata, isSigner: false, isWritable: true },
-      { pubkey: owner, isSigner: false, isWritable: false },
-      { pubkey: mint, isSigner: false, isWritable: false },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
-    ],
-    programId: ASSOCIATED_TOKEN_PROGRAM_ID,
-    data: Buffer.alloc(0),
-  });
+  return createAtaInstruction(payer, ata, owner, mint);
 }
 
 /**
@@ -270,9 +261,9 @@ async function getSplTokenBalance(ownerAddress, mint = SOLANA_USDC_MINT) {
   }
 }
 
-// Solana CCTP Mainnet Program IDs
-const SOLANA_CCTP_TOKEN_MESSENGER = new PublicKey("CCTPmbSD7gX1bxKPAmg77w8oFzNFpaQiQUWD43TKaecd");
-const SOLANA_CCTP_MESSAGE_TRANSMITTER = new PublicKey("CCTPMmbNxLdtMRVhWeXiWryPnx3KitQTJqwLcxreVC55");
+// Solana CCTP Mainnet Program IDs (Circle CCTP V2)
+const SOLANA_CCTP_MESSAGE_TRANSMITTER = new PublicKey("CCTPV2Sm4AdWt5296sk4P66VBZ7bEhcARwFaaS9YPbeC");
+const SOLANA_CCTP_TOKEN_MESSENGER = new PublicKey("CCTPV2vPZJS2u2BBsUoscuikbYjnpFmbFsvVuJdgUMQe");
 
 /**
  * Execute CCTP depositForBurn on Solana to burn SPL USDC for Arc Mainnet (Domain 26).
@@ -315,11 +306,8 @@ async function executeSolanaCctpBurn({ userKeypair, amountUsdc, recipientArcAddr
       SOLANA_CCTP_TOKEN_MESSENGER
     );
 
-    const domainBuffer = Buffer.alloc(4);
-    domainBuffer.writeUInt32BE(26, 0); // Arc Mainnet domain = 26
-
     const [remoteTokenMessengerPda] = PublicKey.findProgramAddressSync(
-      [Buffer.from("remote_token_messenger"), domainBuffer],
+      [Buffer.from("remote_token_messenger"), Buffer.from("26", "utf8")],
       SOLANA_CCTP_TOKEN_MESSENGER
     );
 
@@ -338,29 +326,30 @@ async function executeSolanaCctpBurn({ userKeypair, amountUsdc, recipientArcAddr
     const amountBuf = Buffer.alloc(8);
     amountBuf.writeBigUInt64LE(amountBaseUnits, 0);
 
-    const destDomainBuf = Buffer.alloc(4);
-    destDomainBuf.writeUInt32LE(26, 0);
-
-    const data = Buffer.concat([discriminator, amountBuf, destDomainBuf, recipientBuffer]);
+    const data = Buffer.concat([
+      discriminator,
+      amountBuf,
+      Buffer.from([26, 0, 0, 0]),
+      recipientBuffer,
+    ]);
 
     const keys = [
-      { pubkey: userKeypair.publicKey, isSigner: true, isWritable: false },
-      { pubkey: payer.publicKey, isSigner: true, isWritable: true },
-      { pubkey: senderAuthorityPda, isSigner: false, isWritable: false },
+      { pubkey: userKeypair.publicKey, isSigner: true, isWritable: true },
       { pubkey: userAta, isSigner: false, isWritable: true },
-      { pubkey: messageTransmitterPda, isSigner: false, isWritable: false },
-      { pubkey: tokenMessengerPda, isSigner: false, isWritable: false },
-      { pubkey: remoteTokenMessengerPda, isSigner: false, isWritable: false },
-      { pubkey: tokenMinterPda, isSigner: false, isWritable: true },
+      { pubkey: senderAuthorityPda, isSigner: false, isWritable: false },
       { pubkey: localTokenPda, isSigner: false, isWritable: true },
+      { pubkey: tokenMinterPda, isSigner: false, isWritable: true },
+      { pubkey: remoteTokenMessengerPda, isSigner: false, isWritable: false },
+      { pubkey: tokenMessengerPda, isSigner: false, isWritable: false },
+      { pubkey: messageTransmitterPda, isSigner: false, isWritable: true },
       { pubkey: mint, isSigner: false, isWritable: true },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: SOLANA_CCTP_MESSAGE_TRANSMITTER, isSigner: false, isWritable: false },
       { pubkey: SOLANA_CCTP_TOKEN_MESSENGER, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
     ];
 
-    const instruction = new TransactionInstruction({
+    const ix = new TransactionInstruction({
       programId: SOLANA_CCTP_TOKEN_MESSENGER,
       keys,
       data,
@@ -370,19 +359,269 @@ async function executeSolanaCctpBurn({ userKeypair, amountUsdc, recipientArcAddr
     const tx = new Transaction({
       feePayer: payer.publicKey,
       recentBlockhash: latestBlockhash.blockhash,
-    }).add(instruction);
+    });
 
-    const signers = [payer];
-    if (payer.publicKey.toBase58() !== userKeypair.publicKey.toBase58()) {
-      signers.push(userKeypair);
-    }
+    tx.add(ix);
+    tx.sign(payer, userKeypair);
 
-    tx.sign(...signers);
-    const rawTx = tx.serialize();
-    const txSignature = await connection.sendRawTransaction(rawTx, { skipPreflight: false });
+    const txSignature = await connection.sendRawTransaction(tx.serialize());
+    await connection.confirmTransaction({
+      signature: txSignature,
+      blockhash: latestBlockhash.blockhash,
+      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+    });
+
     return { success: true, txSignature };
   } catch (err) {
     console.warn("[multichain:cctp_burn_error]", err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+// ─── CCTP Message Parsing ─────────────────────────────────────────────────────
+
+/**
+ * Parse a raw CCTP V2 message buffer to extract key routing fields.
+ *
+ * CCTP V2 message layout (all big-endian):
+ *   [0-3]   version:            uint32
+ *   [4-7]   sourceDomain:       uint32
+ *   [8-11]  destinationDomain:  uint32
+ *   [12-19] nonce:              uint64 (nonceBytes used directly as PDA seed)
+ *   [20-51] sender:             bytes32
+ *   [52-83] recipient:          bytes32 (TokenMessenger program on Solana)
+ *   [84-115] destinationCaller: bytes32
+ *   [116+]  messageBody:
+ *     [0-3]   messageBodyVersion: uint32
+ *     [4-35]  burnToken:          bytes32 (Arc USDC contract address, zero-padded, offset 120)
+ *     [36-67] mintRecipient:      bytes32 (Solana recipient public key, offset 152)
+ *     [68-99] amount:             uint256
+ *
+ * @param {string} messageHex - Hex message bytes (with or without 0x)
+ * @returns {{ sourceDomain, nonceBytes, nonce, mintRecipient, burnToken }}
+ */
+function parseCctpMessage(messageHex) {
+  const buf = Buffer.from(messageHex.replace(/^0x/, ""), "hex");
+  if (buf.length < 184) {
+    throw new Error(`CCTP message too short (${buf.length} bytes), expected ≥ 184`);
+  }
+  const sourceDomain = buf.readUInt32BE(4);
+  const nonceBytes   = buf.slice(12, 20); // 8-byte big-endian nonce
+  const nonce        = buf.readBigUInt64BE(12);
+
+  // messageBody starts at offset 116
+  // V2: messageBody[4..36] is burnToken (offset 120..152)
+  //     messageBody[36..68] is mintRecipient (offset 152..184)
+  const burnToken     = buf.slice(120, 152); // 32 bytes
+  const mintRecipient = buf.slice(152, 184); // 32 bytes (Solana recipient pubkey)
+  return { sourceDomain, nonceBytes, nonce, mintRecipient, burnToken };
+}
+
+/**
+ * Derive the used_nonce PDA for the CCTP V2 MessageTransmitter.
+ * seeds = ["used_nonce", nonce_bytes_8_be]
+ *
+ * @param {Buffer} nonceBytes - 8-byte big-endian nonce from the CCTP message
+ * @returns {PublicKey}
+ */
+function getUsedNoncePda(nonceBytes) {
+  const [pda] = PublicKey.findProgramAddressSync(
+    [Buffer.from("used_nonce"), nonceBytes],
+    SOLANA_CCTP_MESSAGE_TRANSMITTER
+  );
+  return pda;
+}
+
+// ─── CCTP receiveMessage on Solana ────────────────────────────────────────────
+
+/**
+ * Submit a CCTP V2 `receiveMessage` on Solana after Circle attests to a burn on
+ * a source chain (Arc Mainnet, domain 26).  This mints USDC directly to
+ * the recipient's token account (e.g. Paj's deposit address).  PayIT's backend
+ * wallet is the fee-payer, spending only ~$0.001 in SOL per call — the recipient
+ * needs zero SOL.
+ *
+ * @param {object}  params
+ * @param {string}  params.messageHex             - Raw CCTP message bytes (hex, ±0x)
+ * @param {string}  params.attestationHex          - Circle attestation bytes (hex, ±0x)
+ * @param {Keypair} params.feePayerKeypair         - PayIT backend Solana wallet (holds SOL)
+ * @param {number}  [params.sourceDomainOverride]  - Override parsed source domain
+ * @returns {Promise<{ success: boolean, txSignature?: string, error?: string }>}
+ */
+async function receiveCctpMessageOnSolana({ messageHex, attestationHex, feePayerKeypair, sourceDomainOverride }) {
+  if (!feePayerKeypair) {
+    return { success: false, error: "feePayerKeypair required to submit CCTP receiveMessage on Solana" };
+  }
+  if (!messageHex || !attestationHex) {
+    return { success: false, error: "message and attestation hex bytes are required" };
+  }
+
+  const connection = getSolanaConnection();
+
+  try {
+    const { sourceDomain, nonceBytes, mintRecipient, burnToken } = parseCctpMessage(messageHex);
+    const effectiveSrcDomain = sourceDomainOverride !== undefined ? sourceDomainOverride : sourceDomain;
+
+    // mintRecipient is the 32-byte Solana public key of the token recipient
+    const recipientPubkey = new PublicKey(mintRecipient);
+    const recipientAta    = getAssociatedTokenAddress(recipientPubkey, SOLANA_USDC_MINT);
+
+    // ── MessageTransmitterV2 PDAs ───────────────────────────────────────────
+    const [authorityPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("message_transmitter_authority"), SOLANA_CCTP_TOKEN_MESSENGER.toBuffer()],
+      SOLANA_CCTP_MESSAGE_TRANSMITTER
+    );
+
+    const [messageTransmitterPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("message_transmitter")],
+      SOLANA_CCTP_MESSAGE_TRANSMITTER
+    );
+
+    const [usedNoncePda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("used_nonce"), nonceBytes],
+      SOLANA_CCTP_MESSAGE_TRANSMITTER
+    );
+
+    const [mtEventAuthorityPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("__event_authority")],
+      SOLANA_CCTP_MESSAGE_TRANSMITTER
+    );
+
+    // ── TokenMessengerMinterV2 PDAs ─────────────────────────────────────────
+    const [tokenMessengerPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("token_messenger")],
+      SOLANA_CCTP_TOKEN_MESSENGER
+    );
+
+    const [remoteTokenMessengerPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("remote_token_messenger"), Buffer.from(effectiveSrcDomain.toString(), "utf8")],
+      SOLANA_CCTP_TOKEN_MESSENGER
+    );
+
+    const [tokenMinterPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("token_minter")],
+      SOLANA_CCTP_TOKEN_MESSENGER
+    );
+
+    const [localTokenPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("local_token"), SOLANA_USDC_MINT.toBuffer()],
+      SOLANA_CCTP_TOKEN_MESSENGER
+    );
+
+    const [tokenPairPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("token_pair"), Buffer.from(effectiveSrcDomain.toString(), "utf8"), burnToken],
+      SOLANA_CCTP_TOKEN_MESSENGER
+    );
+
+    // Circle CCTP V2 fee recipient token account
+    const feeRecipient = new PublicKey("4BPnUzFDibVcWQ5zzixGodRUHwqDxHYpUPdPYus3Bn56");
+    const feeRecipientAta = getAssociatedTokenAddress(feeRecipient, SOLANA_USDC_MINT);
+
+    const [custodyTokenAccountPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("custody"), SOLANA_USDC_MINT.toBuffer()],
+      SOLANA_CCTP_TOKEN_MESSENGER
+    );
+
+    const [tmEventAuthorityPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("__event_authority")],
+      SOLANA_CCTP_TOKEN_MESSENGER
+    );
+
+    // ── Build instruction data (Anchor Borsh encoding) ───────────────────────
+    // discriminator = sha256("global:receive_message")[0:8]
+    const discriminator = crypto
+      .createHash("sha256")
+      .update("global:receive_message")
+      .digest()
+      .slice(0, 8);
+
+    const msgBytes = Buffer.from(messageHex.replace(/^0x/, ""), "hex");
+    const attBytes = Buffer.from(attestationHex.replace(/^0x/, ""), "hex");
+
+    // Vec<u8> = [length: u32 LE][bytes]
+    const msgLenBuf = Buffer.alloc(4);
+    msgLenBuf.writeUInt32LE(msgBytes.length, 0);
+    const attLenBuf = Buffer.alloc(4);
+    attLenBuf.writeUInt32LE(attBytes.length, 0);
+
+    const data = Buffer.concat([discriminator, msgLenBuf, msgBytes, attLenBuf, attBytes]);
+
+    // ── Account list (order is contract-defined in CCTP V2) ───────────────────
+    // Accounts 0-8: MessageTransmitterV2 receive_message context
+    // Accounts 9-19: Forwarded to TokenMessengerMinterV2 handle_receive_finalized_message
+    const keys = [
+      /* 0  payer              */ { pubkey: feePayerKeypair.publicKey,       isSigner: true,  isWritable: true  },
+      /* 1  caller             */ { pubkey: feePayerKeypair.publicKey,       isSigner: true,  isWritable: false },
+      /* 2  authorityPda       */ { pubkey: authorityPda,                    isSigner: false, isWritable: false },
+      /* 3  messageTransmitter */ { pubkey: messageTransmitterPda,           isSigner: false, isWritable: false },
+      /* 4  usedNonce          */ { pubkey: usedNoncePda,                    isSigner: false, isWritable: true  },
+      /* 5  receiver           */ { pubkey: SOLANA_CCTP_TOKEN_MESSENGER,     isSigner: false, isWritable: false },
+      /* 6  systemProgram      */ { pubkey: SystemProgram.programId,         isSigner: false, isWritable: false },
+      /* 7  mtEventAuthority   */ { pubkey: mtEventAuthorityPda,             isSigner: false, isWritable: false },
+      /* 8  mtProgram (self)   */ { pubkey: SOLANA_CCTP_MESSAGE_TRANSMITTER, isSigner: false, isWritable: false },
+      // Forwarded remaining accounts for TokenMessengerMinterV2 CPI:
+      /* 9  tokenMessenger     */ { pubkey: tokenMessengerPda,               isSigner: false, isWritable: false },
+      /* 10 remoteTokenMsg     */ { pubkey: remoteTokenMessengerPda,         isSigner: false, isWritable: false },
+      /* 11 tokenMinter        */ { pubkey: tokenMinterPda,                  isSigner: false, isWritable: false },
+      /* 12 localToken         */ { pubkey: localTokenPda,                   isSigner: false, isWritable: true  },
+      /* 13 tokenPair          */ { pubkey: tokenPairPda,                    isSigner: false, isWritable: false },
+      /* 14 feeRecipientAta    */ { pubkey: feeRecipientAta,                 isSigner: false, isWritable: true  },
+      /* 15 recipientTokenAcct */ { pubkey: recipientAta,                    isSigner: false, isWritable: true  },
+      /* 16 custodyTokenAcct   */ { pubkey: custodyTokenAccountPda,          isSigner: false, isWritable: true  },
+      /* 17 tokenProgram       */ { pubkey: TOKEN_PROGRAM_ID,                isSigner: false, isWritable: false },
+      /* 18 tmEventAuthority   */ { pubkey: tmEventAuthorityPda,             isSigner: false, isWritable: false },
+      /* 19 tmProgram (self)   */ { pubkey: SOLANA_CCTP_TOKEN_MESSENGER,     isSigner: false, isWritable: false },
+    ];
+
+    const receiveIx = new TransactionInstruction({
+      programId: SOLANA_CCTP_MESSAGE_TRANSMITTER,
+      keys,
+      data,
+    });
+
+    // ── Build transaction ────────────────────────────────────────────────────
+    const latestBlockhash = await connection.getLatestBlockhash();
+    const tx = new Transaction({
+      feePayer: feePayerKeypair.publicKey,
+      recentBlockhash: latestBlockhash.blockhash,
+    });
+
+    // Create recipient ATA if it doesn't exist yet (fee payer covers ~0.002 SOL rent)
+    const ataInfo = await connection.getAccountInfo(recipientAta);
+    if (!ataInfo) {
+      console.log(`[multichain:receive_cctp] Creating ATA for ${recipientPubkey.toBase58()}...`);
+      tx.add(createAssociatedTokenAccountInstruction(
+        feePayerKeypair.publicKey, // payer
+        recipientAta,
+        recipientPubkey,
+        SOLANA_USDC_MINT
+      ));
+    }
+
+    tx.add(receiveIx);
+    tx.sign(feePayerKeypair);
+
+    const txSignature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+    console.log(`[multichain:receive_cctp] receiveMessage submitted: ${txSignature}`);
+
+    try {
+      await Promise.race([
+        connection.confirmTransaction({
+          signature: txSignature,
+          blockhash: latestBlockhash.blockhash,
+          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Confirmation timeout")), 45000)),
+      ]);
+      console.log(`[multichain:receive_cctp] USDC minted on Solana ✓ tx=${txSignature}`);
+    } catch (confErr) {
+      // Non-fatal — tx may still confirm, caller can check status
+      console.warn("[multichain:receive_cctp_confirm_note]", confErr.message);
+    }
+
+    return { success: true, txSignature };
+  } catch (err) {
+    console.warn("[multichain:receive_cctp_error]", err.message);
     return { success: false, error: err.message };
   }
 }
@@ -397,6 +636,10 @@ module.exports = {
   sendSolanaTransfer,
   getSplTokenBalance,
   executeSolanaCctpBurn,
+  parseCctpMessage,
+  getUsedNoncePda,
+  getUsedNoncesPda: getUsedNoncePda,
+  receiveCctpMessageOnSolana,
   SOLANA_USDC_MINT,
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,

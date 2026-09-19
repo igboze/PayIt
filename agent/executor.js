@@ -259,31 +259,20 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
   let txHash;
   try {
     if (isTargetSolana) {
-      // 1. Debit user on Arc by transferring native USDC to PayIT Relayer / Treasury
-      const treasuryArcAddress = process.env.APP_FEE_RECIPIENT_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
-      
-      // Calculate send amount ensuring user leaves gas headroom if balance is close to amountMicro
-      let sendMicro = amountMicro;
-      if (balance <= amountMicro + 1000000000000000n && balance > 5000000000000000n) {
-        sendMicro = balance - 2000000000000000n; // Leave 0.002 USDC for gas on Arc
-      }
-      txHash = await walletLib.sendFromWallet(userWallet, treasuryArcAddress, sendMicro);
+      // Execute direct Circle CCTP Arc→Solana burn from user's Arc wallet
+      // Circle CCTP burns native USDC on Arc and mints SPL USDC directly to Paj's Solana deposit address.
+      // PayIT backend acts as gas fee-payer (~$0.001 SOL); user needs zero SOL and no relayer float is required.
+      const burnRes = await cctpBridge.executeArcToSolanaCctpBurn({
+        userWallet,
+        amountUsdc: result.amount || amountUsdc,
+        recipientSolanaAddress: result.address,
+        autoCompleteOnSolana: true,
+      });
 
-      // 2. Deliver SPL USDC on Solana to Paj's dynamic deposit address
-      const relayerKey = process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
-      if (relayerKey) {
-        try {
-          const derivedSol = multichain.deriveSolanaFromEvmKey(relayerKey);
-          await multichain.sendSolanaTransfer({
-            keypair: derivedSol.keypair,
-            recipientAddress: result.address,
-            amount: result.amount || amountUsdc,
-            currency: "USDC",
-          });
-        } catch (solErr) {
-          console.warn("[executor:solana_paj_settlement_note]", solErr.message);
-        }
+      if (!burnRes.success) {
+        throw new Error(burnRes.error || "Failed to initiate CCTP withdrawal burn on Arc");
       }
+      txHash = burnRes.txHash;
     } else {
       txHash = await walletLib.sendFromWallet(userWallet, targetAddress, amountMicro);
     }
