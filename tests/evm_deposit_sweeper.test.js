@@ -4,6 +4,7 @@
 // CCTP V2 contract mapping, webhook payload routing, and idempotency deduplication.
 
 process.env.NODE_ENV = "test";
+require("dotenv").config();
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -121,6 +122,16 @@ test("Automated EVM Cross-Chain Deposit Engine Test Suite", async (t) => {
     const polyDex = evmDepositSweeper.resolveDexConfig(137);
     assert.ok(polyDex, "Must resolve Polygon DEX");
     assert.equal(polyDex.nativeSymbol, "POL");
+
+    const robinhoodDex = evmDepositSweeper.resolveDexConfig(4663);
+    assert.ok(robinhoodDex, "Must resolve Robinhood DEX");
+    assert.equal(robinhoodDex.name, "Robinhood Chain");
+    assert.equal(robinhoodDex.isRelayIntent, true);
+    assert.equal(robinhoodDex.nativeSymbol, "ETH");
+
+    const robinhoodByName = evmDepositSweeper.resolveDexConfig("Robinhood");
+    assert.ok(robinhoodByName, "Must resolve Robinhood by name");
+    assert.equal(robinhoodByName.chainId, 4663);
   });
 
   await t.test("5. CCTP V2: Resolves TokenMessenger, MessageTransmitter, and domain IDs for Arc (26)", () => {
@@ -263,6 +274,43 @@ test("Automated EVM Cross-Chain Deposit Engine Test Suite", async (t) => {
     // Wrong signature
     const wrongResult = verifyAlchemySignature(body, { "x-alchemy-signature": "0000000000000000000000000000000000000000000000000000000000000000" }, signingKey);
     assert.equal(wrongResult, false, "Signature must fail with invalid digest");
+  });
+
+  await t.test("10. Robinhood Chain: Automated intent deposit routing and notification", async () => {
+    const robinhoodTxHash = `0xrobinhood_tx_${Date.now()}`;
+    const sentMessages = [];
+
+    const mockBot = {
+      telegram: {
+        sendMessage: async (chatId, text, opts) => {
+          sentMessages.push({ chatId, text, opts });
+          return { message_id: 202 };
+        },
+      },
+    };
+
+    const robinhoodDepositPayload = {
+      chainId: 4663,
+      to: personalAddress,
+      from: "0x7777777777777777777777777777777777777777",
+      token: "ETH",
+      amount: "0.05",
+      txHash: robinhoodTxHash,
+    };
+
+    const res = await evmDepositSweeper.processEvmDeposit(robinhoodDepositPayload, mockBot);
+
+    assert.equal(res.success, true, "Robinhood deposit processing must succeed");
+    assert.equal(res.sourceChain, "Robinhood Chain");
+    assert.equal(res.recipient, personalAddress);
+    assert.ok(res.amountUsdc > 0, "Amount USDC must be greater than 0");
+
+    // Verify Telegram notification was dispatched
+    assert.equal(sentMessages.length, 1, "Must send 1 Telegram message");
+    assert.equal(sentMessages[0].chatId, testUserId);
+    assert.match(sentMessages[0].text, /Cross-Chain Deposit Credited/);
+    assert.match(sentMessages[0].text, /Robinhood Chain/);
+    assert.match(sentMessages[0].text, /0\.05 ETH/);
   });
 
   // Final cleanup
