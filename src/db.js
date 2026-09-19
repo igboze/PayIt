@@ -1142,25 +1142,21 @@ function getVolumeStats() {
 
   // Top 5 users by volume (all-time)
   const topUsers = db.prepare(`
-    SELECT telegram_id, username,
-           COALESCE(SUM(CAST(amount_micro AS REAL)), 0) AS vol,
+    SELECT t.telegram_id,
+           u.username,
+           COALESCE(SUM(CAST(t.amount_micro AS REAL)), 0) AS vol,
            COUNT(*) AS tx_count
-    FROM transactions
-    WHERE status = 'confirmed'
-    GROUP BY telegram_id
+    FROM transactions t
+    LEFT JOIN users u ON u.telegram_id = t.telegram_id
+    WHERE t.status = 'confirmed'
+    GROUP BY t.telegram_id
     ORDER BY vol DESC LIMIT 5
   `).all().map(r => ({
     telegram_id: r.telegram_id,
-    username: r.username || `user_${r.telegram_id}`,
+    username: r.username ? `@${r.username}` : `user_${r.telegram_id}`,
     usdc: r.vol / MICRO,
     tx_count: r.tx_count,
   }));
-
-  // Join usernames from users table
-  for (const row of topUsers) {
-    const u = getUser(row.telegram_id);
-    if (u?.username) row.username = `@${u.username}`;
-  }
 
   return { onramp, crypto, offramp, sends, savings, totalAll: { count: totalAll.count, usdc: totalAll.total / MICRO }, users, topUsers };
 }
