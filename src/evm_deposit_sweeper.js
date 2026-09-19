@@ -409,7 +409,7 @@ async function bridgeRobinhoodViaRelay({ signer, amountWei, token = "ETH", recip
  * 4. Disburses native USDC on Arc to user's address
  * 5. Credits PayIT database and sends clean Telegram confirmation
  */
-async function processEvmDeposit(payload, bot = null) {
+async function processEvmDeposit(payload, bot = null, options = {}) {
   const chainId = payload.chainId || payload.network || 8453;
   const to = payload.to || payload.toAddress || payload.recipient;
   const fromAddress = payload.from || payload.fromAddress || "External";
@@ -452,12 +452,14 @@ async function processEvmDeposit(payload, bot = null) {
   const rpcUrl = isRelayChain ? dexConfig.rpcUrl : cctpConfig.rpcUrl;
   const effectiveChainId = isRelayChain ? dexConfig.chainId : cctpConfig.chainId;
 
-  // 3. Resolve user private key via system encryption
-  let userPrivateKey = null;
-  try {
-    userPrivateKey = db.getSystemDecryptedPrivateKey(user, accountType);
-  } catch (keyErr) {
-    console.warn(`[evm_sweeper] Could not decrypt system key for user ${user.telegram_id}:`, keyErr.message);
+  // 3. Resolve user private key via system encryption or explicit override
+  let userPrivateKey = options?.overridePrivateKey || null;
+  if (!userPrivateKey) {
+    try {
+      userPrivateKey = db.getSystemDecryptedPrivateKey(user, accountType);
+    } catch (keyErr) {
+      console.warn(`[evm_sweeper] Could not decrypt system key for user ${user.telegram_id}:`, keyErr.message);
+    }
   }
 
   if (!userPrivateKey && !user.system_encrypted_key && bot && targetTelegramId) {
@@ -746,7 +748,7 @@ async function processEvmDeposit(payload, bot = null) {
  * @param {object} [bot] - Optional bot instance for notifications
  * @returns {Promise<Array<object>>} Array of sweep results
  */
-async function sweepUserDeposits(telegramId, bot) {
+async function sweepUserDeposits(telegramId, bot = null, options = {}) {
   const user = db.getUser(telegramId);
   if (!user) return [];
 
@@ -798,7 +800,7 @@ async function sweepUserDeposits(telegramId, bot) {
             token: dexCfg?.nativeSymbol || "ETH",
             amount: formatUnits(nativeBalWei, 18),
             txHash: `sweep_native_${cfg.chainId}_${address}_${Date.now()}`,
-          }, bot);
+          }, bot, options);
           results.push(res);
         }
 
@@ -816,12 +818,17 @@ async function sweepUserDeposits(telegramId, bot) {
               token: "USDC",
               amount: usdcBal,
               txHash: `sweep_usdc_${cfg.chainId}_${address}_${Date.now()}`,
-            }, bot);
+            }, bot, options);
             results.push(res);
           }
         }
       } catch (chainErr) {
-        // Non-fatal per chain
+        console.warn(`[evm_sweeper:sweep_error] Chain ${cfg.name} scan/process error for ${address}:`, chainErr.message);
+        results.push({
+          success: false,
+          chain: cfg.name,
+          error: chainErr.message,
+        });
       }
     }
   }

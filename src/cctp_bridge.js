@@ -715,26 +715,34 @@ async function executeEvmCctpBurn({
     "function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken) external returns (uint64 _nonce)",
   ];
 
-  // Check gas balance; sponsor gas only if relayer sponsorship is explicitly enabled
+  // Check gas balance; sponsor gas if relayer has funds, or warn if account has 0 gas
+  let gasBal = 0n;
   try {
-    const gasBal = await provider.getBalance(signer.address);
-    const minGas = parseUnits("0.0001", 18);
-    const enableRelayerSponsorship = process.env.ENABLE_RELAYER_SPONSORSHIP === "true";
-    if (gasBal < minGas && enableRelayerSponsorship) {
+    gasBal = await provider.getBalance(signer.address);
+    const minGas = parseUnits("0.00005", 18);
+    if (gasBal < minGas) {
       const relayerKey = signerPrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
       if (relayerKey) {
-        console.log(`[cctp_bridge] Sponsoring gas for ${signer.address} on ${chainConfig.name}...`);
         const relayer = new Wallet(relayerKey, provider);
-        const sponsorTx = await relayer.sendTransaction({
-          to: signer.address,
-          value: parseUnits("0.0003", 18),
-        });
-        await sponsorTx.wait(1);
-        console.log(`[cctp_bridge] Gas sponsored ✓ tx=${sponsorTx.hash}`);
+        const relayerBal = await provider.getBalance(relayer.address).catch(() => 0n);
+        if (relayerBal > parseUnits("0.0001", 18)) {
+          console.log(`[cctp_bridge] Sponsoring gas for ${signer.address} on ${chainConfig.name}...`);
+          const sponsorTx = await relayer.sendTransaction({
+            to: signer.address,
+            value: parseUnits("0.0001", 18),
+          });
+          await sponsorTx.wait(1);
+          gasBal = await provider.getBalance(signer.address);
+          console.log(`[cctp_bridge] Gas sponsored ✓ tx=${sponsorTx.hash}`);
+        }
       }
     }
   } catch (gasErr) {
     console.warn(`[cctp_bridge:gas_check_note] Gas check/sponsor note on ${chainConfig.name}:`, gasErr.message);
+  }
+
+  if (gasBal === 0n) {
+    throw new Error(`Insufficient gas on ${chainConfig.name} for CCTP bridge. Address needs a fraction of native gas (~$0.10) to approve and bridge USDC.`);
   }
 
   // 1. Check and approve TokenMessenger
