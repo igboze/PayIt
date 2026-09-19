@@ -1206,7 +1206,7 @@ bot.action("action_gateway", async (ctx) => {
     `<b>Your Unified Deposit Address (tap to copy):</b>\n` +
     `<code>${arcAddress}</code>\n\n` +
     `⚡ <b>Automated Instant Conversion to Arc USDC:</b>\n` +
-    `• <b>Supported Networks:</b> Base, Arbitrum, Ethereum, Avalanche, Polygon, Optimism\n` +
+    `• <b>Supported Networks:</b> Base, Arbitrum, Robinhood Chain, Ethereum, Avalanche, Polygon, Optimism\n` +
     `• <b>Accepted Assets:</b> Native tokens (ETH, AVAX, POL/MATIC) and USDC\n` +
     `• <b>Zero Bridge Hassle:</b> Native tokens are automatically swapped to USDC and bridged to Arc Mainnet with <b>zero user gas or signing required</b>!\n` +
     `• <b>Instant Settlement:</b> Native USDC is credited to your PayIT balance automatically.\n\n` +
@@ -1241,7 +1241,7 @@ bot.action("action_sweep_deposits", async (ctx) => {
     );
   }
 
-  await ctx.reply("🔍 Scanning Base, Arbitrum, Ethereum, Avalanche, Polygon, and Optimism for deposits...");
+  await ctx.reply("🔍 Scanning Base, Arbitrum, Robinhood Chain, Ethereum, Avalanche, Polygon, and Optimism for deposits...");
   try {
     const results = await evmDepositSweeper.sweepUserDeposits(ctx.from.id, bot);
     if (!results || results.length === 0) {
