@@ -3059,6 +3059,7 @@ async function showAdminMenu(ctx) {
     `DB path: ${dbPath}\n\n` +
     `Recent transactions:\n${txLines}`,
     Markup.inlineKeyboard([
+      [Markup.button.callback("📊 Volume Stats", "admin_volume")],
       [Markup.button.callback("📤 Export Points", "admin_export_points")],
       [Markup.button.callback("📣 Broadcast", "admin_broadcast")],
       [Markup.button.callback("🎁 Reward Notify", "admin_reward_notify")],
@@ -3129,6 +3130,133 @@ bot.action("admin_reward_notify", (ctx) => {
     "Send the reward notification message. You can also add filters like min_days=30 min_points=10 min_tx=3 min_recent_tx=1 recent_days=30 min_invoices=1.",
     Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "admin_menu")]])
   );
+});
+
+// ─── Admin Volume Monitoring ──────────────────────────────────────────────────
+
+function formatVolRow(label, breakdown) {
+  const { today, week, month, allTime } = breakdown;
+  const fmt = (v) => `$${v.usdc.toFixed(2)} (${v.count}tx)`;
+  return (
+    `\n<b>${label}</b>\n` +
+    `  Today:    ${fmt(today)}\n` +
+    `  7 days:   ${fmt(week)}\n` +
+    `  30 days:  ${fmt(month)}\n` +
+    `  All-time: ${fmt(allTime)}`
+  );
+}
+
+bot.action("admin_volume", async (ctx) => {
+  ctx.answerCbQuery();
+  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return ctx.reply("Not authorised.");
+
+  let stats;
+  try {
+    stats = db.getVolumeStats();
+  } catch (err) {
+    return ctx.reply(`Volume stats error: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("« Back", "admin_menu")]]));
+  }
+
+  const { onramp, crypto, offramp, sends, savings, totalAll, users, topUsers } = stats;
+
+  const topLine = topUsers.length
+    ? topUsers.map((u, i) => `  ${i + 1}. ${u.username} · $${u.usdc.toFixed(2)} · ${u.tx_count}tx`).join("\n")
+    : "  No data yet";
+
+  const message =
+    `📊 <b>PayIT Volume Dashboard</b>\n` +
+    `──────────────────────────\n` +
+    formatVolRow("🇳🇬 Naira Onramp", onramp) +
+    formatVolRow("🌐 Crypto Deposit", crypto) +
+    formatVolRow("💵 Cash Out (Offramp)", offramp) +
+    formatVolRow("📤 Sends & Auto-Pay", sends) +
+    formatVolRow("📈 Savings Deposits", savings) +
+    `\n\n<b>📦 Total Platform Volume</b>\n` +
+    `  All-time: $${totalAll.usdc.toFixed(2)} (${totalAll.count} transactions)\n` +
+    `\n<b>👤 User Growth</b>\n` +
+    `  Today: +${users.today}  |  7d: +${users.week}  |  30d: +${users.month}  |  Total: ${users.total}\n` +
+    `\n<b>🏆 Top 5 Users by Volume</b>\n` +
+    topLine;
+
+  return ctx.reply(message, {
+    parse_mode: "HTML",
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback("📊 Export Volume CSV", "admin_volume_csv")],
+      [Markup.button.callback("🔄 Refresh", "admin_volume")],
+      [Markup.button.callback("« Admin Menu", "admin_menu")],
+    ]),
+  });
+});
+
+bot.action("admin_volume_csv", async (ctx) => {
+  ctx.answerCbQuery();
+  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return ctx.reply("Not authorised.");
+
+  try {
+    // Raw per-day volume breakdown across all types
+    const rows = db.db.prepare(`
+      SELECT
+        date(created_at)   AS day,
+        type,
+        COUNT(*)           AS tx_count,
+        COALESCE(SUM(CAST(amount_micro AS REAL)), 0) / 1e18 AS usdc_volume
+      FROM transactions
+      WHERE status = 'confirmed'
+      GROUP BY day, type
+      ORDER BY day DESC, type
+    `).all();
+
+    if (!rows.length) return ctx.reply("No confirmed transactions to export.", Markup.inlineKeyboard([[Markup.button.callback("« Back", "admin_volume")]]));
+
+    const csvLines = [
+      "date,type,tx_count,usdc_volume",
+      ...rows.map((r) => `${r.day},${r.type},${r.tx_count},${r.usdc_volume.toFixed(6)}`),
+    ];
+
+    const csv = csvLines.join("\n");
+    await ctx.replyWithDocument({
+      source: Buffer.from(csv, "utf8"),
+      filename: `payit_volume_${new Date().toISOString().slice(0, 10)}.csv`,
+    });
+    return ctx.reply("Volume export complete.", Markup.inlineKeyboard([[Markup.button.callback("« Back", "admin_volume")]]));
+  } catch (err) {
+    return ctx.reply(`Export error: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("« Back", "admin_volume")]]));
+  }
+});
+
+bot.command("volume", async (ctx) => {
+  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return;
+  const fakeAction = { ...ctx, answerCbQuery: () => {} };
+  // Reuse action handler by dispatching a fake callback
+  let stats;
+  try { stats = db.getVolumeStats(); } catch (err) {
+    return ctx.reply(`Volume stats error: ${err.message}`);
+  }
+  const { onramp, crypto, offramp, sends, savings, totalAll, users, topUsers } = stats;
+  const topLine = topUsers.length
+    ? topUsers.map((u, i) => `  ${i + 1}. ${u.username} · $${u.usdc.toFixed(2)} · ${u.tx_count}tx`).join("\n")
+    : "  No data yet";
+  const message =
+    `📊 <b>PayIT Volume Dashboard</b>\n` +
+    `──────────────────────────\n` +
+    formatVolRow("🇳🇬 Naira Onramp", onramp) +
+    formatVolRow("🌐 Crypto Deposit", crypto) +
+    formatVolRow("💵 Cash Out (Offramp)", offramp) +
+    formatVolRow("📤 Sends & Auto-Pay", sends) +
+    formatVolRow("📈 Savings Deposits", savings) +
+    `\n\n<b>📦 Total Platform Volume</b>\n` +
+    `  All-time: $${totalAll.usdc.toFixed(2)} (${totalAll.count} transactions)\n` +
+    `\n<b>👤 User Growth</b>\n` +
+    `  Today: +${users.today}  |  7d: +${users.week}  |  30d: +${users.month}  |  Total: ${users.total}\n` +
+    `\n<b>🏆 Top 5 Users by Volume</b>\n` +
+    topLine;
+  return ctx.reply(message, {
+    parse_mode: "HTML",
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback("📊 Export Volume CSV", "admin_volume_csv")],
+      [Markup.button.callback("🔄 Refresh", "admin_volume")],
+    ]),
+  });
 });
 
 // ─── Main text handler — intent router ───────────────────────────────────────
