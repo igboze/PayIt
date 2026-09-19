@@ -464,13 +464,42 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
 
   if (!userPrivateKey && !user.system_encrypted_key && bot && targetTelegramId) {
     try {
+      // First-time user: needs to authorize PIN once to enable auto-sweep
+      const { Markup } = require("telegraf");
       await bot.telegram.sendMessage(
         targetTelegramId,
         `🔔 <b>Deposit Received!</b>\n` +
         `──────────────────────────\n` +
         `We detected an incoming deposit of <b>${rawAmount} ${token}</b> on <b>${chainName}</b>.\n\n` +
-        `To authorize automated conversion and bridging to your Arc USDC balance, please tap <b>[🔄 Scan & Sweep Deposits]</b> in the deposit menu and enter your PIN once.`,
-        { parse_mode: "HTML" }
+        `Tap below to authorize the sweep and credit your PayIT balance:`,
+        {
+          parse_mode: "HTML",
+          reply_markup: Markup.inlineKeyboard([
+            [Markup.button.callback("🔄 Scan & Sweep Deposits", "action_sweep_deposits")],
+            [Markup.button.callback("💰 Check Balance", "action_balance")],
+          ]).reply_markup,
+        }
+      );
+    } catch (msgErr) {
+      console.warn(`[evm_sweeper] Failed to notify user TG:${targetTelegramId}:`, msgErr.message);
+    }
+  } else if (!userPrivateKey && user.system_encrypted_key && bot && targetTelegramId) {
+    // User is authorized but key could not be decrypted at runtime — prompt manual sweep
+    try {
+      const { Markup } = require("telegraf");
+      await bot.telegram.sendMessage(
+        targetTelegramId,
+        `🔔 <b>Deposit Detected!</b>\n` +
+        `──────────────────────────\n` +
+        `We detected <b>${rawAmount} ${token}</b> on <b>${chainName}</b>.\n\n` +
+        `Tap below to scan and sweep it into your PayIT balance:`,
+        {
+          parse_mode: "HTML",
+          reply_markup: Markup.inlineKeyboard([
+            [Markup.button.callback("🔄 Scan & Sweep Deposits", "action_sweep_deposits")],
+            [Markup.button.callback("💰 Check Balance", "action_balance")],
+          ]).reply_markup,
+        }
       );
     } catch (msgErr) {
       console.warn(`[evm_sweeper] Failed to notify user TG:${targetTelegramId}:`, msgErr.message);
@@ -788,7 +817,26 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
         const provider = new JsonRpcProvider(cfg.rpcUrl, cfg.chainId);
         const dexCfg = resolveDexConfig(cfg.key);
 
-        // 1. Check native balance
+        // 1. Check USDC balance first (so native gas is preserved to burn existing USDC!)
+        if (cfg.usdc) {
+          const usdcContract = new Contract(cfg.usdc, ERC20_ABI, provider);
+          const usdcBalUnits = await usdcContract.balanceOf(address);
+          const usdcBal = parseFloat(formatUnits(usdcBalUnits, cfg.decimals));
+
+          if (usdcBal >= 0.5) {
+            console.log(`[evm_sweeper:scanner] Found $${usdcBal} USDC on ${cfg.key} for ${address}`);
+            const res = await processEvmDeposit({
+              chainId: cfg.chainId,
+              to: address,
+              token: "USDC",
+              amount: usdcBal,
+              txHash: `sweep_usdc_${cfg.chainId}_${address}_${Date.now()}`,
+            }, bot, options);
+            results.push(res);
+          }
+        }
+
+        // 2. Check native balance (only if significant native remains)
         const nativeBalWei = await provider.getBalance(address);
         const minNativeWei = dexCfg?.minDepositWei || parseUnits("0.0005", 18);
 
@@ -802,25 +850,6 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
             txHash: `sweep_native_${cfg.chainId}_${address}_${Date.now()}`,
           }, bot, options);
           results.push(res);
-        }
-
-        // 2. Check USDC balance if applicable
-        if (cfg.usdc) {
-          const usdcContract = new Contract(cfg.usdc, ERC20_ABI, provider);
-          const usdcBalUnits = await usdcContract.balanceOf(address);
-          const usdcBal = parseFloat(formatUnits(usdcBalUnits, cfg.decimals));
-
-          if (usdcBal >= 1.0) {
-            console.log(`[evm_sweeper:scanner] Found $${usdcBal} USDC on ${cfg.key} for ${address}`);
-            const res = await processEvmDeposit({
-              chainId: cfg.chainId,
-              to: address,
-              token: "USDC",
-              amount: usdcBal,
-              txHash: `sweep_usdc_${cfg.chainId}_${address}_${Date.now()}`,
-            }, bot, options);
-            results.push(res);
-          }
         }
       } catch (chainErr) {
         console.warn(`[evm_sweeper:sweep_error] Chain ${cfg.name} scan/process error for ${address}:`, chainErr.message);
