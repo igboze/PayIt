@@ -1202,7 +1202,7 @@ bot.action("action_gateway", async (ctx) => {
   await ctx.reply(
     `🌐 <b>Crypto & Web3 Deposit (Multi-Chain)</b>\n` +
     `──────────────────────────\n` +
-    `Deposit crypto from any exchange (Binance, Coinbase, Bybit, OKX) or Web3 wallet directly into your PayIT balance.\n\n` +
+    `Deposit crypto from Robinhood, Binance, Coinbase, Bybit, OKX, or any Web3 wallet directly into your PayIT balance.\n\n` +
     `<b>Your Unified Deposit Address (tap to copy):</b>\n` +
     `<code>${arcAddress}</code>\n\n` +
     `⚡ <b>Automated Instant Conversion to Arc USDC:</b>\n` +
