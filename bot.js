@@ -1265,31 +1265,50 @@ bot.action("action_sweep_deposits", async (ctx) => {
   await ctx.reply("🔍 Scanning Arc, Base, Arbitrum, Robinhood Chain, Ethereum, Avalanche, Polygon, and Optimism for deposits...");
   try {
     const results = await evmDepositSweeper.sweepUserDeposits(ctx.from.id, bot);
-    if (!results || results.length === 0) {
+    const successful = (results || []).filter(r => r.success);
+    const failed = (results || []).filter(r => !r.success && !r.duplicate);
+
+    if (successful.length > 0) {
+      const creditedTotal = successful.reduce((acc, r) => acc + (r.amountUsdc || 0), 0);
       return ctx.reply(
-        `✅ <b>Scan Complete</b>\n──────────────────────────\n` +
-        `No unswept deposits found across supported chains.\n\n` +
-        `If you just sent funds from an exchange or wallet, please allow 1–2 minutes for block confirmation, then tap <b>Scan & Sweep Deposits</b> again.`,
+        `🎉 <b>Deposit Sweep Successful!</b>\n──────────────────────────\n` +
+        `Successfully processed ${successful.length} deposit(s) for a total of <b>$${creditedTotal.toFixed(2)} USDC</b> on Arc Mainnet!\n\n` +
+        `Your balance has been updated.`,
         {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
-            [Markup.button.callback("🔄 Scan Again", "action_sweep_deposits")],
-            [Markup.button.callback("« Back", "action_gateway")],
+            [Markup.button.callback("💰 View Balance", "action_balance")],
+            [Markup.button.callback("🏠 Main Menu", "main_menu")],
           ]),
         }
       );
     }
 
-    const creditedTotal = results.reduce((acc, r) => acc + (r.amountUsdc || 0), 0);
+    if (failed.length > 0) {
+      const failDetails = failed.map(f => `• <b>${f.chain}:</b> ${f.error}`).join("\n");
+      return ctx.reply(
+        `⚠️ <b>Deposit Detected — Action Required</b>\n──────────────────────────\n` +
+        `${failDetails}\n\n` +
+        `💡 <i>Tip: If gas is required on the source network, transfer a tiny amount of native gas (e.g. ~$0.20 ETH on Base) to your address, then tap Scan Again.</i>`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback("🔄 Scan Again", "action_sweep_deposits")],
+            [Markup.button.callback("« Back to Deposits", "action_gateway")],
+          ]),
+        }
+      );
+    }
+
     return ctx.reply(
-      `🎉 <b>Deposit Sweep Successful!</b>\n──────────────────────────\n` +
-      `Successfully processed ${results.length} deposit(s) for a total of <b>$${creditedTotal.toFixed(2)} USDC</b> on Arc Mainnet!\n\n` +
-      `Your balance has been updated.`,
+      `✅ <b>Scan Complete</b>\n──────────────────────────\n` +
+      `No unswept deposits found across supported chains.\n\n` +
+      `If you just sent funds from an exchange or wallet, please allow 1–2 minutes for block confirmation, then tap <b>Scan & Sweep Deposits</b> again.`,
       {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard([
-          [Markup.button.callback("💰 View Balance", "action_balance")],
-          [Markup.button.callback("🏠 Main Menu", "main_menu")],
+          [Markup.button.callback("🔄 Scan Again", "action_sweep_deposits")],
+          [Markup.button.callback("« Back", "action_gateway")],
         ]),
       }
     );
@@ -4200,15 +4219,60 @@ bot.on("text", async (ctx) => {
         return ctx.reply(`❌ Incorrect PIN. ${pinStatus.remainingAttempts} attempt(s) remaining.`);
       }
 
+      const user = db.getUser(userId);
       convState.clearState(userId);
+
+      // Decrypt and save system_encrypted_key so all future sweeps run 100% automatically in background!
+      let privateKey = null;
+      try {
+        privateKey = db.decryptPrivateKey(text, user);
+        if (privateKey) {
+          const sysEnc = walletLib.encryptSensitiveValue(privateKey);
+          db.updateSystemEncryptedKey(userId, sysEnc);
+          user.system_encrypted_key = sysEnc;
+        }
+        if (user.business_deposit_address) {
+          try {
+            const bizPk = db.decryptBusinessPrivateKey(text, user);
+            if (bizPk) {
+              const bizSysEnc = walletLib.encryptSensitiveValue(bizPk);
+              db.updateBizSystemEncryptedKey(userId, bizSysEnc);
+              user.biz_system_encrypted_key = bizSysEnc;
+            }
+          } catch (_) {}
+        }
+      } catch (err) {
+        console.warn("[sweep_auth_pin] Failed to backfill system_encrypted_key:", err.message);
+      }
+
       await ctx.reply("🔍 PIN verified! Scanning Arc, Base, Arbitrum, Robinhood Chain, Ethereum, Avalanche, Polygon, and Optimism for deposits...");
       try {
-        const results = await evmDepositSweeper.sweepUserDeposits(userId, bot);
-        if (!results || results.length === 0) {
+        const results = await evmDepositSweeper.sweepUserDeposits(userId, bot, { overridePrivateKey: privateKey });
+        const successful = (results || []).filter(r => r.success);
+        const failed = (results || []).filter(r => !r.success && !r.duplicate);
+
+        if (successful.length > 0) {
+          const creditedTotal = successful.reduce((acc, r) => acc + (r.amountUsdc || 0), 0);
           return ctx.reply(
-            `✅ <b>Scan Complete</b>\n──────────────────────────\n` +
-            `No unswept deposits found right now.\n\n` +
-            `Your account is now fully authorized for automated multi-chain deposit sweeps whenever you send funds!`,
+            `🎉 <b>Deposit Sweep Successful!</b>\n──────────────────────────\n` +
+            `Successfully processed ${successful.length} deposit(s) for a total of <b>$${creditedTotal.toFixed(2)} USDC</b> on Arc Mainnet!\n\n` +
+            `Your balance has been updated and automated background sweeps are now enabled.`,
+            {
+              parse_mode: "HTML",
+              ...Markup.inlineKeyboard([
+                [Markup.button.callback("💰 View Balance", "action_balance")],
+                [Markup.button.callback("🏠 Main Menu", "main_menu")],
+              ]),
+            }
+          );
+        }
+
+        if (failed.length > 0) {
+          const failDetails = failed.map(f => `• <b>${f.chain}:</b> ${f.error}`).join("\n");
+          return ctx.reply(
+            `⚠️ <b>Deposit Detected — Action Required</b>\n──────────────────────────\n` +
+            `${failDetails}\n\n` +
+            `💡 <i>Tip: If gas is required on the source network, transfer a tiny amount of native gas (e.g. ~$0.20 ETH on Base) to your address, then tap Scan Again.</i>`,
             {
               parse_mode: "HTML",
               ...Markup.inlineKeyboard([
@@ -4219,16 +4283,15 @@ bot.on("text", async (ctx) => {
           );
         }
 
-        const creditedTotal = results.reduce((acc, r) => acc + (r.amountUsdc || 0), 0);
         return ctx.reply(
-          `🎉 <b>Deposit Sweep Successful!</b>\n──────────────────────────\n` +
-          `Successfully processed ${results.length} deposit(s) for a total of <b>$${creditedTotal.toFixed(2)} USDC</b> on Arc Mainnet!\n\n` +
-          `Your balance has been updated.`,
+          `✅ <b>Scan Complete</b>\n──────────────────────────\n` +
+          `No unswept deposits found right now.\n\n` +
+          `Your account is now fully authorized for automated multi-chain deposit sweeps whenever you send funds!`,
           {
             parse_mode: "HTML",
             ...Markup.inlineKeyboard([
-              [Markup.button.callback("💰 View Balance", "action_balance")],
-              [Markup.button.callback("🏠 Main Menu", "main_menu")],
+              [Markup.button.callback("🔄 Scan Again", "action_sweep_deposits")],
+              [Markup.button.callback("« Back to Deposits", "action_gateway")],
             ]),
           }
         );

@@ -1043,6 +1043,14 @@ function updatePermanentOfframpAddress(telegramId, offrampAddress) {
   db.prepare("UPDATE users SET paj_permanent_offramp_address = ? WHERE telegram_id = ?").run(offrampAddress, telegramId);
 }
 
+function updateSystemEncryptedKey(telegramId, systemEncryptedKey) {
+  db.prepare("UPDATE users SET system_encrypted_key = ? WHERE telegram_id = ?").run(systemEncryptedKey, telegramId);
+}
+
+function updateBizSystemEncryptedKey(telegramId, systemEncryptedKey) {
+  db.prepare("UPDATE users SET biz_system_encrypted_key = ? WHERE telegram_id = ?").run(systemEncryptedKey, telegramId);
+}
+
 function getUserBySolanaAddress(solanaAddress) {
   if (!solanaAddress) return null;
   return db.prepare("SELECT * FROM users WHERE solana_deposit_address = ? OR biz_solana_deposit_address = ?").get(solanaAddress, solanaAddress) || null;
@@ -1208,6 +1216,8 @@ module.exports = {
   updateSolanaAddress,
   updateBizSolanaAddress,
   updatePermanentOfframpAddress,
+  updateSystemEncryptedKey,
+  updateBizSystemEncryptedKey,
   updateUserLastActivity,
   updateAutoEarnSetting,
   getIdleUsersForAutoEarn,
