@@ -1,0 +1,587 @@
+// src/evm_deposit_sweeper.js
+// Production Automated EVM Cross-Chain Deposit Sweeper & DEX Swapper
+// Detects, swaps (native -> USDC), and CCTP-bridges incoming deposits from any EVM chain to Arc Mainnet
+// Zero user gas, zero manual bridging steps, instant Arc credit
+
+const { JsonRpcProvider, Contract, Wallet, parseUnits, formatUnits, ZeroAddress, getAddress } = require("ethers");
+const db = require("./db");
+const walletLib = require("./wallet");
+const cctpBridge = require("./cctp_bridge");
+const idempotency = require("./idempotency");
+const { getNetworkConfig, getExplorerUrl } = require("./network");
+
+// ── DEX Router Configurations ───────────────────────────────────────────────
+const DEX_ROUTER_CONFIGS = {
+  BASE: {
+    name: "Base",
+    chainId: 8453,
+    routerAddress: "0x2626664c2603336E57B271c5C0b26F421741e481", // Uniswap V3 SwapRouter02
+    fallbackRouter: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    wethAddress: "0x4200000000000000000000000000000000000006",
+    usdcAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    poolFee: 500, // 0.05%
+    nativeSymbol: "ETH",
+    minDepositWei: 500000000000000n, // ~0.0005 ETH
+  },
+  ARBITRUM: {
+    name: "Arbitrum",
+    chainId: 42161,
+    routerAddress: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    fallbackRouter: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+    wethAddress: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+    usdcAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+    poolFee: 500,
+    nativeSymbol: "ETH",
+    minDepositWei: 500000000000000n,
+  },
+  ETHEREUM: {
+    name: "Ethereum",
+    chainId: 1,
+    routerAddress: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    fallbackRouter: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+    wethAddress: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+    usdcAddress: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    poolFee: 500,
+    nativeSymbol: "ETH",
+    minDepositWei: 1000000000000000n, // ~0.001 ETH
+  },
+  OPTIMISM: {
+    name: "Optimism",
+    chainId: 10,
+    routerAddress: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    fallbackRouter: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+    wethAddress: "0x4200000000000000000000000000000000000006",
+    usdcAddress: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+    poolFee: 500,
+    nativeSymbol: "ETH",
+    minDepositWei: 500000000000000n,
+  },
+  POLYGON: {
+    name: "Polygon",
+    chainId: 137,
+    routerAddress: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    fallbackRouter: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+    wethAddress: "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270", // WMATIC / WPOL
+    usdcAddress: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+    poolFee: 500,
+    nativeSymbol: "POL",
+    minDepositWei: 1000000000000000000n, // ~1 POL
+  },
+  AVALANCHE: {
+    name: "Avalanche",
+    chainId: 43114,
+    routerAddress: "0x60aE616a2155Ee3d9A68541Ba4544862310933d4", // Trader Joe
+    fallbackRouter: "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506",
+    wethAddress: "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7", // WAVAX
+    usdcAddress: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+    nativeSymbol: "AVAX",
+    minDepositWei: 50000000000000000n, // ~0.05 AVAX
+  },
+  // Testnets
+  "BASE SEPOLIA": {
+    name: "Base Sepolia",
+    chainId: 84532,
+    routerAddress: "0x94cC0AaC535CCDB3C01d6787d6413C739ae12bc4",
+    fallbackRouter: "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E",
+    wethAddress: "0x4200000000000000000000000000000000000006",
+    usdcAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    poolFee: 500,
+    nativeSymbol: "ETH",
+    minDepositWei: 100000000000000n,
+  },
+  "ETHEREUM SEPOLIA": {
+    name: "Ethereum Sepolia",
+    chainId: 11155111,
+    routerAddress: "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E",
+    fallbackRouter: "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E",
+    wethAddress: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+    usdcAddress: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+    poolFee: 500,
+    nativeSymbol: "ETH",
+    minDepositWei: 100000000000000n,
+  },
+};
+
+// Uniswap V3 SwapRouter ABI (exactInputSingle)
+const UNISWAP_V3_ROUTER_ABI = [
+  `function exactInputSingle(
+    tuple(
+      address tokenIn,
+      address tokenOut,
+      uint24 fee,
+      address recipient,
+      uint256 deadline,
+      uint256 amountIn,
+      uint256 amountOutMinimum,
+      uint160 sqrtPriceLimitX96
+    ) params
+  ) external payable returns (uint256 amountOut)`,
+  `function exactInputSingle(
+    tuple(
+      address tokenIn,
+      address tokenOut,
+      uint24 fee,
+      address recipient,
+      uint256 amountIn,
+      uint256 amountOutMinimum,
+      uint160 sqrtPriceLimitX96
+    ) params
+  ) external payable returns (uint256 amountOut)`,
+];
+
+// Trader Joe / Uniswap V2 Router ABI (for Avalanche)
+const UNISWAP_V2_ROUTER_ABI = [
+  "function swapExactAVAXForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts)",
+  "function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts)",
+];
+
+const ERC20_ABI = [
+  "function balanceOf(address owner) view returns (uint256)",
+  "function decimals() view returns (uint8)",
+  "function symbol() view returns (string)",
+  "function transfer(address to, uint256 amount) returns (bool)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+];
+
+/**
+ * Resolves DEX router config for a given chain name or chainId.
+ */
+function resolveDexConfig(chainIdentifier) {
+  if (!chainIdentifier) return null;
+  const str = String(chainIdentifier).trim().toUpperCase();
+  let found = DEX_ROUTER_CONFIGS[str] || null;
+
+  if (!found) {
+    for (const [key, cfg] of Object.entries(DEX_ROUTER_CONFIGS)) {
+      if (
+        String(cfg.chainId) === str ||
+        key.replace(/\s+/g, "") === str.replace(/\s+/g, "") ||
+        cfg.name.toUpperCase() === str
+      ) {
+        found = cfg;
+        break;
+      }
+    }
+  }
+  if (!found) return null;
+
+  return {
+    ...found,
+    routerAddress: getAddress(found.routerAddress.toLowerCase()),
+    fallbackRouter: found.fallbackRouter ? getAddress(found.fallbackRouter.toLowerCase()) : undefined,
+    wethAddress: getAddress(found.wethAddress.toLowerCase()),
+    usdcAddress: getAddress(found.usdcAddress.toLowerCase()),
+  };
+}
+
+/**
+ * Checks if a token symbol or address represents the chain's native gas token.
+ */
+function isNativeToken(token, chainConfig) {
+  if (!token) return true;
+  const t = String(token).trim().toUpperCase();
+  if (t === "ETH" || t === "NATIVE" || t === "AVAX" || t === "POL" || t === "MATIC") return true;
+  if (chainConfig && t === chainConfig.nativeSymbol.toUpperCase()) return true;
+  if (t === ZeroAddress || t === "0X0000000000000000000000000000000000000000") return true;
+  return false;
+}
+
+/**
+ * Swaps native token (ETH, AVAX, MATIC/POL) to USDC on the source chain via DEX router.
+ *
+ * @param {object} params
+ * @param {Wallet} params.signer - Signer wallet holding the native funds
+ * @param {object} params.chainConfig - DEX config for the chain
+ * @param {BigInt} params.amountInWei - Amount of native token to swap
+ * @returns {Promise<{ success: boolean, txHash?: string, usdcReceived: number, error?: string }>}
+ */
+async function swapNativeToUsdc({ signer, chainConfig, amountInWei }) {
+  try {
+    console.log(`[evm_sweeper] Swapping native token to USDC on ${chainConfig.name}... Amount: ${formatUnits(amountInWei, 18)}`);
+
+    const usdcContract = new Contract(chainConfig.usdcAddress, ERC20_ABI, signer);
+    const balanceBefore = await usdcContract.balanceOf(signer.address);
+
+    const deadline = Math.floor(Date.now() / 1000) + 1200; // 20 minutes
+
+    // 1. Try Uniswap V3 SwapRouter
+    if (chainConfig.chainId !== 43114) {
+      const router = new Contract(chainConfig.routerAddress, UNISWAP_V3_ROUTER_ABI, signer);
+
+      try {
+        const paramsV3 = {
+          tokenIn: chainConfig.wethAddress,
+          tokenOut: chainConfig.usdcAddress,
+          fee: chainConfig.poolFee || 500,
+          recipient: signer.address,
+          deadline,
+          amountIn: amountInWei,
+          amountOutMinimum: 0n, // We accept current market rate on deposits
+          sqrtPriceLimitX96: 0n,
+        };
+
+        const tx = await router.exactInputSingle(paramsV3, { value: amountInWei });
+        const receipt = await tx.wait(1);
+        const balanceAfter = await usdcContract.balanceOf(signer.address);
+        const received = balanceAfter - balanceBefore;
+        const usdcReceived = parseFloat(formatUnits(received, 6));
+
+        console.log(`[evm_sweeper] Native swap successful on ${chainConfig.name} ✓ Received $${usdcReceived} USDC (tx: ${receipt.hash})`);
+        return { success: true, txHash: receipt.hash, usdcReceived };
+      } catch (routerErr) {
+        console.warn(`[evm_sweeper] Router 1 error on ${chainConfig.name}:`, routerErr.message);
+        // Try fallback router if available
+        if (chainConfig.fallbackRouter && chainConfig.fallbackRouter !== chainConfig.routerAddress) {
+          const fallbackRouter = new Contract(chainConfig.fallbackRouter, UNISWAP_V3_ROUTER_ABI, signer);
+          const paramsV3 = {
+            tokenIn: chainConfig.wethAddress,
+            tokenOut: chainConfig.usdcAddress,
+            fee: chainConfig.poolFee || 500,
+            recipient: signer.address,
+            deadline,
+            amountIn: amountInWei,
+            amountOutMinimum: 0n,
+            sqrtPriceLimitX96: 0n,
+          };
+          const tx = await fallbackRouter.exactInputSingle(paramsV3, { value: amountInWei });
+          const receipt = await tx.wait(1);
+          const balanceAfter = await usdcContract.balanceOf(signer.address);
+          const usdcReceived = parseFloat(formatUnits(balanceAfter - balanceBefore, 6));
+          return { success: true, txHash: receipt.hash, usdcReceived };
+        }
+        throw routerErr;
+      }
+    } else {
+      // Avalanche (Trader Joe V2 / V1)
+      const router = new Contract(chainConfig.routerAddress, UNISWAP_V2_ROUTER_ABI, signer);
+      const path = [chainConfig.wethAddress, chainConfig.usdcAddress];
+      const tx = await router.swapExactAVAXForTokens(0n, path, signer.address, deadline, { value: amountInWei });
+      const receipt = await tx.wait(1);
+      const balanceAfter = await usdcContract.balanceOf(signer.address);
+      const usdcReceived = parseFloat(formatUnits(balanceAfter - balanceBefore, 6));
+      return { success: true, txHash: receipt.hash, usdcReceived };
+    }
+  } catch (err) {
+    console.error(`[evm_sweeper] Native swap failed on ${chainConfig.name}:`, err.message);
+    return { success: false, error: err.message, usdcReceived: 0 };
+  }
+}
+
+/**
+ * Universal Processor for incoming EVM deposits.
+ * Handles both Native Token deposits (swapping to USDC first) and direct USDC deposits,
+ * then bridges them automatically to Arc Mainnet via Circle CCTP V2.
+ *
+ * @param {object} params
+ * @param {number|string} params.chainId - Source chain ID or network name
+ * @param {string} params.from - Sender address
+ * @param {string} params.to - Recipient deposit address (PayIT user)
+ * @param {string} [params.token] - Token symbol or contract ("ETH", "USDC", etc.)
+ * @param {number|string} [params.amount] - Deposit amount
+ * @param {string} [params.txHash] - Incoming transaction hash
+ * @param {object} [bot] - Telegraf bot instance for real-time notification
+ * @returns {Promise<object>}
+ */
+async function processEvmDeposit(payload, bot) {
+  const chainId = payload.chainId || payload.network || 8453;
+  const toAddress = payload.to || payload.toAddress || payload.recipient;
+  const fromAddress = payload.from || payload.fromAddress || "External";
+  const token = payload.token || payload.asset || "ETH";
+  const rawAmount = payload.amount || payload.value || 0;
+  const txHash = payload.txHash || payload.hash || `evm_dep_${Date.now()}`;
+
+  console.log(`[evm_sweeper] Processing incoming EVM deposit on chain ${chainId} to ${toAddress}: ${rawAmount} ${token}`);
+
+  // 0. Strict Idempotency: Prevent replay
+  const eventId = `evm_deposit_${txHash}_${toAddress}`;
+  if (idempotency.isWebhookProcessed(eventId)) {
+    console.log(`[evm_sweeper] Deposit event ${eventId} already processed, skipping.`);
+    return { success: true, duplicate: true };
+  }
+
+  // 1. Resolve owner user from database
+  const user = db.getUserByDepositAddress(toAddress);
+  if (!user) {
+    console.warn(`[evm_sweeper] No PayIT user found matching address: ${toAddress}`);
+    return { success: false, error: "Recipient address not found in PayIT database" };
+  }
+
+  const isBiz = user.business_deposit_address && user.business_deposit_address.toLowerCase() === toAddress.toLowerCase();
+  const accountType = isBiz ? "business" : "personal";
+  const accountLabel = isBiz ? "Business Account" : "Personal Wallet";
+  const targetTelegramId = user.telegram_id;
+
+  // 2. Resolve CCTP and DEX configs
+  const cctpConfig = cctpBridge.resolveEvmCctpConfig(chainId);
+  const dexConfig = resolveDexConfig(chainId);
+  if (!cctpConfig) {
+    throw new Error(`Unsupported EVM chain for CCTP bridge: ${chainId}`);
+  }
+
+  // 3. Resolve user private key via system encryption
+  let userPrivateKey = null;
+  try {
+    userPrivateKey = db.getSystemDecryptedPrivateKey(user, accountType);
+  } catch (keyErr) {
+    console.warn(`[evm_sweeper] Could not decrypt system key for user ${user.telegram_id}:`, keyErr.message);
+  }
+
+  const provider = new JsonRpcProvider(cctpConfig.rpcUrl, cctpConfig.chainId);
+  const signer = userPrivateKey ? new Wallet(userPrivateKey, provider) : null;
+
+  let effectiveAmountUsdc = 0;
+  let swapTxHash = null;
+
+  const isNative = isNativeToken(token, dexConfig);
+
+  // 4. Handle Native Token (Swap to USDC) or direct USDC
+  if (isNative) {
+    if (!signer) {
+      throw new Error(`Signer wallet required to execute native swap on ${cctpConfig.name}`);
+    }
+
+    // Check balance on-chain
+    const balanceWei = await provider.getBalance(signer.address);
+    const gasReserveWei = parseUnits("0.0002", 18); // Reserve for gas
+
+    if (balanceWei <= gasReserveWei) {
+      console.warn(`[evm_sweeper] Native balance (${formatUnits(balanceWei, 18)}) too low to swap.`);
+      return { success: false, error: "Insufficient native deposit for swap" };
+    }
+
+    const swapAmountWei = balanceWei - gasReserveWei;
+    const swapResult = await swapNativeToUsdc({
+      signer,
+      chainConfig: dexConfig || DEX_ROUTER_CONFIGS.BASE,
+      amountInWei: swapAmountWei,
+    });
+
+    if (!swapResult.success || swapResult.usdcReceived <= 0) {
+      throw new Error(`Native to USDC swap failed on ${cctpConfig.name}: ${swapResult.error}`);
+    }
+
+    effectiveAmountUsdc = swapResult.usdcReceived;
+    swapTxHash = swapResult.txHash;
+  } else {
+    // Direct USDC transfer
+    effectiveAmountUsdc = parseFloat(rawAmount.toString());
+    if (effectiveAmountUsdc <= 0 && signer) {
+      const usdcContract = new Contract(cctpConfig.usdc, ERC20_ABI, provider);
+      const rawBal = await usdcContract.balanceOf(signer.address);
+      effectiveAmountUsdc = parseFloat(formatUnits(rawBal, 6));
+    }
+  }
+
+  if (effectiveAmountUsdc < 0.5) {
+    console.warn(`[evm_sweeper] Effective USDC amount too low ($${effectiveAmountUsdc}), minimum $0.50.`);
+    return { success: false, error: "Amount below minimum threshold ($0.50 USDC)" };
+  }
+
+  console.log(`[evm_sweeper] Ready to bridge $${effectiveAmountUsdc} USDC from ${cctpConfig.name} to Arc for user ${user.telegram_id}...`);
+
+  // 5. Execute CCTP Burn & Auto-Redeem / Instant Credit on Arc
+  let burnResult = null;
+  if (signer) {
+    try {
+      burnResult = await cctpBridge.executeEvmCctpBurn({
+        userWallet: signer,
+        chain: cctpConfig.name,
+        amountUsdc: effectiveAmountUsdc,
+        recipientArcAddress: toAddress,
+        autoCompleteOnArc: true,
+      });
+    } catch (burnErr) {
+      console.warn(`[evm_sweeper] CCTP burn note (${burnErr.message}), executing direct Arc disbursement...`);
+      const arcDisburseHash = await cctpBridge.disburseDirectOnArc({
+        recipientArcAddress: toAddress,
+        amountUsdc: effectiveAmountUsdc,
+      });
+      burnResult = {
+        success: true,
+        instantDisburseHash: arcDisburseHash,
+        sourceChain: cctpConfig.name,
+        recipient: toAddress,
+        burnError: burnErr.message,
+      };
+    }
+  } else {
+    // If signer is not directly available, trigger instant relayer disbursement directly on Arc
+    const arcDisburseHash = await cctpBridge.disburseDirectOnArc({
+      recipientArcAddress: toAddress,
+      amountUsdc: effectiveAmountUsdc,
+    });
+    burnResult = {
+      success: true,
+      instantDisburseHash: arcDisburseHash,
+      sourceChain: cctpConfig.name,
+      recipient: toAddress,
+    };
+  }
+
+  // 6. Record transaction and points
+  try {
+    const amountMicro = walletLib.parseToMicro(effectiveAmountUsdc.toFixed(6));
+    db.recordTransaction(
+      targetTelegramId,
+      "deposit_crosschain",
+      amountMicro,
+      "confirmed",
+      burnResult.instantDisburseHash || burnResult.txHash || txHash,
+      accountType
+    );
+    db.awardPoints(targetTelegramId, 5, "deposit", `Cross-chain deposit from ${cctpConfig.name}`);
+  } catch (recErr) {
+    console.warn("[evm_sweeper] Record tx error:", recErr.message);
+  }
+
+  // 7. Instant Telegram Notification with clean consumer receipt
+  if (bot && targetTelegramId) {
+    try {
+      const displayAmount = isNative ? `${rawAmount} ${token}` : `$${effectiveAmountUsdc.toFixed(2)} USDC`;
+      const swapNote = isNative ? `\n🔄 <b>Swapped:</b> ${displayAmount} → $${effectiveAmountUsdc.toFixed(2)} USDC` : "";
+
+      await bot.telegram.sendMessage(
+        targetTelegramId,
+        `🎉 <b>Cross-Chain Deposit Credited!</b>\n` +
+        `──────────────────────────\n` +
+        `🌐 <b>Source Network:</b> ${cctpConfig.name}\n` +
+        `💵 <b>Received:</b> ${displayAmount}${swapNote}\n` +
+        `💰 <b>Credited on Arc:</b> $${effectiveAmountUsdc.toFixed(2)} native USDC\n` +
+        `💼 <b>Account:</b> ${accountLabel}\n` +
+        `🔗 <b>Status:</b> Ready to spend, send, or save!\n\n` +
+        `<i>Your funds were automatically bridged via Circle CCTP and are instantly available in your PayIT balance.</i>`,
+        { parse_mode: "HTML" }
+      );
+    } catch (msgErr) {
+      console.warn(`[evm_sweeper] Failed to notify user TG:${targetTelegramId}:`, msgErr.message);
+    }
+  }
+
+  // Mark processed
+  idempotency.markWebhookProcessed(eventId, "crypto_deposit", txHash);
+
+  return {
+    success: true,
+    sourceChain: cctpConfig.name,
+    amountUsdc: effectiveAmountUsdc,
+    recipient: toAddress,
+    accountType,
+    burnResult,
+    swapTxHash,
+  };
+}
+
+/**
+ * Scan all supported EVM chains for a user's addresses and sweep any detected deposits.
+ *
+ * @param {number} telegramId - User's Telegram ID
+ * @param {object} [bot] - Optional bot instance for notifications
+ * @returns {Promise<Array<object>>} Array of sweep results
+ */
+async function sweepUserDeposits(telegramId, bot) {
+  const user = db.getUser(telegramId);
+  if (!user) return [];
+
+  const addresses = [
+    { address: user.deposit_address, accountType: "personal" },
+    ...(user.business_deposit_address ? [{ address: user.business_deposit_address, accountType: "business" }] : []),
+  ];
+
+  const results = [];
+
+  for (const { address, accountType } of addresses) {
+    if (!address) continue;
+
+    for (const [chainKey, cfg] of Object.entries(cctpBridge.EVM_CCTP_CONTRACTS)) {
+      try {
+        const provider = new JsonRpcProvider(cfg.rpcUrl, cfg.chainId);
+        const dexCfg = resolveDexConfig(chainKey);
+
+        // 1. Check native balance
+        const nativeBalWei = await provider.getBalance(address);
+        const minNativeWei = dexCfg?.minDepositWei || parseUnits("0.001", 18);
+
+        if (nativeBalWei > minNativeWei) {
+          console.log(`[evm_sweeper:scanner] Found ${formatUnits(nativeBalWei, 18)} native on ${chainKey} for ${address}`);
+          const res = await processEvmDeposit({
+            chainId: cfg.chainId,
+            to: address,
+            token: dexCfg?.nativeSymbol || "ETH",
+            amount: formatUnits(nativeBalWei, 18),
+            txHash: `sweep_native_${cfg.chainId}_${address}_${Date.now()}`,
+          }, bot);
+          results.push(res);
+        }
+
+        // 2. Check USDC balance
+        const usdcContract = new Contract(cfg.usdc, ERC20_ABI, provider);
+        const usdcBalUnits = await usdcContract.balanceOf(address);
+        const usdcBal = parseFloat(formatUnits(usdcBalUnits, cfg.decimals));
+
+        if (usdcBal >= 1.0) {
+          console.log(`[evm_sweeper:scanner] Found $${usdcBal} USDC on ${chainKey} for ${address}`);
+          const res = await processEvmDeposit({
+            chainId: cfg.chainId,
+            to: address,
+            token: "USDC",
+            amount: usdcBal,
+            txHash: `sweep_usdc_${cfg.chainId}_${address}_${Date.now()}`,
+          }, bot);
+          results.push(res);
+        }
+      } catch (chainErr) {
+        // Non-fatal per chain
+      }
+    }
+  }
+
+  return results;
+}
+
+let _monitorTimer = null;
+
+/**
+ * Start the background polling monitor for active users.
+ */
+function startEvmDepositMonitor({ bot, intervalMs = 90000 } = {}) {
+  if (_monitorTimer) return;
+  console.log(`[evm_sweeper] Starting background EVM deposit monitor (interval: ${intervalMs}ms)...`);
+
+  _monitorTimer = setInterval(async () => {
+    try {
+      // Find users active in the last 48 hours
+      const activeUsers = db.getAllUsers().filter((u) => {
+        if (!u.last_activity_at) return false;
+        const last = new Date(u.last_activity_at).getTime();
+        return Date.now() - last < 48 * 3600 * 1000;
+      });
+
+      for (const user of activeUsers.slice(0, 20)) {
+        await sweepUserDeposits(user.telegram_id, bot);
+      }
+    } catch (err) {
+      console.warn("[evm_sweeper:monitor_error]", err.message);
+    }
+  }, intervalMs);
+
+  return _monitorTimer;
+}
+
+function stopEvmDepositMonitor() {
+  if (_monitorTimer) {
+    clearInterval(_monitorTimer);
+    _monitorTimer = null;
+  }
+}
+
+module.exports = {
+  DEX_ROUTER_CONFIGS,
+  resolveDexConfig,
+  isNativeToken,
+  swapNativeToUsdc,
+  processEvmDeposit,
+  sweepUserDeposits,
+  startEvmDepositMonitor,
+  stopEvmDepositMonitor,
+};

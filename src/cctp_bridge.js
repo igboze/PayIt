@@ -30,6 +30,129 @@ const ARC_CCTP_CONTRACTS = {
   GATEWAY_MINTER: "0x0022222ABE238Cc2C7Bb1f21003F0a260052475B",
 };
 
+// Supported EVM source chains for CCTP V2 burns into Arc (Domain 26)
+const EVM_CCTP_CONTRACTS = {
+  BASE: {
+    name: "Base",
+    domain: 6,
+    chainId: 8453,
+    rpcUrl: process.env.BASE_RPC_URL || "https://mainnet.base.org",
+    tokenMessenger: "0x1682Ae6375C4E4A97e4B583BC394c36577037E7e",
+    messageTransmitter: "0xAD09780d193884d503182aD4588450C416D6F9D4",
+    usdc: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    decimals: 6,
+  },
+  ARBITRUM: {
+    name: "Arbitrum",
+    domain: 3,
+    chainId: 42161,
+    rpcUrl: process.env.ARBITRUM_RPC_URL || "https://arb1.arbitrum.io/rpc",
+    tokenMessenger: "0x19330d10D9Cc8751218eaf51E8885D058642E08A",
+    messageTransmitter: "0xC30362313FBBA5cf9163F0bb16a0e01f01A896ca",
+    usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+    decimals: 6,
+  },
+  ETHEREUM: {
+    name: "Ethereum",
+    domain: 0,
+    chainId: 1,
+    rpcUrl: process.env.ETHEREUM_RPC_URL || "https://ethereum-rpc.publicnode.com",
+    tokenMessenger: "0xbd3fa81b58ba92a82136038b25adec70f7840391",
+    messageTransmitter: "0x0a992d191DEeC32aFe36203Ad87D7d289a738F81",
+    usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    decimals: 6,
+  },
+  AVALANCHE: {
+    name: "Avalanche",
+    domain: 1,
+    chainId: 43114,
+    rpcUrl: process.env.AVALANCHE_RPC_URL || "https://api.avax.network/ext/bc/C/rpc",
+    tokenMessenger: "0x6B25532e1060CE10cc3B0A99e5683b91BFDe6982",
+    messageTransmitter: "0x81862590b57Db9874838472fa99896424564c781",
+    usdc: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+    decimals: 6,
+  },
+  OPTIMISM: {
+    name: "Optimism",
+    domain: 2,
+    chainId: 10,
+    rpcUrl: process.env.OPTIMISM_RPC_URL || "https://mainnet.optimism.io",
+    tokenMessenger: "0x2B4069517957735bE00ceE0fadAE88a26365528f",
+    messageTransmitter: "0x4d41f22c5a0e5c74309c3004aacc57891885502c",
+    usdc: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+    decimals: 6,
+  },
+  POLYGON: {
+    name: "Polygon",
+    domain: 7,
+    chainId: 137,
+    rpcUrl: process.env.POLYGON_RPC_URL || "https://polygon-rpc.com",
+    tokenMessenger: "0x9daF8257e601854c302288a7B6d8C110d7E91108",
+    messageTransmitter: "0xF3be9355363857F3e001be68856A2f96b4C39Ba9",
+    usdc: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+    decimals: 6,
+  },
+  // Testnet configs
+  "BASE SEPOLIA": {
+    name: "Base Sepolia",
+    domain: 6,
+    chainId: 84532,
+    rpcUrl: process.env.BASE_SEPOLIA_RPC_URL || "https://base-sepolia-rpc.publicnode.com",
+    tokenMessenger: "0x9f3B8679c73C2Fef8b59B4f3444d4e156fb70AA5",
+    messageTransmitter: "0x7865fAfC2db2093669d92c0F33AQ974B302666c4",
+    usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    decimals: 6,
+  },
+  "ETHEREUM SEPOLIA": {
+    name: "Ethereum Sepolia",
+    domain: 0,
+    chainId: 11155111,
+    rpcUrl: process.env.SEPOLIA_RPC_URL || "https://ethereum-sepolia-rpc.publicnode.com",
+    tokenMessenger: "0x9f3B8679c73C2Fef8b59B4f3444d4e156fb70AA5",
+    messageTransmitter: "0x7865fAfC2db2093669d92c0F33AQ974B302666c4",
+    usdc: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+    decimals: 6,
+  },
+  "AVALANCHE FUJI": {
+    name: "Avalanche Fuji",
+    domain: 1,
+    chainId: 43113,
+    rpcUrl: process.env.FUJI_RPC_URL || "https://api.avax-test.network/ext/bc/C/rpc",
+    tokenMessenger: "0xeb08f243e5d352267fa2019340544a0465422dd7",
+    messageTransmitter: "0xa9fb1b3009dcb79e2fe346c16a604b8fa8ae0a79",
+    usdc: "0x5425890298aed601595a70ab815c96711a31bc65",
+    decimals: 6,
+  },
+};
+
+function resolveEvmCctpConfig(chainIdentifier) {
+  if (!chainIdentifier) return null;
+  const str = String(chainIdentifier).trim().toUpperCase();
+  let found = EVM_CCTP_CONTRACTS[str] ? { ...EVM_CCTP_CONTRACTS[str] } : null;
+
+  if (!found) {
+    for (const [key, cfg] of Object.entries(EVM_CCTP_CONTRACTS)) {
+      if (
+        String(cfg.chainId) === str ||
+        String(cfg.domain) === str ||
+        key.replace(/\s+/g, "") === str.replace(/\s+/g, "")
+      ) {
+        found = { ...cfg };
+        break;
+      }
+    }
+  }
+  if (!found) return null;
+
+  return {
+    ...found,
+    name: found.name || str,
+    tokenMessenger: getAddress(found.tokenMessenger.toLowerCase()),
+    messageTransmitter: getAddress(found.messageTransmitter.toLowerCase()),
+    usdc: getAddress(found.usdc.toLowerCase()),
+  };
+}
+
 const MESSAGE_TRANSMITTER_ABI = [
   "function receiveMessage(bytes calldata message, bytes calldata attestation) external returns (bool)",
   "function isNonceUsed(bytes32 nonce) external view returns (bool)",
@@ -526,9 +649,185 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
   };
 }
 
+/**
+ * Executes a CCTP depositForBurn on any source EVM chain (Base, Arbitrum, Ethereum, etc.)
+ * targeting an Arc recipient address (Domain 26).
+ *
+ * Automatically sponsors gas from PayIT Relayer if the user's wallet has insufficient
+ * native token for ERC-20 approval and depositForBurn execution.
+ *
+ * @param {object} params
+ * @param {Wallet|object} params.userWallet - Signer wallet or object with privateKey
+ * @param {string|number} params.chain - Source chain name or ID (e.g. "Base", "Arbitrum", 8453)
+ * @param {number} params.amountUsdc - Amount of USDC to burn
+ * @param {string} params.recipientArcAddress - Destination Arc address
+ * @param {boolean} [params.autoCompleteOnArc=true] - Instant credit & Iris redeem in background
+ * @param {string} [params.signerPrivateKey] - Optional relayer key override
+ * @returns {Promise<object>}
+ */
+async function executeEvmCctpBurn({
+  userWallet,
+  chain,
+  amountUsdc,
+  recipientArcAddress,
+  autoCompleteOnArc = true,
+  signerPrivateKey,
+}) {
+  const chainConfig = resolveEvmCctpConfig(chain);
+  if (!chainConfig) {
+    throw new Error(`Unsupported EVM chain for CCTP burn: ${chain}`);
+  }
+  if (!recipientArcAddress) {
+    throw new Error("recipientArcAddress required for CCTP burn");
+  }
+
+  const { JsonRpcProvider, Contract, parseUnits, Interface, keccak256, zeroPadValue } = require("ethers");
+  const provider = new JsonRpcProvider(chainConfig.rpcUrl, chainConfig.chainId);
+  const signerKey = userWallet.privateKey || (typeof userWallet === "string" ? userWallet : null);
+  const signer = signerKey ? new Wallet(signerKey, provider) : userWallet.connect(provider);
+
+  const amountUnits = parseUnits(amountUsdc.toString(), chainConfig.decimals);
+  const mintRecipient = zeroPadValue(getAddress(recipientArcAddress.toLowerCase()), 32);
+
+  const ERC20_ABI = [
+    "function approve(address spender, uint256 amount) external returns (bool)",
+    "function allowance(address owner, address spender) external view returns (uint256)",
+    "function balanceOf(address owner) external view returns (uint256)",
+  ];
+
+  const TOKEN_MESSENGER_ABI = [
+    "function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken) external returns (uint64 _nonce)",
+  ];
+
+  // Check gas balance; sponsor microscopic gas from relayer if needed
+  try {
+    const gasBal = await provider.getBalance(signer.address);
+    const minGas = parseUnits("0.0001", 18);
+    if (gasBal < minGas) {
+      const relayerKey = signerPrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
+      if (relayerKey) {
+        console.log(`[cctp_bridge] Sponsoring gas for ${signer.address} on ${chainConfig.name}...`);
+        const relayer = new Wallet(relayerKey, provider);
+        const sponsorTx = await relayer.sendTransaction({
+          to: signer.address,
+          value: parseUnits("0.0003", 18),
+        });
+        await sponsorTx.wait(1);
+        console.log(`[cctp_bridge] Gas sponsored ✓ tx=${sponsorTx.hash}`);
+      }
+    }
+  } catch (gasErr) {
+    console.warn(`[cctp_bridge:gas_check_note] Gas check/sponsor note on ${chainConfig.name}:`, gasErr.message);
+  }
+
+  // 1. Check and approve TokenMessenger
+  const usdcContract = new Contract(chainConfig.usdc, ERC20_ABI, signer);
+  const currentAllowance = await usdcContract.allowance(signer.address, chainConfig.tokenMessenger);
+  if (currentAllowance < amountUnits) {
+    console.log(`[cctp_bridge] Approving TokenMessenger on ${chainConfig.name}...`);
+    const appTx = await usdcContract.approve(chainConfig.tokenMessenger, amountUnits);
+    await appTx.wait(1);
+    console.log(`[cctp_bridge] TokenMessenger approved ✓`);
+  }
+
+  // 2. Execute depositForBurn targeting Arc Mainnet (Domain 26)
+  const tokenMessenger = new Contract(chainConfig.tokenMessenger, TOKEN_MESSENGER_ABI, signer);
+  console.log(`[cctp_bridge] Calling depositForBurn on ${chainConfig.name} targeting Arc (domain 26)...`);
+  const tx = await tokenMessenger.depositForBurn(
+    amountUnits,
+    CCTP_DOMAINS.ARC,
+    mintRecipient,
+    chainConfig.usdc
+  );
+
+  let rawCctpMessage = null;
+  let messageHash = null;
+
+  try {
+    const receipt = await Promise.race([
+      tx.wait(1),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Confirmation timeout")), 20000)),
+    ]);
+    if (receipt && receipt.logs) {
+      const msgIface = new Interface(["event MessageSent(bytes message)"]);
+      for (const log of receipt.logs) {
+        try {
+          const parsed = msgIface.parseLog(log);
+          if (parsed?.args?.message) {
+            rawCctpMessage = parsed.args.message;
+            messageHash = keccak256(rawCctpMessage);
+            console.log(`[cctp_bridge] Extracted CCTP message from ${chainConfig.name} ✓ hash=${messageHash}`);
+            break;
+          }
+        } catch {}
+      }
+    }
+  } catch (waitErr) {
+    console.warn("[cctp_bridge:evm_burn_wait_note]", waitErr.message);
+  }
+
+  // 3. Automated Arc completion & instant credit
+  let instantDisburseHash = null;
+  if (autoCompleteOnArc) {
+    // Instant 1-second credit to user's Arc wallet
+    disburseDirectOnArc({
+      recipientArcAddress,
+      amountUsdc,
+      signerPrivateKey,
+    }).then((hash) => {
+      instantDisburseHash = hash;
+      console.log(`[cctp_bridge] Instant credit disbursed on Arc ✓ tx=${hash}`);
+    }).catch((disErr) => {
+      console.warn("[cctp_bridge:instant_disburse_warn]", disErr.message);
+    });
+
+    // Background Iris attestation polling & Arc MessageTransmitter receiveMessage
+    if (messageHash || tx.hash) {
+      (async () => {
+        try {
+          let attMessage = rawCctpMessage;
+          let attHash = messageHash;
+          if (!attHash) {
+            const irisMsg = await fetchCctpMessage(chainConfig.domain, tx.hash);
+            attMessage = irisMsg.message;
+            attHash = irisMsg.messageHash;
+          }
+          if (attHash) {
+            console.log(`[cctp_bridge] Polling Iris attestation for ${attHash}...`);
+            const { attestation } = await pollCctpAttestation(attHash, 90, 5000);
+            await redeemOnArc({
+              attestation,
+              message: attMessage,
+              userPrivateKey: signerPrivateKey,
+            });
+            console.log(`[cctp_bridge] EVM CCTP burn successfully redeemed on Arc MessageTransmitter ✓`);
+          }
+        } catch (pollErr) {
+          console.warn("[cctp_bridge:evm_arc_redeem_warn]", pollErr.message);
+        }
+      })();
+    }
+  }
+
+  return {
+    success: true,
+    txHash: tx.hash,
+    sourceChain: chainConfig.name,
+    sourceDomain: chainConfig.domain,
+    destinationChain: "Arc Mainnet",
+    destinationDomain: CCTP_DOMAINS.ARC,
+    amountUsdc,
+    recipient: recipientArcAddress,
+    messageHash,
+    instantDisburseHash,
+  };
+}
+
 module.exports = {
   CCTP_DOMAINS,
   ARC_CCTP_CONTRACTS,
+  EVM_CCTP_CONTRACTS,
+  resolveEvmCctpConfig,
   fetchCctpMessage,
   pollCctpAttestation,
   redeemOnArc,
@@ -536,4 +835,5 @@ module.exports = {
   autoBridgeSolanaToArc,
   executeArcToSolanaCctpBurn,
   completeCctpWithdrawalOnSolana,
+  executeEvmCctpBurn,
 };
