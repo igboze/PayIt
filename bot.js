@@ -1229,6 +1229,18 @@ bot.action("action_sweep_deposits", async (ctx) => {
   const user = requireUser(ctx);
   if (!user) return;
 
+  if (!user.system_encrypted_key) {
+    convState.setState(ctx.from.id, "sweep_auth_pin", {}, getContext(ctx.from.id));
+    return ctx.reply(
+      `🔐 <b>One-Time Authorization</b>\n──────────────────────────\n` +
+      `To authorize automated multi-chain deposit sweeps, please enter your 4-digit PIN:`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_gateway")]]),
+      }
+    );
+  }
+
   await ctx.reply("🔍 Scanning Base, Arbitrum, Ethereum, Avalanche, Polygon, and Optimism for deposits...");
   try {
     const results = await evmDepositSweeper.sweepUserDeposits(ctx.from.id, bot);
@@ -4020,6 +4032,59 @@ bot.on("text", async (ctx) => {
         `You can withdraw anytime.\n\nEnter your PIN to start saving:`,
         Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_yields")]])
       );
+    if (state.type === "sweep_auth_pin") {
+      await deleteSensitiveMessage(ctx);
+      if (!/^\d{4}$/.test(text)) return ctx.reply("Please enter your 4-digit PIN.");
+      const pinStatus = db.verifyPinWithStatus(userId, text);
+      if (pinStatus.locked) {
+        convState.clearState(userId);
+        const mins = Math.ceil(pinStatus.remainingSec / 60);
+        return ctx.reply(`🔒 Account temporarily locked due to failed PIN attempts. Try again in ${mins} min.`);
+      }
+      if (!pinStatus.valid) {
+        if (pinStatus.remainingAttempts === 0) {
+          convState.clearState(userId);
+          return ctx.reply("🔒 Too many failed PIN attempts. Account locked for 15 minutes.");
+        }
+        return ctx.reply(`❌ Incorrect PIN. ${pinStatus.remainingAttempts} attempt(s) remaining.`);
+      }
+
+      convState.clearState(userId);
+      await ctx.reply("🔍 PIN verified! Scanning Base, Arbitrum, Ethereum, Avalanche, Polygon, and Optimism for deposits...");
+      try {
+        const results = await evmDepositSweeper.sweepUserDeposits(userId, bot);
+        if (!results || results.length === 0) {
+          return ctx.reply(
+            `✅ <b>Scan Complete</b>\n──────────────────────────\n` +
+            `No unswept deposits found right now.\n\n` +
+            `Your account is now fully authorized for automated multi-chain deposit sweeps whenever you send funds!`,
+            {
+              parse_mode: "HTML",
+              ...Markup.inlineKeyboard([
+                [Markup.button.callback("🔄 Scan Again", "action_sweep_deposits")],
+                [Markup.button.callback("« Back to Deposits", "action_gateway")],
+              ]),
+            }
+          );
+        }
+
+        const creditedTotal = results.reduce((acc, r) => acc + (r.amountUsdc || 0), 0);
+        return ctx.reply(
+          `🎉 <b>Deposit Sweep Successful!</b>\n──────────────────────────\n` +
+          `Successfully processed ${results.length} deposit(s) for a total of <b>$${creditedTotal.toFixed(2)} USDC</b> on Arc Mainnet!\n\n` +
+          `Your balance has been updated.`,
+          {
+            parse_mode: "HTML",
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback("💰 View Balance", "action_balance")],
+              [Markup.button.callback("🏠 Main Menu", "main_menu")],
+            ]),
+          }
+        );
+      } catch (sweepErr) {
+        console.error("[bot:sweep_auth_pin_err]", sweepErr);
+        return ctx.reply(`Could not complete deposit scan: ${sweepErr.message}`);
+      }
     }
 
     if (state.type === "confirm_yield_deposit") {
