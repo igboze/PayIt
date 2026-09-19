@@ -41,6 +41,8 @@ const { generateReceiptPNG }   = require("./src/receipt_generator");
 const paymaster = require("./src/paymaster");
 const bankResolver = require("./src/bank_resolver");
 const evmDepositSweeper = require("./src/evm_deposit_sweeper");
+const autoEarn = require("./src/auto_earn");
+const cashflow = require("./src/cashflow");
 
 // ── Agent modules ─────────────────────────────────────────────────────────────
 const { parsePaymentIntent }      = require("./agent/orchestrator");
@@ -4052,7 +4054,7 @@ bot.on("text", async (ctx) => {
       }
 
       convState.clearState(userId);
-      await ctx.reply("🔍 PIN verified! Scanning Base, Arbitrum, Ethereum, Avalanche, Polygon, and Optimism for deposits...");
+      await ctx.reply("🔍 PIN verified! Scanning Base, Arbitrum, Robinhood Chain, Ethereum, Avalanche, Polygon, and Optimism for deposits...");
       try {
         const results = await evmDepositSweeper.sweepUserDeposits(userId, bot);
         if (!results || results.length === 0) {
@@ -5452,7 +5454,6 @@ async function startBot() {
   }
 
   // Start SME morning cash flow briefing scheduler (8:00 AM daily)
-  const cashflow = require("./src/cashflow");
   try {
     cashflow.initCashFlowScheduler(bot);
   } catch (err) {
@@ -5460,7 +5461,6 @@ async function startBot() {
   }
 
   // Start background auto-earn worker (monitors funds idle ≥ 2 hours)
-  const autoEarn = require("./src/auto_earn");
   try {
     autoEarn.startAutoEarnWorker({
       intervalMs: 15 * 60 * 1000,
@@ -5479,9 +5479,6 @@ async function startBot() {
 }
 
 startBot();
-
-const autoEarn = require("./src/auto_earn");
-const cashflow = require("./src/cashflow");
 
 process.once("SIGINT", () => {
   evmDepositSweeper.stopEvmDepositMonitor();
