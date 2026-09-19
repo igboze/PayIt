@@ -6,10 +6,48 @@ const axios = require("axios");
 const { JsonRpcProvider, Contract, Wallet, keccak256, getAddress, zeroPadValue } = require("ethers");
 const { getNetworkConfig, getExplorerUrl } = require("./network");
 const gateway = require("./gateway");
-const { receiveCctpMessageOnSolana } = require("./multichain");
+const { receiveCctpMessageOnSolana, getSolanaConnection } = require("./multichain");
+const db = require("./db");
 
 const CIRCLE_IRIS_API_V2 = "https://iris-api.circle.com/v2";
 const CIRCLE_IRIS_API_V1 = "https://iris-api.circle.com/v1";
+
+// Minimum SOL lamports required for one CCTP receiveMessage call.
+// ATA creation costs ~0.002 SOL rent + ~0.000005 SOL fee = ~0.0025 SOL.
+// We require at least 0.01 SOL (10_000_000 lamports) as a safe buffer.
+const MIN_FEE_PAYER_LAMPORTS = 10_000_000; // 0.01 SOL
+
+/**
+ * Check that the Solana fee-payer wallet has enough SOL to complete a CCTP
+ * receiveMessage call.  Returns { ok: boolean, balanceSol: number }.
+ *
+ * Call this BEFORE executing any Arc burn to avoid stranded funds.
+ *
+ * @param {string} [feePayerKey] - Base58 secret key (fallback: SOLANA_FEE_PAYER_KEY env)
+ * @returns {Promise<{ ok: boolean, balanceSol: number, address: string }>}
+ */
+async function checkSolanaFeePayerBalance(feePayerKey) {
+  const bs58Key = feePayerKey || process.env.SOLANA_FEE_PAYER_KEY;
+  if (!bs58Key) {
+    return { ok: false, balanceSol: 0, address: "(no key set)" };
+  }
+  try {
+    const bs58 = require("bs58");
+    const { Keypair } = require("@solana/web3.js");
+    const bs58Decode = bs58.default ? bs58.default.decode : bs58.decode;
+    const keypair = Keypair.fromSecretKey(bs58Decode(bs58Key));
+    const conn = getSolanaConnection();
+    const lamports = await conn.getBalance(keypair.publicKey);
+    return {
+      ok: lamports >= MIN_FEE_PAYER_LAMPORTS,
+      balanceSol: lamports / 1e9,
+      address: keypair.publicKey.toBase58(),
+    };
+  } catch (err) {
+    console.warn("[cctp_bridge:fee_payer_check]", err.message);
+    return { ok: false, balanceSol: 0, address: "(error)" };
+  }
+}
 
 // CCTP Domain mapping
 const CCTP_DOMAINS = {
@@ -446,9 +484,25 @@ async function autoBridgeSolanaToArc({
  * @param {string}  [params.feePayerKey]         - Base58 Solana fee-payer key (fallback: env)
  * @returns {Promise<{ success: boolean, txHash?: string, error?: string }>}
  */
-async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSolanaAddress, autoCompleteOnSolana = true, feePayerKey }) {
+async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSolanaAddress, autoCompleteOnSolana = true, feePayerKey, telegramId }) {
   if (!userWallet) throw new Error("userWallet required for Arc CCTP burn");
   if (!recipientSolanaAddress) throw new Error("recipientSolanaAddress required for Arc CCTP burn");
+
+  // ── PRE-FLIGHT: Verify Solana fee-payer has enough SOL BEFORE burning on Arc ──
+  // This is the most important guard: once USDC is burned on Arc it CANNOT be
+  // recovered without completing the Solana receiveMessage, so we refuse to burn
+  // if the fee-payer wallet is empty.
+  const feeCheck = await checkSolanaFeePayerBalance(feePayerKey);
+  console.log(`[cctp_bridge:preflight] Fee payer ${feeCheck.address}: ${feeCheck.balanceSol} SOL`);
+  if (!feeCheck.ok) {
+    const errMsg =
+      `Solana fee-payer wallet (${feeCheck.address}) has insufficient SOL ` +
+      `(${feeCheck.balanceSol.toFixed(4)} SOL, need ≥ ${MIN_FEE_PAYER_LAMPORTS / 1e9} SOL). ` +
+      `Please fund this wallet before withdrawing. Contact support if you need help.`;
+    console.error("[cctp_bridge:preflight_FAIL]", errMsg);
+    return { success: false, error: errMsg };
+  }
+  console.log(`[cctp_bridge:preflight] Fee payer SOL check passed ✓ (${feeCheck.balanceSol.toFixed(4)} SOL)`);
 
   try {
     const bs58 = require("bs58");
@@ -518,13 +572,30 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
       }
     }
 
-    // 3. Fire background completion: poll attestation + receiveMessage on Solana
+    // 3. Record pending burn to DB immediately after Arc tx so we can retry on Solana
+    //    if the completion step fails (e.g. RPC hiccup, temporary SOL shortage).
+    try {
+      db.recordCctpPendingBurn({
+        telegramId: telegramId || 0,
+        arcTxHash,
+        messageHex: rawCctpMessage,
+        messageHash,
+        amountUsdc,
+        recipientSolana: recipientSolanaAddress,
+      });
+      console.log(`[cctp_bridge] Recorded pending burn in DB: ${arcTxHash}`);
+    } catch (dbErr) {
+      console.warn("[cctp_bridge:db_record_note]", dbErr.message);
+    }
+
+    // 4. Fire background completion: poll attestation + receiveMessage on Solana
     if (autoCompleteOnSolana) {
       completeCctpWithdrawalOnSolana({
         arcTxHash,
         messageHex: rawCctpMessage,
         messageHash,
         feePayerKey,
+        telegramId,
         // Use generous polling for mainnet: up to 90 attempts × 5s = 7.5 min
         maxAttempts: 90,
         intervalMs: 5000,
@@ -571,13 +642,12 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
  * @param {number} [params.intervalMs=5000] - Polling interval in ms
  * @returns {Promise<{ success, arcTxHash, solanaTxSignature, messageHash }>}
  */
-async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHash, feePayerKey, maxAttempts = 90, intervalMs = 5000 }) {
+async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHash, feePayerKey, maxAttempts = 90, intervalMs = 5000, telegramId }) {
   const bs58Key = feePayerKey || process.env.SOLANA_FEE_PAYER_KEY;
   if (!bs58Key) {
-    throw new Error(
-      "SOLANA_FEE_PAYER_KEY is not set. Add a Solana wallet with ~0.1 SOL to your .env to " +
-      "enable gasless CCTP withdrawals. Cost: ~$0.001 per withdrawal."
-    );
+    const msg = "SOLANA_FEE_PAYER_KEY is not set. Add a Solana wallet with ~0.1 SOL to your .env to enable gasless CCTP withdrawals.";
+    try { db.failCctpPendingBurn(arcTxHash, msg); } catch {}
+    throw new Error(msg);
   }
 
   const bs58 = require("bs58");
@@ -585,8 +655,20 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
   const bs58Decode = bs58.default ? bs58.default.decode : bs58.decode;
   const feePayerKeypair = Keypair.fromSecretKey(bs58Decode(bs58Key));
 
+  // Runtime SOL balance check — if we somehow arrive here with low SOL, record and bail.
+  const conn = getSolanaConnection();
+  const lamports = await conn.getBalance(feePayerKeypair.publicKey).catch(() => 0);
+  if (lamports < MIN_FEE_PAYER_LAMPORTS) {
+    const msg =
+      `Fee-payer ${feePayerKeypair.publicKey.toBase58()} has only ${lamports / 1e9} SOL — ` +
+      `need ≥ ${MIN_FEE_PAYER_LAMPORTS / 1e9} SOL. Top up wallet and run /retry_cctp to resume.`;
+    console.error("[cctp_bridge:complete_SOL_FAIL]", msg);
+    try { db.failCctpPendingBurn(arcTxHash, msg); } catch {}
+    throw new Error(msg);
+  }
+
   console.log(`[cctp_bridge:complete] Starting Arc→Solana CCTP completion for arc tx: ${arcTxHash}`);
-  console.log(`[cctp_bridge:complete] Fee-payer: ${feePayerKeypair.publicKey.toBase58()}`);
+  console.log(`[cctp_bridge:complete] Fee-payer: ${feePayerKeypair.publicKey.toBase58()} | ${lamports / 1e9} SOL`);
 
   // Step 1: Resolve the CCTP message & hash (receipt logs first, Iris API fallback)
   let msgDetails = (messageHex && messageHash) ? { message: messageHex, messageHash } : null;
@@ -632,15 +714,23 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
   }
 
   if (!msgDetails?.message) {
-    throw new Error(`CCTP message not found for Arc tx ${arcTxHash}. ` +
-      "The tx may not be confirmed yet or CCTP isn't registered for this token.");
+    const msg = `CCTP message not found for Arc tx ${arcTxHash}. The tx may not be confirmed yet or CCTP isn't registered for this token.`;
+    try { db.failCctpPendingBurn(arcTxHash, msg); } catch {}
+    throw new Error(msg);
   }
 
   console.log(`[cctp_bridge:complete] Message hash: ${msgDetails.messageHash}`);
 
   // Step 2: Poll Circle for attestation
   console.log(`[cctp_bridge:complete] Polling Circle for attestation (max ${maxAttempts} attempts)...`);
-  const { attestation } = await pollCctpAttestation(msgDetails.messageHash, maxAttempts, intervalMs);
+  let attestation;
+  try {
+    ({ attestation } = await pollCctpAttestation(msgDetails.messageHash, maxAttempts, intervalMs));
+  } catch (attErr) {
+    const msg = `Attestation polling failed for ${arcTxHash}: ${attErr.message}`;
+    try { db.failCctpPendingBurn(arcTxHash, msg); } catch {}
+    throw new Error(msg);
+  }
   console.log(`[cctp_bridge:complete] Attestation received ✓`);
 
   // Step 3: Submit receiveMessage on Solana (fee payer pays ~$0.001 SOL)
@@ -652,16 +742,79 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
   });
 
   if (!result.success) {
-    throw new Error(`Solana receiveMessage failed: ${result.error}`);
+    const msg = `Solana receiveMessage failed: ${result.error}`;
+    try { db.failCctpPendingBurn(arcTxHash, msg); } catch {}
+    throw new Error(msg);
   }
 
   console.log(`[cctp_bridge:complete] USDC minted on Solana ✓ tx=${result.txSignature}`);
+
+  // Mark completed in DB so it's not retried again
+  try { db.completeCctpPendingBurn(arcTxHash, result.txSignature); } catch {}
 
   return {
     success: true,
     arcTxHash,
     solanaTxSignature: result.txSignature,
     messageHash: msgDetails.messageHash,
+  };
+}
+
+/**
+ * Retry all pending/failed CCTP Arc→Solana burns stored in the DB.
+ * Call this from an admin command (/retry_cctp) or a scheduled cron worker
+ * after funding the Solana fee-payer wallet with SOL.
+ *
+ * @param {string} [feePayerKey] - Optional override for fee payer (default: env)
+ * @returns {Promise<{ retried: number, succeeded: number, failed: number, skipped: number }>}
+ */
+async function retryPendingCctpBurns(feePayerKey) {
+  // Safety: abort early if fee payer still has no SOL
+  const feeCheck = await checkSolanaFeePayerBalance(feePayerKey);
+  if (!feeCheck.ok) {
+    console.warn(`[cctp_bridge:retry] Fee payer ${feeCheck.address} has ${feeCheck.balanceSol} SOL — skipping retry`);
+    return { retried: 0, succeeded: 0, failed: 0, skipped: 0, feePayerSol: feeCheck.balanceSol, feePayerAddress: feeCheck.address };
+  }
+
+  const pending = db.getPendingCctpBurns();
+  console.log(`[cctp_bridge:retry] Found ${pending.length} pending CCTP burns to retry`);
+
+  let succeeded = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  for (const burn of pending) {
+    console.log(`[cctp_bridge:retry] Retrying arcTxHash=${burn.arc_tx_hash} (attempt ${burn.retry_count + 1})`);
+    try {
+      const result = await completeCctpWithdrawalOnSolana({
+        arcTxHash: burn.arc_tx_hash,
+        messageHex: burn.message_hex || undefined,
+        messageHash: burn.message_hash || undefined,
+        feePayerKey,
+        telegramId: burn.telegram_id,
+        maxAttempts: 60,
+        intervalMs: 5000,
+      });
+      if (result.success) {
+        succeeded++;
+        console.log(`[cctp_bridge:retry] ✓ ${burn.arc_tx_hash} → Solana tx ${result.solanaTxSignature}`);
+      } else {
+        failed++;
+        console.warn(`[cctp_bridge:retry] ✗ ${burn.arc_tx_hash}: completeCctpWithdrawalOnSolana returned success=false`);
+      }
+    } catch (err) {
+      failed++;
+      console.warn(`[cctp_bridge:retry] ✗ ${burn.arc_tx_hash}:`, err.message);
+    }
+  }
+
+  return {
+    retried: pending.length,
+    succeeded,
+    failed,
+    skipped,
+    feePayerSol: feeCheck.balanceSol,
+    feePayerAddress: feeCheck.address,
   };
 }
 
@@ -866,4 +1019,7 @@ module.exports = {
   executeArcToSolanaCctpBurn,
   completeCctpWithdrawalOnSolana,
   executeEvmCctpBurn,
+  checkSolanaFeePayerBalance,
+  retryPendingCctpBurns,
+  MIN_FEE_PAYER_LAMPORTS,
 };

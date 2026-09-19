@@ -615,7 +615,8 @@ async function showBalance(ctx) {
          Markup.button.callback("📤 Send Money",      "action_send_menu")],
         [Markup.button.callback("💵 Cash Out to Naira", "action_withdraw_menu"),
          Markup.button.callback("📈 Earn Interest",   "action_yields")],
-        [Markup.button.callback("🌍 Add from Abroad", "action_gateway")],
+        [Markup.button.callback("🌐 Crypto Deposit",  "action_gateway"),
+         Markup.button.callback("🔄 Scan & Sweep",    "action_sweep_deposits")],
         [Markup.button.callback("📋 History",         "action_history")],
       ])
     );
@@ -657,7 +658,8 @@ async function showBizBalance(ctx) {
          Markup.button.callback("💸 Log Expense",   "action_log_expense")],
         [Markup.button.callback("📋 Invoices",      "action_list_biz_invoices"),
          Markup.button.callback("📊 This Month",    "action_cash_flow")],
-        [Markup.button.callback("🌍 Add from Abroad", "action_gateway")],
+        [Markup.button.callback("🌐 Crypto Deposit", "action_gateway"),
+         Markup.button.callback("🔄 Scan & Sweep",  "action_sweep_deposits")],
       ]), ...accountToggle("business") }
     );
   } catch (err) {
@@ -688,6 +690,7 @@ async function showReceive(ctx) {
         [Markup.button.callback("🇳🇬 Deposit Naira (Bank Transfer)", "action_paj_onramp")],
         [Markup.button.callback("💳 Pay with Card / Apple Pay",     "gateway_onramp")],
         [Markup.button.callback("🌐 Crypto & Web3 Deposit",        "action_gateway")],
+        [Markup.button.callback("🔄 Scan & Sweep Deposits",        "action_sweep_deposits")],
         [Markup.button.callback("💰 Check Balance",                 "action_balance")],
         [Markup.button.callback("🏠 Main Menu",                     "main_menu")],
       ]),
@@ -1245,8 +1248,10 @@ bot.action("action_gateway", async (ctx) => {
   );
 });
 
-bot.action("action_sweep_deposits", async (ctx) => {
-  ctx.answerCbQuery();
+async function handleSweepDeposits(ctx) {
+  if (ctx.callbackQuery) {
+    ctx.answerCbQuery().catch(() => {});
+  }
   const user = requireUser(ctx);
   if (!user) return;
 
@@ -1318,7 +1323,11 @@ bot.action("action_sweep_deposits", async (ctx) => {
       ...Markup.inlineKeyboard([[Markup.button.callback("« Back", "action_gateway")]]),
     });
   }
-});
+}
+
+bot.action("action_sweep_deposits", handleSweepDeposits);
+bot.command("sweep", handleSweepDeposits);
+bot.command("scan", handleSweepDeposits);
 
 bot.action("gateway_onramp", async (ctx) => {
   ctx.answerCbQuery();
@@ -3295,6 +3304,95 @@ bot.command("volume", async (ctx) => {
       [Markup.button.callback("🔄 Refresh", "admin_volume")],
     ]),
   });
+});
+
+// ─── Admin: CCTP Retry & Fee-Payer Status ────────────────────────────────────
+
+/**
+ * /retry_cctp — Admin command to retry all pending CCTP Arc→Solana burns.
+ * Use this after funding the Solana fee-payer wallet (5ba1CAaz...) with SOL.
+ */
+bot.command("retry_cctp", async (ctx) => {
+  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return;
+  const cctpBridge = require("./src/cctp_bridge");
+  const statusMsg = await ctx.reply("🔄 Checking Solana fee-payer and retrying pending CCTP burns...");
+  try {
+    const result = await cctpBridge.retryPendingCctpBurns();
+    const { retried, succeeded, failed, feePayerSol, feePayerAddress } = result;
+    if (retried === 0) {
+      return ctx.reply(
+        `✅ <b>No pending CCTP burns to retry.</b>\n\n` +
+        `💳 Fee payer: <code>${feePayerAddress}</code>\n` +
+        `💰 Balance: ${feePayerSol.toFixed(4)} SOL`,
+        { parse_mode: "HTML" }
+      );
+    }
+    return ctx.reply(
+      `🔄 <b>CCTP Retry Complete</b>\n` +
+      `──────────────────────────\n` +
+      `Total retried:  ${retried}\n` +
+      `✅ Succeeded:   ${succeeded}\n` +
+      `❌ Failed:      ${failed}\n\n` +
+      `💳 Fee payer: <code>${feePayerAddress}</code>\n` +
+      `💰 Balance: ${feePayerSol.toFixed(4)} SOL`,
+      { parse_mode: "HTML" }
+    );
+  } catch (err) {
+    return ctx.reply(`❌ CCTP retry error: ${err.message}`);
+  }
+});
+
+/**
+ * admin_cctp_status — Inline button to show CCTP fee payer status and pending count.
+ */
+bot.action("admin_cctp_status", async (ctx) => {
+  ctx.answerCbQuery();
+  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return ctx.reply("Not authorised.");
+  const cctpBridge = require("./src/cctp_bridge");
+  try {
+    const feeCheck = await cctpBridge.checkSolanaFeePayerBalance();
+    const pendingCount = db.countPendingCctpBurns();
+    const statusIcon = feeCheck.ok ? "✅" : "⚠️";
+    const balanceMsg = feeCheck.ok
+      ? `${feeCheck.balanceSol.toFixed(4)} SOL (healthy)`
+      : `${feeCheck.balanceSol.toFixed(4)} SOL ← ⚠️ NEEDS FUNDING (min 0.01 SOL)`;
+    const message =
+      `🌉 <b>CCTP Arc→Solana Status</b>\n` +
+      `──────────────────────────\n` +
+      `${statusIcon} Fee Payer: <code>${feeCheck.address}</code>\n` +
+      `   Balance: ${balanceMsg}\n\n` +
+      `📋 Pending burns: ${pendingCount}\n\n` +
+      (pendingCount > 0
+        ? `⚡ Run /retry_cctp after funding the wallet to complete pending withdrawals.`
+        : `✅ No stuck withdrawals.`);
+    return ctx.reply(message, {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("🔄 Retry Pending Burns", "admin_cctp_retry")],
+        [Markup.button.callback("« Admin Menu", "admin_menu")],
+      ]),
+    });
+  } catch (err) {
+    return ctx.reply(`CCTP status error: ${err.message}`);
+  }
+});
+
+bot.action("admin_cctp_retry", async (ctx) => {
+  ctx.answerCbQuery("Retrying pending burns...");
+  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return ctx.reply("Not authorised.");
+  const cctpBridge = require("./src/cctp_bridge");
+  try {
+    const result = await cctpBridge.retryPendingCctpBurns();
+    const { retried, succeeded, failed, feePayerSol, feePayerAddress } = result;
+    return ctx.reply(
+      `🔄 <b>CCTP Retry Result</b>\n` +
+      `Retried: ${retried} | ✅ ${succeeded} OK | ❌ ${failed} failed\n` +
+      `💰 Fee payer balance: ${feePayerSol.toFixed(4)} SOL`,
+      { parse_mode: "HTML", ...Markup.inlineKeyboard([[Markup.button.callback("« Back", "admin_cctp_status")]]) }
+    );
+  } catch (err) {
+    return ctx.reply(`Error: ${err.message}`);
+  }
 });
 
 // ─── Main text handler — intent router ───────────────────────────────────────
@@ -5346,6 +5444,19 @@ bot.on("text", async (ctx) => {
 
   // Skip very short messages (likely accidental)
   if (text.length < 3) return;
+
+  // Fast trigger for sweep/scan text keywords
+  const lowerText = text.toLowerCase().trim();
+  if (
+    lowerText === "sweep" ||
+    lowerText === "scan" ||
+    lowerText === "scan and sweep" ||
+    lowerText === "scan & sweep" ||
+    lowerText === "scan deposits" ||
+    lowerText === "sweep deposits"
+  ) {
+    return handleSweepDeposits(ctx);
+  }
 
   await ctx.reply("⏳ On it...");
 

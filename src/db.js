@@ -138,6 +138,26 @@ db.exec(`
     locked_until      INTEGER NOT NULL DEFAULT 0,
     last_attempt_at   TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  -- Pending CCTP Arc→Solana burns awaiting Solana receiveMessage completion.
+  -- Written immediately after the Arc depositForBurn tx is confirmed so funds
+  -- can NEVER be permanently stuck even if the Solana fee-payer runs out of SOL.
+  -- Auto-retried by retryPendingCctpBurns() whenever the fee payer is funded.
+  CREATE TABLE IF NOT EXISTS cctp_pending_burns (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id       INTEGER NOT NULL,
+    arc_tx_hash       TEXT NOT NULL UNIQUE,
+    message_hex       TEXT,
+    message_hash      TEXT,
+    amount_usdc       REAL NOT NULL,
+    recipient_solana  TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'pending',
+    error             TEXT,
+    retry_count       INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at      TEXT,
+    solana_tx_sig     TEXT
+  );
 `);
 
 function ensureUserSchema() {
@@ -268,9 +288,35 @@ function ensureTransactionsSchema() {
   if (!cols.includes("type")) db.exec("ALTER TABLE transactions ADD COLUMN type TEXT DEFAULT 'general'");
 }
 
+function ensureCctpPendingSchema() {
+  // Idempotently add the cctp_pending_burns table for deployments that pre-date it.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS cctp_pending_burns (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id       INTEGER NOT NULL,
+        arc_tx_hash       TEXT NOT NULL UNIQUE,
+        message_hex       TEXT,
+        message_hash      TEXT,
+        amount_usdc       REAL NOT NULL,
+        recipient_solana  TEXT NOT NULL,
+        status            TEXT NOT NULL DEFAULT 'pending',
+        error             TEXT,
+        retry_count       INTEGER NOT NULL DEFAULT 0,
+        created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+        completed_at      TEXT,
+        solana_tx_sig     TEXT
+      )
+    `);
+  } catch (err) {
+    console.warn("[db] ensureCctpPendingSchema note:", err.message);
+  }
+}
+
 ensureUserSchema();
 ensureYieldPositionsSchema();
 ensureTransactionsSchema();
+ensureCctpPendingSchema();
 
 // ─── User helpers ─────────────────────────────────────────────────────────────
 
@@ -1169,6 +1215,83 @@ function getVolumeStats() {
   return { onramp, crypto, offramp, sends, savings, totalAll: { count: totalAll.count, usdc: totalAll.total / MICRO }, users, topUsers };
 }
 
+// ─── CCTP Pending Burns ────────────────────────────────────────────────────────
+
+/**
+ * Record an Arc→Solana CCTP burn that has been submitted on Arc but not yet
+ * finalised on Solana.  Allows recovery if the Solana fee-payer has no SOL.
+ */
+function recordCctpPendingBurn({ telegramId, arcTxHash, messageHex, messageHash, amountUsdc, recipientSolana }) {
+  try {
+    db.prepare(`
+      INSERT OR IGNORE INTO cctp_pending_burns
+        (telegram_id, arc_tx_hash, message_hex, message_hash, amount_usdc, recipient_solana, status)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending')
+    `).run(telegramId || 0, arcTxHash, messageHex || null, messageHash || null, amountUsdc, recipientSolana);
+  } catch (err) {
+    console.warn("[db:cctp_pending] recordCctpPendingBurn error:", err.message);
+  }
+}
+
+/**
+ * Mark a pending CCTP burn as successfully completed on Solana.
+ */
+function completeCctpPendingBurn(arcTxHash, solanaTxSig) {
+  try {
+    db.prepare(`
+      UPDATE cctp_pending_burns
+      SET status = 'completed', solana_tx_sig = ?, completed_at = datetime('now')
+      WHERE arc_tx_hash = ?
+    `).run(solanaTxSig, arcTxHash);
+  } catch (err) {
+    console.warn("[db:cctp_pending] completeCctpPendingBurn error:", err.message);
+  }
+}
+
+/**
+ * Mark a pending CCTP burn as failed with an error message and increment retry count.
+ */
+function failCctpPendingBurn(arcTxHash, errorMsg) {
+  try {
+    db.prepare(`
+      UPDATE cctp_pending_burns
+      SET status = 'failed', error = ?, retry_count = retry_count + 1
+      WHERE arc_tx_hash = ?
+    `).run(errorMsg, arcTxHash);
+  } catch (err) {
+    console.warn("[db:cctp_pending] failCctpPendingBurn error:", err.message);
+  }
+}
+
+/**
+ * Retrieve all pending CCTP burns that need to be retried.
+ * Returns burns with status = 'pending' or 'failed' (up to 3 previous retries).
+ */
+function getPendingCctpBurns() {
+  try {
+    return db.prepare(`
+      SELECT * FROM cctp_pending_burns
+      WHERE status IN ('pending', 'failed') AND retry_count < 10
+      ORDER BY created_at ASC
+    `).all();
+  } catch (err) {
+    console.warn("[db:cctp_pending] getPendingCctpBurns error:", err.message);
+    return [];
+  }
+}
+
+/**
+ * Get the count of outstanding (un-completed) pending CCTP burns.
+ */
+function countPendingCctpBurns() {
+  try {
+    const row = db.prepare(`SELECT COUNT(*) as c FROM cctp_pending_burns WHERE status IN ('pending','failed') AND retry_count < 10`).get();
+    return row?.c || 0;
+  } catch {
+    return 0;
+  }
+}
+
 module.exports = {
   db,
   resolveDbPath,
@@ -1222,6 +1345,11 @@ module.exports = {
   updateAutoEarnSetting,
   getIdleUsersForAutoEarn,
   getVolumeStats,
+  recordCctpPendingBurn,
+  completeCctpPendingBurn,
+  failCctpPendingBurn,
+  getPendingCctpBurns,
+  countPendingCctpBurns,
   _db: db,
   prepare: (...args) => db.prepare(...args),
   exec: (...args) => db.exec(...args),
