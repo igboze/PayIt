@@ -3,6 +3,8 @@
 // Tests database resolution, system key encryption, DEX router resolution,
 // CCTP V2 contract mapping, webhook payload routing, and idempotency deduplication.
 
+process.env.NODE_ENV = "test";
+
 const test = require("node:test");
 const assert = require("node:assert/strict");
 

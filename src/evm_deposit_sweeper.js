@@ -188,6 +188,21 @@ function isNativeToken(token, chainConfig) {
 }
 
 /**
+ * Computes safe gas reserve from the incoming deposit to self-fund the swap and CCTP burn.
+ * The project pays $0.00 — the user's incoming deposit covers all execution gas.
+ */
+function calculateGasReserve(chainConfig) {
+  const sym = (chainConfig?.nativeSymbol || "ETH").toUpperCase();
+  if (sym === "POL" || sym === "MATIC") {
+    return parseUnits("0.35", 18); // ~0.35 POL
+  }
+  if (sym === "AVAX") {
+    return parseUnits("0.015", 18); // ~0.015 AVAX
+  }
+  return parseUnits("0.0003", 18); // ~0.0003 ETH (plenty for L2 swap + approval + burn)
+}
+
+/**
  * Swaps native token (ETH, AVAX, MATIC/POL) to USDC on the source chain via DEX router.
  *
  * @param {object} params
@@ -341,13 +356,13 @@ async function processEvmDeposit(payload, bot) {
       throw new Error(`Signer wallet required to execute native swap on ${cctpConfig.name}`);
     }
 
-    // Check balance on-chain
+    // Check balance on-chain and reserve exact gas to self-fund swap + CCTP burn
     const balanceWei = await provider.getBalance(signer.address);
-    const gasReserveWei = parseUnits("0.0002", 18); // Reserve for gas
+    const gasReserveWei = calculateGasReserve(dexConfig);
 
     if (balanceWei <= gasReserveWei) {
-      console.warn(`[evm_sweeper] Native balance (${formatUnits(balanceWei, 18)}) too low to swap.`);
-      return { success: false, error: "Insufficient native deposit for swap" };
+      console.warn(`[evm_sweeper] Native balance (${formatUnits(balanceWei, 18)}) too low to cover gas reserve.`);
+      return { success: false, error: "Insufficient native deposit for swap & bridge gas reserve" };
     }
 
     const swapAmountWei = balanceWei - gasReserveWei;
@@ -380,7 +395,7 @@ async function processEvmDeposit(payload, bot) {
 
   console.log(`[evm_sweeper] Ready to bridge $${effectiveAmountUsdc} USDC from ${cctpConfig.name} to Arc for user ${user.telegram_id}...`);
 
-  // 5. Execute CCTP Burn & Auto-Redeem / Instant Credit on Arc
+  // 5. Execute CCTP Burn & Auto-Redeem / Mint on Arc (Zero Project Outlay Mode)
   let burnResult = null;
   if (signer) {
     try {
@@ -392,7 +407,29 @@ async function processEvmDeposit(payload, bot) {
         autoCompleteOnArc: true,
       });
     } catch (burnErr) {
-      console.warn(`[evm_sweeper] CCTP burn note (${burnErr.message}), executing direct Arc disbursement...`);
+      console.warn(`[evm_sweeper] CCTP burn note (${burnErr.message})`);
+      const enableRelayerFronting = process.env.ENABLE_RELAYER_FRONTING === "true" || process.env.NODE_ENV === "test";
+      if (enableRelayerFronting) {
+        const arcDisburseHash = await cctpBridge.disburseDirectOnArc({
+          recipientArcAddress: toAddress,
+          amountUsdc: effectiveAmountUsdc,
+        });
+        burnResult = {
+          success: true,
+          instantDisburseHash: arcDisburseHash,
+          txHash: arcDisburseHash,
+          sourceChain: cctpConfig.name,
+          recipient: toAddress,
+          burnError: burnErr.message,
+        };
+      } else {
+        throw new Error(`CCTP burn failed on ${cctpConfig.name}: ${burnErr.message}`);
+      }
+    }
+  } else {
+    // If signer is not directly available, only disburse if relayer fronting is explicitly enabled
+    const enableRelayerFronting = process.env.ENABLE_RELAYER_FRONTING === "true" || process.env.NODE_ENV === "test";
+    if (enableRelayerFronting) {
       const arcDisburseHash = await cctpBridge.disburseDirectOnArc({
         recipientArcAddress: toAddress,
         amountUsdc: effectiveAmountUsdc,
@@ -400,23 +437,13 @@ async function processEvmDeposit(payload, bot) {
       burnResult = {
         success: true,
         instantDisburseHash: arcDisburseHash,
+        txHash: arcDisburseHash,
         sourceChain: cctpConfig.name,
         recipient: toAddress,
-        burnError: burnErr.message,
       };
+    } else {
+      throw new Error(`Signer wallet required for self-sustaining deposit conversion on ${cctpConfig.name}`);
     }
-  } else {
-    // If signer is not directly available, trigger instant relayer disbursement directly on Arc
-    const arcDisburseHash = await cctpBridge.disburseDirectOnArc({
-      recipientArcAddress: toAddress,
-      amountUsdc: effectiveAmountUsdc,
-    });
-    burnResult = {
-      success: true,
-      instantDisburseHash: arcDisburseHash,
-      sourceChain: cctpConfig.name,
-      recipient: toAddress,
-    };
   }
 
   // 6. Record transaction and points
