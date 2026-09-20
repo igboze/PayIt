@@ -231,7 +231,9 @@ test("Automated EVM Cross-Chain Deposit Engine Test Suite", async (t) => {
 
       const res = await evmDepositSweeper.processEvmDeposit(depositPayload, mockBot);
       assert.equal(res.success, true, "Deposit processing must succeed");
-      assert.equal(res.amountUsdc, 50.0);
+      assert.equal(res.grossAmount, 50.0, "Gross amount must be preserved");
+      assert.equal(res.networkFee, 0.05, "Network fee must match Base bridge fee ($0.05)");
+      assert.equal(res.amountUsdc, 49.95, "Net credited USDC must equal gross minus network bridging fee");
       assert.equal(res.recipient, personalAddress);
       assert.equal(res.sourceChain, "Base");
 
@@ -240,6 +242,8 @@ test("Automated EVM Cross-Chain Deposit Engine Test Suite", async (t) => {
       assert.equal(sentMessages[0].chatId, testUserId);
       assert.match(sentMessages[0].text, /Cross-Chain Deposit Credited/);
       assert.match(sentMessages[0].text, /50\.00/);
+      assert.match(sentMessages[0].text, /49\.95/);
+      assert.match(sentMessages[0].text, /Network Bridging Fee/);
       assert.match(sentMessages[0].text, /Base/);
 
       // Verify transaction was logged in database
@@ -310,6 +314,61 @@ test("Automated EVM Cross-Chain Deposit Engine Test Suite", async (t) => {
     assert.match(sentMessages[0].text, /Cross-Chain Deposit Credited/);
     assert.match(sentMessages[0].text, /Robinhood Chain/);
     assert.match(sentMessages[0].text, /0\.05 ETH/);
+  });
+
+  await t.test("11. Polygon (CCTP): Pure USDC deposit with self-funding fee deduction", async () => {
+    const polygonTxHash = `0xpolygon_tx_${Date.now()}`;
+    const sentMessages = [];
+
+    const mockBot = {
+      telegram: {
+        sendMessage: async (chatId, text, opts) => {
+          sentMessages.push({ chatId, text, opts });
+          return { message_id: 303 };
+        },
+      },
+    };
+
+    // Mock executeEvmCctpBurn to avoid live RPC calls during test
+    const originalBurn = cctpBridge.executeEvmCctpBurn;
+    cctpBridge.executeEvmCctpBurn = async ({ userWallet, chain, amountUsdc, recipientArcAddress }) => {
+      return {
+        success: true,
+        txHash: `0xpolygon_burn_${Date.now()}`,
+        sourceChain: chain,
+        recipient: recipientArcAddress,
+      };
+    };
+
+    try {
+      const polygonDepositPayload = {
+        chainId: 137,
+        to: personalAddress,
+        from: "0x6666666666666666666666666666666666666666",
+        token: "USDC",
+        amount: "25.00",
+        txHash: polygonTxHash,
+      };
+
+      const res = await evmDepositSweeper.processEvmDeposit(polygonDepositPayload, mockBot);
+
+      assert.equal(res.success, true, "Polygon deposit processing must succeed");
+      assert.equal(res.sourceChain, "Polygon");
+      assert.equal(res.grossAmount, 25.0);
+      assert.equal(res.networkFee, 0.05, "Polygon bridge fee must be $0.05");
+      assert.equal(res.amountUsdc, 24.95, "Net credited USDC must equal gross minus fee (25.00 - 0.05 = 24.95)");
+      assert.equal(res.recipient, personalAddress);
+
+      // Verify Telegram notification breakdown
+      assert.equal(sentMessages.length, 1, "Must send 1 Telegram message");
+      assert.equal(sentMessages[0].chatId, testUserId);
+      assert.match(sentMessages[0].text, /Polygon/);
+      assert.match(sentMessages[0].text, /25\.00/);
+      assert.match(sentMessages[0].text, /24\.95/);
+      assert.match(sentMessages[0].text, /Network Bridging Fee/);
+    } finally {
+      cctpBridge.executeEvmCctpBurn = originalBurn;
+    }
   });
 
   // Final cleanup

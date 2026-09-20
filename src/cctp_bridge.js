@@ -996,17 +996,36 @@ async function executeEvmCctpBurn({
   let gasBal = 0n;
   try {
     gasBal = await provider.getBalance(signer.address);
-    const minGas = parseUnits("0.00005", 18);
+
+    // Compute chain-appropriate minGas and micro-drip gas
+    let minGas = parseUnits("0.00005", 18);
+    let dripGas = parseUnits("0.00015", 18);
+    const chainIdNum = Number(chainConfig.chainId);
+
+    if (chainIdNum === 137) {
+      // Polygon (POL/MATIC)
+      minGas = parseUnits("0.15", 18);
+      dripGas = parseUnits("0.30", 18);
+    } else if (chainIdNum === 43114) {
+      // Avalanche (AVAX)
+      minGas = parseUnits("0.008", 18);
+      dripGas = parseUnits("0.015", 18);
+    } else if (chainIdNum === 1) {
+      // Ethereum L1
+      minGas = parseUnits("0.001", 18);
+      dripGas = parseUnits("0.002", 18);
+    }
+
     if (gasBal < minGas) {
       const relayerKey = signerPrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
       if (relayerKey) {
         const relayer = new Wallet(relayerKey, provider);
         const relayerBal = await provider.getBalance(relayer.address).catch(() => 0n);
-        if (relayerBal > parseUnits("0.0001", 18)) {
-          console.log(`[cctp_bridge] Sponsoring gas for ${signer.address} on ${chainConfig.name}...`);
+        if (relayerBal > dripGas) {
+          console.log(`[cctp_bridge] Sponsoring micro-gas for ${signer.address} on ${chainConfig.name}...`);
           const sponsorTx = await relayer.sendTransaction({
             to: signer.address,
-            value: parseUnits("0.0001", 18),
+            value: dripGas,
           });
           await sponsorTx.wait(1);
           gasBal = await provider.getBalance(signer.address);
