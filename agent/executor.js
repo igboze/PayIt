@@ -267,6 +267,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
         amountUsdc: result.amount || amountUsdc,
         recipientSolanaAddress: result.address,
         autoCompleteOnSolana: true,
+        telegramId,
       });
 
       if (!burnRes.success) {

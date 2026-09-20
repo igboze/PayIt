@@ -633,20 +633,29 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
       return { success: false, error: "Amount below minimum threshold ($0.50 USDC)" };
     }
 
-    // Record transaction
-    try {
-      const amountMicro = walletLib.parseToMicro(effectiveAmountUsdc.toFixed(6));
-      db.recordTransaction(
-        targetTelegramId,
-        "deposit_crosschain",
-        amountMicro,
-        "confirmed",
-        swapTxHash || txHash,
-        accountType
-      );
-      db.awardPoints(targetTelegramId, 5, "deposit", `Cross-chain deposit from ${chainName}`);
-    } catch (recErr) {
-      console.warn("[evm_sweeper] Record tx error:", recErr.message);
+    // Record transaction with retry to guarantee user is credited
+    let recorded = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const amountMicro = walletLib.parseToMicro(effectiveAmountUsdc.toFixed(6));
+        db.recordTransaction(
+          targetTelegramId,
+          "deposit_crosschain",
+          amountMicro,
+          "confirmed",
+          swapTxHash || txHash,
+          accountType
+        );
+        db.awardPoints(targetTelegramId, 5, "deposit", `Cross-chain deposit from ${chainName}`);
+        recorded = true;
+        break;
+      } catch (recErr) {
+        console.warn(`[evm_sweeper] Record tx attempt ${attempt + 1} failed:`, recErr.message);
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+    if (!recorded) {
+      throw new Error(`CRITICAL: Failed to credit deposit ${effectiveAmountUsdc} USDC to user TG:${targetTelegramId}. Webhook will not be marked processed to allow retry.`);
     }
 
     // Notify user
@@ -796,20 +805,29 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     }
   }
 
-  // 6. Record transaction and points
-  try {
-    const amountMicro = walletLib.parseToMicro(effectiveAmountUsdc.toFixed(6));
-    db.recordTransaction(
-      targetTelegramId,
-      "deposit_crosschain",
-      amountMicro,
-      "confirmed",
-      burnResult.instantDisburseHash || burnResult.txHash || txHash,
-      accountType
-    );
-    db.awardPoints(targetTelegramId, 5, "deposit", `Cross-chain deposit from ${cctpConfig.name}`);
-  } catch (recErr) {
-    console.warn("[evm_sweeper] Record tx error:", recErr.message);
+  // 6. Record transaction and points with retry to guarantee user is credited
+  let recorded = false;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const amountMicro = walletLib.parseToMicro(effectiveAmountUsdc.toFixed(6));
+      db.recordTransaction(
+        targetTelegramId,
+        "deposit_crosschain",
+        amountMicro,
+        "confirmed",
+        burnResult.instantDisburseHash || burnResult.txHash || txHash,
+        accountType
+      );
+      db.awardPoints(targetTelegramId, 5, "deposit", `Cross-chain deposit from ${cctpConfig.name}`);
+      recorded = true;
+      break;
+    } catch (recErr) {
+      console.warn(`[evm_sweeper] Record tx attempt ${attempt + 1} failed:`, recErr.message);
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  if (!recorded) {
+    throw new Error(`CRITICAL: Failed to credit deposit ${effectiveAmountUsdc} USDC to user TG:${targetTelegramId}. Webhook will not be marked processed to allow retry.`);
   }
 
   // 7. Instant Telegram Notification with clean consumer receipt

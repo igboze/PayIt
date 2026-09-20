@@ -579,8 +579,15 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
     // Ensure recipient ATA is initialized on Solana before burning on Arc
     try {
       const conn = getSolanaConnection();
-      const ataInfo = await conn.getAccountInfo(recipientAta);
-      if (!ataInfo && feePayerKeypair) {
+      let ataInfo = await conn.getAccountInfo(recipientAta);
+      if (!ataInfo) {
+        if (!feePayerKeypair) {
+          console.warn("[cctp_bridge] Recipient ATA does not exist and SOLANA_FEE_PAYER_KEY is missing. Aborting burn to protect funds.");
+          return {
+            success: false,
+            error: "Solana recipient token account does not exist and cannot be auto-initialized. Transfer aborted to prevent loss of funds.",
+          };
+        }
         console.log(`[cctp_bridge] Initializing recipient ATA ${recipientAta.toBase58()} for ${recipientPubkey.toBase58()}...`);
         const { Transaction, createAssociatedTokenAccountInstruction } = require("@solana/web3.js");
         const latestBlockhash = await conn.getLatestBlockhash();
@@ -601,9 +608,18 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
           lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
         });
         console.log(`[cctp_bridge] Recipient ATA initialized ✓ (${sig})`);
+
+        ataInfo = await conn.getAccountInfo(recipientAta);
+        if (!ataInfo) {
+          throw new Error("Recipient ATA could not be confirmed on Solana after creation.");
+        }
       }
     } catch (ataErr) {
-      console.warn("[cctp_bridge:ata_init_note]", ataErr.message);
+      console.error("[cctp_bridge:ata_init_error] Solana ATA preparation failed:", ataErr.message);
+      return {
+        success: false,
+        error: `Solana recipient account preparation failed: ${ataErr.message}. Funds were NOT burned.`,
+      };
     }
 
     const mintRecipient = "0x" + Buffer.from(recipientAta.toBytes()).toString("hex");
@@ -623,7 +639,8 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
     ];
 
     const { parseUnits, Interface, keccak256, ZeroHash } = require("ethers");
-    const amountUnits = parseUnits(amountUsdc.toString(), 6);
+    const formattedAmount = Number(amountUsdc).toFixed(6);
+    const amountUnits = parseUnits(formattedAmount, 6);
 
     // 1. Approve TokenMessenger if needed
     try {
@@ -978,7 +995,8 @@ async function executeEvmCctpBurn({
   const signerKey = userWallet.privateKey || (typeof userWallet === "string" ? userWallet : null);
   const signer = signerKey ? new Wallet(signerKey, provider) : userWallet.connect(provider);
 
-  const amountUnits = parseUnits(amountUsdc.toString(), chainConfig.decimals);
+  const formattedAmount = Number(amountUsdc).toFixed(chainConfig.decimals || 6);
+  const amountUnits = parseUnits(formattedAmount, chainConfig.decimals || 6);
   const mintRecipient = zeroPadValue(getAddress(recipientArcAddress.toLowerCase()), 32);
 
   const ERC20_ABI = [
