@@ -569,29 +569,28 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
     let rawCctpMessage = null;
     let messageHash = null;
 
-    // Wait for receipt to extract the raw CCTP message from logs
+    // Wait for receipt to ensure the burn succeeded on-chain and extract CCTP message
     if (tx && tx.wait) {
-      try {
-        const receipt = await Promise.race([
-          tx.wait(1),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("Confirmation timeout")), 15000))
-        ]);
-        if (receipt && receipt.logs) {
-          const msgIface = new Interface(["event MessageSent(bytes message)"]);
-          for (const log of receipt.logs) {
-            try {
-              const parsed = msgIface.parseLog(log);
-              if (parsed && parsed.args && parsed.args.message) {
-                rawCctpMessage = parsed.args.message;
-                messageHash = keccak256(rawCctpMessage);
-                console.log(`[cctp_bridge] Extracted CCTP message from Arc receipt ✓ hash=${messageHash}`);
-                break;
-              }
-            } catch {}
-          }
+      const receipt = await Promise.race([
+        tx.wait(1),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Confirmation timeout waiting for Arc block inclusion")), 20000))
+      ]);
+      if (receipt && receipt.status === 0) {
+        throw new Error(`Arc transaction reverted on-chain (status 0) in block ${receipt.blockNumber}. Your USDC was not deducted.`);
+      }
+      if (receipt && receipt.logs) {
+        const msgIface = new Interface(["event MessageSent(bytes message)"]);
+        for (const log of receipt.logs) {
+          try {
+            const parsed = msgIface.parseLog(log);
+            if (parsed && parsed.args && parsed.args.message) {
+              rawCctpMessage = parsed.args.message;
+              messageHash = keccak256(rawCctpMessage);
+              console.log(`[cctp_bridge] Extracted CCTP message from Arc receipt ✓ hash=${messageHash}`);
+              break;
+            }
+          } catch {}
         }
-      } catch (wErr) {
-        console.warn("[cctp_bridge:wait_note]", wErr.message);
       }
     }
 
