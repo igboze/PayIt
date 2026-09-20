@@ -223,10 +223,13 @@ function ensureUserSchema() {
     db.exec("ALTER TABLE users ADD COLUMN referral_code TEXT");
   }
   try {
-    db.exec("UPDATE users SET referral_code = 'ref' || telegram_id WHERE referral_code IS NULL OR referral_code = ''");
-  } catch (err) {
-    console.warn("Could not backfill referral_code:", err?.message || err);
-  }
+    const unassigned = db.prepare("SELECT telegram_id FROM users WHERE referral_code IS NULL OR referral_code = ''").all();
+    for (const r of unassigned) {
+      try {
+        db.prepare("UPDATE users SET referral_code = ? WHERE telegram_id = ?").run(`ref${r.telegram_id}`, r.telegram_id);
+      } catch {}
+    }
+  } catch (err) {}
   if (!columns.includes("referred_at")) {
     db.exec("ALTER TABLE users ADD COLUMN referred_at TEXT");
   }
@@ -269,6 +272,15 @@ function ensureUserSchema() {
 function ensureYieldPositionsSchema() {
   const info = db.prepare("PRAGMA table_info(yield_positions)").all();
   const cols = info.map(c => c.name);
+  if (!cols.includes("amount_usdc")) db.exec("ALTER TABLE yield_positions ADD COLUMN amount_usdc REAL DEFAULT 0");
+  if (!cols.includes("apy")) db.exec("ALTER TABLE yield_positions ADD COLUMN apy REAL DEFAULT 0");
+  if (!cols.includes("project")) db.exec("ALTER TABLE yield_positions ADD COLUMN project TEXT DEFAULT ''");
+  if (!cols.includes("symbol")) db.exec("ALTER TABLE yield_positions ADD COLUMN symbol TEXT DEFAULT 'USDC'");
+  if (!cols.includes("chain")) db.exec("ALTER TABLE yield_positions ADD COLUMN chain TEXT DEFAULT 'arc'");
+  if (!cols.includes("opened_at")) db.exec("ALTER TABLE yield_positions ADD COLUMN opened_at TEXT DEFAULT (datetime('now'))");
+  if (!cols.includes("closed_at")) db.exec("ALTER TABLE yield_positions ADD COLUMN closed_at TEXT");
+  if (!cols.includes("payout")) db.exec("ALTER TABLE yield_positions ADD COLUMN payout REAL");
+  if (!cols.includes("status")) db.exec("ALTER TABLE yield_positions ADD COLUMN status TEXT DEFAULT 'active'");
   if (!cols.includes("vault_address")) db.exec("ALTER TABLE yield_positions ADD COLUMN vault_address TEXT");
   if (!cols.includes("is_auto_earn")) db.exec("ALTER TABLE yield_positions ADD COLUMN is_auto_earn INTEGER DEFAULT 0");
   if (!cols.includes("dev_fee_usdc")) db.exec("ALTER TABLE yield_positions ADD COLUMN dev_fee_usdc REAL DEFAULT 0");
