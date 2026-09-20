@@ -15,6 +15,7 @@ const DEX_ROUTER_CONFIGS = {
   BASE: {
     name: "Base",
     chainId: 8453,
+    rpcUrl: "https://mainnet.base.org",
     routerAddress: "0x2626664c2603336E57B271c5C0b26F421741e481", // Uniswap V3 SwapRouter02
     fallbackRouter: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
     wethAddress: "0x4200000000000000000000000000000000000006",
@@ -22,10 +23,12 @@ const DEX_ROUTER_CONFIGS = {
     poolFee: 500, // 0.05%
     nativeSymbol: "ETH",
     minDepositWei: 500000000000000n, // ~0.0005 ETH
+    isRelayIntent: true,
   },
   ARBITRUM: {
     name: "Arbitrum",
     chainId: 42161,
+    rpcUrl: "https://arb1.arbitrum.io/rpc",
     routerAddress: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
     fallbackRouter: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
     wethAddress: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
@@ -33,10 +36,12 @@ const DEX_ROUTER_CONFIGS = {
     poolFee: 500,
     nativeSymbol: "ETH",
     minDepositWei: 500000000000000n,
+    isRelayIntent: true,
   },
   ETHEREUM: {
     name: "Ethereum",
     chainId: 1,
+    rpcUrl: "https://eth.llamarpc.com",
     routerAddress: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
     fallbackRouter: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
     wethAddress: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
@@ -44,10 +49,12 @@ const DEX_ROUTER_CONFIGS = {
     poolFee: 500,
     nativeSymbol: "ETH",
     minDepositWei: 1000000000000000n, // ~0.001 ETH
+    isRelayIntent: true,
   },
   OPTIMISM: {
     name: "Optimism",
     chainId: 10,
+    rpcUrl: "https://mainnet.optimism.io",
     routerAddress: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
     fallbackRouter: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
     wethAddress: "0x4200000000000000000000000000000000000006",
@@ -55,6 +62,7 @@ const DEX_ROUTER_CONFIGS = {
     poolFee: 500,
     nativeSymbol: "ETH",
     minDepositWei: 500000000000000n,
+    isRelayIntent: true,
   },
   POLYGON: {
     name: "Polygon",
@@ -319,17 +327,21 @@ async function swapNativeToUsdc({ signer, chainConfig, amountInWei }) {
 }
 
 /**
- * Bridges native ETH or supported tokens from Robinhood Chain (4663) directly to Arc Mainnet (5042)
+ * Bridges native tokens or ERC20 (e.g. USDC) from any supported EVM chain directly to Arc Mainnet (5042)
  * using Relay Protocol V2.
- * The solver bridge fee is deducted directly from the deposit amount at fill time.
- * Project cost is $0.00.
+ * Resolves and executes all steps (approvals + deposit sequentially), and returns the fill details.
+ * Solver bridge fee is deducted directly from deposit at fill time (project pays $0.00).
  */
-async function bridgeRobinhoodViaRelay({ signer, amountWei, token = "ETH", recipientArcAddress }) {
-  const isEth = isNativeToken(token);
-  const originCurrency = isEth ? ZeroAddress : "0x5fc5360d0400a0fd4f2af552add042d716f1d168"; // USDG
+async function bridgeViaRelay({ signer, chainId = 4663, amountWei, token = "ETH", recipientArcAddress }) {
+  const dexConfig = resolveDexConfig(chainId);
+  const isNative = isNativeToken(token, dexConfig);
+  let originCurrency = ZeroAddress;
+  if (!isNative) {
+    originCurrency = dexConfig?.usdcAddress || dexConfig?.usdgAddress || (String(token).startsWith("0x") ? token : ZeroAddress);
+  }
   const destinationCurrency = ZeroAddress; // Native gas USDC on Arc Mainnet 5042
 
-  console.log(`[evm_sweeper:relay] Requesting Relay quote for ${formatUnits(amountWei, isEth ? 18 : 6)} ${token} on Robinhood (4663) -> Arc (5042)...`);
+  console.log(`[evm_sweeper:relay] Requesting Relay quote for ${formatUnits(amountWei, isNative ? 18 : 6)} ${token} on chain ${chainId} -> Arc (5042)...`);
 
   const quoteRes = await fetch("https://api.relay.link/quote/v2", {
     method: "POST",
@@ -337,7 +349,7 @@ async function bridgeRobinhoodViaRelay({ signer, amountWei, token = "ETH", recip
     body: JSON.stringify({
       user: signer.address,
       recipient: recipientArcAddress,
-      originChainId: 4663,
+      originChainId: Number(chainId),
       destinationChainId: 5042,
       originCurrency,
       destinationCurrency,
@@ -352,39 +364,33 @@ async function bridgeRobinhoodViaRelay({ signer, amountWei, token = "ETH", recip
   }
 
   const quoteData = await quoteRes.json();
-  const step = quoteData.steps?.[0];
-  const item = step?.items?.[0];
-  const txData = item?.data;
-
-  if (!txData || !txData.to) {
-    throw new Error(`Invalid Relay quote response: missing transaction payload`);
+  if (!quoteData.steps || !quoteData.steps.length) {
+    throw new Error(`Invalid Relay quote response: missing execution steps`);
   }
 
-  // If token is ERC20 (e.g. USDG), check and approve Relay router/proxy
-  if (!isEth) {
-    const approvalProxy = "0xccc88a9d1b4ed6b0eaba998850414b24f1c315be";
-    const tokenContract = new Contract(originCurrency, ERC20_ABI, signer);
-    const allowance = await tokenContract.allowance(signer.address, approvalProxy);
-    if (allowance < amountWei) {
-      console.log(`[evm_sweeper:relay] Approving USDG for Relay proxy...`);
-      const appTx = await tokenContract.approve(approvalProxy, amountWei);
-      await appTx.wait(1);
+  let lastReceipt = null;
+  let lastTxHash = null;
+
+  for (const step of quoteData.steps) {
+    for (const item of (step.items || [])) {
+      const txData = item.data;
+      if (!txData || !txData.to) continue;
+
+      console.log(`[evm_sweeper:relay] Executing step "${step.id}" -> ${txData.to}...`);
+      const tx = await signer.sendTransaction({
+        to: txData.to,
+        data: txData.data || "0x",
+        value: txData.value ? BigInt(txData.value) : 0n,
+        gasLimit: txData.gas ? (BigInt(txData.gas) * 13n) / 10n : undefined,
+        maxFeePerGas: txData.maxFeePerGas ? BigInt(txData.maxFeePerGas) : undefined,
+        maxPriorityFeePerGas: txData.maxPriorityFeePerGas ? BigInt(txData.maxPriorityFeePerGas) : undefined,
+      });
+
+      console.log(`[evm_sweeper:relay] Step "${step.id}" broadcasted: ${tx.hash}. Waiting for confirmation...`);
+      lastReceipt = await tx.wait(1);
+      lastTxHash = tx.hash;
     }
   }
-
-  console.log(`[evm_sweeper:relay] Sending Robinhood deposit tx to ${txData.to} with value ${txData.value || 0}...`);
-
-  const tx = await signer.sendTransaction({
-    to: txData.to,
-    data: txData.data || "0x",
-    value: txData.value ? BigInt(txData.value) : 0n,
-    gasLimit: txData.gas ? (BigInt(txData.gas) * 13n) / 10n : undefined,
-    maxFeePerGas: txData.maxFeePerGas ? BigInt(txData.maxFeePerGas) : undefined,
-    maxPriorityFeePerGas: txData.maxPriorityFeePerGas ? BigInt(txData.maxPriorityFeePerGas) : undefined,
-  });
-
-  console.log(`[evm_sweeper:relay] Robinhood tx broadcasted: ${tx.hash}. Waiting for confirmation...`);
-  const receipt = await tx.wait(1);
 
   const amountUsdc = parseFloat(
     quoteData.details?.currencyOut?.amountFormatted ||
@@ -393,13 +399,14 @@ async function bridgeRobinhoodViaRelay({ signer, amountWei, token = "ETH", recip
 
   return {
     success: true,
-    txHash: tx.hash,
-    receipt,
+    txHash: lastTxHash,
+    receipt: lastReceipt,
     effectiveAmountUsdc: amountUsdc,
     requestId: quoteData.requestId,
-    checkEndpoint: item?.check?.endpoint,
   };
 }
+
+const bridgeRobinhoodViaRelay = bridgeViaRelay;
 
 /**
  * Sweeps an incoming EVM deposit:
@@ -536,7 +543,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
         bridgeAmountWei = balanceWei - gasReserveWei;
       }
     } else {
-      const tokenAddress = dexConfig.usdgAddress || token;
+      const tokenAddress = dexConfig.usdcAddress || dexConfig.usdgAddress || token;
       const tokenContract = new Contract(tokenAddress, ERC20_ABI, provider);
       bridgeAmountWei = await tokenContract.balanceOf(signer.address);
       if (bridgeAmountWei <= 0n) {
@@ -545,19 +552,20 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     }
 
     let relayResult;
-    if (process.env.NODE_ENV === "test" && !process.env.ROBINHOOD_TEST_LIVE) {
+    if (process.env.NODE_ENV === "test" && !process.env.ROBINHOOD_TEST_LIVE && !process.env.RELAY_TEST_LIVE) {
       const numAmount = parseFloat(rawAmount.toString() || "1.0");
       effectiveAmountUsdc = isNative ? (numAmount * 2600) : numAmount;
       relayResult = {
         success: true,
-        txHash: `0xrelay_robinhood_${Date.now()}`,
+        txHash: `0xrelay_${effectiveChainId}_${Date.now()}`,
         effectiveAmountUsdc,
       };
     } else {
-      relayResult = await bridgeRobinhoodViaRelay({
+      relayResult = await bridgeViaRelay({
         signer,
+        chainId: effectiveChainId,
         amountWei: bridgeAmountWei,
-        token: isNative ? "ETH" : "USDG",
+        token: isNative ? (dexConfig?.nativeSymbol || "ETH") : (dexConfig?.usdcAddress ? "USDC" : "USDG"),
         recipientArcAddress: toAddress,
       });
       effectiveAmountUsdc = relayResult.effectiveAmountUsdc;
@@ -796,7 +804,7 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
       rpcUrl: cfg.rpcUrl,
       usdc: cfg.usdc,
       decimals: cfg.decimals,
-      isRelayIntent: false,
+      isRelayIntent: [8453, 42161, 10, 1].includes(cfg.chainId),
     })),
     {
       key: "ROBINHOOD",
@@ -907,6 +915,7 @@ module.exports = {
   isNativeToken,
   calculateGasReserve,
   swapNativeToUsdc,
+  bridgeViaRelay,
   bridgeRobinhoodViaRelay,
   processEvmDeposit,
   sweepUserDeposits,
