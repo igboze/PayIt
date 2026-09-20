@@ -1262,6 +1262,7 @@ function reconcileLiveProductVolume() {
   let backfilledPayments = 0;
   let backfilledYield = 0;
   let backfilledOnramp = 0;
+  let deduplicatedSweeps = 0;
 
   try {
     // 1. Rescale legacy 6-decimal amounts in transactions (< 1e13)
@@ -1379,11 +1380,32 @@ function reconcileLiveProductVolume() {
         }
       }
     } catch {}
+
+    // 7. Deduplicate repeating synthetic sweep deposits created by background monitor loops
+    try {
+      const dupes = db.prepare(`
+        SELECT id FROM (
+          SELECT id, ROW_NUMBER() OVER (
+            PARTITION BY telegram_id, type, amount_micro, DATE(created_at)
+            ORDER BY id ASC
+          ) as rn
+          FROM transactions
+          WHERE (tx_hash LIKE 'sweep_%' OR tx_hash LIKE '0xrelay_%') AND type = 'deposit_crosschain'
+        )
+        WHERE rn > 1
+      `).all();
+      for (const d of dupes) {
+        db.prepare("DELETE FROM transactions WHERE id = ?").run(d.id);
+        deduplicatedSweeps++;
+      }
+    } catch (dupeErr) {
+      console.warn("[db:reconcileLiveProductVolume] Deduplication note:", dupeErr.message);
+    }
   } catch (scanErr) {
     console.warn("[db:reconcileLiveProductVolume] Error during live scan:", scanErr.message);
   }
 
-  return { fixedScale, backfilledInvoices, backfilledPayments, backfilledYield, backfilledOnramp };
+  return { fixedScale, backfilledInvoices, backfilledPayments, backfilledYield, backfilledOnramp, deduplicatedSweeps };
 }
 
 // ─── CCTP Pending Burns ────────────────────────────────────────────────────────
