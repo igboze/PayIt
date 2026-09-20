@@ -833,9 +833,10 @@ async function autoBridgeSolanaToArc({
 
   // If user has Solana SPL USDC awaiting bridge, execute CCTP deposit_for_burn
   let hasSplBalance = false;
+  let splBal = null;
   if (solKeypair) {
     try {
-      const splBal = await multichain.getSplTokenBalance(solKeypair.publicKey, multichain.SOLANA_USDC_MINT);
+      splBal = await multichain.getSplTokenBalance(solKeypair.publicKey.toBase58(), multichain.SOLANA_USDC_MINT);
       if (splBal && splBal.uiAmount > 0) {
         hasSplBalance = true;
         console.log(`[cctp_bridge] Detected ${splBal.uiAmount} SPL USDC on Solana (${solKeypair.publicKey.toBase58()}). Executing CCTP burn...`);
@@ -846,6 +847,7 @@ async function autoBridgeSolanaToArc({
   }
 
   if (solKeypair && hasSplBalance) {
+    const burnAmount = (splBal && splBal.uiAmount > 0) ? splBal.uiAmount : amountUsdc;
     // Pre-flight check on Solana fee payer
     const feeCheck = await checkSolanaFeePayerBalance();
     if (!feeCheck.ok) {
@@ -854,7 +856,7 @@ async function autoBridgeSolanaToArc({
         success: false,
         status: "failed",
         error: `Solana fee payer wallet has insufficient SOL for CCTP burn gas. Funds remain safe on Solana address ${solKeypair.publicKey.toBase58()}.`,
-        amountUsdc,
+        amountUsdc: burnAmount,
         recipient: recipientArcAddress,
         solanaTxSignature,
       };
@@ -865,16 +867,16 @@ async function autoBridgeSolanaToArc({
       telegramId,
       solanaAddress: solKeypair.publicKey.toBase58(),
       arcAddress: recipientArcAddress,
-      amountUsdc,
+      amountUsdc: burnAmount,
       solanaBurnSig: null,
       status: "initiated",
     });
 
     // Execute CCTP deposit_for_burn on Solana
-    console.log(`[cctp_bridge] Executing CCTP deposit_for_burn on Solana for ${solKeypair.publicKey.toBase58()} -> Arc:${recipientArcAddress}...`);
+    console.log(`[cctp_bridge] Executing CCTP deposit_for_burn on Solana for ${solKeypair.publicKey.toBase58()} -> Arc:${recipientArcAddress} ($${burnAmount} USDC)...`);
     const burnResult = await multichain.executeSolanaCctpBurn({
       userKeypair: solKeypair,
-      amountUsdc,
+      amountUsdc: burnAmount,
       recipientArcAddress,
     });
 

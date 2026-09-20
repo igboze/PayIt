@@ -73,7 +73,15 @@ function deriveSolanaFromEvmKey(evmPrivateKey) {
  * @returns {boolean}
  */
 function isSolanaAddress(address) {
-  if (!address || typeof address !== "string") return false;
+  if (!address) return false;
+  if (typeof address === "object" && typeof address.toBuffer === "function") {
+    try {
+      return PublicKey.isOnCurve(address.toBuffer());
+    } catch {
+      return false;
+    }
+  }
+  if (typeof address !== "string") return false;
   const trimmed = address.trim();
   if (trimmed.startsWith("0x")) return false;
   if (trimmed.length < 32 || trimmed.length > 44) return false;
@@ -248,7 +256,9 @@ async function getSplTokenBalance(ownerAddress, mint = SOLANA_USDC_MINT) {
   }
   try {
     const connection = getSolanaConnection();
-    const ownerPubkey = new PublicKey(ownerAddress);
+    const ownerPubkey = (ownerAddress && typeof ownerAddress.toBuffer === "function")
+      ? ownerAddress
+      : new PublicKey(ownerAddress);
     const ata = getAssociatedTokenAddress(ownerPubkey, mint);
     const balanceRes = await connection.getTokenAccountBalance(ata);
     return {
