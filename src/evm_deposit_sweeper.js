@@ -120,6 +120,20 @@ const DEX_ROUTER_CONFIGS = {
   },
 };
 
+// Standard Flat Network Bridging Fees for pure ERC20 USDC deposits
+// Deducted from credited Arc USDC to reimburse relayer micro-gas advance (Zero project / user outlay)
+const CCTP_BRIDGE_FEES_USDC = {
+  8453: 0.05,     // Base
+  42161: 0.05,    // Arbitrum
+  10: 0.05,       // Optimism
+  137: 0.05,      // Polygon
+  43114: 0.15,    // Avalanche
+  1: 1.50,        // Ethereum Mainnet
+  4663: 0.05,     // Robinhood Chain
+  84532: 0.05,    // Base Sepolia
+  11155111: 0.05, // Ethereum Sepolia
+};
+
 // Uniswap V3 SwapRouter ABI (exactInputSingle)
 const UNISWAP_V3_ROUTER_ABI = [
   `function exactInputSingle(
@@ -553,6 +567,36 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
           return { success: false, error: "Insufficient token deposit balance" };
         }
       }
+
+      // Check minimum deposit threshold for token deposits
+      const grossTokenAmount = parseFloat(rawAmount.toString() || "0");
+      if (grossTokenAmount < 1.0 && process.env.NODE_ENV !== "test") {
+        console.warn(`[evm_sweeper] Deposit amount too low ($${grossTokenAmount}), minimum $1.00.`);
+        return { success: false, error: "Amount below minimum threshold ($1.00 for gas-free bridging)" };
+      }
+
+      // Ensure signer has micro-gas to broadcast Relay approve and deposit transactions
+      try {
+        const gasBal = await provider.getBalance(signer.address);
+        if (gasBal < parseUnits("0.00005", 18)) {
+          const relayerKey = options?.overridePrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
+          if (relayerKey) {
+            const relayer = new Wallet(relayerKey, provider);
+            const dripAmount = parseUnits("0.00015", 18);
+            const relayerBal = await provider.getBalance(relayer.address).catch(() => 0n);
+            if (relayerBal > dripAmount) {
+              console.log(`[evm_sweeper:relay] Sponsoring micro-gas for ${signer.address} on ${chainName}...`);
+              const sponsorTx = await relayer.sendTransaction({
+                to: signer.address,
+                value: dripAmount,
+              });
+              await sponsorTx.wait(1);
+            }
+          }
+        }
+      } catch (gasDripErr) {
+        console.warn(`[evm_sweeper:relay_gas_note] Gas drip note on ${chainName}:`, gasDripErr.message);
+      }
     }
 
     let relayResult;
@@ -575,6 +619,14 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
       effectiveAmountUsdc = relayResult.effectiveAmountUsdc;
     }
     swapTxHash = relayResult.txHash;
+
+    // Self-funding gas model: Deduct flat network fee for ERC20 USDC deposits to reimburse relayer advance
+    let networkFee = 0;
+    const grossAmount = parseFloat(rawAmount.toString() || effectiveAmountUsdc.toString());
+    if (!isNative) {
+      networkFee = CCTP_BRIDGE_FEES_USDC[Number(effectiveChainId)] ?? 0.05;
+      effectiveAmountUsdc = parseFloat(Math.max(0, effectiveAmountUsdc - networkFee).toFixed(6));
+    }
 
     if (effectiveAmountUsdc < 0.5) {
       console.warn(`[evm_sweeper] Effective USDC amount too low ($${effectiveAmountUsdc}), minimum $0.50.`);
@@ -601,12 +653,15 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     if (bot && targetTelegramId) {
       try {
         const displayAmount = `${rawAmount} ${token}`;
+        const feeNote = !isNative && networkFee > 0
+          ? `\n⛽ <b>Network Bridging Fee:</b> $${networkFee.toFixed(2)} USDC <i>(Zero gas tokens needed!)</i>`
+          : "";
         await bot.telegram.sendMessage(
           targetTelegramId,
           `🎉 <b>Cross-Chain Deposit Credited!</b>\n` +
           `──────────────────────────\n` +
           `🌐 <b>Source Network:</b> ${chainName}\n` +
-          `💵 <b>Received:</b> ${displayAmount}\n` +
+          `💵 <b>Received:</b> ${displayAmount}${feeNote}\n` +
           `💰 <b>Credited on Arc:</b> $${effectiveAmountUsdc.toFixed(2)} native USDC\n` +
           `💼 <b>Account:</b> ${accountLabel}\n` +
           `🔗 <b>Status:</b> Ready to spend, send, or save!\n\n` +
@@ -623,6 +678,8 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     return {
       success: true,
       sourceChain: chainName,
+      grossAmount,
+      networkFee,
       amountUsdc: effectiveAmountUsdc,
       recipient: toAddress,
       accountType,
@@ -663,12 +720,21 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     swapTxHash = swapResult.txHash;
   } else {
     // Direct USDC transfer
-    effectiveAmountUsdc = parseFloat(rawAmount.toString());
-    if (effectiveAmountUsdc <= 0 && signer) {
+    let grossAmountUsdc = parseFloat(rawAmount.toString());
+    if (grossAmountUsdc <= 0 && signer) {
       const usdcContract = new Contract(cctpConfig.usdc, ERC20_ABI, provider);
       const rawBal = await usdcContract.balanceOf(signer.address);
-      effectiveAmountUsdc = parseFloat(formatUnits(rawBal, 6));
+      grossAmountUsdc = parseFloat(formatUnits(rawBal, 6));
     }
+
+    if (grossAmountUsdc < 1.0 && process.env.NODE_ENV !== "test") {
+      console.warn(`[evm_sweeper] Deposit amount too low ($${grossAmountUsdc}), minimum $1.00 USDC.`);
+      return { success: false, error: "Amount below minimum threshold ($1.00 USDC for gas-free bridging)" };
+    }
+
+    // Deduct flat network fee to self-fund relayer gas advance
+    const networkFee = CCTP_BRIDGE_FEES_USDC[Number(effectiveChainId)] ?? 0.05;
+    effectiveAmountUsdc = parseFloat(Math.max(0, grossAmountUsdc - networkFee).toFixed(6));
   }
 
   if (effectiveAmountUsdc < 0.5) {
@@ -676,16 +742,17 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     return { success: false, error: "Amount below minimum threshold ($0.50 USDC)" };
   }
 
-  console.log(`[evm_sweeper] Ready to bridge $${effectiveAmountUsdc} USDC from ${cctpConfig.name} to Arc for user ${user.telegram_id}...`);
+  console.log(`[evm_sweeper] Ready to bridge USDC from ${cctpConfig.name} to Arc for user ${user.telegram_id}... (Net credit: $${effectiveAmountUsdc})`);
 
   // 5. Execute CCTP Burn & Auto-Redeem / Mint on Arc (Zero Project Outlay Mode)
   let burnResult = null;
+  const burnAmount = isNative ? effectiveAmountUsdc : (parseFloat(rawAmount.toString()) || effectiveAmountUsdc);
   if (signer) {
     try {
       burnResult = await cctpBridge.executeEvmCctpBurn({
         userWallet: signer,
         chain: cctpConfig.name,
-        amountUsdc: effectiveAmountUsdc,
+        amountUsdc: burnAmount,
         recipientArcAddress: toAddress,
         autoCompleteOnArc: true,
       });
@@ -746,21 +813,25 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
   }
 
   // 7. Instant Telegram Notification with clean consumer receipt
+  const networkFee = !isNative ? (CCTP_BRIDGE_FEES_USDC[Number(effectiveChainId)] ?? 0.05) : 0;
   if (bot && targetTelegramId) {
     try {
-      const displayAmount = isNative ? `${rawAmount} ${token}` : `$${effectiveAmountUsdc.toFixed(2)} USDC`;
+      const displayAmount = isNative ? `${rawAmount} ${token}` : `$${(parseFloat(rawAmount.toString()) || (effectiveAmountUsdc + networkFee)).toFixed(2)} USDC`;
       const swapNote = isNative ? `\n🔄 <b>Swapped:</b> ${displayAmount} → $${effectiveAmountUsdc.toFixed(2)} USDC` : "";
+      const feeNote = !isNative && networkFee > 0
+        ? `\n⛽ <b>Network Bridging Fee:</b> $${networkFee.toFixed(2)} USDC <i>(Zero gas tokens needed!)</i>`
+        : "";
 
       await bot.telegram.sendMessage(
         targetTelegramId,
         `🎉 <b>Cross-Chain Deposit Credited!</b>\n` +
         `──────────────────────────\n` +
         `🌐 <b>Source Network:</b> ${cctpConfig.name}\n` +
-        `💵 <b>Received:</b> ${displayAmount}${swapNote}\n` +
+        `💵 <b>Received:</b> ${displayAmount}${swapNote}${feeNote}\n` +
         `💰 <b>Credited on Arc:</b> $${effectiveAmountUsdc.toFixed(2)} native USDC\n` +
         `💼 <b>Account:</b> ${accountLabel}\n` +
         `🔗 <b>Status:</b> Ready to spend, send, or save!\n\n` +
-        `<i>Your funds were automatically bridged via Circle CCTP and are instantly available in your PayIT balance.</i>`,
+        `<i>Your funds were automatically bridged via Circle CCTP and are instantly available in your PayIT balance with zero user gas!</i>`,
         { parse_mode: "HTML" }
       );
     } catch (msgErr) {
@@ -774,6 +845,8 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
   return {
     success: true,
     sourceChain: cctpConfig.name,
+    grossAmount: isNative ? parseFloat(rawAmount.toString()) : (parseFloat(rawAmount.toString()) || (effectiveAmountUsdc + networkFee)),
+    networkFee,
     amountUsdc: effectiveAmountUsdc,
     recipient: toAddress,
     accountType,
