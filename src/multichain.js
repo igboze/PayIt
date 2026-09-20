@@ -405,15 +405,32 @@ function parseCctpMessage(messageHex) {
   if (buf.length < 184) {
     throw new Error(`CCTP message too short (${buf.length} bytes), expected ≥ 184`);
   }
+  const version      = buf.readUInt32BE(0);
   const sourceDomain = buf.readUInt32BE(4);
-  const nonceBytes   = buf.slice(12, 20); // 8-byte big-endian nonce
-  const nonce        = buf.readBigUInt64BE(12);
+  const isV2         = version >= 1 && buf.length >= 216;
+  const nonceBytes   = isV2 ? buf.slice(12, 44) : buf.slice(12, 20);
+  const nonce        = isV2 ? ("0x" + nonceBytes.toString("hex")) : buf.readBigUInt64BE(12);
 
-  // messageBody starts at offset 116
-  // V2: messageBody[4..36] is burnToken (offset 120..152)
-  //     messageBody[36..68] is mintRecipient (offset 152..184)
-  const burnToken     = buf.slice(120, 152); // 32 bytes
-  const mintRecipient = buf.slice(152, 184); // 32 bytes (Solana recipient pubkey)
+  // In CCTP V2 (version >= 1 or buffer >= 216 with 148-byte header):
+  //   Header: [0..147] (includes destinationCaller, minFinality, maxFee)
+  //   messageBody starts at offset 148:
+  //     [148..151] bodyVersion (4 bytes)
+  //     [152..184] burnToken (32 bytes)
+  //     [184..216] mintRecipient (32 bytes)
+  // In CCTP V1:
+  //   Header is 116 bytes, messageBody starts at 116:
+  //     [120..152] burnToken
+  //     [152..184] mintRecipient
+  let burnToken;
+  let mintRecipient;
+  if (isV2) {
+    burnToken     = buf.slice(152, 184); // 32 bytes
+    mintRecipient = buf.slice(184, 216); // 32 bytes (Solana recipient pubkey)
+  } else {
+    burnToken     = buf.slice(120, 152); // 32 bytes
+    mintRecipient = buf.slice(152, 184); // 32 bytes
+  }
+
   return { sourceDomain, nonceBytes, nonce, mintRecipient, burnToken };
 }
 
@@ -462,9 +479,8 @@ async function receiveCctpMessageOnSolana({ messageHex, attestationHex, feePayer
     const { sourceDomain, nonceBytes, mintRecipient, burnToken } = parseCctpMessage(messageHex);
     const effectiveSrcDomain = sourceDomainOverride !== undefined ? sourceDomainOverride : sourceDomain;
 
-    // mintRecipient is the 32-byte Solana public key of the token recipient
-    const recipientPubkey = new PublicKey(mintRecipient);
-    const recipientAta    = getAssociatedTokenAddress(recipientPubkey, SOLANA_USDC_MINT);
+    // mintRecipient is the 32-byte public key of the destination token account (USDC ATA)
+    const recipientTokenAccount = new PublicKey(mintRecipient);
 
     // ── MessageTransmitterV2 PDAs ───────────────────────────────────────────
     const [authorityPda] = PublicKey.findProgramAddressSync(
@@ -566,7 +582,7 @@ async function receiveCctpMessageOnSolana({ messageHex, attestationHex, feePayer
       /* 12 localToken         */ { pubkey: localTokenPda,                   isSigner: false, isWritable: true  },
       /* 13 tokenPair          */ { pubkey: tokenPairPda,                    isSigner: false, isWritable: false },
       /* 14 feeRecipientAta    */ { pubkey: feeRecipientAta,                 isSigner: false, isWritable: true  },
-      /* 15 recipientTokenAcct */ { pubkey: recipientAta,                    isSigner: false, isWritable: true  },
+      /* 15 recipientTokenAcct */ { pubkey: recipientTokenAccount,            isSigner: false, isWritable: true  },
       /* 16 custodyTokenAcct   */ { pubkey: custodyTokenAccountPda,          isSigner: false, isWritable: true  },
       /* 17 tokenProgram       */ { pubkey: TOKEN_PROGRAM_ID,                isSigner: false, isWritable: false },
       /* 18 tmEventAuthority   */ { pubkey: tmEventAuthorityPda,             isSigner: false, isWritable: false },
@@ -586,16 +602,10 @@ async function receiveCctpMessageOnSolana({ messageHex, attestationHex, feePayer
       recentBlockhash: latestBlockhash.blockhash,
     });
 
-    // Create recipient ATA if it doesn't exist yet (fee payer covers ~0.002 SOL rent)
-    const ataInfo = await connection.getAccountInfo(recipientAta);
+    // Verify recipient token account exists on Solana
+    const ataInfo = await connection.getAccountInfo(recipientTokenAccount);
     if (!ataInfo) {
-      console.log(`[multichain:receive_cctp] Creating ATA for ${recipientPubkey.toBase58()}...`);
-      tx.add(createAssociatedTokenAccountInstruction(
-        feePayerKeypair.publicKey, // payer
-        recipientAta,
-        recipientPubkey,
-        SOLANA_USDC_MINT
-      ));
+      console.warn(`[multichain:receive_cctp] Warning: recipient token account ${recipientTokenAccount.toBase58()} not found on Solana`);
     }
 
     tx.add(receiveIx);
