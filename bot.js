@@ -3279,7 +3279,8 @@ bot.action("admin_scan_volume", async (ctx) => {
     `• Backfilled paid invoices: ${res.backfilledInvoices}\n` +
     `• Backfilled completed payments: ${res.backfilledPayments}\n` +
     `• Backfilled savings positions: ${res.backfilledYield}\n` +
-    `• Backfilled onramp deposits: ${res.backfilledOnramp || 0}`,
+    `• Backfilled onramp deposits: ${res.backfilledOnramp || 0}\n` +
+    `• Deduplicated monitor sweeps: ${res.deduplicatedSweeps || 0}`,
     { parse_mode: "HTML" }
   );
 

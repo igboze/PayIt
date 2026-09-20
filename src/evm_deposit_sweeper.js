@@ -778,6 +778,8 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
   };
 }
 
+const _recentSweeps = new Map();
+
 /**
  * Scan all supported EVM chains for a user's addresses and sweep any detected deposits.
  *
@@ -838,13 +840,21 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
           const usdcBal = parseFloat(formatUnits(usdcBalUnits, cfg.decimals));
 
           if (usdcBal >= 0.5) {
+            const sweepLockKey = `sweep_usdc_${cfg.chainId}_${address.toLowerCase()}_${usdcBalUnits.toString()}`;
+            const lastSweep = _recentSweeps.get(sweepLockKey);
+            if (lastSweep && Date.now() - lastSweep < 3600000) {
+              // Already swept this exact balance recently, skip to prevent duplicate monitor spam
+              continue;
+            }
+            _recentSweeps.set(sweepLockKey, Date.now());
+
             console.log(`[evm_sweeper:scanner] Found $${usdcBal} USDC on ${cfg.key} for ${address}`);
             const res = await processEvmDeposit({
               chainId: cfg.chainId,
               to: address,
               token: "USDC",
               amount: usdcBal,
-              txHash: `sweep_usdc_${cfg.chainId}_${address}_${Date.now()}`,
+              txHash: `sweep_usdc_${cfg.chainId}_${address.toLowerCase()}_${usdcBalUnits.toString()}`,
             }, bot, options);
             results.push(res);
           }
@@ -855,13 +865,21 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
         const minNativeWei = dexCfg?.minDepositWei || parseUnits("0.0005", 18);
 
         if (nativeBalWei > minNativeWei) {
+          const sweepLockKey = `sweep_native_${cfg.chainId}_${address.toLowerCase()}_${nativeBalWei.toString()}`;
+          const lastSweep = _recentSweeps.get(sweepLockKey);
+          if (lastSweep && Date.now() - lastSweep < 3600000) {
+            // Already swept this exact balance recently, skip to prevent duplicate monitor spam
+            continue;
+          }
+          _recentSweeps.set(sweepLockKey, Date.now());
+
           console.log(`[evm_sweeper:scanner] Found ${formatUnits(nativeBalWei, 18)} native on ${cfg.key} for ${address}`);
           const res = await processEvmDeposit({
             chainId: cfg.chainId,
             to: address,
             token: dexCfg?.nativeSymbol || "ETH",
             amount: formatUnits(nativeBalWei, 18),
-            txHash: `sweep_native_${cfg.chainId}_${address}_${Date.now()}`,
+            txHash: `sweep_native_${cfg.chainId}_${address.toLowerCase()}_${nativeBalWei.toString()}`,
           }, bot, options);
           results.push(res);
         }
