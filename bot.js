@@ -1338,13 +1338,19 @@ async function handleSweepDeposits(ctx) {
       }
     }
 
-    // 2. Retry pending inbound CCTP transfers for user
+    // 2. Retry pending inbound CCTP transfers for user (matched by telegram_id OR EVM wallet address)
     try {
       const pendingCctp = db.getPendingInboundCctpTransfers
         ? db.getPendingInboundCctpTransfers()
         : [];
-      const userPending = pendingCctp.filter(t => t.telegram_id === ctx.from.id || t.telegram_id === user.telegram_id);
+      const userPending = pendingCctp.filter(t => 
+        t.telegram_id === ctx.from.id || 
+        t.telegram_id === user.telegram_id || 
+        (arcAddr && t.arc_address && t.arc_address.toLowerCase() === arcAddr.toLowerCase())
+      );
       for (const p of userPending) {
+        solanaBridged = true;
+        solAmount = p.amount_usdc || solAmount;
         cctpBridge.completeInboundCctpTransferFlow({
           inboundId: p.id,
           solanaBurnSig: p.solana_burn_sig,
