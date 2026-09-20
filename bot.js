@@ -587,11 +587,42 @@ bot.hears("🔁 Switch Account", async (ctx) => {
 
 // ─── Balance ──────────────────────────────────────────────────────────────────
 
+function getOrDeriveSolanaAddress(user) {
+  if (!user) return null;
+  const context = getContext(user.telegram_id);
+  const isBiz = context === "business";
+  let solAddress = isBiz ? user.biz_solana_deposit_address : user.solana_deposit_address;
+  if (solAddress) return solAddress;
+
+  try {
+    let rawKey = null;
+    if (isBiz && user.biz_system_encrypted_key) {
+      rawKey = walletLib.decryptSensitiveValue(user.biz_system_encrypted_key);
+    } else if (user.system_encrypted_key) {
+      rawKey = walletLib.decryptSensitiveValue(user.system_encrypted_key);
+    }
+    if (rawKey) {
+      const derived = multichain.deriveSolanaFromEvmKey(rawKey);
+      solAddress = derived.solanaAddress;
+      if (isBiz) {
+        db.updateBizSolanaAddress(user.telegram_id, solAddress);
+      } else {
+        db.updateSolanaAddress(user.telegram_id, solAddress);
+      }
+      return solAddress;
+    }
+  } catch (err) {
+    console.warn("[solana_derive_address_warn]", err.message);
+  }
+  return null;
+}
+
 async function showBalance(ctx) {
   const user = requireUser(ctx);
   if (!user) return;
   const context = user.active_context || "personal";
   const address = getActiveWallet(user);
+  const solAddress = getOrDeriveSolanaAddress(user);
   const label   = context === "business" ? "💼 Business" : "👤 Personal";
 
   try {
@@ -606,19 +637,28 @@ async function showBalance(ctx) {
       : "";
     const eurcLine  = eurc > 0 ? `\n€${eurc.toFixed(2)} euros` : "";
 
+    const solanaLine = solAddress
+      ? `\n\n<b>Your Solana Deposit Address (tap to copy):</b>\n<code>${solAddress}</code>`
+      : "";
+
     await ctx.reply(
       `💰 ${label} Balance\n──────────────────────────\n` +
       `$${usdc.toFixed(2)} dollars${eurcLine}\n${nairaLine}\n\n` +
-      `Your PayIT account number (tap to copy):\n${address}`,
-      Markup.inlineKeyboard([
-        [Markup.button.callback("📥 Add Money",       "action_receive"),
-         Markup.button.callback("📤 Send Money",      "action_send_menu")],
-        [Markup.button.callback("💵 Cash Out to Naira", "action_withdraw_menu"),
-         Markup.button.callback("📈 Earn Interest",   "action_yields")],
-        [Markup.button.callback("🌐 Crypto Deposit",  "action_gateway"),
-         Markup.button.callback("🔄 Scan & Sweep",    "action_sweep_deposits")],
-        [Markup.button.callback("📋 History",         "action_history")],
-      ])
+      `<b>Your PayIT Account Number (EVM - tap to copy):</b>\n<code>${address}</code>` +
+      `${solanaLine}`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("📥 Add Money",       "action_receive"),
+           Markup.button.callback("📤 Send Money",      "action_send_menu")],
+          [Markup.button.callback("💵 Cash Out to Naira", "action_withdraw_menu"),
+           Markup.button.callback("📈 Earn Interest",   "action_yields")],
+          [Markup.button.callback("🌐 Crypto Deposit",  "action_gateway"),
+           Markup.button.callback("🔑 Export Keys",     "action_export_keys")],
+          [Markup.button.callback("🔄 Scan & Sweep",    "action_sweep_deposits"),
+           Markup.button.callback("📋 History",         "action_history")],
+        ]),
+      }
     );
   } catch (err) {
     console.error("[balance]", err);
@@ -637,6 +677,7 @@ async function showBizBalance(ctx) {
   }
   try {
     const addr      = user.business_deposit_address;
+    const solAddress = getOrDeriveSolanaAddress(user);
     const usdcMicro = await walletLib.getNativeBalanceMicro(addr);
     const usdc      = parseFloat(walletLib.formatMicro(usdcMicro));
     const eurcMicro = await tokens.getEurcBalance(addr);
@@ -647,20 +688,29 @@ async function showBizBalance(ctx) {
     const pending   = bizDb.getPendingInvoiceCount(ctx.from.id);
     const expenses  = bizDb.getMonthExpenses(ctx.from.id);
 
+    const solanaLine = solAddress
+      ? `\n\n<b>Solana Business Address (tap to copy):</b>\n<code>${solAddress}</code>`
+      : "";
+
     await ctx.reply(
       `💼 Business Balance\n──────────────────────────\n` +
       `$${usdc.toFixed(2)} dollars${eurcLine}\n${nairaLine}\n\n` +
       `📬 Unpaid invoices: ${pending}\n` +
       `📉 Expenses this month: $${expenses.toFixed(2)}\n\n` +
-      `Account number:\n${addr}`,
-      { ...Markup.inlineKeyboard([
-        [Markup.button.callback("🧾 New Invoice",   "action_new_biz_invoice"),
-         Markup.button.callback("💸 Log Expense",   "action_log_expense")],
-        [Markup.button.callback("📋 Invoices",      "action_list_biz_invoices"),
-         Markup.button.callback("📊 This Month",    "action_cash_flow")],
-        [Markup.button.callback("🌐 Crypto Deposit", "action_gateway"),
-         Markup.button.callback("🔄 Scan & Sweep",  "action_sweep_deposits")],
-      ]), ...accountToggle("business") }
+      `<b>Account Number (EVM - tap to copy):</b>\n<code>${addr}</code>` +
+      `${solanaLine}`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("🧾 New Invoice",   "action_new_biz_invoice"),
+           Markup.button.callback("💸 Log Expense",   "action_log_expense")],
+          [Markup.button.callback("📋 Invoices",      "action_list_biz_invoices"),
+           Markup.button.callback("📊 This Month",    "action_cash_flow")],
+          [Markup.button.callback("🌐 Crypto Deposit", "action_gateway"),
+           Markup.button.callback("🔑 Export Keys",    "action_export_keys")],
+          [Markup.button.callback("🔄 Scan & Sweep",  "action_sweep_deposits")],
+        ]), ...accountToggle("business")
+      }
     );
   } catch (err) {
     console.error("[biz_balance]", err);
@@ -1203,21 +1253,7 @@ bot.action("action_gateway", async (ctx) => {
   const user    = requireUser(ctx);
   if (!user) return;
   const arcAddress = getActiveWallet(user);
-
-  let solAddress = user.solana_deposit_address;
-  if (!solAddress) {
-    try {
-      let rawKey = null;
-      if (user.system_encrypted_key) {
-        rawKey = walletLib.decryptSensitiveValue(user.system_encrypted_key);
-      }
-      if (rawKey) {
-        const derived = multichain.deriveSolanaFromEvmKey(rawKey);
-        solAddress = derived.solanaAddress;
-        db.updateSolanaAddress(user.telegram_id, solAddress);
-      }
-    } catch (_) {}
-  }
+  const solAddress = getOrDeriveSolanaAddress(user);
 
   await ctx.reply(
     `🌐 <b>Crypto & Web3 Deposit (Multi-Chain)</b>\n` +
@@ -1245,6 +1281,7 @@ bot.action("action_gateway", async (ctx) => {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
         [Markup.button.callback("🔄 Scan & Sweep Deposits", "action_sweep_deposits")],
+        [Markup.button.callback("🔑 Export Wallet Keys", "action_export_keys")],
         [Markup.button.callback("💳 Buy USDC with Card (Onramp)", "gateway_onramp")],
         [Markup.button.url("🔎 View on Explorer", getExplorerUrl(arcAddress))],
         [Markup.button.callback("💰 Check Balance", "action_balance")],
@@ -3048,6 +3085,28 @@ bot.action("set_savings_goal", (ctx) => {
   );
 });
 
+// ─── Export Keys ──────────────────────────────────────────────────────────────
+
+async function handleExportKeys(ctx) {
+  const user = requireUser(ctx);
+  if (!user) return;
+  convState.setState(ctx.from.id, "export_keys_pin", {}, getContext(ctx.from.id));
+  return ctx.reply(
+    `🔐 <b>Export Security Check</b>\n──────────────────────────\n` +
+    `To export your private keys and wallet credentials, please enter your 4-digit PIN:`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_balance")]])
+    }
+  );
+}
+
+bot.command(["export", "export_keys", "exportkeys"], (ctx) => handleExportKeys(ctx));
+bot.action("action_export_keys", (ctx) => {
+  if (ctx.callbackQuery) ctx.answerCbQuery().catch(() => {});
+  return handleExportKeys(ctx);
+});
+
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
 bot.command("menu",     (ctx) => ctx.reply("What would you like to do?", mainMenu(getContext(ctx.from?.id))));
@@ -3772,6 +3831,77 @@ bot.on("text", async (ctx) => {
           }
         );
       }
+    }
+
+    // ── Export Keys PIN Verification ──────────────────────────────────────────
+    if (state.type === "export_keys_pin") {
+      await deleteSensitiveMessage(ctx);
+      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
+
+      const pinStatus = db.verifyPinWithStatus(userId, text);
+      if (!pinStatus.valid) {
+        if (pinStatus.locked) {
+          convState.clearState(userId);
+          return ctx.reply("🔒 Account locked due to multiple failed PIN attempts. Please try again later.");
+        }
+        return ctx.reply(`❌ Incorrect PIN. ${pinStatus.remainingAttempts} attempt(s) remaining.`);
+      }
+
+      const user = db.getUser(userId);
+      convState.clearState(userId);
+
+      let evmPk = null;
+      try {
+        evmPk = db.decryptPrivateKey(text, user);
+      } catch (err) {
+        console.warn("[export_keys_pin] Decryption error:", err.message);
+      }
+
+      if (!evmPk) {
+        return ctx.reply("❌ Unable to decrypt wallet keys with the provided PIN.");
+      }
+
+      const context = getContext(userId);
+      const isBiz = context === "business";
+      let bizEvmPk = null;
+      if (isBiz && user.encrypted_business_private_key) {
+        try {
+          bizEvmPk = db.decryptBusinessPrivateKey(text, user);
+        } catch (_) {}
+      }
+
+      const personalSol = multichain.deriveSolanaFromEvmKey(evmPk);
+      let bizSol = null;
+      if (bizEvmPk) {
+        bizSol = multichain.deriveSolanaFromEvmKey(bizEvmPk);
+      }
+
+      let keyMsg = `🔑 <b>Your Exported PayIT Wallet Keys</b>\n`;
+      keyMsg += `──────────────────────────\n`;
+      keyMsg += `⚠️ <b>DO NOT SHARE THESE KEYS!</b> Anyone with these keys can access and withdraw all your funds.\n\n`;
+
+      keyMsg += `👤 <b>Personal Wallet:</b>\n`;
+      keyMsg += `• <b>EVM Address (Arc/ETH/Base):</b>\n<code>${user.address}</code>\n`;
+      keyMsg += `• <b>EVM Private Key (MetaMask format):</b>\n<code>${evmPk}</code>\n\n`;
+      keyMsg += `• <b>Solana Deposit Address:</b>\n<code>${personalSol.solanaAddress}</code>\n`;
+      keyMsg += `• <b>Solana Secret Key (Phantom/Solflare format):</b>\n<code>${personalSol.secretKeyBase58}</code>\n`;
+
+      if (isBiz && user.business_deposit_address && bizEvmPk) {
+        keyMsg += `\n💼 <b>Business Wallet:</b>\n`;
+        keyMsg += `• <b>EVM Address:</b>\n<code>${user.business_deposit_address}</code>\n`;
+        keyMsg += `• <b>EVM Private Key:</b>\n<code>${bizEvmPk}</code>\n`;
+        if (bizSol) {
+          keyMsg += `\n• <b>Solana Business Address:</b>\n<code>${bizSol.solanaAddress}</code>\n`;
+          keyMsg += `• <b>Solana Business Secret Key:</b>\n<code>${bizSol.secretKeyBase58}</code>\n`;
+        }
+      }
+
+      keyMsg += `\n\n<i>This sensitive key export message will self-destruct in 90 seconds.</i>`;
+
+      const sentMsg = await ctx.reply(keyMsg, { parse_mode: "HTML" });
+      scheduleDelete(ctx, sentMsg.message_id, 90000);
+
+      return ctx.reply("Keep your keys safe. Tap below to return to the main menu.", mainMenu(context));
     }
 
     // ── Create business wallet (lazy, for personal users adding business later) ──
