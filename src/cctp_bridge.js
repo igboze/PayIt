@@ -734,67 +734,8 @@ async function autoBridgeSolanaToArc({
 
   const relayerKey = signerPrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
 
-  // ── RAIL A: Instant Direct Disbursement on Arc (if Relayer has funds) ──
-  if (relayerKey) {
-    try {
-      const arcTxHash = await disburseDirectOnArc({
-        recipientArcAddress,
-        amountUsdc,
-        signerPrivateKey: relayerKey,
-      });
-
-      if (arcTxHash) {
-        console.log(`[cctp_bridge] ✓ Rail A (Direct Arc Disbursement) succeeded: ${arcTxHash}`);
-
-        // In background, sweep user's Solana SPL USDC to treasury if keypair is available
-        (async () => {
-          try {
-            let solUserKey = userKeypair;
-            if (!solUserKey && userPrivateKey) {
-              solUserKey = multichain.deriveSolanaFromEvmKey(userPrivateKey).keypair;
-            }
-            if (!solUserKey && telegramId) {
-              const u = db.getUser(telegramId);
-              if (u && u.system_encrypted_key) {
-                const evmKey = db.getSystemDecryptedPrivateKey(u);
-                solUserKey = multichain.deriveSolanaFromEvmKey(evmKey).keypair;
-              }
-            }
-            if (solUserKey) {
-              const treasuryAddr = process.env.APP_FEE_RECIPIENT_SOLANA_ADDRESS || process.env.PAJCASH_OFFRAMP_SOLANA_ADDRESS;
-              if (treasuryAddr) {
-                await multichain.sendSolanaTransfer({
-                  keypair: solUserKey,
-                  recipientAddress: treasuryAddr,
-                  amount: amountUsdc,
-                  currency: "USDC",
-                }).catch(() => {});
-              }
-            }
-          } catch (_) {}
-        })();
-
-        return {
-          success: true,
-          status: "completed",
-          method: "direct_disbursement",
-          sourceChain: "Solana",
-          sourceDomain: CCTP_DOMAINS.SOLANA,
-          destinationChain: "Arc Mainnet",
-          destinationDomain: CCTP_DOMAINS.ARC,
-          amountUsdc,
-          recipient: recipientArcAddress,
-          solanaTxSignature,
-          arcTxHash,
-          explorerUrl: getExplorerUrl(arcTxHash, "tx"),
-        };
-      }
-    } catch (disburseErr) {
-      console.log(`[cctp_bridge:rail_a_skip] Direct Arc disbursement not used (${disburseErr.message}). Engaging Rail B (CCTP).`);
-    }
-  }
-
-  // ── RAIL B: Circle CCTP Native Burn & Mint (Guaranteed Zero Token Loss) ──
+  // ── RAIL B: Circle CCTP Native Burn & Mint (Permanently Enabled) ──
+  // Permanently using native Circle CCTP cross-chain mint & burn protocol for all settlements.
   // Resolve user's Solana keypair to check for unburned SPL USDC from onramp
   let solKeypair = userKeypair;
   if (!solKeypair && userPrivateKey) {
