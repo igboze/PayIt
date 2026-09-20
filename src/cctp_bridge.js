@@ -259,39 +259,83 @@ async function fetchCctpMessage(sourceDomain, txHash) {
 
 /**
  * Poll Circle Iris API for CCTP burn message attestation.
- * Once Circle attests to the burn on source chain, the attestation can be redeemed on Arc.
+ * Once Circle attests to the burn on source chain, the attestation can be redeemed on Arc or destination chain.
  *
- * @param {string} messageHash - Keccak256 hash of the CCTP message
+ * @param {string} [messageHash] - Keccak256 hash of the CCTP message or transaction hash
  * @param {number} [maxAttempts=30] - Maximum polling attempts
  * @param {number} [intervalMs=2000] - Polling interval in ms
- * @returns {Promise<{ status: string, attestation: string }>}
+ * @param {object} [options] - Optional routing hints: { txHash, sourceDomain, nonce }
+ * @returns {Promise<{ status: string, attestation: string, message?: string }>}
  */
-async function pollCctpAttestation(messageHash, maxAttempts = 30, intervalMs = 2000) {
-  const cleanHash = messageHash.startsWith("0x") ? messageHash : "0x" + messageHash;
-  const urls = [
-    `${CIRCLE_IRIS_API_V2}/attestations/${cleanHash}`,
-    `${CIRCLE_IRIS_API_V1}/attestations/${cleanHash}`,
-  ];
+async function pollCctpAttestation(messageHash, maxAttempts = 30, intervalMs = 2000, options = {}) {
+  const cleanHash = messageHash ? (messageHash.startsWith("0x") ? messageHash : "0x" + messageHash) : null;
+  const sourceDomain = options.sourceDomain !== undefined ? options.sourceDomain : (options.domain !== undefined ? options.domain : 26);
+  const txHash = options.txHash || (cleanHash && cleanHash.length === 66 ? cleanHash : null);
 
   for (let i = 0; i < maxAttempts; i++) {
-    for (const url of urls) {
+    // 1. Try Iris V2 messages endpoint by transactionHash if available (required for Domain 26 Arc / CCTP V2)
+    if (txHash) {
       try {
-        const res = await axios.get(url, { timeout: 10000 });
-        if (res.data?.status === "complete" && res.data?.attestation) {
+        const v2Url = `${CIRCLE_IRIS_API_V2}/messages/${sourceDomain}?transactionHash=${encodeURIComponent(txHash)}`;
+        const res = await axios.get(v2Url, { timeout: 10000 });
+        const firstMsg = res.data?.messages?.[0];
+        if (firstMsg?.status === "complete" && firstMsg?.attestation) {
           return {
             status: "complete",
-            attestation: res.data.attestation,
+            attestation: firstMsg.attestation,
+            message: firstMsg.message,
           };
         }
       } catch (err) {
-        if (err.response?.status !== 404) {
-          console.warn(`[cctp_bridge] Attestation check warning (${url}):`, err.message);
+        if (err.response?.status !== 404 && i % 10 === 0) {
+          console.warn(`[cctp_bridge] Iris V2 tx query warning (${txHash}):`, err.message);
         }
       }
     }
+
+    // 2. Try Iris V2 messages endpoint by nonce if available
+    if (options.nonce) {
+      try {
+        const v2NonceUrl = `${CIRCLE_IRIS_API_V2}/messages/${sourceDomain}?nonce=${encodeURIComponent(options.nonce)}`;
+        const res = await axios.get(v2NonceUrl, { timeout: 10000 });
+        const firstMsg = res.data?.messages?.[0];
+        if (firstMsg?.status === "complete" && firstMsg?.attestation) {
+          return {
+            status: "complete",
+            attestation: firstMsg.attestation,
+            message: firstMsg.message,
+          };
+        }
+      } catch {}
+    }
+
+    // 3. Fallback: Iris V1 / V2 attestations endpoint by messageHash
+    if (cleanHash) {
+      const urls = [
+        `${CIRCLE_IRIS_API_V2}/attestations/${cleanHash}`,
+        `${CIRCLE_IRIS_API_V1}/attestations/${cleanHash}`,
+      ];
+
+      for (const url of urls) {
+        try {
+          const res = await axios.get(url, { timeout: 10000 });
+          if (res.data?.status === "complete" && res.data?.attestation) {
+            return {
+              status: "complete",
+              attestation: res.data.attestation,
+            };
+          }
+        } catch (err) {
+          if (err.response?.status !== 404 && i % 10 === 0) {
+            console.warn(`[cctp_bridge] Attestation check warning (${url}):`, err.message);
+          }
+        }
+      }
+    }
+
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
-  throw new Error(`CCTP attestation timed out for messageHash: ${messageHash}`);
+  throw new Error(`CCTP attestation timed out for ${txHash ? `txHash: ${txHash}` : `messageHash: ${messageHash}`}`);
 }
 
 /**
@@ -424,7 +468,10 @@ async function autoBridgeSolanaToArc({
   // Step 2: If messageHash is found and polling is enabled, try CCTP contract redeem
   if (msgDetails.messageHash && maxAttempts > 0) {
     try {
-      const attResult = await pollCctpAttestation(msgDetails.messageHash, maxAttempts, intervalMs);
+      const attResult = await pollCctpAttestation(msgDetails.messageHash, maxAttempts, intervalMs, {
+        txHash: solanaTxSignature,
+        sourceDomain: CCTP_DOMAINS.SOLANA,
+      });
       attestation = attResult.attestation;
 
       arcTxHash = await redeemOnArc({
@@ -505,10 +552,55 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
   console.log(`[cctp_bridge:preflight] Fee payer SOL check passed ✓ (${feeCheck.balanceSol.toFixed(4)} SOL)`);
 
   try {
-    const bs58 = require("bs58");
-    const bs58Decode = bs58.default ? bs58.default.decode : bs58.decode;
-    const solPubKeyBytes = bs58Decode(recipientSolanaAddress);
-    const mintRecipient = "0x" + Buffer.from(solPubKeyBytes).toString("hex");
+    const { PublicKey } = require("@solana/web3.js");
+    const { getAssociatedTokenAddress, SOLANA_USDC_MINT } = require("./multichain");
+
+    const recipientPubkey = new PublicKey(recipientSolanaAddress);
+    // On Solana, CCTP mints directly to recipient_token_account, which must be the recipient's USDC Associated Token Account.
+    let recipientAta;
+    try {
+      const conn = getSolanaConnection();
+      const accountInfo = await conn.getAccountInfo(recipientPubkey);
+      if (accountInfo && accountInfo.owner.toBase58() === "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") {
+        recipientAta = recipientPubkey;
+      } else {
+        recipientAta = getAssociatedTokenAddress(recipientPubkey, SOLANA_USDC_MINT);
+      }
+    } catch {
+      recipientAta = getAssociatedTokenAddress(recipientPubkey, SOLANA_USDC_MINT);
+    }
+
+    // Ensure recipient ATA is initialized on Solana before burning on Arc
+    try {
+      const conn = getSolanaConnection();
+      const ataInfo = await conn.getAccountInfo(recipientAta);
+      if (!ataInfo) {
+        console.log(`[cctp_bridge] Initializing recipient ATA ${recipientAta.toBase58()} for ${recipientPubkey.toBase58()}...`);
+        const { Transaction, createAssociatedTokenAccountInstruction } = require("@solana/web3.js");
+        const latestBlockhash = await conn.getLatestBlockhash();
+        const createAtaTx = new Transaction({
+          feePayer: feePayerKeypair.publicKey,
+          recentBlockhash: latestBlockhash.blockhash,
+        }).add(createAssociatedTokenAccountInstruction(
+          feePayerKeypair.publicKey,
+          recipientAta,
+          recipientPubkey,
+          SOLANA_USDC_MINT
+        ));
+        createAtaTx.sign(feePayerKeypair);
+        const sig = await conn.sendRawTransaction(createAtaTx.serialize());
+        await conn.confirmTransaction({
+          signature: sig,
+          blockhash: latestBlockhash.blockhash,
+          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+        });
+        console.log(`[cctp_bridge] Recipient ATA initialized ✓ (${sig})`);
+      }
+    } catch (ataErr) {
+      console.warn("[cctp_bridge:ata_init_note]", ataErr.message);
+    }
+
+    const mintRecipient = "0x" + Buffer.from(recipientAta.toBytes()).toString("hex");
 
     const net = getNetworkConfig();
     const tokenMessengerAddress = ARC_CCTP_CONTRACTS.TOKEN_MESSENGER;
@@ -747,7 +839,10 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
   console.log(`[cctp_bridge:complete] Polling Circle for attestation (max ${maxAttempts} attempts)...`);
   let attestation;
   try {
-    ({ attestation } = await pollCctpAttestation(msgDetails.messageHash, maxAttempts, intervalMs));
+    ({ attestation } = await pollCctpAttestation(msgDetails.messageHash, maxAttempts, intervalMs, {
+      txHash: arcTxHash,
+      sourceDomain: CCTP_DOMAINS.ARC,
+    }));
   } catch (attErr) {
     const msg = `Attestation polling failed for ${arcTxHash}: ${attErr.message}`;
     try { db.failCctpPendingBurn(arcTxHash, msg); } catch {}
@@ -1015,7 +1110,10 @@ async function executeEvmCctpBurn({
           }
           if (attHash) {
             console.log(`[cctp_bridge] Polling Iris attestation for ${attHash}...`);
-            const { attestation } = await pollCctpAttestation(attHash, 90, 5000);
+            const { attestation } = await pollCctpAttestation(attHash, 90, 5000, {
+              txHash: tx.hash,
+              sourceDomain: chainConfig.domain,
+            });
             const mintTxHash = await redeemOnArc({
               attestation,
               message: attMessage,
