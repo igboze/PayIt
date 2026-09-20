@@ -1329,6 +1329,19 @@ async function handleSweepDeposits(ctx) {
             recipientArcAddress: arcAddr,
             bot,
           });
+          if (bridgeRes && (bridgeRes.needsPin || bridgeRes.status === "auth_required")) {
+            convState.setState(ctx.from.id, "onramp_bridge_pin", {
+              amountToBridge: solAmount,
+              arcAddr,
+              isBiz: getContext(ctx.from.id) === "business",
+            }, getContext(ctx.from.id));
+            return ctx.reply(
+              `🔐 <b>PIN Authorization Required</b>\n──────────────────────────\n` +
+              `Detected <b>$${solAmount.toFixed(2)} USDC</b> on your Solana deposit address!\n\n` +
+              `Please enter your 4-digit PIN to authorize cross-chain bridging to Arc Mainnet:`,
+              { parse_mode: "HTML" }
+            );
+          }
           if (bridgeRes && (bridgeRes.success || bridgeRes.status === "initiated" || bridgeRes.status === "burned")) {
             solanaBridged = true;
           }
