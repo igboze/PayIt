@@ -1310,18 +1310,65 @@ async function handleSweepDeposits(ctx) {
     );
   }
 
-  await ctx.reply("🔍 Scanning Arc, Base, Arbitrum, Robinhood Chain, Ethereum, Avalanche, Polygon, and Optimism for deposits...");
+  await ctx.reply("🔍 Scanning Solana, Paj Onramp, Arc, Base, Arbitrum, Robinhood Chain, Ethereum, Avalanche, Polygon, and Optimism for deposits...");
   try {
+    const arcAddr = getActiveWallet(user);
+    const solAddr = getOrDeriveSolanaAddress(user);
+    let solanaBridged = false;
+    let solAmount = 0;
+
+    // 1. Check Solana SPL USDC balance for CCTP auto-bridge
+    if (solAddr) {
+      try {
+        const solBal = await multichain.getSplTokenBalance(solAddr);
+        if (solBal && solBal.uiAmount > 0) {
+          solAmount = solBal.uiAmount;
+          const bridgeRes = await cctpBridge.autoBridgeSolanaToArc({
+            telegramId: ctx.from.id,
+            amountUsdc: solAmount,
+            recipientArcAddress: arcAddr,
+            bot,
+          });
+          if (bridgeRes && (bridgeRes.success || bridgeRes.status === "initiated" || bridgeRes.status === "burned")) {
+            solanaBridged = true;
+          }
+        }
+      } catch (solErr) {
+        console.warn("[sweep:solana_check_error]", solErr.message);
+      }
+    }
+
+    // 2. Retry pending inbound CCTP transfers for user
+    try {
+      const pendingCctp = db.getPendingInboundCctpTransfers
+        ? db.getPendingInboundCctpTransfers()
+        : [];
+      const userPending = pendingCctp.filter(t => t.telegram_id === ctx.from.id || t.telegram_id === user.telegram_id);
+      for (const p of userPending) {
+        cctpBridge.completeInboundCctpTransferFlow({
+          inboundId: p.id,
+          solanaBurnSig: p.solana_burn_sig,
+          recipientArcAddress: p.arc_address || arcAddr,
+          amountUsdc: p.amount_usdc,
+          telegramId: ctx.from.id,
+          bot,
+        }).catch(() => {});
+      }
+    } catch (cctpErr) {
+      console.warn("[sweep:cctp_retry_error]", cctpErr.message);
+    }
+
+    // 3. Multi-chain EVM deposit sweep
     const results = await evmDepositSweeper.sweepUserDeposits(ctx.from.id, bot);
     const successful = (results || []).filter(r => r.success);
     const failed = (results || []).filter(r => !r.success && !r.duplicate);
 
-    if (successful.length > 0) {
-      const creditedTotal = successful.reduce((acc, r) => acc + (r.amountUsdc || 0), 0);
+    if (solanaBridged || successful.length > 0) {
+      const creditedTotal = (solanaBridged ? solAmount : 0) + successful.reduce((acc, r) => acc + (r.amountUsdc || 0), 0);
       return ctx.reply(
         `🎉 <b>Deposit Sweep Successful!</b>\n──────────────────────────\n` +
-        `Successfully processed ${successful.length} deposit(s) for a total of <b>$${creditedTotal.toFixed(2)} USDC</b> on Arc Mainnet!\n\n` +
-        `Your balance has been updated.`,
+        `Successfully initiated cross-chain settlement for <b>$${creditedTotal.toFixed(2)} USDC</b> to Arc Mainnet via Circle CCTP!\n\n` +
+        `Your balance will update automatically upon final attestation.`,
         {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
