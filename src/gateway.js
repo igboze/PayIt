@@ -266,7 +266,7 @@ async function getDepositInfo(arcAddress) {
 async function getSourceChainNativeBalance(walletAddress, sourceChainName) {
   const chain = SUPPORTED_CHAINS.find(c => c.name === sourceChainName);
   if (!chain) throw new Error(`Unsupported chain: ${sourceChainName}`);
-  const provider = new JsonRpcProvider(CHAIN_RPCS[sourceChainName], chain.chainId);
+  const provider = new JsonRpcProvider(CHAIN_RPCS[sourceChainName], chain.chainId, { staticNetwork: true });
   const raw = await provider.getBalance(walletAddress);
   return formatUnits(raw, 18);
 }
@@ -363,7 +363,7 @@ async function executeDeposit(privateKey, sourceChainName, amountUsdc) {
     throw new Error(`Missing RPC or USDC address config for: ${sourceChainName}`);
   }
 
-  const provider = new JsonRpcProvider(rpcUrl, chain.chainId);
+  const provider = new JsonRpcProvider(rpcUrl, chain.chainId, { staticNetwork: true });
   const signer   = new Wallet(privateKey, provider);
   const address  = await signer.getAddress();
 

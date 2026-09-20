@@ -214,7 +214,7 @@ async function depositIntoVault(privateKey, vaultAddress, amountUsdc) {
 
   // Direct ERC-4626 fallback on Arc
   try {
-    const provider = new JsonRpcProvider(net.rpcUrl, net.chainId);
+    const provider = new JsonRpcProvider(net.rpcUrl, net.chainId, { staticNetwork: true });
     const userWallet = walletLib.walletFromPrivateKey(privateKey);
     const amountMicro = walletLib.parseToMicro(amountUsdc.toString());
     const vaultContract = new Contract(vaultAddress, ERC4626_ABI, userWallet);

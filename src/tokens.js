@@ -19,7 +19,7 @@ let _provider = null;
 function getProvider() {
   const net = getNetworkConfig();
   if (!_provider || _provider._network?.chainId !== BigInt(net.chainId)) {
-    _provider = new JsonRpcProvider(net.rpcUrl, net.chainId);
+    _provider = new JsonRpcProvider(net.rpcUrl, net.chainId, { staticNetwork: true });
   }
   return _provider;
 }
