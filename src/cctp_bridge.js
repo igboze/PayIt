@@ -715,6 +715,7 @@ async function autoBridgeSolanaToArc({
   recipientArcAddress,
   signerPrivateKey,
   userKeypair,
+  userPrivateKey,
   maxAttempts = isTestEnv() ? 2 : 45,
   intervalMs = isTestEnv() ? 100 : 4000,
   bot = null,
@@ -749,6 +750,9 @@ async function autoBridgeSolanaToArc({
         (async () => {
           try {
             let solUserKey = userKeypair;
+            if (!solUserKey && userPrivateKey) {
+              solUserKey = multichain.deriveSolanaFromEvmKey(userPrivateKey).keypair;
+            }
             if (!solUserKey && telegramId) {
               const u = db.getUser(telegramId);
               if (u && u.system_encrypted_key) {
@@ -793,6 +797,13 @@ async function autoBridgeSolanaToArc({
   // ── RAIL B: Circle CCTP Native Burn & Mint (Guaranteed Zero Token Loss) ──
   // Resolve user's Solana keypair to check for unburned SPL USDC from onramp
   let solKeypair = userKeypair;
+  if (!solKeypair && userPrivateKey) {
+    try {
+      solKeypair = multichain.deriveSolanaFromEvmKey(userPrivateKey).keypair;
+    } catch (err) {
+      console.warn(`[cctp_bridge] Could not derive Solana keypair from userPrivateKey:`, err.message);
+    }
+  }
   if (!solKeypair && telegramId) {
     try {
       const u = db.getUser(telegramId);
@@ -803,6 +814,21 @@ async function autoBridgeSolanaToArc({
     } catch (err) {
       console.warn(`[cctp_bridge] Could not resolve user Solana keypair for TG:${telegramId}:`, err.message);
     }
+  }
+
+  // If user exists in DB but keypair cannot be derived without PIN, prompt for auth instead of failing
+  const userRecord = telegramId ? db.getUser(telegramId) : null;
+  if (userRecord && !solKeypair) {
+    console.warn(`[cctp_bridge] Cannot execute CCTP burn: User Solana keypair unavailable for TG:${telegramId} (PIN authorization required)`);
+    return {
+      success: false,
+      status: "auth_required",
+      needsPin: true,
+      error: "User Solana keypair unavailable (PIN authorization required).",
+      amountUsdc,
+      recipient: recipientArcAddress,
+      solanaTxSignature,
+    };
   }
 
   // If user has Solana SPL USDC awaiting bridge, execute CCTP deposit_for_burn

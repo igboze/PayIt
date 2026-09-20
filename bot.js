@@ -1922,6 +1922,27 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
           ]),
         }
       );
+    } else if (!user.system_encrypted_key || bridgeRes?.needsPin || bridgeRes?.status === "auth_required") {
+      convState.setState(user.telegram_id, "onramp_bridge_pin", {
+        orderId: orderId || "",
+        amountToBridge,
+        arcAddr,
+        txHash: pajOrder?.txHash || null,
+        isBiz,
+      }, getContext(user.telegram_id));
+
+      return ctx.reply(
+        `🔐 <b>One-Time Authorization Required</b>\n` +
+        `──────────────────────────\n` +
+        `We detected your deposit of <b>$${amountToBridge.toFixed(2)} USDC</b> on Solana.\n\n` +
+        `To authorize cross-chain delivery directly to your Arc Mainnet wallet (<code>${arcAddr.slice(0, 6)}...${arcAddr.slice(-4)}</code>), please enter your <b>4-digit PayIT PIN</b>:`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback("❌ Cancel", "main_menu")]
+          ]),
+        }
+      );
     } else {
       return ctx.reply(
         `⏳ <b>Deposit Received & Bridging to Arc!</b>\n` +
@@ -3643,6 +3664,114 @@ bot.on("text", async (ctx) => {
 
       const context = isBusiness ? "business" : "personal";
       return ctx.reply(`What would you like to do first?`, mainMenu(context));
+    }
+
+    // ── Onramp bridge PIN authorization (for legacy users lacking system_encrypted_key) ──
+    if (state.type === "onramp_bridge_pin") {
+      await deleteSensitiveMessage(ctx);
+      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
+
+      const pinStatus = db.verifyPinWithStatus(userId, text);
+      if (!pinStatus.valid) {
+        if (pinStatus.locked) {
+          convState.clearState(userId);
+          return ctx.reply("🔒 Account locked due to multiple failed PIN attempts. Please try again later.");
+        }
+        return ctx.reply(`❌ Incorrect PIN. ${pinStatus.remainingAttempts} attempt(s) remaining.`);
+      }
+
+      const user = db.getUser(userId);
+      const stateData = state.data || {};
+      convState.clearState(userId);
+
+      // Decrypt EVM private key using verified PIN
+      let userPk = null;
+      try {
+        userPk = db.decryptPrivateKey(text, user);
+      } catch (err) {
+        console.warn("[onramp_bridge_pin] Could not decrypt private key:", err.message);
+      }
+
+      const amountToBridge = stateData.amountToBridge || 0;
+      const arcAddr = stateData.arcAddr;
+      const isBiz = stateData.isBiz;
+
+      await ctx.reply(
+        `🔐 <b>PIN Verified!</b>\n` +
+        `──────────────────────────\n` +
+        `⚡ Initiating cross-chain settlement of <b>$${amountToBridge.toFixed(2)} USDC</b> to Arc Mainnet...`,
+        { parse_mode: "HTML" }
+      );
+
+      try {
+        const bridgeRes = await cctpBridge.autoBridgeSolanaToArc({
+          telegramId: userId,
+          amountUsdc: amountToBridge,
+          recipientArcAddress: arcAddr,
+          userPrivateKey: userPk,
+          bot,
+        });
+
+        // Refresh Arc balance
+        let arcBal = 0;
+        try {
+          const refreshed = await walletLib.getNativeBalanceMicro(arcAddr);
+          arcBal = parseFloat(walletLib.formatMicro(refreshed));
+        } catch {}
+
+        const isSettled = bridgeRes && bridgeRes.status === "completed" && bridgeRes.arcTxHash;
+        if (isSettled || (arcBal > 0 && bridgeRes?.status === "completed")) {
+          const explorerLink = bridgeRes?.explorerUrl
+            ? `\n🔗 <a href="${bridgeRes.explorerUrl}">View on Arcscan</a>`
+            : "";
+          return ctx.reply(
+            `🎉 <b>Deposit Settled & Confirmed!</b>\n` +
+            `──────────────────────────\n` +
+            `💼 <b>Account:</b> ${isBiz ? "Business Treasury" : "Personal Wallet"}\n` +
+            `💰 <b>Current Balance:</b> <b>$${arcBal.toFixed(2)} USDC</b>\n` +
+            `🏛 <b>Network:</b> Arc Mainnet (Domain 26)${explorerLink}\n\n` +
+            `<i>Your dollars have been credited and are ready to spend, save, or send!</i>`,
+            {
+              parse_mode: "HTML",
+              ...Markup.inlineKeyboard([
+                [Markup.button.callback("💰 View Balance", "action_balance")],
+                [Markup.button.callback("🏠 Main Menu",    "main_menu")],
+              ]),
+            }
+          );
+        } else {
+          return ctx.reply(
+            `⏳ <b>Deposit Received & Bridging to Arc!</b>\n` +
+            `──────────────────────────\n` +
+            `💼 <b>Account:</b> ${isBiz ? "Business Treasury" : "Personal Wallet"}\n` +
+            `💰 <b>Incoming Amount:</b> <b>$${amountToBridge.toFixed(2)} USDC</b>\n` +
+            `🔄 <b>Status:</b> Cross-chain settlement to Arc Mainnet in progress...\n` +
+            `🏛 <b>Network:</b> Arc Mainnet (Domain 26)\n\n` +
+            `<i>Your payment was detected on Solana and is finalizing cross-chain minting to Arc Mainnet. Your balance will update automatically in approximately 1-2 minutes!</i>`,
+            {
+              parse_mode: "HTML",
+              ...Markup.inlineKeyboard([
+                [Markup.button.callback("🔄 Refresh Status", `action_check_paj_onramp_${stateData.orderId || ""}`)],
+                [Markup.button.callback("💰 View Balance", "action_balance")],
+                [Markup.button.callback("🏠 Main Menu",    "main_menu")],
+              ]),
+            }
+          );
+        }
+      } catch (bridgeErr) {
+        console.error("[onramp_bridge_pin] Bridge error:", bridgeErr);
+        return ctx.reply(
+          `⚠️ <b>Bridge Processing Note</b>\n` +
+          `Your authorization was received. If your balance does not update within 2 minutes, tap 'Refresh Status'.`,
+          {
+            parse_mode: "HTML",
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback("🔄 Refresh Status", `action_check_paj_onramp_${stateData.orderId || ""}`)],
+              [Markup.button.callback("🏠 Main Menu", "main_menu")],
+            ]),
+          }
+        );
+      }
     }
 
     // ── Create business wallet (lazy, for personal users adding business later) ──
