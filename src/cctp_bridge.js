@@ -12,6 +12,8 @@ const db = require("./db");
 const CIRCLE_IRIS_API_V2 = "https://iris-api.circle.com/v2";
 const CIRCLE_IRIS_API_V1 = "https://iris-api.circle.com/v1";
 
+const isTestEnv = () => process.env.NODE_ENV === "test" || process.argv.some((a) => a.includes("test"));
+
 // Minimum SOL lamports required for one CCTP receiveMessage call.
 // ATA creation costs ~0.002 SOL rent + ~0.000005 SOL fee = ~0.0025 SOL.
 // We require at least 0.003 SOL (3_000_000 lamports) as a safe buffer.
@@ -222,69 +224,103 @@ const MESSAGE_TRANSMITTER_ABI = [
 async function fetchCctpMessage(sourceDomain, txHash) {
   if (!txHash) throw new Error("Transaction hash required to fetch CCTP message");
 
-  const endpoints = [
-    `${CIRCLE_IRIS_API_V2}/messages/${sourceDomain}?transactionHash=${encodeURIComponent(txHash)}`,
-    `${CIRCLE_IRIS_API_V1}/messages/${sourceDomain}?transactionHash=${encodeURIComponent(txHash)}`,
-  ];
-
-  for (const url of endpoints) {
-    try {
-      const res = await axios.get(url, { timeout: 15000 });
-      const msgObj = res.data?.messages?.[0] || res.data?.message || res.data;
-      if (msgObj) {
-        const message = typeof msgObj === "string" ? msgObj : msgObj.message;
-        let messageHash = msgObj.messageHash;
-        if (!messageHash && message) {
-          messageHash = keccak256(message.startsWith("0x") ? message : "0x" + message);
-        }
-        if (message || messageHash) {
-          return {
-            message,
-            messageHash,
-            status: msgObj.status || "pending",
-          };
-        }
+  const url = `${CIRCLE_IRIS_API_V2}/messages/${sourceDomain}?transactionHash=${encodeURIComponent(txHash)}`;
+  try {
+    const res = await axios.get(url, { timeout: 15000 });
+    const msgObj = res.data?.messages?.[0] || res.data?.message || res.data;
+    if (msgObj) {
+      const message = typeof msgObj === "string" ? msgObj : msgObj.message;
+      let messageHash = msgObj.messageHash;
+      if (!messageHash && message) {
+        messageHash = keccak256(message.startsWith("0x") ? message : "0x" + message);
       }
-    } catch (err) {
-      if (err.response?.status !== 404) {
-        console.warn(`[cctp_bridge] Iris message fetch warning (${url}):`, err.message);
+      if (message || messageHash) {
+        return {
+          message,
+          messageHash,
+          status: msgObj.status || "pending",
+        };
       }
+    }
+  } catch (err) {
+    if (err.response?.status !== 404) {
+      console.warn(`[cctp_bridge] Iris message fetch warning (${url}):`, err.message);
     }
   }
 
-  // Fallback: derive deterministic keccak256 hash of txHash if message not indexed yet
-  const messageHash = keccak256(Buffer.from(txHash, "utf8"));
-  return { message: null, messageHash, status: "indexed" };
+  // Not yet indexed on Iris
+  return null;
 }
 
 /**
  * Poll Circle Iris API for CCTP burn message attestation.
  * Once Circle attests to the burn on source chain, the attestation can be redeemed on Arc or destination chain.
  *
- * @param {string} [messageHash] - Keccak256 hash of the CCTP message or transaction hash
+ * @param {string} [identifier] - Message hash or transaction hash
  * @param {number} [maxAttempts=30] - Maximum polling attempts
  * @param {number} [intervalMs=2000] - Polling interval in ms
- * @param {object} [options] - Optional routing hints: { txHash, sourceDomain, nonce }
- * @returns {Promise<{ status: string, attestation: string, message?: string }>}
+ * @param {object} [options] - Optional routing hints: { txHash, messageHash, sourceDomain, nonce, isTxHash, isMessageHash }
+ * @returns {Promise<{ status: string, attestation: string, message?: string, messageHash?: string }>}
  */
-async function pollCctpAttestation(messageHash, maxAttempts = 30, intervalMs = 2000, options = {}) {
-  const cleanHash = messageHash ? (messageHash.startsWith("0x") ? messageHash : "0x" + messageHash) : null;
+async function pollCctpAttestation(identifier, maxAttempts = 30, intervalMs = 2000, options = {}) {
   const sourceDomain = options.sourceDomain !== undefined ? options.sourceDomain : (options.domain !== undefined ? options.domain : 26);
-  const txHash = options.txHash || (cleanHash && cleanHash.length === 66 ? cleanHash : null);
+
+  const isMessageHash = (val) => {
+    if (!val || typeof val !== "string") return false;
+    const hex = val.startsWith("0x") ? val.slice(2) : val;
+    return hex.length === 64 && /^[0-9a-fA-F]{64}$/.test(hex);
+  };
+
+  let txHash = options.txHash || null;
+  let messageHash = (options.messageHash && isMessageHash(options.messageHash))
+    ? (options.messageHash.startsWith("0x") ? options.messageHash : "0x" + options.messageHash)
+    : null;
+  let cachedMessage = null;
+
+  if (identifier) {
+    const isSolanaSig = !/^(0x)?[0-9a-fA-F]+$/.test(identifier);
+    if (options.isTxHash || isSolanaSig || (txHash && identifier === txHash)) {
+      txHash = identifier;
+    } else if (options.isMessageHash || (messageHash && identifier === messageHash)) {
+      messageHash = identifier.startsWith("0x") ? identifier : "0x" + identifier;
+    } else if (txHash && !messageHash) {
+      if (isMessageHash(identifier)) {
+        messageHash = identifier.startsWith("0x") ? identifier : "0x" + identifier;
+      }
+    } else if (messageHash && !txHash) {
+      txHash = identifier;
+    } else if (isMessageHash(identifier)) {
+      messageHash = identifier.startsWith("0x") ? identifier : "0x" + identifier;
+    } else {
+      txHash = identifier;
+    }
+  }
 
   for (let i = 0; i < maxAttempts; i++) {
-    // 1. Try Iris V2 messages endpoint by transactionHash if available (required for Domain 26 Arc / CCTP V2)
+    // 1. Try Iris V2 messages endpoint by transactionHash if available
     if (txHash) {
       try {
         const v2Url = `${CIRCLE_IRIS_API_V2}/messages/${sourceDomain}?transactionHash=${encodeURIComponent(txHash)}`;
         const res = await axios.get(v2Url, { timeout: 10000 });
         const firstMsg = res.data?.messages?.[0];
-        if (firstMsg?.status === "complete" && firstMsg?.attestation) {
-          return {
-            status: "complete",
-            attestation: firstMsg.attestation,
-            message: firstMsg.message,
-          };
+        if (firstMsg) {
+          if (!messageHash && firstMsg.message) {
+            try {
+              const { keccak256 } = require("ethers");
+              messageHash = keccak256(firstMsg.message.startsWith("0x") ? firstMsg.message : "0x" + firstMsg.message);
+            } catch {}
+          }
+          if (firstMsg.message) {
+            cachedMessage = firstMsg.message;
+          }
+          if (firstMsg.status === "complete" && firstMsg.attestation) {
+            return {
+              status: "complete",
+              attestation: firstMsg.attestation,
+              message: firstMsg.message,
+              messageHash: messageHash,
+            };
+          }
         }
       } catch (err) {
         if (err.response?.status !== 404 && i % 10 === 0) {
@@ -299,36 +335,44 @@ async function pollCctpAttestation(messageHash, maxAttempts = 30, intervalMs = 2
         const v2NonceUrl = `${CIRCLE_IRIS_API_V2}/messages/${sourceDomain}?nonce=${encodeURIComponent(options.nonce)}`;
         const res = await axios.get(v2NonceUrl, { timeout: 10000 });
         const firstMsg = res.data?.messages?.[0];
-        if (firstMsg?.status === "complete" && firstMsg?.attestation) {
-          return {
-            status: "complete",
-            attestation: firstMsg.attestation,
-            message: firstMsg.message,
-          };
+        if (firstMsg) {
+          if (!messageHash && firstMsg.message) {
+            try {
+              const { keccak256 } = require("ethers");
+              messageHash = keccak256(firstMsg.message.startsWith("0x") ? firstMsg.message : "0x" + firstMsg.message);
+            } catch {}
+          }
+          if (firstMsg.message) {
+            cachedMessage = firstMsg.message;
+          }
+          if (firstMsg.status === "complete" && firstMsg.attestation) {
+            return {
+              status: "complete",
+              attestation: firstMsg.attestation,
+              message: firstMsg.message,
+              messageHash: messageHash,
+            };
+          }
         }
       } catch {}
     }
 
-    // 3. Fallback: Iris V1 / V2 attestations endpoint by messageHash
-    if (cleanHash) {
-      const urls = [
-        `${CIRCLE_IRIS_API_V2}/attestations/${cleanHash}`,
-        `${CIRCLE_IRIS_API_V1}/attestations/${cleanHash}`,
-      ];
-
-      for (const url of urls) {
-        try {
-          const res = await axios.get(url, { timeout: 10000 });
-          if (res.data?.status === "complete" && res.data?.attestation) {
-            return {
-              status: "complete",
-              attestation: res.data.attestation,
-            };
-          }
-        } catch (err) {
-          if (err.response?.status !== 404 && i % 10 === 0) {
-            console.warn(`[cctp_bridge] Attestation check warning (${url}):`, err.message);
-          }
+    // 3. Query Iris V1 attestations endpoint by messageHash if available
+    if (messageHash) {
+      const url = `${CIRCLE_IRIS_API_V1}/attestations/${messageHash}`;
+      try {
+        const res = await axios.get(url, { timeout: 10000 });
+        if (res.data?.status === "complete" && res.data?.attestation) {
+          return {
+            status: "complete",
+            attestation: res.data.attestation,
+            message: res.data?.message || cachedMessage,
+            messageHash,
+          };
+        }
+      } catch (err) {
+        if (err.response?.status !== 404 && i % 10 === 0) {
+          console.warn(`[cctp_bridge] Attestation check warning (${url}):`, err.message);
         }
       }
     }
@@ -410,31 +454,259 @@ async function disburseDirectOnArc({ recipientArcAddress, amountUsdc, signerPriv
     throw new Error("No relayer key configured to broadcast Arc transfer");
   }
 
-  const { parseUnits } = require("ethers");
-  const relayerWallet = new Wallet(signerKey, provider);
-  const amountWei = parseUnits(amountUsdc.toString(), 18); // Arc native USDC is 18 decimals
+  const { parseUnits, formatUnits, isAddress } = require("ethers");
+  if (!isAddress(recipientArcAddress)) {
+    throw new Error(`Invalid recipient Arc address: ${recipientArcAddress}`);
+  }
 
-  console.log(`[cctp_bridge] Disbursing $${amountUsdc} native USDC on Arc to ${recipientArcAddress}...`);
-  const tx = await relayerWallet.sendTransaction({
-    to: recipientArcAddress,
-    value: amountWei,
-  });
-  const receipt = await tx.wait();
-  console.log(`[cctp_bridge] Direct Arc disbursement confirmed: ${receipt.hash}`);
-  return receipt.hash;
+  const relayerWallet = new Wallet(signerKey, provider);
+  const usdcAddress = net.usdcAddress || "0x3600000000000000000000000000000000000000";
+  const usdcContract = new Contract(
+    usdcAddress,
+    [
+      "function balanceOf(address) view returns (uint256)",
+      "function transfer(address to, uint256 amount) returns (bool)",
+    ],
+    relayerWallet
+  );
+
+  const amountUnits = parseUnits(Number(amountUsdc).toFixed(6), 6);
+  const amountWei = parseUnits(amountUsdc.toString(), 18);
+  const minGas = parseUnits("0.0001", 18);
+
+  // Check live balances on Arc
+  const [gasBal, ercBal] = await Promise.all([
+    provider.getBalance(relayerWallet.address).catch(() => 0n),
+    usdcContract.balanceOf(relayerWallet.address).catch(() => 0n),
+  ]);
+
+  console.log(
+    `[cctp_bridge:disburse] Relayer ${relayerWallet.address} balance on Arc: ` +
+    `USDC=${formatUnits(ercBal, 6)}, Gas=${formatUnits(gasBal, 18)} (Needed: $${amountUsdc})`
+  );
+
+  if (ercBal < amountUnits && gasBal < (amountWei + minGas)) {
+    throw new Error(
+      `Insufficient relayer float on Arc: has $${formatUnits(ercBal, 6)} USDC (needed $${amountUsdc})`
+    );
+  }
+
+  if (gasBal < minGas) {
+    throw new Error(`Insufficient native gas on Arc for relayer to execute transfer`);
+  }
+
+  console.log(`[cctp_bridge] Disbursing $${amountUsdc} USDC on Arc to ${recipientArcAddress}...`);
+
+  // Prefer ERC-20 transfer on the USDC precompile
+  if (ercBal >= amountUnits) {
+    const ercTx = await usdcContract.transfer(recipientArcAddress, amountUnits);
+    const receipt = await ercTx.wait(1);
+    console.log(`[cctp_bridge] Direct Arc ERC-20 disbursement confirmed: ${receipt.hash}`);
+    return receipt.hash;
+  } else {
+    // Fallback: native wei transfer
+    const nativeTx = await relayerWallet.sendTransaction({
+      to: recipientArcAddress,
+      value: amountWei,
+    });
+    const receipt = await nativeTx.wait(1);
+    console.log(`[cctp_bridge] Direct Arc native disbursement confirmed: ${receipt.hash}`);
+    return receipt.hash;
+  }
+}
+
+/**
+ * Background worker to complete an inbound CCTP burn: polls Iris for attestation
+ * and calls MessageTransmitter.receiveMessage on Arc Mainnet to mint Circle USDC.
+ */
+async function completeInboundCctpTransferFlow({
+  inboundId,
+  solanaBurnSig,
+  recipientArcAddress,
+  amountUsdc,
+  telegramId,
+  signerPrivateKey,
+  maxAttempts = isTestEnv() ? 2 : 45,
+  intervalMs = isTestEnv() ? 100 : 4000,
+  bot = null,
+}) {
+  console.log(`[cctp_bridge:inbound_flow] Starting Iris polling for burn sig ${solanaBurnSig} (ID: ${inboundId})...`);
+  try {
+    const attResult = await pollCctpAttestation(solanaBurnSig, maxAttempts, intervalMs, {
+      txHash: solanaBurnSig,
+      sourceDomain: CCTP_DOMAINS.SOLANA,
+    });
+
+    const attestation = attResult?.attestation;
+    let message = attResult?.message;
+
+    if (!message) {
+      const irisMsg = await fetchCctpMessage(CCTP_DOMAINS.SOLANA, solanaBurnSig);
+      message = irisMsg?.message;
+    }
+
+    if (!attestation || !message) {
+      console.warn(`[cctp_bridge:inbound_flow] Incomplete attestation/message for ${solanaBurnSig}`);
+      db.updateInboundCctpTransfer(inboundId, { status: "pending_retry" });
+      return null;
+    }
+
+    // Update DB to attested
+    db.updateInboundCctpTransfer(inboundId, {
+      status: "attested",
+      attestation,
+      cctp_message: message,
+      message_hash: attResult?.messageHash || null,
+    });
+
+    // Call MessageTransmitter.receiveMessage on Arc Mainnet
+    console.log(`[cctp_bridge:inbound_flow] Redeeming on Arc MessageTransmitter for burn ${solanaBurnSig}...`);
+    const arcTxHash = await redeemOnArc({
+      userPrivateKey: signerPrivateKey,
+      attestation,
+      message,
+    });
+
+    if (arcTxHash) {
+      db.completeInboundCctpTransfer(inboundId, arcTxHash);
+      db.updateTransactionByTxHash(solanaBurnSig, "confirmed", arcTxHash);
+      console.log(`[cctp_bridge:inbound_flow] ✓ Inbound CCTP mint completed on Arc: ${arcTxHash}`);
+
+      // Send confirmation to user if Telegram bot and ID available
+      if (bot && telegramId) {
+        try {
+          const explorerUrl = getExplorerUrl(arcTxHash, "tx");
+          await bot.telegram.sendMessage(
+            telegramId,
+            `🎉 <b>Deposit Settled & Credited!</b>\n` +
+            `──────────────────────────\n` +
+            `💰 <b>Dollars Credited:</b> $${Number(amountUsdc).toFixed(2)} USDC\n` +
+            `🏛 <b>Network:</b> Arc Mainnet (Domain 26)\n` +
+            `🔗 <a href="${explorerUrl}">View on Arcscan</a>\n\n` +
+            `<i>Your balance has been updated and is ready to spend, save, or send!</i>`,
+            { parse_mode: "HTML" }
+          );
+        } catch (botErr) {
+          console.warn("[cctp_bridge:inbound_flow] User notification warning:", botErr.message);
+        }
+      }
+      return arcTxHash;
+    }
+  } catch (err) {
+    console.warn(`[cctp_bridge:inbound_flow] Mint deferred for ${solanaBurnSig}:`, err.message);
+    db.updateInboundCctpTransfer(inboundId, { status: "pending_retry" });
+    return null;
+  }
+}
+
+/**
+ * Guaranteed Settlement Recovery: Scans the database for any inbound CCTP transfers
+ * that were burned on Solana but have not yet been minted on Arc.
+ * Polled periodically to ensure zero token loss across bot restarts and network timeouts.
+ */
+async function recoverPendingInboundCctpTransfers(bot = null) {
+  const pending = db.getPendingInboundCctpTransfers();
+  if (!pending || pending.length === 0) return { recovered: 0, pending: 0 };
+
+  console.log(`[cctp_bridge:recovery] Found ${pending.length} pending inbound CCTP transfers to recover`);
+  let recovered = 0;
+
+  for (const item of pending) {
+    try {
+      console.log(`[cctp_bridge:recovery] Processing inbound transfer #${item.id} (status: ${item.status}, burn: ${item.solana_burn_sig})`);
+
+      let attestation = item.attestation;
+      let message = item.cctp_message;
+
+      // If not yet attested, query Iris
+      if (!attestation || !message) {
+        if (!item.solana_burn_sig) {
+          continue;
+        }
+        const irisMsg = await fetchCctpMessage(CCTP_DOMAINS.SOLANA, item.solana_burn_sig).catch(() => null);
+        if (irisMsg?.attestation && irisMsg?.message) {
+          attestation = irisMsg.attestation;
+          message = irisMsg.message;
+          db.updateInboundCctpTransfer(item.id, {
+            status: "attested",
+            attestation,
+            cctp_message: message,
+            message_hash: irisMsg.messageHash,
+          });
+        }
+      }
+
+      if (attestation && message) {
+        try {
+          const arcTxHash = await redeemOnArc({
+            attestation,
+            message,
+          });
+          if (arcTxHash) {
+            db.completeInboundCctpTransfer(item.id, arcTxHash);
+            db.updateTransactionByTxHash(item.solana_burn_sig, "confirmed", arcTxHash);
+            recovered++;
+            console.log(`[cctp_bridge:recovery] ✓ Transfer #${item.id} successfully minted on Arc: ${arcTxHash}`);
+
+            if (bot && item.telegram_id) {
+              const explorerUrl = getExplorerUrl(arcTxHash, "tx");
+              await bot.telegram.sendMessage(
+                item.telegram_id,
+                `🎉 <b>Deposit Settled & Credited!</b>\n` +
+                `──────────────────────────\n` +
+                `💰 <b>Dollars Credited:</b> $${Number(item.amount_usdc).toFixed(2)} USDC\n` +
+                `🏛 <b>Network:</b> Arc Mainnet (Domain 26)\n` +
+                `🔗 <a href="${explorerUrl}">View on Arcscan</a>\n\n` +
+                `<i>Your balance has been updated and is ready to spend, save, or send!</i>`,
+                { parse_mode: "HTML" }
+              ).catch(() => {});
+            }
+          }
+        } catch (redeemErr) {
+          const errMsg = String(redeemErr.message || "").toLowerCase();
+          if (errMsg.includes("nonce already used") || errMsg.includes("already executed") || errMsg.includes("already received")) {
+            console.log(`[cctp_bridge:recovery] Transfer #${item.id} was already redeemed on Arc. Marking completed.`);
+            db.completeInboundCctpTransfer(item.id, "already_redeemed_on_arc");
+            recovered++;
+          } else {
+            console.warn(`[cctp_bridge:recovery] Redeem error for #${item.id}:`, redeemErr.message);
+            db.updateInboundCctpTransfer(item.id, {
+              retry_count: (item.retry_count || 0) + 1,
+              status: "pending_retry",
+            });
+          }
+        }
+      } else {
+        db.updateInboundCctpTransfer(item.id, {
+          retry_count: (item.retry_count || 0) + 1,
+        });
+      }
+    } catch (itemErr) {
+      console.warn(`[cctp_bridge:recovery] Error processing transfer #${item.id}:`, itemErr.message);
+    }
+  }
+
+  return { recovered, pending: pending.length };
 }
 
 /**
  * Auto-Bridge Handler: Triggered when an onramp payment settles on Solana.
- * Automatically executes the cross-chain transition into Arc Mainnet via Circle CCTP or direct relayer disbursement.
+ * Dual-Rail Zero Token Loss Architecture:
+ * - Rail A (Instant Disbursement): Disburses directly on Arc from funded Relayer Treasury.
+ * - Rail B (Guaranteed CCTP Burn & Mint): Burns SPL USDC on Solana, persists transfer in SQLite ledger,
+ *   polls Iris attestation, and redeems on Arc MessageTransmitter.
  *
  * @param {object} params
- * @param {string} params.telegramId - User Telegram ID
- * @param {string} params.solanaTxSignature - Solana settlement tx signature
+ * @param {string|number} params.telegramId - User Telegram ID
+ * @param {string} [params.solanaTxSignature] - Solana settlement tx signature (from onramp)
  * @param {number} params.amountUsdc - USDC amount
- * @param {string} params.recipientArcAddress - Destination Arc address
+ * @param {string} params.recipientArcAddress - User's Arc EVM deposit address
  * @param {string} [params.signerPrivateKey] - Optional relayer key
- * @returns {Promise<object>} Bridge operation result
+ * @param {Keypair} [params.userKeypair] - Optional user Solana keypair
+ * @param {number} [params.maxAttempts=45] - Iris polling attempts
+ * @param {number} [params.intervalMs=4000] - Polling interval in ms
+ * @param {object} [params.bot] - Optional Telegraf bot instance for notifications
+ * @returns {Promise<object>}
  */
 async function autoBridgeSolanaToArc({
   telegramId,
@@ -442,8 +714,10 @@ async function autoBridgeSolanaToArc({
   amountUsdc,
   recipientArcAddress,
   signerPrivateKey,
-  maxAttempts = 2,
-  intervalMs = 800,
+  userKeypair,
+  maxAttempts = isTestEnv() ? 2 : 45,
+  intervalMs = isTestEnv() ? 100 : 4000,
+  bot = null,
 }) {
   console.log(`[cctp_bridge] Auto-bridge triggered for TG:${telegramId}, amount: $${amountUsdc} USDC`);
   console.log(`[cctp_bridge] Source: Solana tx ${solanaTxSignature} -> Destination Arc: ${recipientArcAddress}`);
@@ -452,65 +726,222 @@ async function autoBridgeSolanaToArc({
     throw new Error("Recipient Arc address required for auto-bridge");
   }
 
-  let arcTxHash = null;
-  let attestation = null;
-  let msgDetails = { message: null, messageHash: null };
-
-  // Step 1: Query Circle Iris API for CCTP message if signature provided
-  if (solanaTxSignature) {
-    try {
-      msgDetails = await fetchCctpMessage(CCTP_DOMAINS.SOLANA, solanaTxSignature);
-    } catch (msgErr) {
-      console.warn(`[cctp_bridge] Fetch CCTP message warning:`, msgErr.message);
-    }
+  const { isAddress } = require("ethers");
+  if (!isAddress(recipientArcAddress)) {
+    throw new Error(`Invalid recipient Arc address: ${recipientArcAddress}`);
   }
 
-  // Step 2: If messageHash is found and polling is enabled, try CCTP contract redeem
-  if (msgDetails.messageHash && maxAttempts > 0) {
-    try {
-      const attResult = await pollCctpAttestation(msgDetails.messageHash, maxAttempts, intervalMs, {
-        txHash: solanaTxSignature,
-        sourceDomain: CCTP_DOMAINS.SOLANA,
-      });
-      attestation = attResult.attestation;
-
-      arcTxHash = await redeemOnArc({
-        userPrivateKey: signerPrivateKey,
-        attestation,
-        message: msgDetails.message,
-      });
-    } catch (err) {
-      console.warn(`[cctp_bridge] CCTP contract redeem deferred:`, err.message);
-    }
-  }
-
-  // Step 3: If not redeemed via CCTP contract, disburse directly on Arc via Relayer
   const relayerKey = signerPrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
-  if (!arcTxHash && relayerKey) {
+
+  // ── RAIL A: Instant Direct Disbursement on Arc (if Relayer has funds) ──
+  if (relayerKey) {
     try {
-      arcTxHash = await disburseDirectOnArc({
+      const arcTxHash = await disburseDirectOnArc({
         recipientArcAddress,
         amountUsdc,
         signerPrivateKey: relayerKey,
       });
+
+      if (arcTxHash) {
+        console.log(`[cctp_bridge] ✓ Rail A (Direct Arc Disbursement) succeeded: ${arcTxHash}`);
+
+        // In background, sweep user's Solana SPL USDC to treasury if keypair is available
+        (async () => {
+          try {
+            let solUserKey = userKeypair;
+            if (!solUserKey && telegramId) {
+              const u = db.getUser(telegramId);
+              if (u && u.system_encrypted_key) {
+                const evmKey = db.getSystemDecryptedPrivateKey(u);
+                solUserKey = multichain.deriveSolanaFromEvmKey(evmKey).keypair;
+              }
+            }
+            if (solUserKey) {
+              const treasuryAddr = process.env.APP_FEE_RECIPIENT_SOLANA_ADDRESS || process.env.PAJCASH_OFFRAMP_SOLANA_ADDRESS;
+              if (treasuryAddr) {
+                await multichain.sendSolanaTransfer({
+                  keypair: solUserKey,
+                  recipientAddress: treasuryAddr,
+                  amount: amountUsdc,
+                  currency: "USDC",
+                }).catch(() => {});
+              }
+            }
+          } catch (_) {}
+        })();
+
+        return {
+          success: true,
+          status: "completed",
+          method: "direct_disbursement",
+          sourceChain: "Solana",
+          sourceDomain: CCTP_DOMAINS.SOLANA,
+          destinationChain: "Arc Mainnet",
+          destinationDomain: CCTP_DOMAINS.ARC,
+          amountUsdc,
+          recipient: recipientArcAddress,
+          solanaTxSignature,
+          arcTxHash,
+          explorerUrl: getExplorerUrl(arcTxHash, "tx"),
+        };
+      }
     } catch (disburseErr) {
-      console.warn(`[cctp_bridge] Direct Arc disbursement note:`, disburseErr.message);
+      console.log(`[cctp_bridge:rail_a_skip] Direct Arc disbursement not used (${disburseErr.message}). Engaging Rail B (CCTP).`);
     }
   }
 
+  // ── RAIL B: Circle CCTP Native Burn & Mint (Guaranteed Zero Token Loss) ──
+  // If solanaTxSignature is provided (e.g. from onramp deposit or external CCTP transfer),
+  // record in inbound ledger and launch Iris attestation polling & Arc redemption.
+  if (solanaTxSignature) {
+    console.log(`[cctp_bridge] Inbound signature ${solanaTxSignature} detected. Recording in ledger and initiating Iris settlement.`);
+    let solAddr = "external";
+    if (userKeypair) {
+      solAddr = userKeypair.publicKey.toBase58();
+    } else if (telegramId) {
+      const u = db.getUser(telegramId);
+      if (u?.solana_deposit_address) solAddr = u.solana_deposit_address;
+    }
+
+    const inboundId = db.recordInboundCctpTransfer({
+      telegramId,
+      solanaAddress: solAddr,
+      arcAddress: recipientArcAddress,
+      amountUsdc,
+      solanaBurnSig: solanaTxSignature,
+      status: "initiated",
+    });
+
+    completeInboundCctpTransferFlow({
+      inboundId,
+      solanaBurnSig: solanaTxSignature,
+      recipientArcAddress,
+      amountUsdc,
+      telegramId,
+      signerPrivateKey: relayerKey,
+      maxAttempts,
+      intervalMs,
+      bot,
+    });
+
+    return {
+      success: true,
+      status: "initiated",
+      sourceChain: "Solana",
+      sourceDomain: CCTP_DOMAINS.SOLANA,
+      destinationChain: "Arc Mainnet",
+      destinationDomain: CCTP_DOMAINS.ARC,
+      amountUsdc,
+      recipient: recipientArcAddress,
+      solanaTxSignature,
+      inboundId,
+    };
+  }
+
+  // Otherwise, Paj sent regular SPL USDC to the user's Solana wallet.
+  // We must execute CCTP depositForBurn on Solana using the user's derived key.
+  let solKeypair = userKeypair;
+  if (!solKeypair && telegramId) {
+    try {
+      const u = db.getUser(telegramId);
+      if (u) {
+        const evmKey = db.getSystemDecryptedPrivateKey(u);
+        solKeypair = multichain.deriveSolanaFromEvmKey(evmKey).keypair;
+      }
+    } catch (err) {
+      console.warn(`[cctp_bridge] Could not resolve user Solana keypair for TG:${telegramId}:`, err.message);
+    }
+  }
+
+  if (!solKeypair) {
+    console.error(`[cctp_bridge] Cannot execute CCTP burn: User Solana keypair unavailable for TG:${telegramId}`);
+    return {
+      success: false,
+      status: "failed",
+      error: "User Solana keypair unavailable. Direct disbursement float also insufficient.",
+      amountUsdc,
+      recipient: recipientArcAddress,
+      solanaTxSignature,
+    };
+  }
+
+  // Pre-flight check on Solana fee payer
+  const feeCheck = await checkSolanaFeePayerBalance();
+  if (!feeCheck.ok) {
+    console.error(`[cctp_bridge:preflight_fail] Fee payer has insufficient SOL:`, feeCheck);
+    return {
+      success: false,
+      status: "failed",
+      error: `Solana fee payer wallet has insufficient SOL for CCTP burn gas. Funds remain safe on Solana address ${solKeypair.publicKey.toBase58()}.`,
+      amountUsdc,
+      recipient: recipientArcAddress,
+      solanaTxSignature,
+    };
+  }
+
+  // Record transfer in database ledger BEFORE burn
+  const inboundId = db.recordInboundCctpTransfer({
+    telegramId,
+    solanaAddress: solKeypair.publicKey.toBase58(),
+    arcAddress: recipientArcAddress,
+    amountUsdc,
+    solanaBurnSig: null,
+    status: "initiated",
+  });
+
+  // Execute CCTP deposit_for_burn on Solana
+  console.log(`[cctp_bridge] Executing CCTP deposit_for_burn on Solana for ${solKeypair.publicKey.toBase58()} -> Arc:${recipientArcAddress}...`);
+  const burnResult = await multichain.executeSolanaCctpBurn({
+    userKeypair: solKeypair,
+    amountUsdc,
+    recipientArcAddress,
+  });
+
+  if (!burnResult.success) {
+    db.updateInboundCctpTransfer(inboundId, { status: "failed_burn" });
+    console.error(`[cctp_bridge] Solana CCTP burn failed:`, burnResult.error);
+    return {
+      success: false,
+      status: "failed",
+      error: `Solana CCTP burn failed: ${burnResult.error}`,
+      amountUsdc,
+      recipient: recipientArcAddress,
+      solanaTxSignature,
+    };
+  }
+
+  const solanaBurnSig = burnResult.txSignature;
+  console.log(`[cctp_bridge] Solana CCTP burn confirmed ✓ txSig=${solanaBurnSig}`);
+  db.updateInboundCctpTransfer(inboundId, {
+    solana_burn_sig: solanaBurnSig,
+    status: "burned",
+  });
+
+  // Launch background completion & Iris polling
+  completeInboundCctpTransferFlow({
+    inboundId,
+    solanaBurnSig,
+    recipientArcAddress,
+    amountUsdc,
+    telegramId,
+    signerPrivateKey: relayerKey,
+    maxAttempts,
+    intervalMs,
+    bot,
+  });
+
   return {
     success: true,
-    status: arcTxHash ? "completed" : "initiated",
+    status: "burned",
+    method: "cctp_burn",
     sourceChain: "Solana",
     sourceDomain: CCTP_DOMAINS.SOLANA,
     destinationChain: "Arc Mainnet",
     destinationDomain: CCTP_DOMAINS.ARC,
     amountUsdc,
     recipient: recipientArcAddress,
-    solanaTxSignature,
-    messageHash: msgDetails.messageHash,
-    arcTxHash,
-    explorerUrl: arcTxHash ? getExplorerUrl(arcTxHash, "tx") : null,
+    solanaTxSignature: solanaBurnSig,
+    inboundId,
   };
 }
 
@@ -840,8 +1271,11 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
   if (!msgDetails?.message) {
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
-        msgDetails = await fetchCctpMessage(CCTP_DOMAINS.ARC, arcTxHash);
-        if (msgDetails.message && msgDetails.messageHash) break;
+        const res = await fetchCctpMessage(CCTP_DOMAINS.ARC, arcTxHash);
+        if (res && res.message && res.messageHash) {
+          msgDetails = res;
+          break;
+        }
       } catch (e) {
         // Circle may not have indexed the tx yet — retry
       }
@@ -1148,21 +1582,30 @@ async function executeEvmCctpBurn({
           let attHash = messageHash;
           if (!attHash) {
             const irisMsg = await fetchCctpMessage(chainConfig.domain, tx.hash);
-            attMessage = irisMsg.message;
-            attHash = irisMsg.messageHash;
+            if (irisMsg) {
+              attMessage = irisMsg.message;
+              attHash = irisMsg.messageHash;
+            }
           }
-          if (attHash) {
-            console.log(`[cctp_bridge] Polling Iris attestation for ${attHash}...`);
-            const { attestation } = await pollCctpAttestation(attHash, 90, 5000, {
+          if (attHash || tx.hash) {
+            console.log(`[cctp_bridge] Polling Iris attestation for ${attHash || tx.hash}...`);
+            const attResult = await pollCctpAttestation(attHash || tx.hash, 90, 5000, {
               txHash: tx.hash,
+              messageHash: attHash,
               sourceDomain: chainConfig.domain,
             });
-            const mintTxHash = await redeemOnArc({
-              attestation,
-              message: attMessage,
-              userPrivateKey: signerPrivateKey,
-            });
-            console.log(`[cctp_bridge] EVM CCTP burn successfully redeemed on Arc MessageTransmitter ✓ tx=${mintTxHash}`);
+            const attestation = attResult?.attestation;
+            if (!attMessage && attResult?.message) {
+              attMessage = attResult.message;
+            }
+            if (attestation && attMessage) {
+              const mintTxHash = await redeemOnArc({
+                attestation,
+                message: attMessage,
+                userPrivateKey: signerPrivateKey,
+              });
+              console.log(`[cctp_bridge] EVM CCTP burn successfully redeemed on Arc MessageTransmitter ✓ tx=${mintTxHash}`);
+            }
           }
         } catch (pollErr) {
           console.warn("[cctp_bridge:evm_arc_redeem_warn]", pollErr.message);
@@ -1200,5 +1643,6 @@ module.exports = {
   executeEvmCctpBurn,
   checkSolanaFeePayerBalance,
   retryPendingCctpBurns,
+  recoverPendingInboundCctpTransfers,
   MIN_FEE_PAYER_LAMPORTS,
 };

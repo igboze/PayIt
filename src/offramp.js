@@ -17,9 +17,16 @@ async function requestOfframp(telegramId, amountMicro, bankDetails) {
   const amountUsdc = parseFloat(walletLib.formatMicro(amountMicro));
 
   try {
+    if (!bankDetails || !bankDetails.accountNumber) {
+      throw new Error("Account number is required for cash out payout");
+    }
+    if (!bankDetails.bankCode) {
+      throw new Error("Valid 6-digit NIBSS bank code is required for cash out payout");
+    }
+
     const payload = {
-      accountNumber: bankDetails.accountNumber,
-      bankCode: bankDetails.bankCode || "000013", // Default to GTBank if unspecified
+      accountNumber: String(bankDetails.accountNumber).trim(),
+      bankCode: String(bankDetails.bankCode).trim(),
       currency: "NGN",
       description: `PayIT Cash Out - TG:${telegramId}`,
     };

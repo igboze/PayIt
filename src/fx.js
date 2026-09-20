@@ -45,8 +45,12 @@ async function getUsdToNgnRate() {
     return _cachedRate;
   }
 
-  // 4. Default fallback if first fetch on cold boot fails
-  return 1620;
+  // 4. Configured override or fail cold boot fetch
+  if (process.env.USD_TO_NGN_RATE && Number(process.env.USD_TO_NGN_RATE) > 0) {
+    return Number(process.env.USD_TO_NGN_RATE);
+  }
+
+  throw new Error("Unable to fetch live USD/NGN exchange rate from live providers (Paj, OpenER)");
 }
 
 function formatNaira(amount) {

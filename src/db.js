@@ -77,6 +77,8 @@ db.exec(`
     amount_micro  TEXT NOT NULL,
     status        TEXT NOT NULL,
     tx_hash       TEXT,
+    account_type  TEXT NOT NULL DEFAULT 'personal',
+    decimals      INTEGER NOT NULL DEFAULT 18,
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -311,6 +313,7 @@ function ensureTransactionsSchema() {
   if (!cols.includes("amount_micro")) db.exec("ALTER TABLE transactions ADD COLUMN amount_micro TEXT");
   if (!cols.includes("status")) db.exec("ALTER TABLE transactions ADD COLUMN status TEXT DEFAULT 'pending'");
   if (!cols.includes("type")) db.exec("ALTER TABLE transactions ADD COLUMN type TEXT DEFAULT 'general'");
+  if (!cols.includes("decimals")) db.exec("ALTER TABLE transactions ADD COLUMN decimals INTEGER NOT NULL DEFAULT 18");
 }
 
 function ensureCctpPendingSchema() {
@@ -338,11 +341,42 @@ function ensureCctpPendingSchema() {
   }
 }
 
+function ensureCctpInboundSchema() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS cctp_inbound_transfers (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id       INTEGER NOT NULL,
+        solana_address    TEXT NOT NULL,
+        arc_address       TEXT NOT NULL,
+        amount_usdc       REAL NOT NULL,
+        solana_burn_sig   TEXT UNIQUE,
+        message_hex       TEXT,
+        message_hash      TEXT,
+        attestation       TEXT,
+        arc_tx_hash       TEXT,
+        status            TEXT NOT NULL DEFAULT 'initiated',
+        error             TEXT,
+        retry_count       INTEGER NOT NULL DEFAULT 0,
+        created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+        completed_at      TEXT
+      )
+    `);
+    const cols = db.prepare("PRAGMA table_info(cctp_inbound_transfers)").all().map((r) => r.name);
+    if (!cols.includes("cctp_message")) {
+      db.exec("ALTER TABLE cctp_inbound_transfers ADD COLUMN cctp_message TEXT");
+    }
+  } catch (err) {
+    console.warn("[db] ensureCctpInboundSchema note:", err.message);
+  }
+}
+
 ensureUserSchema();
 ensureYieldPositionsSchema();
 ensureInvoicesSchema();
 ensureTransactionsSchema();
 ensureCctpPendingSchema();
+ensureCctpInboundSchema();
 
 // ─── User helpers ─────────────────────────────────────────────────────────────
 
@@ -779,10 +813,10 @@ function isBlocked(telegramId) {
 }
 // ─── Transactions ─────────────────────────────────────────────────────────────
 
-function recordTransaction(telegramId, type, amountMicro, status, txHash, accountType = "personal") {
+function recordTransaction(telegramId, type, amountMicro, status, txHash, accountType = "personal", decimals = 18) {
   const result = db.prepare(
-    "INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, account_type) VALUES (?, ?, ?, ?, ?, ?)"
-  ).run(telegramId, type, amountMicro.toString(), status, txHash || null, accountType);
+    "INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, account_type, decimals) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  ).run(telegramId, type, amountMicro.toString(), status, txHash || null, accountType, decimals);
   return result.lastInsertRowid;
 }
 
@@ -791,6 +825,19 @@ function updateTransactionStatus(txId, status, txHash = null) {
     db.prepare("UPDATE transactions SET status = ?, tx_hash = ? WHERE id = ?").run(status, txHash, txId);
   } else {
     db.prepare("UPDATE transactions SET status = ? WHERE id = ?").run(status, txId);
+  }
+}
+
+function updateTransactionByTxHash(oldTxHash, status, newTxHash = null) {
+  if (!oldTxHash) return;
+  try {
+    if (newTxHash) {
+      db.prepare("UPDATE transactions SET status = ?, tx_hash = ? WHERE tx_hash = ?").run(status, newTxHash, oldTxHash);
+    } else {
+      db.prepare("UPDATE transactions SET status = ? WHERE tx_hash = ?").run(status, oldTxHash);
+    }
+  } catch (err) {
+    console.warn("[db] updateTransactionByTxHash error:", err.message);
   }
 }
 
@@ -1199,7 +1246,7 @@ function getVolumeStats() {
   const MICRO = 1e18; // Arc uses 18-decimal USDC natively
 
   const VALID_STATUSES = "('confirmed', 'submitted', 'success', 'completed')";
-  const NORMALIZE_AMOUNT = "CASE WHEN CAST(amount_micro AS REAL) > 0 AND CAST(amount_micro AS REAL) < 1e13 THEN CAST(amount_micro AS REAL) * 1e12 ELSE CAST(amount_micro AS REAL) END";
+  const NORMALIZE_AMOUNT = "CASE WHEN decimals = 6 THEN CAST(amount_micro AS REAL) * 1e12 ELSE CAST(amount_micro AS REAL) END";
 
   function sumForTypes(types, since) {
     const placeholders = types.map(() => "?").join(", ");
@@ -1300,14 +1347,14 @@ function reconcileLiveProductVolume() {
   let deduplicatedSweeps = 0;
 
   try {
-    // 1. Rescale legacy 6-decimal amounts in transactions (< 1e13)
+    // 1. Rescale legacy 6-decimal amounts in transactions (decimals = 6)
     const lowRows = db.prepare(
-      "SELECT id, amount_micro FROM transactions WHERE CAST(amount_micro AS REAL) > 0 AND CAST(amount_micro AS REAL) < 1e13"
+      "SELECT id, amount_micro FROM transactions WHERE decimals = 6"
     ).all();
     for (const row of lowRows) {
       try {
         const scaled = (BigInt(row.amount_micro) * 1_000_000_000_000n).toString();
-        db.prepare("UPDATE transactions SET amount_micro = ? WHERE id = ?").run(scaled, row.id);
+        db.prepare("UPDATE transactions SET amount_micro = ?, decimals = 18 WHERE id = ?").run(scaled, row.id);
         fixedScale++;
       } catch {}
     }
@@ -1520,6 +1567,82 @@ function countPendingCctpBurns() {
   }
 }
 
+/**
+ * Record an incoming Solana→Arc CCTP transfer before or immediately after burn.
+ */
+function recordInboundCctpTransfer({ telegramId, solanaAddress, arcAddress, amountUsdc, solanaBurnSig, status = "initiated" }) {
+  try {
+    if (solanaBurnSig) {
+      const existing = db.prepare(`SELECT id FROM cctp_inbound_transfers WHERE solana_burn_sig = ?`).get(solanaBurnSig);
+      if (existing) {
+        return existing.id;
+      }
+    }
+    const info = db.prepare(`
+      INSERT INTO cctp_inbound_transfers (telegram_id, solana_address, arc_address, amount_usdc, solana_burn_sig, status)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(telegramId, solanaAddress, arcAddress, amountUsdc, solanaBurnSig || null, status);
+    return info.lastInsertRowid;
+  } catch (err) {
+    console.warn("[db:cctp_inbound] recordInboundCctpTransfer error:", err.message);
+    return null;
+  }
+}
+
+/**
+ * Update an inbound CCTP transfer record by ID or burn signature.
+ */
+function updateInboundCctpTransfer(idOrSig, updates = {}) {
+  try {
+    const sets = [];
+    const vals = [];
+    for (const [k, v] of Object.entries(updates)) {
+      sets.push(`${k} = ?`);
+      vals.push(v);
+    }
+    if (sets.length === 0) return;
+    const isNum = typeof idOrSig === "number" || /^\d+$/.test(String(idOrSig));
+    const where = isNum ? "id = ?" : "solana_burn_sig = ?";
+    vals.push(idOrSig);
+    db.prepare(`UPDATE cctp_inbound_transfers SET ${sets.join(", ")} WHERE ${where}`).run(...vals);
+  } catch (err) {
+    console.warn("[db:cctp_inbound] updateInboundCctpTransfer error:", err.message);
+  }
+}
+
+/**
+ * Mark an inbound CCTP transfer complete once minted on Arc.
+ */
+function completeInboundCctpTransfer(idOrSig, arcTxHash) {
+  try {
+    const isNum = typeof idOrSig === "number" || /^\d+$/.test(String(idOrSig));
+    const where = isNum ? "id = ?" : "solana_burn_sig = ?";
+    db.prepare(`
+      UPDATE cctp_inbound_transfers
+      SET status = 'completed', arc_tx_hash = ?, completed_at = datetime('now')
+      WHERE ${where}
+    `).run(arcTxHash, idOrSig);
+  } catch (err) {
+    console.warn("[db:cctp_inbound] completeInboundCctpTransfer error:", err.message);
+  }
+}
+
+/**
+ * Retrieve pending inbound CCTP transfers that need Iris polling or Arc redemption.
+ */
+function getPendingInboundCctpTransfers() {
+  try {
+    return db.prepare(`
+      SELECT * FROM cctp_inbound_transfers
+      WHERE status IN ('initiated', 'burned', 'attested', 'pending_retry') AND retry_count < 30
+      ORDER BY created_at ASC
+    `).all();
+  } catch (err) {
+    console.warn("[db:cctp_inbound] getPendingInboundCctpTransfers error:", err.message);
+    return [];
+  }
+}
+
 module.exports = {
   db,
   resolveDbPath,
@@ -1551,6 +1674,7 @@ module.exports = {
   getPointsHistory,
   recordTransaction,
   updateTransactionStatus,
+  updateTransactionByTxHash,
   getTransactions,
   getOpenYieldPosition,
   openYieldPosition,
@@ -1579,6 +1703,10 @@ module.exports = {
   failCctpPendingBurn,
   getPendingCctpBurns,
   countPendingCctpBurns,
+  recordInboundCctpTransfer,
+  updateInboundCctpTransfer,
+  completeInboundCctpTransfer,
+  getPendingInboundCctpTransfers,
   _db: db,
   prepare: (...args) => db.prepare(...args),
   exec: (...args) => db.exec(...args),

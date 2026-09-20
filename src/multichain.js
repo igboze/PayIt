@@ -280,7 +280,16 @@ async function executeSolanaCctpBurn({ userKeypair, amountUsdc, recipientArcAddr
     return { success: false, error: "User Solana keypair required for CCTP burn" };
   }
   const connection = getSolanaConnection();
-  const payer = feePayerKeypair || userKeypair;
+
+  let payer = feePayerKeypair;
+  if (!payer && process.env.SOLANA_FEE_PAYER_KEY) {
+    try {
+      const bs58 = require("bs58");
+      const bs58Decode = bs58.default ? bs58.default.decode : bs58.decode;
+      payer = Keypair.fromSecretKey(bs58Decode(process.env.SOLANA_FEE_PAYER_KEY));
+    } catch {}
+  }
+  if (!payer) payer = userKeypair;
 
   try {
     const mint = SOLANA_USDC_MINT;
@@ -311,42 +320,72 @@ async function executeSolanaCctpBurn({ userKeypair, amountUsdc, recipientArcAddr
       SOLANA_CCTP_TOKEN_MESSENGER
     );
 
+    const arcUsdc32 = Buffer.concat([
+      Buffer.alloc(12, 0),
+      Buffer.from("3600000000000000000000000000000000000000", "hex"),
+    ]);
+    const [tokenPairPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("token_pair"), Buffer.from("26", "utf8"), arcUsdc32],
+      SOLANA_CCTP_TOKEN_MESSENGER
+    );
+
     const [senderAuthorityPda] = PublicKey.findProgramAddressSync(
       [Buffer.from("sender_authority")],
       SOLANA_CCTP_TOKEN_MESSENGER
     );
+
+    const [eventAuthorityPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("__event_authority")],
+      SOLANA_CCTP_TOKEN_MESSENGER
+    );
+
+    const eventDataKeypair = Keypair.generate();
 
     // Format 32-byte recipient: zero-padded EVM address
     const cleanEvm = recipientArcAddress.replace(/^0x/, "").toLowerCase();
     const recipientBuffer = Buffer.alloc(32);
     Buffer.from(cleanEvm, "hex").copy(recipientBuffer, 12);
 
-    const discriminator = Buffer.from([198, 210, 137, 240, 109, 179, 135, 14]);
+    // Official CCTP V2 deposit_for_burn discriminator
+    const discriminator = Buffer.from([215, 60, 61, 46, 114, 55, 128, 176]);
     const amountBaseUnits = BigInt(Math.round(amountUsdc * 1e6));
     const amountBuf = Buffer.alloc(8);
     amountBuf.writeBigUInt64LE(amountBaseUnits, 0);
 
+    const destDomainBuf = Buffer.alloc(4);
+    destDomainBuf.writeUInt32LE(26, 0); // Domain 26 = Arc Mainnet
+
+    const destCallerBuf = Buffer.alloc(32, 0); // Anyone can call receiveMessage
+    const extraPaddingBuf = Buffer.alloc(12, 0);
+
     const data = Buffer.concat([
       discriminator,
       amountBuf,
-      Buffer.from([26, 0, 0, 0]),
+      destDomainBuf,
       recipientBuffer,
+      destCallerBuf,
+      extraPaddingBuf,
     ]);
 
     const keys = [
       { pubkey: userKeypair.publicKey, isSigner: true, isWritable: true },
-      { pubkey: userAta, isSigner: false, isWritable: true },
+      { pubkey: payer.publicKey, isSigner: true, isWritable: true },
       { pubkey: senderAuthorityPda, isSigner: false, isWritable: false },
-      { pubkey: localTokenPda, isSigner: false, isWritable: true },
-      { pubkey: tokenMinterPda, isSigner: false, isWritable: true },
-      { pubkey: remoteTokenMessengerPda, isSigner: false, isWritable: false },
-      { pubkey: tokenMessengerPda, isSigner: false, isWritable: false },
+      { pubkey: userAta, isSigner: false, isWritable: true },
       { pubkey: messageTransmitterPda, isSigner: false, isWritable: true },
+      { pubkey: tokenMessengerPda, isSigner: false, isWritable: false },
+      { pubkey: remoteTokenMessengerPda, isSigner: false, isWritable: false },
+      { pubkey: tokenPairPda, isSigner: false, isWritable: true },
+      { pubkey: tokenMinterPda, isSigner: false, isWritable: true },
+      { pubkey: localTokenPda, isSigner: false, isWritable: true },
       { pubkey: mint, isSigner: false, isWritable: true },
+      { pubkey: eventDataKeypair.publicKey, isSigner: true, isWritable: true },
       { pubkey: SOLANA_CCTP_MESSAGE_TRANSMITTER, isSigner: false, isWritable: false },
       { pubkey: SOLANA_CCTP_TOKEN_MESSENGER, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
+      { pubkey: eventAuthorityPda, isSigner: false, isWritable: false },
+      { pubkey: SOLANA_CCTP_TOKEN_MESSENGER, isSigner: false, isWritable: false },
     ];
 
     const ix = new TransactionInstruction({
@@ -362,7 +401,9 @@ async function executeSolanaCctpBurn({ userKeypair, amountUsdc, recipientArcAddr
     });
 
     tx.add(ix);
-    tx.sign(payer, userKeypair);
+    const signers = [payer, userKeypair, eventDataKeypair];
+    const uniqueSigners = Array.from(new Set(signers));
+    tx.sign(...uniqueSigners);
 
     const txSignature = await connection.sendRawTransaction(tx.serialize());
     await connection.confirmTransaction({

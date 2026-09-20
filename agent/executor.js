@@ -21,6 +21,7 @@ const multichain   = require("../src/multichain");
 const idempotency  = require("../src/idempotency");
 const bankResolver = require("../src/bank_resolver");
 const cctpBridge   = require("../src/cctp_bridge");
+const fx           = require("../src/fx");
 
 
 // ─── Single on-chain payment (Arc EVM) ────────────────────────────────────────
@@ -174,11 +175,6 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
     amount: amountUsdc,
   });
 
-  const offrampAddress = process.env.PAJCASH_OFFRAMP_ADDRESS || process.env.APP_FEE_RECIPIENT_ADDRESS;
-  if (!offrampAddress || !walletLib.isValidAddress(offrampAddress)) {
-    idempotency.failOperationIdempotency(idempKey, "Offramp address not configured");
-    return { success: false, error: "Cash out isn't available yet in your region — coming soon.", label, amount: amountUsdc, chain: "fiat" };
-  }
 
   let balance;
   try {
@@ -231,10 +227,13 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
     };
   } else {
     try {
+      if (!bankDetails?.accountNumber || !bankDetails?.bankCode) {
+        throw new Error("Missing bank account number or bank code for cash out payout");
+      }
       result = await offramp.requestOfframp(telegramId, amountMicro, {
-        accountNumber: bankDetails.accountNumber || "0000000000",
-        bankCode:      bankDetails.bankCode      || "000013",
-        accountName:   bankDetails.accountName   || "PayIT User",
+        accountNumber: bankDetails.accountNumber,
+        bankCode:      bankDetails.bankCode,
+        accountName:   bankDetails.accountName,
         fiatAmount:    bankDetails.fiatAmount,
         accountType:   options.accountType       || "personal",
       });
@@ -251,10 +250,19 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
   }
 
   // Step 2: On-chain send to offramp destination address
+  const offrampAddress = process.env.PAJCASH_OFFRAMP_ADDRESS || process.env.APP_FEE_RECIPIENT_ADDRESS;
   const isTargetSolana = result.address && multichain.isSolanaAddress(result.address);
   const targetAddress = isTargetSolana
     ? result.address
-    : (result.address && walletLib.isValidAddress(result.address) ? result.address : offrampAddress);
+    : (result.address && walletLib.isValidAddress(result.address)
+        ? result.address
+        : (offrampAddress && walletLib.isValidAddress(offrampAddress) ? offrampAddress : null));
+
+  if (!targetAddress) {
+    db.updateTransactionStatus(txId, "failed");
+    idempotency.failOperationIdempotency(idempKey, "No valid settlement deposit address");
+    return { success: false, error: "No valid deposit address provided for cash out settlement", label, amount: amountUsdc, chain: "fiat" };
+  }
 
   let txHash;
   try {
@@ -410,11 +418,16 @@ async function executePlan(plan, pin, user, context = "personal") {
         fiatAmount = payment.amount;
         try {
           const rates = await paj.getRates("NGN");
-          const offrampRate = Number(rates?.offRampRate?.rate) || 1500;
-          amountUsdc = Math.ceil((fiatAmount / offrampRate) * 100) / 100;
+          const offrampRate = Number(rates?.offRampRate?.rate);
+          if (offrampRate && offrampRate > 0) {
+            amountUsdc = Math.ceil((fiatAmount / offrampRate) * 100) / 100;
+          } else {
+            const liveFxRate = await fx.getUsdToNgnRate();
+            amountUsdc = Math.ceil((fiatAmount / liveFxRate) * 100) / 100;
+          }
         } catch (rateErr) {
-          console.warn("[executor] Rate fetch fallback:", rateErr.message);
-          amountUsdc = Math.ceil((fiatAmount / 1500) * 100) / 100;
+          const liveFxRate = await fx.getUsdToNgnRate();
+          amountUsdc = Math.ceil((fiatAmount / liveFxRate) * 100) / 100;
         }
       }
 

@@ -144,6 +144,7 @@ async function processPajEvent(payload, bot) {
             solanaTxSignature,
             amountUsdc: effectiveAmountUsdc,
             recipientArcAddress: mainSettlementAddress,
+            bot,
           });
 
           console.log(`[webhook_server] Invoice CCTP Auto-Bridge result:`, bridgeResult);
@@ -175,54 +176,75 @@ async function processPajEvent(payload, bot) {
       ? (user ? (user.business_deposit_address || user.deposit_address) : data.destinationArcAddress)
       : (user ? user.deposit_address : data.destinationArcAddress);
 
-    // Send Telegram alert: Bank transfer detected with clean, consumer-friendly grammar
-    if (bot && targetTelegramId) {
+    let bridgeResult = null;
+    if (recipientArcAddress) {
       try {
-        await bot.telegram.sendMessage(
-          targetTelegramId,
-          `🎉 <b>Deposit Received (${accountLabel})!</b>\n` +
-          `──────────────────────────\n` +
-          `💵 <b>Amount Deposited:</b> ₦${fiatAmount ? fiatAmount.toLocaleString() : "..."}\n` +
-          `💰 <b>Dollars Credited:</b> $${amountUsdc.toFixed(2)}\n` +
-          `💼 <b>Account:</b> ${accountLabel}\n\n` +
-          `<i>Your balance is updated and ready to spend, save, or send!</i>`,
-          { parse_mode: "HTML" }
-        );
+        bridgeResult = await cctpBridge.autoBridgeSolanaToArc({
+          telegramId: targetTelegramId,
+          solanaTxSignature,
+          amountUsdc,
+          recipientArcAddress,
+          bot,
+        });
+        console.log(`[webhook_server] CCTP Auto-Bridge result:`, bridgeResult);
       } catch (err) {
-        console.warn(`[webhook_server] Failed to notify TG user ${targetTelegramId}:`, err.message);
+        console.error(`[webhook_server] CCTP Auto-bridge error:`, err.message);
       }
     }
 
-    // Record confirmed onramp transaction in ledger
+    const isDirectlySettled = bridgeResult && bridgeResult.status === "completed" && bridgeResult.arcTxHash;
+    const amountMicro = walletLib.parseToMicro(amountUsdc.toFixed(6));
+
+    // Record onramp transaction in ledger
     try {
-      const amountMicro = walletLib.parseToMicro(amountUsdc.toFixed(6));
       db.recordTransaction(
         targetTelegramId,
         "deposit_naira",
         amountMicro,
-        "confirmed",
-        solanaTxSignature || data.id,
+        isDirectlySettled ? "confirmed" : "pending_bridge",
+        isDirectlySettled ? bridgeResult.arcTxHash : (solanaTxSignature || data.id),
         isBizAccount ? "business" : "personal"
       );
     } catch (recErr) {
       console.warn("[webhook_server] Record onramp tx error:", recErr.message);
     }
 
-    // Trigger Circle CCTP Auto-Bridge in background to the specific isolated address (Personal vs Business)
-    if (recipientArcAddress) {
+    // Send Telegram alert with accurate status
+    if (bot && targetTelegramId) {
       try {
-        const bridgeResult = await cctpBridge.autoBridgeSolanaToArc({
-          telegramId: targetTelegramId,
-          solanaTxSignature,
-          amountUsdc,
-          recipientArcAddress,
-        });
-
-        console.log(`[webhook_server] CCTP Auto-Bridge result:`, bridgeResult);
+        if (isDirectlySettled) {
+          const explorerLink = bridgeResult.explorerUrl
+            ? `\n🔗 <a href="${bridgeResult.explorerUrl}">View on Arcscan</a>`
+            : "";
+          await bot.telegram.sendMessage(
+            targetTelegramId,
+            `🎉 <b>Deposit Settled & Credited (${accountLabel})!</b>\n` +
+            `──────────────────────────\n` +
+            `💵 <b>Amount Deposited:</b> ₦${fiatAmount ? fiatAmount.toLocaleString() : "..."}\n` +
+            `💰 <b>Dollars Credited:</b> $${amountUsdc.toFixed(2)} USDC\n` +
+            `💼 <b>Account:</b> ${accountLabel}\n` +
+            `🏛 <b>Network:</b> Arc Mainnet (Domain 26)${explorerLink}\n\n` +
+            `<i>Your balance is updated and ready to spend, save, or send!</i>`,
+            { parse_mode: "HTML" }
+          );
+        } else {
+          await bot.telegram.sendMessage(
+            targetTelegramId,
+            `⏳ <b>Deposit Received (${accountLabel})!</b>\n` +
+            `──────────────────────────\n` +
+            `💵 <b>Amount Deposited:</b> ₦${fiatAmount ? fiatAmount.toLocaleString() : "..."}\n` +
+            `💰 <b>Incoming:</b> $${amountUsdc.toFixed(2)} USDC\n` +
+            `💼 <b>Account:</b> ${accountLabel}\n` +
+            `🔄 <b>Status:</b> Bridging funds cross-chain to Arc Mainnet...\n\n` +
+            `<i>Your balance will automatically update once minted on Arc.</i>`,
+            { parse_mode: "HTML" }
+          );
+        }
       } catch (err) {
-        console.error(`[webhook_server] CCTP Auto-bridge error:`, err);
+        console.warn(`[webhook_server] Failed to notify TG user ${targetTelegramId}:`, err.message);
       }
     }
+
     idempotency.markWebhookProcessed(eventId, event, data.id);
     return;
   }
@@ -238,7 +260,11 @@ async function processPajEvent(payload, bot) {
 
     // Record confirmed offramp transaction in ledger
     try {
-      const usdcAmount = Number(data.amount || data.amountUsdc || (fiatAmount > 0 ? (fiatAmount / (data.rate || 1400)) : 0));
+      let liveRate = data.rate;
+      if (!liveRate && fiatAmount > 0 && !data.amount && !data.amountUsdc) {
+        liveRate = await fx.getUsdToNgnRate().catch(() => null);
+      }
+      const usdcAmount = Number(data.amount || data.amountUsdc || (fiatAmount > 0 && liveRate > 0 ? (fiatAmount / liveRate) : 0));
       if (usdcAmount > 0) {
         const amountMicro = walletLib.parseToMicro(usdcAmount.toFixed(6));
         db.recordTransaction(
