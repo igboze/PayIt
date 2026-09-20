@@ -230,7 +230,6 @@ test("Automated EVM Cross-Chain Deposit Engine Test Suite", async (t) => {
       };
 
       const res = await evmDepositSweeper.processEvmDeposit(depositPayload, mockBot);
-
       assert.equal(res.success, true, "Deposit processing must succeed");
       assert.equal(res.amountUsdc, 50.0);
       assert.equal(res.recipient, personalAddress);
