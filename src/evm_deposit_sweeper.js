@@ -513,7 +513,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     }
   }
 
-  const provider = new JsonRpcProvider(rpcUrl, effectiveChainId);
+  const provider = new JsonRpcProvider(rpcUrl, effectiveChainId, { staticNetwork: true });
   const signer = userPrivateKey ? new Wallet(userPrivateKey, provider) : null;
 
   let effectiveAmountUsdc = 0;
@@ -822,7 +822,7 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
 
     for (const cfg of allScanChains) {
       try {
-        const provider = new JsonRpcProvider(cfg.rpcUrl, cfg.chainId);
+        const provider = new JsonRpcProvider(cfg.rpcUrl, cfg.chainId, { staticNetwork: true });
         const dexCfg = resolveDexConfig(cfg.key);
 
         // 1. Check USDC balance first (so native gas is preserved to burn existing USDC!)

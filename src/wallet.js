@@ -15,7 +15,7 @@ let _provider = null;
 function getProvider() {
   const net = getNetworkConfig();
   if (!_provider || _provider._network?.chainId !== BigInt(net.chainId)) {
-    _provider = new JsonRpcProvider(net.rpcUrl, net.chainId);
+    _provider = new JsonRpcProvider(net.rpcUrl, net.chainId, { staticNetwork: true });
   }
   return _provider;
 }
@@ -157,7 +157,7 @@ async function getUsdcBalance(walletAddress, chainName) {
     throw new Error(`Missing RPC or USDC address config for: ${chainName}`);
   }
 
-  const provider = new JsonRpcProvider(rpcUrl, chain.chainId);
+  const provider = new JsonRpcProvider(rpcUrl, chain.chainId, { staticNetwork: true });
   const usdc     = new Contract(usdcAddress, ERC20_BALANCE_ABI, provider);
 
   const raw = await usdc.balanceOf(walletAddress);

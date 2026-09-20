@@ -306,7 +306,7 @@ async function pollCctpAttestation(messageHash, maxAttempts = 30, intervalMs = 2
  */
 async function redeemOnArc({ userPrivateKey, attestation, signature, message }) {
   const net = getNetworkConfig();
-  const provider = new JsonRpcProvider(net.rpcUrl, net.chainId);
+  const provider = new JsonRpcProvider(net.rpcUrl, net.chainId, { staticNetwork: true });
 
   const signerKey = userPrivateKey || process.env.DEPLOYER_PRIVATE_KEY || process.env.RELAYER_PRIVATE_KEY;
   if (!signerKey) {
@@ -359,7 +359,7 @@ async function redeemOnArc({ userPrivateKey, attestation, signature, message }) 
  */
 async function disburseDirectOnArc({ recipientArcAddress, amountUsdc, signerPrivateKey }) {
   const net = getNetworkConfig();
-  const provider = new JsonRpcProvider(net.rpcUrl, net.chainId);
+  const provider = new JsonRpcProvider(net.rpcUrl, net.chainId, { staticNetwork: true });
 
   const signerKey = signerPrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
   if (!signerKey) {
@@ -677,7 +677,7 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
     try {
       const { JsonRpcProvider, Interface, keccak256 } = require("ethers");
       const net = getNetworkConfig();
-      const provider = new JsonRpcProvider(net.rpcUrl, net.chainId);
+      const provider = new JsonRpcProvider(net.rpcUrl, net.chainId, { staticNetwork: true });
       const receipt = await provider.getTransactionReceipt(arcTxHash);
       if (receipt && receipt.logs) {
         const msgIface = new Interface(["event MessageSent(bytes message)"]);
@@ -851,7 +851,7 @@ async function executeEvmCctpBurn({
   }
 
   const { JsonRpcProvider, Contract, parseUnits, Interface, keccak256, zeroPadValue } = require("ethers");
-  const provider = new JsonRpcProvider(chainConfig.rpcUrl, chainConfig.chainId);
+  const provider = new JsonRpcProvider(chainConfig.rpcUrl, chainConfig.chainId, { staticNetwork: true });
   const signerKey = userWallet.privateKey || (typeof userWallet === "string" ? userWallet : null);
   const signer = signerKey ? new Wallet(signerKey, provider) : userWallet.connect(provider);
 
