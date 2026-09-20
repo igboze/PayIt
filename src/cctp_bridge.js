@@ -570,11 +570,17 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
       recipientAta = getAssociatedTokenAddress(recipientPubkey, SOLANA_USDC_MINT);
     }
 
+    const bs58 = require("bs58");
+    const { Keypair } = require("@solana/web3.js");
+    const bs58Decode = bs58.default ? bs58.default.decode : bs58.decode;
+    const bs58Key = feePayerKey || process.env.SOLANA_FEE_PAYER_KEY;
+    const feePayerKeypair = bs58Key ? Keypair.fromSecretKey(bs58Decode(bs58Key)) : null;
+
     // Ensure recipient ATA is initialized on Solana before burning on Arc
     try {
       const conn = getSolanaConnection();
       const ataInfo = await conn.getAccountInfo(recipientAta);
-      if (!ataInfo) {
+      if (!ataInfo && feePayerKeypair) {
         console.log(`[cctp_bridge] Initializing recipient ATA ${recipientAta.toBase58()} for ${recipientPubkey.toBase58()}...`);
         const { Transaction, createAssociatedTokenAccountInstruction } = require("@solana/web3.js");
         const latestBlockhash = await conn.getLatestBlockhash();
