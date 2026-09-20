@@ -4219,11 +4219,11 @@ bot.on("text", async (ctx) => {
               txHash:           result.txHash || null,
             });
             await ctx.replyWithPhoto({ source: receiptPath }, {
-              caption: result.warning || `✅ Cash out submitted! Naira arrives in ~10 minutes.`,
+              caption: result.warning || `✅ Cash out submitted! Naira arrives in ~1–2 minutes.`,
               ...afterPaymentButtons,
             });
           } catch {
-            await ctx.reply(result.warning || `✅ Cash out submitted! Naira arrives in ~10 minutes.`, afterPaymentButtons);
+            await ctx.reply(result.warning || `✅ Cash out submitted! Naira arrives in ~1–2 minutes.`, afterPaymentButtons);
           }
         } else {
           await ctx.reply(`❌ ${result.error}`, backToMenu);

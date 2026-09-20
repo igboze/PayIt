@@ -518,7 +518,7 @@ function formatResults(results) {
           `   🏦 ${ngnDisplay}\n` +
           `   ${r.bankDetails?.bankName || r.bankName || "Bank"} · \`${r.bankDetails?.accountNumber || ""}\`\n` +
           `   Ref: \`${r.reference || "—"}\`\n` +
-          `   Naira arrives in recipient bank account in ~10 minutes.`
+          `   Naira arrives in recipient bank account in ~1–2 minutes.`
         );
       }
       if (r.success && r.warning) {
