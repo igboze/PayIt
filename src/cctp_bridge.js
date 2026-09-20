@@ -515,6 +515,7 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
     const usdcAddress = net.usdcAddress || "0x3600000000000000000000000000000000000000";
 
     const TOKEN_MESSENGER_ABI = [
+      "function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes32 destinationCaller, uint256 maxFee, uint32 minFinalityThreshold) external",
       "function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken) external returns (uint64 _nonce)",
     ];
 
@@ -523,7 +524,7 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
       "function allowance(address owner, address spender) external view returns (uint256)",
     ];
 
-    const { parseUnits, Interface, keccak256 } = require("ethers");
+    const { parseUnits, Interface, keccak256, ZeroHash } = require("ethers");
     const amountUnits = parseUnits(amountUsdc.toString(), 6);
 
     // 1. Approve TokenMessenger if needed
@@ -531,16 +532,38 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
       const usdcContract = new Contract(usdcAddress, ERC20_ABI, userWallet);
       const allowance = await usdcContract.allowance(userWallet.address, tokenMessengerAddress);
       if (allowance < amountUnits) {
+        console.log(`[cctp_bridge] Approving TokenMessenger for ${amountUnits} USDC units...`);
         const approveTx = await usdcContract.approve(tokenMessengerAddress, amountUnits);
-        await approveTx.wait();
+        await approveTx.wait(1);
+        console.log(`[cctp_bridge] TokenMessenger approved ✓`);
       }
     } catch (appErr) {
       console.warn("[cctp_bridge:approve_note]", appErr.message);
     }
 
     // 2. Call depositForBurn targeting Solana (Domain 5)
+    // Arc TokenMessenger uses CCTP V2 (7 parameters: amount, destinationDomain, mintRecipient, burnToken, destinationCaller, maxFee, minFinalityThreshold)
     const tokenMessenger = new Contract(tokenMessengerAddress, TOKEN_MESSENGER_ABI, userWallet);
-    const tx = await tokenMessenger.depositForBurn(amountUnits, CCTP_DOMAINS.SOLANA, mintRecipient, usdcAddress);
+    let tx;
+    try {
+      tx = await tokenMessenger["depositForBurn(uint256,uint32,bytes32,address,bytes32,uint256,uint32)"](
+        amountUnits,
+        CCTP_DOMAINS.SOLANA,
+        mintRecipient,
+        usdcAddress,
+        ZeroHash,
+        0,
+        0
+      );
+    } catch (v2Err) {
+      console.warn("[cctp_bridge] V2 depositForBurn failed, falling back to 4-arg signature:", v2Err.message);
+      tx = await tokenMessenger["depositForBurn(uint256,uint32,bytes32,address)"](
+        amountUnits,
+        CCTP_DOMAINS.SOLANA,
+        mintRecipient,
+        usdcAddress
+      );
+    }
 
     let arcTxHash = tx.hash;
     let rawCctpMessage = null;
@@ -865,6 +888,7 @@ async function executeEvmCctpBurn({
   ];
 
   const TOKEN_MESSENGER_ABI = [
+    "function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes32 destinationCaller, uint256 maxFee, uint32 minFinalityThreshold) external",
     "function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken) external returns (uint64 _nonce)",
   ];
 
@@ -911,12 +935,27 @@ async function executeEvmCctpBurn({
   // 2. Execute depositForBurn targeting Arc Mainnet (Domain 26)
   const tokenMessenger = new Contract(chainConfig.tokenMessenger, TOKEN_MESSENGER_ABI, signer);
   console.log(`[cctp_bridge] Calling depositForBurn on ${chainConfig.name} targeting Arc (domain 26)...`);
-  const tx = await tokenMessenger.depositForBurn(
-    amountUnits,
-    CCTP_DOMAINS.ARC,
-    mintRecipient,
-    chainConfig.usdc
-  );
+  let tx;
+  try {
+    tx = await tokenMessenger["depositForBurn(uint256,uint32,bytes32,address)"](
+      amountUnits,
+      CCTP_DOMAINS.ARC,
+      mintRecipient,
+      chainConfig.usdc
+    );
+  } catch (v1Err) {
+    console.warn(`[cctp_bridge] V1 depositForBurn failed on ${chainConfig.name}, trying V2 signature:`, v1Err.message);
+    const { ZeroHash } = require("ethers");
+    tx = await tokenMessenger["depositForBurn(uint256,uint32,bytes32,address,bytes32,uint256,uint32)"](
+      amountUnits,
+      CCTP_DOMAINS.ARC,
+      mintRecipient,
+      chainConfig.usdc,
+      ZeroHash,
+      0,
+      0
+    );
+  }
 
   let rawCctpMessage = null;
   let messageHash = null;
