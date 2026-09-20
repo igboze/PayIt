@@ -1581,7 +1581,7 @@ function recordInboundCctpTransfer({ telegramId, solanaAddress, arcAddress, amou
     const info = db.prepare(`
       INSERT INTO cctp_inbound_transfers (telegram_id, solana_address, arc_address, amount_usdc, solana_burn_sig, status)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(telegramId, solanaAddress, arcAddress, amountUsdc, solanaBurnSig || null, status);
+    `).run(telegramId || 0, solanaAddress || '', arcAddress, amountUsdc, solanaBurnSig || null, status);
     return info.lastInsertRowid;
   } catch (err) {
     console.warn("[db:cctp_inbound] recordInboundCctpTransfer error:", err.message);
