@@ -791,7 +791,116 @@ async function autoBridgeSolanaToArc({
   }
 
   // ── RAIL B: Circle CCTP Native Burn & Mint (Guaranteed Zero Token Loss) ──
-  // If solanaTxSignature is provided (e.g. from onramp deposit or external CCTP transfer),
+  // Resolve user's Solana keypair to check for unburned SPL USDC from onramp
+  let solKeypair = userKeypair;
+  if (!solKeypair && telegramId) {
+    try {
+      const u = db.getUser(telegramId);
+      if (u && u.system_encrypted_key) {
+        const evmKey = db.getSystemDecryptedPrivateKey(u);
+        solKeypair = multichain.deriveSolanaFromEvmKey(evmKey).keypair;
+      }
+    } catch (err) {
+      console.warn(`[cctp_bridge] Could not resolve user Solana keypair for TG:${telegramId}:`, err.message);
+    }
+  }
+
+  // If user has Solana SPL USDC awaiting bridge, execute CCTP deposit_for_burn
+  let hasSplBalance = false;
+  if (solKeypair) {
+    try {
+      const splBal = await multichain.getSplTokenBalance(solKeypair.publicKey, multichain.SOLANA_USDC_MINT);
+      if (splBal && splBal.uiAmount > 0) {
+        hasSplBalance = true;
+        console.log(`[cctp_bridge] Detected ${splBal.uiAmount} SPL USDC on Solana (${solKeypair.publicKey.toBase58()}). Executing CCTP burn...`);
+      }
+    } catch (err) {
+      console.warn(`[cctp_bridge] Could not fetch Solana SPL balance for ${solKeypair.publicKey.toBase58()}:`, err.message);
+    }
+  }
+
+  if (solKeypair && hasSplBalance) {
+    // Pre-flight check on Solana fee payer
+    const feeCheck = await checkSolanaFeePayerBalance();
+    if (!feeCheck.ok) {
+      console.error(`[cctp_bridge:preflight_fail] Fee payer has insufficient SOL:`, feeCheck);
+      return {
+        success: false,
+        status: "failed",
+        error: `Solana fee payer wallet has insufficient SOL for CCTP burn gas. Funds remain safe on Solana address ${solKeypair.publicKey.toBase58()}.`,
+        amountUsdc,
+        recipient: recipientArcAddress,
+        solanaTxSignature,
+      };
+    }
+
+    // Record transfer in database ledger BEFORE burn
+    const inboundId = db.recordInboundCctpTransfer({
+      telegramId,
+      solanaAddress: solKeypair.publicKey.toBase58(),
+      arcAddress: recipientArcAddress,
+      amountUsdc,
+      solanaBurnSig: null,
+      status: "initiated",
+    });
+
+    // Execute CCTP deposit_for_burn on Solana
+    console.log(`[cctp_bridge] Executing CCTP deposit_for_burn on Solana for ${solKeypair.publicKey.toBase58()} -> Arc:${recipientArcAddress}...`);
+    const burnResult = await multichain.executeSolanaCctpBurn({
+      userKeypair: solKeypair,
+      amountUsdc,
+      recipientArcAddress,
+    });
+
+    if (!burnResult.success) {
+      db.updateInboundCctpTransfer(inboundId, { status: "failed_burn" });
+      console.error(`[cctp_bridge] Solana CCTP burn failed:`, burnResult.error);
+      return {
+        success: false,
+        status: "failed",
+        error: `Solana CCTP burn failed: ${burnResult.error}`,
+        amountUsdc,
+        recipient: recipientArcAddress,
+        solanaTxSignature,
+      };
+    }
+
+    const solanaBurnSig = burnResult.txSignature;
+    console.log(`[cctp_bridge] Solana CCTP burn confirmed ✓ txSig=${solanaBurnSig}`);
+    db.updateInboundCctpTransfer(inboundId, {
+      solana_burn_sig: solanaBurnSig,
+      status: "burned",
+    });
+
+    // Launch background completion & Iris polling
+    completeInboundCctpTransferFlow({
+      inboundId,
+      solanaBurnSig,
+      recipientArcAddress,
+      amountUsdc,
+      telegramId,
+      signerPrivateKey: relayerKey,
+      maxAttempts,
+      intervalMs,
+      bot,
+    });
+
+    return {
+      success: true,
+      status: "burned",
+      method: "cctp_burn",
+      sourceChain: "Solana",
+      sourceDomain: CCTP_DOMAINS.SOLANA,
+      destinationChain: "Arc Mainnet",
+      destinationDomain: CCTP_DOMAINS.ARC,
+      amountUsdc,
+      recipient: recipientArcAddress,
+      solanaTxSignature: solanaBurnSig,
+      inboundId,
+    };
+  }
+
+  // Fallback: If solanaTxSignature is provided (e.g. pre-burned CCTP transfer or test mock),
   // record in inbound ledger and launch Iris attestation polling & Arc redemption.
   if (solanaTxSignature) {
     console.log(`[cctp_bridge] Inbound signature ${solanaTxSignature} detected. Recording in ledger and initiating Iris settlement.`);
@@ -838,21 +947,6 @@ async function autoBridgeSolanaToArc({
     };
   }
 
-  // Otherwise, Paj sent regular SPL USDC to the user's Solana wallet.
-  // We must execute CCTP depositForBurn on Solana using the user's derived key.
-  let solKeypair = userKeypair;
-  if (!solKeypair && telegramId) {
-    try {
-      const u = db.getUser(telegramId);
-      if (u) {
-        const evmKey = db.getSystemDecryptedPrivateKey(u);
-        solKeypair = multichain.deriveSolanaFromEvmKey(evmKey).keypair;
-      }
-    } catch (err) {
-      console.warn(`[cctp_bridge] Could not resolve user Solana keypair for TG:${telegramId}:`, err.message);
-    }
-  }
-
   if (!solKeypair) {
     console.error(`[cctp_bridge] Cannot execute CCTP burn: User Solana keypair unavailable for TG:${telegramId}`);
     return {
@@ -864,85 +958,6 @@ async function autoBridgeSolanaToArc({
       solanaTxSignature,
     };
   }
-
-  // Pre-flight check on Solana fee payer
-  const feeCheck = await checkSolanaFeePayerBalance();
-  if (!feeCheck.ok) {
-    console.error(`[cctp_bridge:preflight_fail] Fee payer has insufficient SOL:`, feeCheck);
-    return {
-      success: false,
-      status: "failed",
-      error: `Solana fee payer wallet has insufficient SOL for CCTP burn gas. Funds remain safe on Solana address ${solKeypair.publicKey.toBase58()}.`,
-      amountUsdc,
-      recipient: recipientArcAddress,
-      solanaTxSignature,
-    };
-  }
-
-  // Record transfer in database ledger BEFORE burn
-  const inboundId = db.recordInboundCctpTransfer({
-    telegramId,
-    solanaAddress: solKeypair.publicKey.toBase58(),
-    arcAddress: recipientArcAddress,
-    amountUsdc,
-    solanaBurnSig: null,
-    status: "initiated",
-  });
-
-  // Execute CCTP deposit_for_burn on Solana
-  console.log(`[cctp_bridge] Executing CCTP deposit_for_burn on Solana for ${solKeypair.publicKey.toBase58()} -> Arc:${recipientArcAddress}...`);
-  const burnResult = await multichain.executeSolanaCctpBurn({
-    userKeypair: solKeypair,
-    amountUsdc,
-    recipientArcAddress,
-  });
-
-  if (!burnResult.success) {
-    db.updateInboundCctpTransfer(inboundId, { status: "failed_burn" });
-    console.error(`[cctp_bridge] Solana CCTP burn failed:`, burnResult.error);
-    return {
-      success: false,
-      status: "failed",
-      error: `Solana CCTP burn failed: ${burnResult.error}`,
-      amountUsdc,
-      recipient: recipientArcAddress,
-      solanaTxSignature,
-    };
-  }
-
-  const solanaBurnSig = burnResult.txSignature;
-  console.log(`[cctp_bridge] Solana CCTP burn confirmed ✓ txSig=${solanaBurnSig}`);
-  db.updateInboundCctpTransfer(inboundId, {
-    solana_burn_sig: solanaBurnSig,
-    status: "burned",
-  });
-
-  // Launch background completion & Iris polling
-  completeInboundCctpTransferFlow({
-    inboundId,
-    solanaBurnSig,
-    recipientArcAddress,
-    amountUsdc,
-    telegramId,
-    signerPrivateKey: relayerKey,
-    maxAttempts,
-    intervalMs,
-    bot,
-  });
-
-  return {
-    success: true,
-    status: "burned",
-    method: "cctp_burn",
-    sourceChain: "Solana",
-    sourceDomain: CCTP_DOMAINS.SOLANA,
-    destinationChain: "Arc Mainnet",
-    destinationDomain: CCTP_DOMAINS.ARC,
-    amountUsdc,
-    recipient: recipientArcAddress,
-    solanaTxSignature: solanaBurnSig,
-    inboundId,
-  };
 }
 
 /**
