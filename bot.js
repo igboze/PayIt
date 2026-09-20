@@ -3928,12 +3928,13 @@ bot.on("text", async (ctx) => {
       }
 
       const context = getContext(userId);
-      const isBiz = context === "business";
       let bizEvmPk = null;
-      if (isBiz && user.encrypted_business_private_key) {
+      if (user.biz_encrypted_key) {
         try {
           bizEvmPk = db.decryptBusinessPrivateKey(text, user);
-        } catch (_) {}
+        } catch (err) {
+          console.warn("[export_keys_pin] Biz decryption error:", err.message);
+        }
       }
 
       const personalSol = multichain.deriveSolanaFromEvmKey(evmPk);
@@ -3947,19 +3948,17 @@ bot.on("text", async (ctx) => {
       keyMsg += `⚠️ <b>DO NOT SHARE THESE KEYS!</b> Anyone with these keys can access and withdraw all your funds.\n\n`;
 
       keyMsg += `👤 <b>Personal Wallet:</b>\n`;
-      keyMsg += `• <b>EVM Address (Arc/ETH/Base):</b>\n<code>${user.address}</code>\n`;
+      keyMsg += `• <b>EVM Address (Arc/ETH/Base):</b>\n<code>${user.deposit_address || user.address}</code>\n`;
       keyMsg += `• <b>EVM Private Key (MetaMask format):</b>\n<code>${evmPk}</code>\n\n`;
       keyMsg += `• <b>Solana Deposit Address:</b>\n<code>${personalSol.solanaAddress}</code>\n`;
       keyMsg += `• <b>Solana Secret Key (Phantom/Solflare format):</b>\n<code>${personalSol.secretKeyBase58}</code>\n`;
 
-      if (isBiz && user.business_deposit_address && bizEvmPk) {
-        keyMsg += `\n💼 <b>Business Wallet:</b>\n`;
-        keyMsg += `• <b>EVM Address:</b>\n<code>${user.business_deposit_address}</code>\n`;
-        keyMsg += `• <b>EVM Private Key:</b>\n<code>${bizEvmPk}</code>\n`;
-        if (bizSol) {
-          keyMsg += `\n• <b>Solana Business Address:</b>\n<code>${bizSol.solanaAddress}</code>\n`;
-          keyMsg += `• <b>Solana Business Secret Key:</b>\n<code>${bizSol.secretKeyBase58}</code>\n`;
-        }
+      if (user.business_deposit_address && bizEvmPk && bizSol) {
+        keyMsg += `\n\n💼 <b>Business Wallet:</b>\n`;
+        keyMsg += `• <b>EVM Address (Arc/ETH/Base):</b>\n<code>${user.business_deposit_address}</code>\n`;
+        keyMsg += `• <b>EVM Private Key (MetaMask format):</b>\n<code>${bizEvmPk}</code>\n\n`;
+        keyMsg += `• <b>Solana Deposit Address:</b>\n<code>${bizSol.solanaAddress}</code>\n`;
+        keyMsg += `• <b>Solana Secret Key (Phantom/Solflare format):</b>\n<code>${bizSol.secretKeyBase58}</code>\n`;
       }
 
       keyMsg += `\n\n<i>This sensitive key export message will self-destruct in 90 seconds.</i>`;

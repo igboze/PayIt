@@ -43,6 +43,16 @@ test("Export Keys & Solana Address Derivation Suite", async (t) => {
 
   // 4. Update & retrieve Solana deposit address
   db.updateSolanaAddress(testTgId, solDerived.solanaAddress);
-  const updatedUser = db.getUser(testTgId);
+  let updatedUser = db.getUser(testTgId);
   assert.strictEqual(updatedUser.solana_deposit_address, solDerived.solanaAddress, "Solana deposit address stored in DB");
+
+  // 5. Test Business Wallet export & decryption
+  const bizW = walletLib.generateUserWallet();
+  db.addBusinessWallet(testTgId, bizW.address, bizW.privateKey, pin);
+  updatedUser = db.getUser(testTgId);
+  assert.ok(updatedUser.biz_encrypted_key, "biz_encrypted_key present on user");
+  const decryptedBizKey = db.decryptBusinessPrivateKey(pin, updatedUser);
+  assert.strictEqual(decryptedBizKey, bizW.privateKey, "Business EVM private key decrypted with PIN");
+  const bizSolDerived = multichain.deriveSolanaFromEvmKey(bizW.privateKey);
+  assert.strictEqual(updatedUser.biz_solana_deposit_address, bizSolDerived.solanaAddress, "Business Solana address matches derived address");
 });
