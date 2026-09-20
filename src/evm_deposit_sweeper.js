@@ -54,7 +54,7 @@ const DEX_ROUTER_CONFIGS = {
   OPTIMISM: {
     name: "Optimism",
     chainId: 10,
-    rpcUrl: "https://mainnet.optimism.io",
+    rpcUrl: process.env.OPTIMISM_RPC_URL || "https://optimism-rpc.publicnode.com",
     routerAddress: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
     fallbackRouter: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
     wethAddress: "0x4200000000000000000000000000000000000006",

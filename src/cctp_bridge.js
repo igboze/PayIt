@@ -14,8 +14,8 @@ const CIRCLE_IRIS_API_V1 = "https://iris-api.circle.com/v1";
 
 // Minimum SOL lamports required for one CCTP receiveMessage call.
 // ATA creation costs ~0.002 SOL rent + ~0.000005 SOL fee = ~0.0025 SOL.
-// We require at least 0.01 SOL (10_000_000 lamports) as a safe buffer.
-const MIN_FEE_PAYER_LAMPORTS = 10_000_000; // 0.01 SOL
+// We require at least 0.003 SOL (3_000_000 lamports) as a safe buffer.
+const MIN_FEE_PAYER_LAMPORTS = 3_000_000; // 0.003 SOL
 
 /**
  * Check that the Solana fee-payer wallet has enough SOL to complete a CCTP
@@ -130,7 +130,7 @@ const EVM_CCTP_CONTRACTS = {
     name: "Optimism",
     domain: 2,
     chainId: 10,
-    rpcUrl: process.env.OPTIMISM_RPC_URL || "https://mainnet.optimism.io",
+    rpcUrl: process.env.OPTIMISM_RPC_URL || "https://optimism-rpc.publicnode.com",
     tokenMessenger: "0x2B4069517957735bE00ceE0fadAE88a26365528f",
     messageTransmitter: "0x4d41f22c5a0e5c74309c3004aacc57891885502c",
     usdc: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
