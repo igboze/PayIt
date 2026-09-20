@@ -9,6 +9,7 @@ const bizDb = require("./biz_db");
 const paj = require("./paj");
 const multichain = require("./multichain");
 const { generateInvoicePNG } = require("./invoice_generator");
+const db = require("./db");
 
 /**
  * Legacy HD invoice creation helper.
@@ -337,6 +338,18 @@ async function validateAndConfirmPayment(paymentAddress, txHash) {
 
   if (isValid) {
     invoiceDb.markInvoicePaidWithTxHash(invoice.id, txHash);
+    try {
+      db.recordTransaction(
+        invoice.owner_telegram_id || invoice.telegram_id || 0,
+        "invoice_payment",
+        expectedAmountMicro,
+        "confirmed",
+        txHash,
+        "personal"
+      );
+    } catch (recErr) {
+      console.warn("[invoice_hd] Failed to record invoice transaction:", recErr.message);
+    }
     console.log(`[invoice_hd] ✅ Invoice ${invoice.invoice_number} marked PAID via ${txHash}`);
     return {
       invoiceId: invoice.id,

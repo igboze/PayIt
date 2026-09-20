@@ -11,6 +11,7 @@ const idempotency = require("./idempotency");
 const invoiceDb = require("./invoice_db");
 const bizDb = require("./biz_db");
 const evmDepositSweeper = require("./evm_deposit_sweeper");
+const walletLib = require("./wallet");
 
 function verifyAlchemySignature(rawBody, headers, signingKey) {
   if (!signingKey) return true;
@@ -192,6 +193,21 @@ async function processPajEvent(payload, bot) {
       }
     }
 
+    // Record confirmed onramp transaction in ledger
+    try {
+      const amountMicro = walletLib.parseToMicro(amountUsdc.toFixed(6));
+      db.recordTransaction(
+        targetTelegramId,
+        "deposit_naira",
+        amountMicro,
+        "confirmed",
+        solanaTxSignature || data.id,
+        isBizAccount ? "business" : "personal"
+      );
+    } catch (recErr) {
+      console.warn("[webhook_server] Record onramp tx error:", recErr.message);
+    }
+
     // Trigger Circle CCTP Auto-Bridge in background to the specific isolated address (Personal vs Business)
     if (recipientArcAddress) {
       try {
@@ -219,6 +235,24 @@ async function processPajEvent(payload, bot) {
     const accountNumber = data.accountNumber ? `...${String(data.accountNumber).slice(-4)}` : "";
     const accountType = data.metadata?.accountType || "Personal";
     const accountLabel = accountType === "business" ? "Business Account" : "Personal Wallet";
+
+    // Record confirmed offramp transaction in ledger
+    try {
+      const usdcAmount = Number(data.amount || data.amountUsdc || (fiatAmount > 0 ? (fiatAmount / (data.rate || 1400)) : 0));
+      if (usdcAmount > 0) {
+        const amountMicro = walletLib.parseToMicro(usdcAmount.toFixed(6));
+        db.recordTransaction(
+          telegramId,
+          "offramp",
+          amountMicro,
+          "confirmed",
+          data.id,
+          accountType
+        );
+      }
+    } catch (recErr) {
+      console.warn("[webhook_server] Record offramp tx error:", recErr.message);
+    }
 
     if (bot && telegramId) {
       try {

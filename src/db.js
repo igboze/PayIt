@@ -1146,18 +1146,22 @@ function getSystemDecryptedPrivateKey(user, accountType = "personal") {
  * Platform-wide volume stats for the admin dashboard.
  * Returns totals for each major flow over today, 7d, 30d, and all-time.
  * amount_micro is stored as a BigInt-compatible string (18-decimal USDC on Arc).
+ * Dynamically handles both standard 18-decimal (Arc) and 6-decimal amounts.
  */
 function getVolumeStats() {
   const MICRO = 1e18; // Arc uses 18-decimal USDC natively
 
+  const VALID_STATUSES = "('confirmed', 'submitted', 'success', 'completed')";
+  const NORMALIZE_AMOUNT = "CASE WHEN CAST(amount_micro AS REAL) > 0 AND CAST(amount_micro AS REAL) < 1e13 THEN CAST(amount_micro AS REAL) * 1e12 ELSE CAST(amount_micro AS REAL) END";
+
   function sumForTypes(types, since) {
     const placeholders = types.map(() => "?").join(", ");
-    const sinceClause = since ? `AND created_at >= datetime('now', '${since}')` : "";
+    const sinceClause = since ? `AND datetime(created_at) >= datetime('now', '${since}')` : "";
     const row = db.prepare(`
-      SELECT COALESCE(SUM(CAST(amount_micro AS REAL)), 0) AS total,
+      SELECT COALESCE(SUM(${NORMALIZE_AMOUNT}), 0) AS total,
              COUNT(*) AS count
       FROM transactions
-      WHERE type IN (${placeholders}) AND status = 'confirmed'
+      WHERE type IN (${placeholders}) AND status IN ${VALID_STATUSES}
       ${sinceClause}
     `).get(...types);
     return { count: row.count, usdc: row.total / MICRO };
@@ -1172,37 +1176,46 @@ function getVolumeStats() {
     };
   }
 
-  const onramp   = txBreakdown(["deposit_naira", "onramp"]);
-  const crypto   = txBreakdown(["deposit_crosschain"]);
-  const offramp  = txBreakdown(["offramp", "offramp_request"]);
-  const sends    = txBreakdown(["send_usdc", "send_eurc", "autopay"]);
-  const savings  = txBreakdown(["yield_deposit"]);
+  const onramp   = txBreakdown(["deposit_naira", "onramp", "paj_onramp"]);
+  const crypto   = txBreakdown(["deposit_crosschain", "crypto_deposit"]);
+  const offramp  = txBreakdown(["offramp", "offramp_request", "payout"]);
+  const sends    = txBreakdown(["send_usdc", "send_eurc", "autopay", "payment"]);
+  const savings  = txBreakdown(["yield_deposit", "yield_withdraw", "auto_earn_liquidate", "auto_earn_deposit"]);
+  const invoices = txBreakdown(["invoice_payment", "invoice"]);
+  const swaps    = txBreakdown(["swap_usdc_eurc", "swap_eurc_usdc"]);
 
   // All-time totals across every confirmed tx (any type)
-  const totalAll = db.prepare(`
-    SELECT COALESCE(SUM(CAST(amount_micro AS REAL)), 0) AS total, COUNT(*) AS count
-    FROM transactions WHERE status = 'confirmed'
+  const totalAllRow = db.prepare(`
+    SELECT COALESCE(SUM(${NORMALIZE_AMOUNT}), 0) AS total, COUNT(*) AS count
+    FROM transactions WHERE status IN ${VALID_STATUSES}
   `).get();
 
   // User growth
-  const users = db.prepare(`
+  const usersRow = db.prepare(`
     SELECT
       COUNT(*) AS total,
-      SUM(CASE WHEN created_at >= datetime('now', '-1 day')  THEN 1 ELSE 0 END) AS today,
-      SUM(CASE WHEN created_at >= datetime('now', '-7 days') THEN 1 ELSE 0 END) AS week,
-      SUM(CASE WHEN created_at >= datetime('now', '-30 days') THEN 1 ELSE 0 END) AS month
+      COALESCE(SUM(CASE WHEN datetime(created_at) >= datetime('now', '-1 day')  THEN 1 ELSE 0 END), 0) AS today,
+      COALESCE(SUM(CASE WHEN datetime(created_at) >= datetime('now', '-7 days') THEN 1 ELSE 0 END), 0) AS week,
+      COALESCE(SUM(CASE WHEN datetime(created_at) >= datetime('now', '-30 days') THEN 1 ELSE 0 END), 0) AS month
     FROM users
   `).get();
+
+  const users = {
+    total: usersRow?.total ?? 0,
+    today: usersRow?.today ?? 0,
+    week: usersRow?.week ?? 0,
+    month: usersRow?.month ?? 0,
+  };
 
   // Top 5 users by volume (all-time)
   const topUsers = db.prepare(`
     SELECT t.telegram_id,
            u.username,
-           COALESCE(SUM(CAST(t.amount_micro AS REAL)), 0) AS vol,
+           COALESCE(SUM(${NORMALIZE_AMOUNT}), 0) AS vol,
            COUNT(*) AS tx_count
     FROM transactions t
     LEFT JOIN users u ON u.telegram_id = t.telegram_id
-    WHERE t.status = 'confirmed'
+    WHERE t.status IN ${VALID_STATUSES}
     GROUP BY t.telegram_id
     ORDER BY vol DESC LIMIT 5
   `).all().map(r => ({
@@ -1212,7 +1225,153 @@ function getVolumeStats() {
     tx_count: r.tx_count,
   }));
 
-  return { onramp, crypto, offramp, sends, savings, totalAll: { count: totalAll.count, usdc: totalAll.total / MICRO }, users, topUsers };
+  return {
+    onramp,
+    crypto,
+    offramp,
+    sends,
+    savings,
+    invoices,
+    swaps,
+    totalAll: { count: totalAllRow.count, usdc: totalAllRow.total / MICRO },
+    users,
+    topUsers,
+  };
+}
+
+/**
+ * Scans the live database state across all tables and backfills/normalizes
+ * any missing or mis-scaled records into the \`transactions\` ledger.
+ * Safe to run multiple times (idempotent).
+ */
+function reconcileLiveProductVolume() {
+  let fixedScale = 0;
+  let backfilledInvoices = 0;
+  let backfilledPayments = 0;
+  let backfilledYield = 0;
+  let backfilledOnramp = 0;
+
+  try {
+    // 1. Rescale legacy 6-decimal amounts in transactions (< 1e13)
+    const lowRows = db.prepare(
+      "SELECT id, amount_micro FROM transactions WHERE CAST(amount_micro AS REAL) > 0 AND CAST(amount_micro AS REAL) < 1e13"
+    ).all();
+    for (const row of lowRows) {
+      try {
+        const scaled = (BigInt(row.amount_micro) * 1_000_000_000_000n).toString();
+        db.prepare("UPDATE transactions SET amount_micro = ? WHERE id = ?").run(scaled, row.id);
+        fixedScale++;
+      } catch {}
+    }
+
+    // 2. Backfill paid invoices from invoices table
+    const paidInvoices = db.prepare("SELECT * FROM invoices WHERE status = 'paid'").all();
+    for (const inv of paidInvoices) {
+      const txHash = inv.paid_tx_hash || `inv_${inv.id}_${inv.invoice_number}`;
+      const existing = db.prepare("SELECT id FROM transactions WHERE tx_hash = ?").get(txHash);
+      if (!existing) {
+        const tgId = inv.owner_telegram_id || inv.telegram_id || 0;
+        const micro = inv.expected_amount_micro
+          ? BigInt(inv.expected_amount_micro)
+          : BigInt(Math.round((inv.total || inv.total_usdc || 0) * 1e6)) * 1_000_000_000_000n;
+        db.prepare(`
+          INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, created_at, account_type)
+          VALUES (?, 'invoice_payment', ?, 'confirmed', ?, ?, 'personal')
+        `).run(tgId, micro.toString(), txHash, inv.paid_at || inv.created_at);
+        backfilledInvoices++;
+      }
+    }
+
+    // 3. Backfill paid invoices from biz_invoices table
+    try {
+      const paidBizInvoices = db.prepare("SELECT * FROM biz_invoices WHERE status = 'paid'").all();
+      for (const inv of paidBizInvoices) {
+        const txHash = inv.paid_tx_hash || `bizinv_${inv.id}`;
+        const existing = db.prepare("SELECT id FROM transactions WHERE tx_hash = ?").get(txHash);
+        if (!existing) {
+          const micro = inv.expected_amount_micro
+            ? BigInt(inv.expected_amount_micro)
+            : BigInt(Math.round((inv.total_usdc || 0) * 1e6)) * 1_000_000_000_000n;
+          db.prepare(`
+            INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, created_at, account_type)
+            VALUES (?, 'invoice_payment', ?, 'confirmed', ?, ?, 'business')
+          `).run(inv.telegram_id, micro.toString(), txHash, inv.paid_at || inv.created_at);
+          backfilledInvoices++;
+        }
+      }
+    } catch {}
+
+    // 4. Backfill completed universal_idempotency payments and offramps
+    try {
+      const completedPayments = db.prepare("SELECT * FROM universal_idempotency WHERE status = 'completed' AND amount > 0").all();
+      for (const p of completedPayments) {
+        const txHash = p.tx_hash || p.key;
+        const existing = db.prepare("SELECT id FROM transactions WHERE tx_hash = ?").get(txHash);
+        if (!existing) {
+          const type = p.scope === "offramp" ? "offramp" : "send_usdc";
+          const micro = BigInt(Math.round(p.amount * 1e6)) * 1_000_000_000_000n;
+          db.prepare(`
+            INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, created_at, account_type)
+            VALUES (?, ?, ?, 'confirmed', ?, ?, ?)
+          `).run(p.telegram_id || 0, type, micro.toString(), txHash, p.completed_at || p.created_at, p.account_type || "personal");
+          backfilledPayments++;
+        }
+      }
+    } catch {}
+
+    // 5. Backfill savings positions from yield_positions
+    try {
+      const yieldRows = db.prepare("SELECT * FROM yield_positions WHERE amount_usdc > 0").all();
+      for (const yp of yieldRows) {
+        const txHash = yp.deposit_tx_hash || `yield_pos_${yp.id}`;
+        const existing = db.prepare("SELECT id FROM transactions WHERE tx_hash = ?").get(txHash);
+        if (!existing) {
+          const micro = BigInt(Math.round(yp.amount_usdc * 1e6)) * 1_000_000_000_000n;
+          db.prepare(`
+            INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, created_at, account_type)
+            VALUES (?, 'yield_deposit', ?, 'confirmed', ?, ?, ?)
+          `).run(yp.telegram_id || 0, micro.toString(), txHash, yp.opened_at, yp.account_type || "personal");
+          backfilledYield++;
+        }
+      }
+    } catch {}
+
+    // 6. Backfill onramp events from processed_webhook_events if not already recorded
+    try {
+      const onrampEvents = db.prepare("SELECT * FROM processed_webhook_events WHERE event_type = 'onramp.successful'").all();
+      for (const ev of onrampEvents) {
+        const existing = db.prepare("SELECT id FROM transactions WHERE tx_hash = ?").get(ev.event_id);
+        if (!existing) {
+          const inv = db.prepare("SELECT * FROM invoices WHERE fiat_order_id = ?").get(ev.event_id);
+          let tgId = 0;
+          let usdcAmount = 0;
+          if (inv) {
+            tgId = inv.owner_telegram_id || inv.telegram_id || 0;
+            usdcAmount = inv.total || inv.total_usdc || 0;
+          } else {
+            const match = ev.event_id.match(/_(\d{6,12})_/);
+            if (match) {
+              const parsed = parseInt(match[1]);
+              const u = db.prepare("SELECT telegram_id FROM users WHERE telegram_id = ?").get(parsed);
+              if (u) tgId = parsed;
+            }
+          }
+          if (usdcAmount > 0) {
+            const micro = BigInt(Math.round(usdcAmount * 1e6)) * 1_000_000_000_000n;
+            db.prepare(`
+              INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, created_at, account_type)
+              VALUES (?, 'deposit_naira', ?, 'confirmed', ?, ?, 'personal')
+            `).run(tgId, micro.toString(), ev.event_id, ev.processed_at);
+            backfilledOnramp++;
+          }
+        }
+      }
+    } catch {}
+  } catch (scanErr) {
+    console.warn("[db:reconcileLiveProductVolume] Error during live scan:", scanErr.message);
+  }
+
+  return { fixedScale, backfilledInvoices, backfilledPayments, backfilledYield, backfilledOnramp };
 }
 
 // ─── CCTP Pending Burns ────────────────────────────────────────────────────────
@@ -1345,6 +1504,7 @@ module.exports = {
   updateAutoEarnSetting,
   getIdleUsersForAutoEarn,
   getVolumeStats,
+  reconcileLiveProductVolume,
   recordCctpPendingBurn,
   completeCctpPendingBurn,
   failCctpPendingBurn,
@@ -1354,3 +1514,10 @@ module.exports = {
   prepare: (...args) => db.prepare(...args),
   exec: (...args) => db.exec(...args),
 };
+
+// Automatically reconcile and sync volume on startup
+try {
+  reconcileLiveProductVolume();
+} catch (startupErr) {
+  console.warn("[db] Volume reconciliation on startup warning:", startupErr.message);
+}
