@@ -796,17 +796,23 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
 
   const results = [];
 
+  const currentNet = getNetworkConfig();
   const allScanChains = [
-    ...Object.entries(cctpBridge.EVM_CCTP_CONTRACTS).map(([chainKey, cfg]) => ({
-      key: chainKey,
-      name: cfg.name,
-      chainId: cfg.chainId,
-      rpcUrl: cfg.rpcUrl,
-      usdc: cfg.usdc,
-      decimals: cfg.decimals,
-      isRelayIntent: [8453, 42161, 10, 1].includes(cfg.chainId),
-    })),
-    {
+    ...Object.entries(cctpBridge.EVM_CCTP_CONTRACTS)
+      .filter(([chainKey, cfg]) => {
+        const isTestnetChain = chainKey.includes("SEPOLIA");
+        return currentNet.isTestnet ? isTestnetChain : !isTestnetChain;
+      })
+      .map(([chainKey, cfg]) => ({
+        key: chainKey,
+        name: cfg.name,
+        chainId: cfg.chainId,
+        rpcUrl: cfg.rpcUrl,
+        usdc: cfg.usdc,
+        decimals: cfg.decimals,
+        isRelayIntent: [8453, 42161, 10, 1].includes(cfg.chainId),
+      })),
+    ...(!currentNet.isTestnet ? [{
       key: "ROBINHOOD",
       name: "Robinhood Chain",
       chainId: 4663,
@@ -814,7 +820,7 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
       usdc: null,
       decimals: 18,
       isRelayIntent: true,
-    },
+    }] : []),
   ];
 
   for (const { address, accountType } of addresses) {
