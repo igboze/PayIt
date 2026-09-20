@@ -1707,6 +1707,7 @@ module.exports = {
   updateInboundCctpTransfer,
   completeInboundCctpTransfer,
   getPendingInboundCctpTransfers,
+  getSystemDecryptedPrivateKey,
   _db: db,
   prepare: (...args) => db.prepare(...args),
   exec: (...args) => db.exec(...args),
