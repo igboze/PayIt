@@ -1693,11 +1693,24 @@ bot.action(/^action_check_paj_onramp_(.+)$/, async (ctx) => {
       if (splBal && splBal.uiAmount > 0) {
         bridgedAmount = splBal.uiAmount;
         console.log(`[paj_check] Detected $${bridgedAmount} USDC on Solana address ${solAddr}, bridging to Arc ${addr}...`);
-        await cctpBridge.autoBridgeSolanaToArc({
+        const bridgeRes = await cctpBridge.autoBridgeSolanaToArc({
           telegramId: user.telegram_id,
           amountUsdc: bridgedAmount,
           recipientArcAddress: addr,
         });
+        try {
+          const amountMicro = walletLib.parseToMicro(bridgedAmount.toFixed(6));
+          db.recordTransaction(
+            user.telegram_id,
+            "deposit_naira",
+            amountMicro,
+            "confirmed",
+            bridgeRes?.solanaTxSignature || orderId,
+            isBiz ? "business" : "personal"
+          );
+        } catch (recErr) {
+          console.warn("[paj_check] Record tx error:", recErr.message);
+        }
       }
     } catch (err) {
       console.warn("[paj_check_solana_sync_warn]", err.message);
@@ -3182,8 +3195,9 @@ bot.action("admin_reward_notify", (ctx) => {
 // ─── Admin Volume Monitoring ──────────────────────────────────────────────────
 
 function formatVolRow(label, breakdown) {
+  if (!breakdown) return "";
   const { today, week, month, allTime } = breakdown;
-  const fmt = (v) => `$${v.usdc.toFixed(2)} (${v.count}tx)`;
+  const fmt = (v) => `$${(v?.usdc || 0).toFixed(2)} (${v?.count || 0}tx)`;
   return (
     `\n<b>${label}</b>\n` +
     `  Today:    ${fmt(today)}\n` +
@@ -3193,46 +3207,114 @@ function formatVolRow(label, breakdown) {
   );
 }
 
-bot.action("admin_volume", async (ctx) => {
-  ctx.answerCbQuery();
-  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return ctx.reply("Not authorised.");
+function renderVolumeDashboard() {
+  const stats = db.getVolumeStats();
+  const { onramp, crypto, offramp, sends, savings, invoices, swaps, totalAll, users, topUsers } = stats;
 
-  let stats;
-  try {
-    stats = db.getVolumeStats();
-  } catch (err) {
-    return ctx.reply(`Volume stats error: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("« Back", "admin_menu")]]));
-  }
-
-  const { onramp, crypto, offramp, sends, savings, totalAll, users, topUsers } = stats;
-
-  const topLine = topUsers.length
-    ? topUsers.map((u, i) => `  ${i + 1}. ${u.username} · $${u.usdc.toFixed(2)} · ${u.tx_count}tx`).join("\n")
+  const topLine = topUsers && topUsers.length
+    ? topUsers.map((u, i) => `  ${i + 1}. ${u.username} · $${(u.usdc || 0).toFixed(2)} · ${u.tx_count}tx`).join("\n")
     : "  No data yet";
 
-  const message =
+  let message =
     `📊 <b>PayIT Volume Dashboard</b>\n` +
     `──────────────────────────\n` +
     formatVolRow("🇳🇬 Naira Onramp", onramp) +
     formatVolRow("🌐 Crypto Deposit", crypto) +
     formatVolRow("💵 Cash Out (Offramp)", offramp) +
     formatVolRow("📤 Sends & Auto-Pay", sends) +
-    formatVolRow("📈 Savings Deposits", savings) +
+    formatVolRow("📈 Savings Deposits", savings);
+
+  if (invoices && invoices.allTime && invoices.allTime.count > 0) {
+    message += formatVolRow("🧾 Invoice Payments", invoices);
+  }
+  if (swaps && swaps.allTime && swaps.allTime.count > 0) {
+    message += formatVolRow("🔄 Currency Swaps", swaps);
+  }
+
+  message +=
     `\n\n<b>📦 Total Platform Volume</b>\n` +
-    `  All-time: $${totalAll.usdc.toFixed(2)} (${totalAll.count} transactions)\n` +
+    `  All-time: $${(totalAll?.usdc || 0).toFixed(2)} (${totalAll?.count || 0} transactions)\n` +
     `\n<b>👤 User Growth</b>\n` +
-    `  Today: +${users.today}  |  7d: +${users.week}  |  30d: +${users.month}  |  Total: ${users.total}\n` +
+    `  Today: +${users?.today ?? 0}  |  7d: +${users?.week ?? 0}  |  30d: +${users?.month ?? 0}  |  Total: ${users?.total ?? 0}\n` +
     `\n<b>🏆 Top 5 Users by Volume</b>\n` +
     topLine;
 
-  return ctx.reply(message, {
-    parse_mode: "HTML",
-    ...Markup.inlineKeyboard([
-      [Markup.button.callback("📊 Export Volume CSV", "admin_volume_csv")],
-      [Markup.button.callback("🔄 Refresh", "admin_volume")],
-      [Markup.button.callback("« Admin Menu", "admin_menu")],
-    ]),
-  });
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback("🔍 Scan Live Product", "admin_scan_volume")],
+    [Markup.button.callback("📊 Export Volume CSV", "admin_volume_csv")],
+    [Markup.button.callback("🔄 Refresh", "admin_volume")],
+    [Markup.button.callback("« Admin Menu", "admin_menu")],
+  ]);
+
+  return { message, keyboard };
+}
+
+bot.action("admin_volume", async (ctx) => {
+  ctx.answerCbQuery();
+  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return ctx.reply("Not authorised.");
+
+  try {
+    const { message, keyboard } = renderVolumeDashboard();
+    return ctx.reply(message, { parse_mode: "HTML", ...keyboard });
+  } catch (err) {
+    return ctx.reply(`Volume stats error: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("« Back", "admin_menu")]]));
+  }
+});
+
+bot.action("admin_scan_volume", async (ctx) => {
+  ctx.answerCbQuery("Scanning live product...");
+  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return ctx.reply("Not authorised.");
+
+  await ctx.reply("🔍 Scanning live product database and reconciling transactions...");
+  let res;
+  try {
+    res = db.reconcileLiveProductVolume();
+  } catch (err) {
+    return ctx.reply(`Scan error: ${err.message}`, Markup.inlineKeyboard([[Markup.button.callback("« Back", "admin_volume")]]));
+  }
+
+  await ctx.reply(
+    `✅ <b>Live Product Reconciled!</b>\n──────────────────────────\n` +
+    `• Scaled legacy amounts: ${res.fixedScale}\n` +
+    `• Backfilled paid invoices: ${res.backfilledInvoices}\n` +
+    `• Backfilled completed payments: ${res.backfilledPayments}\n` +
+    `• Backfilled savings positions: ${res.backfilledYield}\n` +
+    `• Backfilled onramp deposits: ${res.backfilledOnramp || 0}`,
+    { parse_mode: "HTML" }
+  );
+
+  try {
+    const { message, keyboard } = renderVolumeDashboard();
+    return ctx.reply(message, { parse_mode: "HTML", ...keyboard });
+  } catch (err) {
+    return ctx.reply(`Volume stats error: ${err.message}`);
+  }
+});
+
+bot.command("scan_volume", async (ctx) => {
+  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return;
+  await ctx.reply("🔍 Scanning live product database and reconciling transactions...");
+  let res;
+  try {
+    res = db.reconcileLiveProductVolume();
+  } catch (err) {
+    return ctx.reply(`Scan error: ${err.message}`);
+  }
+  await ctx.reply(
+    `✅ <b>Live Product Reconciled!</b>\n──────────────────────────\n` +
+    `• Scaled legacy amounts: ${res.fixedScale}\n` +
+    `• Backfilled paid invoices: ${res.backfilledInvoices}\n` +
+    `• Backfilled completed payments: ${res.backfilledPayments}\n` +
+    `• Backfilled savings positions: ${res.backfilledYield}\n` +
+    `• Backfilled onramp deposits: ${res.backfilledOnramp || 0}`,
+    { parse_mode: "HTML" }
+  );
+  try {
+    const { message, keyboard } = renderVolumeDashboard();
+    return ctx.reply(message, { parse_mode: "HTML", ...keyboard });
+  } catch (err) {
+    return ctx.reply(`Volume stats error: ${err.message}`);
+  }
 });
 
 bot.action("admin_volume_csv", async (ctx) => {
@@ -3240,15 +3322,15 @@ bot.action("admin_volume_csv", async (ctx) => {
   if (!ADMIN_IDS.includes(String(ctx.from?.id))) return ctx.reply("Not authorised.");
 
   try {
-    // Raw per-day volume breakdown across all types
+    // Raw per-day volume breakdown across all types with normalized amount scaling
     const rows = db.db.prepare(`
       SELECT
         date(created_at)   AS day,
         type,
         COUNT(*)           AS tx_count,
-        COALESCE(SUM(CAST(amount_micro AS REAL)), 0) / 1e18 AS usdc_volume
+        COALESCE(SUM(CASE WHEN CAST(amount_micro AS REAL) > 0 AND CAST(amount_micro AS REAL) < 1e13 THEN CAST(amount_micro AS REAL) * 1e12 ELSE CAST(amount_micro AS REAL) END), 0) / 1e18 AS usdc_volume
       FROM transactions
-      WHERE status = 'confirmed'
+      WHERE status IN ('confirmed', 'submitted', 'success', 'completed')
       GROUP BY day, type
       ORDER BY day DESC, type
     `).all();
@@ -3273,37 +3355,12 @@ bot.action("admin_volume_csv", async (ctx) => {
 
 bot.command("volume", async (ctx) => {
   if (!ADMIN_IDS.includes(String(ctx.from?.id))) return;
-  const fakeAction = { ...ctx, answerCbQuery: () => {} };
-  // Reuse action handler by dispatching a fake callback
-  let stats;
-  try { stats = db.getVolumeStats(); } catch (err) {
+  try {
+    const { message, keyboard } = renderVolumeDashboard();
+    return ctx.reply(message, { parse_mode: "HTML", ...keyboard });
+  } catch (err) {
     return ctx.reply(`Volume stats error: ${err.message}`);
   }
-  const { onramp, crypto, offramp, sends, savings, totalAll, users, topUsers } = stats;
-  const topLine = topUsers.length
-    ? topUsers.map((u, i) => `  ${i + 1}. ${u.username} · $${u.usdc.toFixed(2)} · ${u.tx_count}tx`).join("\n")
-    : "  No data yet";
-  const message =
-    `📊 <b>PayIT Volume Dashboard</b>\n` +
-    `──────────────────────────\n` +
-    formatVolRow("🇳🇬 Naira Onramp", onramp) +
-    formatVolRow("🌐 Crypto Deposit", crypto) +
-    formatVolRow("💵 Cash Out (Offramp)", offramp) +
-    formatVolRow("📤 Sends & Auto-Pay", sends) +
-    formatVolRow("📈 Savings Deposits", savings) +
-    `\n\n<b>📦 Total Platform Volume</b>\n` +
-    `  All-time: $${totalAll.usdc.toFixed(2)} (${totalAll.count} transactions)\n` +
-    `\n<b>👤 User Growth</b>\n` +
-    `  Today: +${users.today}  |  7d: +${users.week}  |  30d: +${users.month}  |  Total: ${users.total}\n` +
-    `\n<b>🏆 Top 5 Users by Volume</b>\n` +
-    topLine;
-  return ctx.reply(message, {
-    parse_mode: "HTML",
-    ...Markup.inlineKeyboard([
-      [Markup.button.callback("📊 Export Volume CSV", "admin_volume_csv")],
-      [Markup.button.callback("🔄 Refresh", "admin_volume")],
-    ]),
-  });
 });
 
 // ─── Admin: CCTP Retry & Fee-Payer Status ────────────────────────────────────
