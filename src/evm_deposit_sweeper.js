@@ -698,6 +698,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
 
   // Standard CCTP Chains
   const isNative = isNativeToken(token, dexConfig);
+  let networkFee = 0;
 
   // 4. Handle Native Token (Swap to USDC) or direct USDC
   if (isNative) {
@@ -742,7 +743,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     }
 
     // Deduct flat network fee to self-fund relayer gas advance
-    const networkFee = CCTP_BRIDGE_FEES_USDC[Number(effectiveChainId)] ?? 0.05;
+    networkFee = CCTP_BRIDGE_FEES_USDC[Number(effectiveChainId)] ?? 0.05;
     effectiveAmountUsdc = parseFloat(Math.max(0, grossAmountUsdc - networkFee).toFixed(6));
   }
 
@@ -753,9 +754,26 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
 
   console.log(`[evm_sweeper] Ready to bridge USDC from ${cctpConfig.name} to Arc for user ${user.telegram_id}... (Net credit: $${effectiveAmountUsdc})`);
 
+  // Reimburse relayer gas fee from deposit address if direct token deposit
+  if (networkFee > 0 && signer) {
+    const relayerKey = options?.overridePrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
+    const feeRecipient = process.env.FEE_RECIPIENT_ADDRESS || (relayerKey ? new Wallet(relayerKey).address : null);
+    if (feeRecipient && feeRecipient.toLowerCase() !== signer.address.toLowerCase()) {
+      try {
+        const usdcContract = new Contract(cctpConfig.usdc, ERC20_ABI, signer);
+        const feeWei = parseUnits(networkFee.toFixed(6), 6);
+        const feeTx = await usdcContract.transfer(feeRecipient, feeWei);
+        await feeTx.wait(1);
+        console.log(`[evm_sweeper] Reimbursed relayer network fee $${networkFee} USDC to ${feeRecipient} on ${cctpConfig.name} ✓ tx=${feeTx.hash}`);
+      } catch (feeErr) {
+        console.warn(`[evm_sweeper] Relayer fee reimbursement note:`, feeErr.message);
+      }
+    }
+  }
+
   // 5. Execute CCTP Burn & Auto-Redeem / Mint on Arc (Zero Project Outlay Mode)
   let burnResult = null;
-  const burnAmount = isNative ? effectiveAmountUsdc : (parseFloat(rawAmount.toString()) || effectiveAmountUsdc);
+  const burnAmount = effectiveAmountUsdc;
   if (signer) {
     try {
       burnResult = await cctpBridge.executeEvmCctpBurn({
@@ -831,7 +849,6 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
   }
 
   // 7. Instant Telegram Notification with clean consumer receipt
-  const networkFee = !isNative ? (CCTP_BRIDGE_FEES_USDC[Number(effectiveChainId)] ?? 0.05) : 0;
   if (bot && targetTelegramId) {
     try {
       const displayAmount = isNative ? `${rawAmount} ${token}` : `$${(parseFloat(rawAmount.toString()) || (effectiveAmountUsdc + networkFee)).toFixed(2)} USDC`;

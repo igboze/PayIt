@@ -1205,11 +1205,17 @@ bot.action("action_gateway", async (ctx) => {
   const arcAddress = getActiveWallet(user);
 
   let solAddress = user.solana_deposit_address;
-  if (!solAddress && user.deposit_address) {
+  if (!solAddress) {
     try {
-      const derived = multichain.deriveSolanaFromEvmKey(user.deposit_address.padEnd(66, "0"));
-      solAddress = derived.solanaAddress;
-      db.updateSolanaAddress(user.telegram_id, solAddress);
+      let rawKey = null;
+      if (user.system_encrypted_key) {
+        rawKey = walletLib.decryptSensitiveValue(user.system_encrypted_key);
+      }
+      if (rawKey) {
+        const derived = multichain.deriveSolanaFromEvmKey(rawKey);
+        solAddress = derived.solanaAddress;
+        db.updateSolanaAddress(user.telegram_id, solAddress);
+      }
     } catch (_) {}
   }
 
@@ -1672,80 +1678,6 @@ bot.action("action_paj_onramp", async (ctx) => {
   }
 });
 
-bot.action(/^action_check_paj_onramp_(.+)$/, async (ctx) => {
-  ctx.answerCbQuery("Checking deposit status...");
-  const orderId = ctx.match[1];
-  const user = requireUser(ctx);
-  if (!user) return;
-
-  const context = user.active_context || "personal";
-  const isBiz = context === "business";
-  const addr = getActiveWallet(user);
-  const solAddr = isBiz && user.biz_solana_deposit_address
-    ? user.biz_solana_deposit_address
-    : user.solana_deposit_address;
-
-  // 1. Actively scan Solana deposit address for USDC funds from Paj
-  let bridgedAmount = 0;
-  if (solAddr) {
-    try {
-      const splBal = await multichain.getSplTokenBalance(solAddr);
-      if (splBal && splBal.uiAmount > 0) {
-        bridgedAmount = splBal.uiAmount;
-        console.log(`[paj_check] Detected $${bridgedAmount} USDC on Solana address ${solAddr}, bridging to Arc ${addr}...`);
-        const bridgeRes = await cctpBridge.autoBridgeSolanaToArc({
-          telegramId: user.telegram_id,
-          amountUsdc: bridgedAmount,
-          recipientArcAddress: addr,
-        });
-        try {
-          const amountMicro = walletLib.parseToMicro(bridgedAmount.toFixed(6));
-          db.recordTransaction(
-            user.telegram_id,
-            "deposit_naira",
-            amountMicro,
-            "confirmed",
-            bridgeRes?.solanaTxSignature || orderId,
-            isBiz ? "business" : "personal"
-          );
-        } catch (recErr) {
-          console.warn("[paj_check] Record tx error:", recErr.message);
-        }
-      }
-    } catch (err) {
-      console.warn("[paj_check_solana_sync_warn]", err.message);
-    }
-  }
-
-  let balMicro = BigInt(0);
-  try { balMicro = await walletLib.getNativeBalanceMicro(addr); } catch {}
-  const balDisplay = walletLib.formatMicro(balMicro);
-
-  const syncText = bridgedAmount > 0
-    ? `🎉 <b>Payment Detected!</b>\n` +
-      `──────────────────────────\n` +
-      `💰 <b>Credited:</b> $${bridgedAmount.toFixed(2)}\n` +
-      `💼 <b>Account:</b> ${isBiz ? "Business Treasury" : "Personal Wallet"}\n` +
-      `Current Balance: <b>$${balDisplay}</b>\n\n` +
-      `<i>Your funds have been credited and are ready to use!</i>`
-    : `🔄 <b>Deposit Status Check</b>\n` +
-      `──────────────────────────\n` +
-      `Reference: <code>${orderId}</code>\n` +
-      `Current Balance: <b>$${balDisplay}</b>\n\n` +
-      `<i>Bank transfers typically credit in 30-90 seconds. Once confirmed, your balance updates automatically!</i>`;
-
-  return ctx.reply(
-    syncText,
-    {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback("🔄 Check Again", `action_check_paj_onramp_${orderId}`)],
-        [Markup.button.callback("💰 View Balance", "action_balance")],
-        [Markup.button.callback("🏠 Main Menu",    "main_menu")],
-      ]),
-    }
-  );
-});
 
 // ─── Withdraw / Cash Out ──────────────────────────────────────────────────────
 
@@ -1935,14 +1867,30 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
   // If SPL USDC is present on Solana or Paj reports completed, trigger CCTP auto-bridge
   if (solBalance.uiAmount > 0 || pajOrder?.status === "completed" || pajOrder?.status === "successful") {
     const amountToBridge = solBalance.uiAmount > 0 ? solBalance.uiAmount : (pajOrder?.amount || 0);
+    let bridgeRes = null;
     if (amountToBridge > 0 && arcAddr) {
       try {
-        await cctpBridge.autoBridgeSolanaToArc({
+        bridgeRes = await cctpBridge.autoBridgeSolanaToArc({
           telegramId: ctx.from.id,
           solanaTxSignature: pajOrder?.txHash || null,
           amountUsdc: amountToBridge,
           recipientArcAddress: arcAddr,
+          bot,
         });
+        const isSettled = bridgeRes && bridgeRes.status === "completed" && bridgeRes.arcTxHash;
+        try {
+          const amountMicro = walletLib.parseToMicro(amountToBridge.toFixed(6));
+          db.recordTransaction(
+            user.telegram_id,
+            "deposit_naira",
+            amountMicro,
+            isSettled ? "confirmed" : "pending_bridge",
+            isSettled ? bridgeRes.arcTxHash : (bridgeRes?.solanaTxSignature || pajOrder?.txHash || orderId),
+            isBiz ? "business" : "personal"
+          );
+        } catch (recErr) {
+          console.warn("[bot:action_check_paj_onramp] Record tx error:", recErr.message);
+        }
       } catch (bridgeErr) {
         console.warn("[bot:action_check_paj_onramp] Bridge note:", bridgeErr.message);
       }
@@ -1954,21 +1902,45 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
       arcBal = parseFloat(walletLib.formatMicro(refreshed));
     } catch {}
 
-    return ctx.reply(
-      `🎉 <b>Deposit Confirmed!</b>\n` +
-      `──────────────────────────\n` +
-      `💼 <b>Account:</b> ${isBiz ? "Business Treasury" : "Personal Wallet"}\n` +
-      `💰 <b>Current Balance:</b> <b>$${arcBal.toFixed(2)} USDC</b>\n` +
-      `🏛 <b>Network:</b> Arc Mainnet (Domain 26)\n\n` +
-      `<i>Your dollars have been credited and are ready to spend, save, or send!</i>`,
-      {
-        parse_mode: "HTML",
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback("💰 View Balance", "action_balance")],
-          [Markup.button.callback("🏠 Main Menu",    "main_menu")],
-        ]),
-      }
-    );
+    const isSettledOnArc = bridgeRes && bridgeRes.status === "completed" && bridgeRes.arcTxHash;
+    if (isSettledOnArc || (arcBal > 0 && bridgeRes?.status === "completed")) {
+      const explorerLink = bridgeRes?.explorerUrl
+        ? `\n🔗 <a href="${bridgeRes.explorerUrl}">View on Arcscan</a>`
+        : "";
+      return ctx.reply(
+        `🎉 <b>Deposit Settled & Confirmed!</b>\n` +
+        `──────────────────────────\n` +
+        `💼 <b>Account:</b> ${isBiz ? "Business Treasury" : "Personal Wallet"}\n` +
+        `💰 <b>Current Balance:</b> <b>$${arcBal.toFixed(2)} USDC</b>\n` +
+        `🏛 <b>Network:</b> Arc Mainnet (Domain 26)${explorerLink}\n\n` +
+        `<i>Your dollars have been credited and are ready to spend, save, or send!</i>`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback("💰 View Balance", "action_balance")],
+            [Markup.button.callback("🏠 Main Menu",    "main_menu")],
+          ]),
+        }
+      );
+    } else {
+      return ctx.reply(
+        `⏳ <b>Deposit Received & Bridging to Arc!</b>\n` +
+        `──────────────────────────\n` +
+        `💼 <b>Account:</b> ${isBiz ? "Business Treasury" : "Personal Wallet"}\n` +
+        `💰 <b>Incoming Amount:</b> <b>$${amountToBridge.toFixed(2)} USDC</b>\n` +
+        `🔄 <b>Status:</b> Cross-chain settlement to Arc Mainnet in progress...\n` +
+        `🏛 <b>Network:</b> Arc Mainnet (Domain 26)\n\n` +
+        `<i>Your payment was detected on Solana and is finalizing cross-chain minting to Arc Mainnet. Your balance will update automatically in approximately 1-2 minutes!</i>`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback("🔄 Refresh Status", `action_check_paj_onramp_${orderId || ""}`)],
+            [Markup.button.callback("💰 View Balance", "action_balance")],
+            [Markup.button.callback("🏠 Main Menu",    "main_menu")],
+          ]),
+        }
+      );
+    }
   }
 
   return ctx.reply(
@@ -3329,7 +3301,7 @@ bot.action("admin_volume_csv", async (ctx) => {
         date(created_at)   AS day,
         type,
         COUNT(*)           AS tx_count,
-        COALESCE(SUM(CASE WHEN CAST(amount_micro AS REAL) > 0 AND CAST(amount_micro AS REAL) < 1e13 THEN CAST(amount_micro AS REAL) * 1e12 ELSE CAST(amount_micro AS REAL) END), 0) / 1e18 AS usdc_volume
+        COALESCE(SUM(CASE WHEN decimals = 6 THEN CAST(amount_micro AS REAL) * 1e12 ELSE CAST(amount_micro AS REAL) END), 0) / 1e18 AS usdc_volume
       FROM transactions
       WHERE status IN ('confirmed', 'submitted', 'success', 'completed')
       GROUP BY day, type
@@ -3988,14 +3960,22 @@ bot.on("text", async (ctx) => {
         // Derive user's Solana address deterministically based on account
         let solAddr = isBiz ? user.biz_solana_deposit_address : user.solana_deposit_address;
         if (!solAddr) {
-          const baseEvm = isBiz && user.business_deposit_address ? user.business_deposit_address : user.deposit_address;
-          const derivedSol = multichain.deriveSolanaFromEvmKey(baseEvm.padEnd(66, "0"));
-          solAddr = derivedSol.solanaAddress;
-          if (isBiz) {
-            db.updateBizSolanaAddress(userId, solAddr);
-          } else {
-            db.updateSolanaAddress(userId, solAddr);
-          }
+          try {
+            let rawKey = null;
+            const encKey = isBiz ? (user.biz_system_encrypted_key || user.system_encrypted_key) : user.system_encrypted_key;
+            if (encKey) {
+              rawKey = walletLib.decryptSensitiveValue(encKey);
+            }
+            if (rawKey) {
+              const derivedSol = multichain.deriveSolanaFromEvmKey(rawKey);
+              solAddr = derivedSol.solanaAddress;
+              if (isBiz) {
+                db.updateBizSolanaAddress(userId, solAddr);
+              } else {
+                db.updateSolanaAddress(userId, solAddr);
+              }
+            }
+          } catch (_) {}
         }
 
         const externalId = isBiz ? `${userId}-biz` : String(userId);
@@ -4014,8 +3994,19 @@ bot.on("text", async (ctx) => {
 
         convState.clearState(userId);
 
-        const onRampRate = state.data?.rate || (await paj.getRates("NGN").then(r => r?.onRampRate?.rate).catch(() => 1393.75));
-        const tokenAmount = (fiatAmount / onRampRate).toFixed(2);
+        let onRampRate = state.data?.rate;
+        if (!onRampRate) {
+          try {
+            const rates = await paj.getRates("NGN");
+            onRampRate = rates?.onRampRate?.rate;
+          } catch (_) {}
+        }
+        if (!onRampRate) {
+          try {
+            onRampRate = await fx.getUsdToNgnRate();
+          } catch (_) {}
+        }
+        const tokenAmount = onRampRate ? (fiatAmount / onRampRate).toFixed(2) : "...";
 
         return ctx.reply(
           `🇳🇬 <b>Bank Transfer Instructions</b>\n` +
@@ -4185,7 +4176,7 @@ bot.on("text", async (ctx) => {
           state.data.amountUsdc,
           {
             accountNumber: state.data.accountNumber,
-            bankCode: state.data.bankCode || "000013",
+            bankCode: state.data.bankCode,
             bankName: state.data.bankName,
             accountName: state.data.accountName,
             orderAddress: state.data.orderAddress,
@@ -5854,6 +5845,17 @@ async function startBot() {
     evmDepositSweeper.startEvmDepositMonitor({ bot, intervalMs: 90000 });
   } catch (err) {
     console.warn("[bot] EVM deposit monitor notice:", err.message);
+  }
+
+  // Start automated CCTP inbound settlement recovery worker (guarantees zero token loss)
+  try {
+    cctpBridge.recoverPendingInboundCctpTransfers(bot).catch(() => {});
+    const inboundRecoveryInterval = setInterval(() => {
+      cctpBridge.recoverPendingInboundCctpTransfers(bot).catch(() => {});
+    }, 20000);
+    inboundRecoveryInterval.unref();
+  } catch (err) {
+    console.warn("[bot] CCTP inbound recovery worker notice:", err.message);
   }
 }
 

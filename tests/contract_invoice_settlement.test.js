@@ -12,7 +12,7 @@ try {
 }
 const { JsonRpcProvider, Wallet, ContractFactory, parseUnits } = require('ethers');
 
-if (!process.env.RUN_CONTRACT_TESTS || !solc || !ganache) {
+if (!solc || !ganache) {
   test.skip('contract_invoice_settlement: solc or ganache devDependency not installed', () => {});
   return;
 }
@@ -57,21 +57,15 @@ async function setup() {
   const server = ganache.server({ wallet: { deterministic: true }, chain: { chainId: 1337 } });
   await server.listen(0);
   const address = server.address();
-  const provider = new JsonRpcProvider(`http://127.0.0.1:${address.port}`);
+  const provider = new JsonRpcProvider(`http://127.0.0.1:${address.port}`, undefined, { staticNetwork: true });
 
-  const privateKeys = [
-    '0x4f3edf983ac636a65a842ce7c78d9aa706d3b113bce9c46f30d7d21715b23b1d',
-    '0x6cbed15c793ce57650b9877cf6fa156fbef513c4e6134f022a85b1ffdd59b2a1',
-    '0x6370fd033278c143179d81c5526140625662b8daa446c22ee2d73db3707e620c'
-  ];
+  const signer0 = await provider.getSigner(0);
+  const signer1 = await provider.getSigner(1);
+  const signer2 = await provider.getSigner(2);
 
-  const signer0 = new Wallet(privateKeys[0], provider);
-  const signer1 = new Wallet(privateKeys[1], provider);
-  const signer2 = new Wallet(privateKeys[2], provider);
-
-  const deployFeeRecipient = await signer1.getAddress();
-  const deployPauser = await signer0.getAddress();
-  const deployBlacklister = await signer2.getAddress();
+  const deployFeeRecipient = signer1.address;
+  const deployPauser = signer0.address;
+  const deployBlacklister = signer2.address;
 
   const factoryUSDC = new ContractFactory(compiledUSDC.abi, compiledUSDC.evm.bytecode.object, signer0);
   const usdc = await factoryUSDC.deploy({ gasLimit: 7_500_000n });
@@ -82,25 +76,24 @@ async function setup() {
   await contract.waitForDeployment();
 
   const initialMint = parseUnits('1000', 18);
-  const mintTx0 = await usdc.mint(await signer0.getAddress(), initialMint);
+  const mintTx0 = await usdc.mint(signer0.address, initialMint);
   await mintTx0.wait();
-  const mintTx1 = await usdc.mint(await signer1.getAddress(), initialMint);
+  const mintTx1 = await usdc.mint(signer1.address, initialMint);
   await mintTx1.wait();
-  const mintTx2 = await usdc.mint(await signer2.getAddress(), initialMint);
+  const mintTx2 = await usdc.mint(signer2.address, initialMint);
   await mintTx2.wait();
 
   return { provider, server, signer0, signer1, signer2, contract, usdc };
 }
 
-async function mineOne(provider) {
-  if (provider.send) {
-    await provider.send('evm_mine', []);
-  }
-}
-
 async function teardown(server) {
-  if (server && typeof server.close === 'function') {
-    await server.close();
+  if (server) {
+    if (typeof server.closeAllConnections === 'function') {
+      server.closeAllConnections();
+    }
+    if (typeof server.close === 'function') {
+      await server.close();
+    }
   }
 }
 
@@ -114,12 +107,14 @@ test('contract supports ownership transfer', async () => {
   try {
     const signer1Address = await signer1.getAddress();
 
-    await contract.requestOwnershipTransfer(signer1Address);
+    const tx1 = await contract.requestOwnershipTransfer(signer1Address);
+    await tx1.wait();
     const pendingOwner = await contract.pendingOwner();
     assert.equal(pendingOwner, signer1Address);
 
     const contractAsNewOwner = contract.connect(signer1);
-    await contractAsNewOwner.acceptOwnership();
+    const tx2 = await contractAsNewOwner.acceptOwnership();
+    await tx2.wait();
     const owner = await contract.owner();
     assert.equal(owner, signer1Address);
   } finally {
@@ -133,18 +128,24 @@ test('contract can pause and unpause settlement', async () => {
     const signer1Address = await signer1.getAddress();
     const contractAsOwner = contract.connect(signer0);
 
-    await contractAsOwner.pause();
+    const pauseTx = await contractAsOwner.pause();
+    await pauseTx.wait();
     const paused = await contract.paused();
     assert.equal(paused, true);
 
     await assert.rejects(
-      contract.settleInvoice(123, signer1Address, 100, parseUnits('0.01', 18), parseUnits('0.02', 18), parseUnits('0.1', 18)),
+      async () => {
+        const tx = await contract.settleInvoice(123, signer1Address, 100, parseUnits('0.01', 18), parseUnits('0.02', 18), parseUnits('0.1', 18));
+        await tx.wait();
+      },
       (err) => {
-        return err.message.includes('PausedError') || err.message.includes('revert');
+        const msg = String(err && (err.message || err.reason || err));
+        return msg.includes('PausedError') || msg.includes('revert') || msg.includes('CALL_EXCEPTION') || err.code === 'CALL_EXCEPTION';
       }
     );
 
-    await contractAsOwner.unpause();
+    const unpauseTx = await contractAsOwner.unpause();
+    await unpauseTx.wait();
     const unpaused = await contract.paused();
     assert.equal(unpaused, false);
   } finally {
@@ -169,7 +170,8 @@ test('emergency withdraw returns contract USDC balance to recipient', async () =
     assert.equal(contractBalance.toString(), depositAmount.toString());
 
     const initialRecipientBalance = await usdc.balanceOf(recipient);
-    await contractAsOwner.emergencyWithdraw(recipient, depositAmount);
+    const withdrawTx = await contractAsOwner.emergencyWithdraw(recipient, depositAmount);
+    await withdrawTx.wait();
     const finalRecipientBalance = await usdc.balanceOf(recipient);
 
     assert.equal(finalRecipientBalance - initialRecipientBalance, depositAmount);
@@ -188,13 +190,15 @@ test('settleInvoice sends fee and remainder when not paused', async () => {
     const minFee = parseUnits('0.01', 18);
     const maxFee = parseUnits('0.5', 18);
 
-    await usdc.connect(signer0).approve(contract.target, amount);
+    const approveTx = await usdc.connect(signer0).approve(contract.target, amount);
+    await approveTx.wait();
 
     const feeRecipientInitial = await usdc.balanceOf(feeRecipient);
     const recipientInitial = await usdc.balanceOf(recipient);
 
     const contractAsPayer = contract.connect(signer0);
-    await contractAsPayer.settleInvoice(54, recipient, feeBps, minFee, maxFee, amount);
+    const settleTx = await contractAsPayer.settleInvoice(54, recipient, feeBps, minFee, maxFee, amount);
+    await settleTx.wait();
 
     const feeRecipientFinal = await usdc.balanceOf(feeRecipient);
     const recipientFinal = await usdc.balanceOf(recipient);
@@ -217,14 +221,22 @@ test('settleInvoice rejects blacklisted caller', async () => {
     const minFee = parseUnits('0.01', 18);
     const maxFee = parseUnits('0.5', 18);
 
-    await blacklister.updateBlacklist(callerAddress, true);
+    const blacklistTx = await blacklister.updateBlacklist(callerAddress, true);
+    await blacklistTx.wait();
 
     const contractAsPayer = contract.connect(signer0);
     await assert.rejects(
-      contractAsPayer.settleInvoice(77, recipient, feeBps, minFee, maxFee, parseUnits('0.5', 18)),
-      (err) => err.message.includes('Blacklisted') || err.message.includes('revert')
+      async () => {
+        const tx = await contractAsPayer.settleInvoice(77, recipient, feeBps, minFee, maxFee, parseUnits('0.5', 18));
+        await tx.wait();
+      },
+      (err) => {
+        const msg = String(err && (err.message || err.reason || err));
+        return msg.includes('Blacklisted') || msg.includes('revert') || msg.includes('CALL_EXCEPTION') || err.code === 'CALL_EXCEPTION';
+      }
     );
   } finally {
     await teardown(server);
   }
 });
+

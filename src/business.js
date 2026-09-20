@@ -57,17 +57,17 @@ async function generateCashFlowBriefing(telegramId, businessDepositAddress) {
  * Format Cash Flow briefing message for Telegram.
  */
 function formatCashFlowBriefing(data) {
-  const rate = data.liveNgnRate || 1620;
-  const balanceNgn = Math.round(data.balanceUsdc * rate);
-  const revenueNgn = Math.round(data.revenue * rate);
-  const outstandingNgn = Math.round(data.outstanding * rate);
+  const rate = data.liveNgnRate;
+  const balanceNgn = rate ? ` (≈ ₦${Math.round(data.balanceUsdc * rate).toLocaleString()})` : "";
+  const revenueNgn = rate ? ` (≈ ₦${Math.round(data.revenue * rate).toLocaleString()})` : "";
+  const outstandingNgn = rate ? ` (≈ ₦${Math.round(data.outstanding * rate).toLocaleString()})` : "";
 
   return (
     `📈 <b>Good morning! Here is your Business Daily Snapshot:</b>\n` +
     `──────────────────────────\n` +
-    `💼 <b>Treasury Balance:</b> $${data.balanceUsdc.toFixed(2)} USDC (≈ ₦${balanceNgn.toLocaleString()})\n` +
-    `📥 <b>Total Invoiced Revenue:</b> $${data.revenue.toFixed(2)} USDC (≈ ₦${revenueNgn.toLocaleString()})\n` +
-    `⏳ <b>Outstanding Invoices:</b> $${data.outstanding.toFixed(2)} USDC (≈ ₦${outstandingNgn.toLocaleString()}) [${data.unpaidCount} unpaid]\n` +
+    `💼 <b>Treasury Balance:</b> $${data.balanceUsdc.toFixed(2)} USDC${balanceNgn}\n` +
+    `📥 <b>Total Invoiced Revenue:</b> $${data.revenue.toFixed(2)} USDC${revenueNgn}\n` +
+    `⏳ <b>Outstanding Invoices:</b> $${data.outstanding.toFixed(2)} USDC${outstandingNgn} [${data.unpaidCount} unpaid]\n` +
     `📊 <b>Settled This Month:</b> $${(data.paidThisMonthUsdc || 0).toFixed(2)} USDC\n\n` +
     `${data.overdueCount > 0 ? `⚠️ <b>${data.overdueCount} overdue invoice(s)</b> — remember to send reminders!` : "✅ <b>All invoices in good standing!</b>"}`
   );

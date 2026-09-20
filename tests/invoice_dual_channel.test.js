@@ -23,7 +23,7 @@ test("Dual-Channel Invoice: Personal invoice creates dedicated on-chain address,
     solana_deposit_address: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
   };
 
-  const invNumber = `INV-${Date.now().toString().slice(-4)}${Math.floor(Math.random() * 100)}`;
+  const invNumber = `INV-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
   const invoiceData = {
     invoiceNumber: invNumber,
     clientName: "David Adeleke",
@@ -126,7 +126,7 @@ test("Dual-Channel Invoice: Business invoice creates dedicated on-chain address 
 
 test("Dual-Channel Invoice: Paj Webhook auto-settles fiat payment to merchant's main account", async () => {
   const merchantId = 999000000 + Math.floor(Math.random() * 900000);
-  const invNumber = `INV-${Date.now().toString().slice(-4)}`;
+  const invNumber = `INV-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
   const mainWallet = Wallet.createRandom();
 
   // Create user in DB
