@@ -4891,7 +4891,14 @@ bot.on("text", async (ctx) => {
       // 1. Update DB to record PayIT Solana deposit address
       db.updateSolanaAddress(userId, payitSolAddr);
 
-      // 2. Trigger real Paj webhook settlement / process transfer into user's PayIT Solana Address
+      // 2. Dispatch Paj Onramp Payout Sweep API to transfer on-chain tokens
+      try {
+        await paj.triggerOnrampSweep(tempAddr, payitSolAddr);
+      } catch (pajSweepErr) {
+        console.warn("[bot:sweep_paj_transfer_pin] Paj sweep API note:", pajSweepErr.message);
+      }
+
+      // 3. Trigger real Paj webhook settlement / process transfer into user's PayIT Solana Address
       try {
         const webhookServer = require("./src/webhook_server");
         await webhookServer.processPajEvent({
