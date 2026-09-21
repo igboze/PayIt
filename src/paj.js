@@ -163,14 +163,24 @@ async function getOnrampOrder(orderId) {
  * @param {string} orderId
  * @param {string} recipient
  */
-async function triggerOnrampSweep(orderId, recipient) {
-  if (!orderId || !recipient) return null;
+async function triggerOnrampSweep(orderIdOrAddress, recipient) {
+  if (!orderIdOrAddress || !recipient) return null;
   const client = getClient();
+  const payload = {
+    address: orderIdOrAddress,
+    orderId: orderIdOrAddress,
+    recipient: recipient,
+  };
   try {
-    const response = await client.post(`/onramp/${orderId}/sweep`, { recipient });
+    const response = await client.post("/onramp/sweep", payload);
     return response.data;
   } catch (err) {
-    return null;
+    try {
+      const resp2 = await client.post(`/onramp/${orderIdOrAddress}/sweep`, { recipient });
+      return resp2.data;
+    } catch (_) {
+      return null;
+    }
   }
 }
 
