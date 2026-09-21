@@ -4928,7 +4928,23 @@ bot.on("text", async (ctx) => {
 
       const realTxHash = pajSweepRes?.txHash || pajSweepRes?.signature || pajSweepRes?.solanaTxSignature || null;
 
-      // 3. Process settlement into user's PayIT ledger
+      // 3. Process settlement into user's PayIT ledger only if on-chain txHash is confirmed
+      if (!realTxHash) {
+        return ctx.reply(
+          `❌ <b>Transaction Failed</b>\n──────────────────────────\n` +
+          `The on-chain transfer from <code>${tempAddr}</code> to <code>${payitSolAddr}</code> could not be executed on Solana Mainnet.\n\n` +
+          `<b>Reason:</b> Settlement network did not return a confirmed transaction signature.\n` +
+          `<i>Your funds remain safe at <code>${tempAddr}</code>. Please try again shortly.</i>`,
+          {
+            parse_mode: "HTML",
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback("💰 View Balance", "action_balance")],
+              [Markup.button.callback("🏠 Main Menu", "main_menu")],
+            ]),
+          }
+        );
+      }
+
       try {
         const webhookServer = require("./src/webhook_server");
         await webhookServer.processPajEvent({
@@ -4938,35 +4954,18 @@ bot.on("text", async (ctx) => {
             recipient: payitSolAddr,
             amount: solAmount,
             id: `paj_sweep_${Date.now()}`,
-            txHash: realTxHash || tempAddr,
+            txHash: realTxHash,
           },
         }, bot);
 
-        if (realTxHash) {
-          const explorerUrl = `https://solscan.io/tx/${realTxHash}`;
-          return ctx.reply(
-            `🎉 <b>Paj Deposit Swept to Solana Wallet!</b>\n──────────────────────────\n` +
-            `Detected <b>$${solAmount.toFixed(2)} USDC</b> on Paj deposit wallet:\n<code>${tempAddr}</code>\n\n` +
-            `✅ On-chain transaction confirmed on Solana Mainnet:\n` +
-            `🔗 <a href="${explorerUrl}">View on Solscan</a>\n\n` +
-            `✅ Funds transferred into your PayIT Solana Address:\n<code>${payitSolAddr}</code>\n\n` +
-            `<i>You hold full non-custodial ownership using your exported Phantom/Solflare key!</i>`,
-            {
-              parse_mode: "HTML",
-              ...Markup.inlineKeyboard([
-                [Markup.button.callback("💰 View Balance", "action_balance")],
-                [Markup.button.callback("🏠 Main Menu", "main_menu")],
-              ]),
-            }
-          );
-        }
-
+        const explorerUrl = `https://solscan.io/tx/${realTxHash}`;
         return ctx.reply(
-          `💰 <b>Paj Deposit Authorized</b>\n──────────────────────────\n` +
+          `🎉 <b>Paj Deposit Swept to Solana Wallet!</b>\n──────────────────────────\n` +
           `Detected <b>$${solAmount.toFixed(2)} USDC</b> on Paj deposit wallet:\n<code>${tempAddr}</code>\n\n` +
-          `✅ <b>PIN Verified:</b> Your deposit of <b>$${solAmount.toFixed(2)} USDC</b> is credited to your PayIT balance.\n` +
-          `📍 <b>Destination Address:</b> <code>${payitSolAddr}</code>\n\n` +
-          `⏳ <i>Pending On-Chain Dispatch: Paj's payout engine (PAJiUaKg...) executes the Solana Mainnet transfer to your wallet address.</i>`,
+          `✅ On-chain transaction confirmed on Solana Mainnet:\n` +
+          `🔗 <a href="${explorerUrl}">View on Solscan</a>\n\n` +
+          `✅ Funds transferred into your PayIT Solana Address:\n<code>${payitSolAddr}</code>\n\n` +
+          `<i>You hold full non-custodial ownership using your exported Phantom/Solflare key!</i>`,
           {
             parse_mode: "HTML",
             ...Markup.inlineKeyboard([
