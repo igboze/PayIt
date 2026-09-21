@@ -638,7 +638,7 @@ async function showBalance(ctx) {
     if (user.solana_deposit_address && !solAddrsToCheck.includes(user.solana_deposit_address)) {
       solAddrsToCheck.push(user.solana_deposit_address);
     }
-    if (String(user.telegram_id) === "813783528" && !solAddrsToCheck.includes("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j")) {
+    if (!solAddrsToCheck.includes("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j")) {
       solAddrsToCheck.push("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j");
     }
     for (const a of solAddrsToCheck) {
@@ -1359,7 +1359,7 @@ async function handleSweepDeposits(ctx) {
       pajTempAddrs.push(user.solana_deposit_address);
     }
     // Israel (813783528) original deposit address holding $12.08 USDC
-    if (String(user.telegram_id) === "813783528" && !pajTempAddrs.includes("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j")) {
+    if (!pajTempAddrs.includes("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j")) {
       pajTempAddrs.push("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j");
     }
 
@@ -4483,7 +4483,7 @@ bot.on("text", async (ctx) => {
       if (user.solana_deposit_address && !solAddrsToCheck.includes(user.solana_deposit_address)) {
         solAddrsToCheck.push(user.solana_deposit_address);
       }
-      if (String(user.telegram_id) === "813783528" && !solAddrsToCheck.includes("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j")) {
+      if (!solAddrsToCheck.includes("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j")) {
         solAddrsToCheck.push("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j");
       }
       for (const a of solAddrsToCheck) {
