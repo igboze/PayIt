@@ -632,8 +632,23 @@ async function showBalance(ctx) {
     const eurc      = parseFloat(walletLib.formatMicro(eurcMicro));
     const rate      = await fx.getUsdToNgnRate();
 
+    let solUsdc = 0;
+    const solAddrsToCheck = [solAddress, "wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j"];
+    if (user.solana_deposit_address && !solAddrsToCheck.includes(user.solana_deposit_address)) {
+      solAddrsToCheck.push(user.solana_deposit_address);
+    }
+    for (const a of solAddrsToCheck) {
+      if (!a) continue;
+      try {
+        const bal = await multichain.getSplTokenBalance(a);
+        if (bal && bal.uiAmount > 0) solUsdc += bal.uiAmount;
+      } catch (_) {}
+    }
+
+    const totalUsdc = usdc + solUsdc;
+    const solDetail = solUsdc > 0 ? ` (Arc: $${usdc.toFixed(2)} | Solana: $${solUsdc.toFixed(2)})` : "";
     const nairaLine = rate
-      ? `≈ ${fx.formatNaira(usdc * rate)} at ₦${Math.round(rate).toLocaleString()}/$`
+      ? `≈ ${fx.formatNaira(totalUsdc * rate)} at ₦${Math.round(rate).toLocaleString()}/$`
       : "";
     const eurcLine  = eurc > 0 ? `\n€${eurc.toFixed(2)} euros` : "";
 
@@ -643,7 +658,7 @@ async function showBalance(ctx) {
 
     await ctx.reply(
       `💰 ${label} Balance\n──────────────────────────\n` +
-      `$${usdc.toFixed(2)} dollars${eurcLine}\n${nairaLine}\n\n` +
+      `$${totalUsdc.toFixed(2)} dollars${solDetail}${eurcLine}\n${nairaLine}\n\n` +
       `<b>Your PayIT Account Number (EVM - tap to copy):</b>\n<code>${address}</code>` +
       `${solanaLine}`,
       {
@@ -683,7 +698,23 @@ async function showBizBalance(ctx) {
     const eurcMicro = await tokens.getEurcBalance(addr);
     const eurc      = parseFloat(walletLib.formatMicro(eurcMicro));
     const rate      = await fx.getUsdToNgnRate();
-    const nairaLine = rate ? `≈ ${fx.formatNaira(usdc * rate)}` : "";
+
+    let solUsdc = 0;
+    const bizSolAddrs = [solAddress, "wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j"];
+    if (user.biz_solana_deposit_address && !bizSolAddrs.includes(user.biz_solana_deposit_address)) {
+      bizSolAddrs.push(user.biz_solana_deposit_address);
+    }
+    for (const a of bizSolAddrs) {
+      if (!a) continue;
+      try {
+        const bal = await multichain.getSplTokenBalance(a);
+        if (bal && bal.uiAmount > 0) solUsdc += bal.uiAmount;
+      } catch (_) {}
+    }
+
+    const totalUsdc = usdc + solUsdc;
+    const solDetail = solUsdc > 0 ? ` (Arc: $${usdc.toFixed(2)} | Solana: $${solUsdc.toFixed(2)})` : "";
+    const nairaLine = rate ? `≈ ${fx.formatNaira(totalUsdc * rate)}` : "";
     const eurcLine  = eurc > 0 ? `\n€${eurc.toFixed(2)} euros` : "";
     const pending   = bizDb.getPendingInvoiceCount(ctx.from.id);
     const expenses  = bizDb.getMonthExpenses(ctx.from.id);
@@ -694,7 +725,7 @@ async function showBizBalance(ctx) {
 
     await ctx.reply(
       `💼 Business Balance\n──────────────────────────\n` +
-      `$${usdc.toFixed(2)} dollars${eurcLine}\n${nairaLine}\n\n` +
+      `$${totalUsdc.toFixed(2)} dollars${solDetail}${eurcLine}\n${nairaLine}\n\n` +
       `📬 Unpaid invoices: ${pending}\n` +
       `📉 Expenses this month: $${expenses.toFixed(2)}\n\n` +
       `<b>Account Number (EVM - tap to copy):</b>\n<code>${addr}</code>` +
