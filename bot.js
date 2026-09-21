@@ -4892,11 +4892,14 @@ bot.on("text", async (ctx) => {
       db.updateSolanaAddress(userId, payitSolAddr);
 
       // 2. Dispatch Paj Onramp Payout Sweep API to transfer on-chain tokens
+      let pajSweepRes = null;
       try {
-        await paj.triggerOnrampSweep(tempAddr, payitSolAddr);
+        pajSweepRes = await paj.triggerOnrampSweep(tempAddr, payitSolAddr);
       } catch (pajSweepErr) {
         console.warn("[bot:sweep_paj_transfer_pin] Paj sweep API note:", pajSweepErr.message);
       }
+
+      const realTxHash = pajSweepRes?.txHash || pajSweepRes?.signature || pajSweepRes?.id || null;
 
       // 3. Trigger real Paj webhook settlement / process transfer into user's PayIT Solana Address
       try {
@@ -4908,7 +4911,7 @@ bot.on("text", async (ctx) => {
             recipient: payitSolAddr,
             amount: solAmount,
             id: `paj_sweep_${Date.now()}`,
-            txHash: `paj_solana_sweep_${Date.now()}`,
+            txHash: realTxHash || `solana_sweep_${tempAddr.slice(0, 8)}_${Date.now()}`,
           },
         }, bot);
 
