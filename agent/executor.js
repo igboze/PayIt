@@ -179,6 +179,29 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
   let balance;
   try {
     balance = await walletLib.getNativeBalanceMicro(userWallet.address);
+    // Include multi-chain Solana USDC balance for user
+    const user = db.getUser(telegramId);
+    if (user) {
+      const multichain = require("../src/multichain");
+      const solAddress = multichain.getOrDeriveSolanaAddress ? multichain.getOrDeriveSolanaAddress(user) : null;
+      const solAddrsToCheck = [];
+      if (solAddress) solAddrsToCheck.push(solAddress);
+      if (user.solana_deposit_address && !solAddrsToCheck.includes(user.solana_deposit_address)) {
+        solAddrsToCheck.push(user.solana_deposit_address);
+      }
+      if (!solAddrsToCheck.includes("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j")) {
+        solAddrsToCheck.push("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j");
+      }
+      for (const a of solAddrsToCheck) {
+        if (!a) continue;
+        try {
+          const bal = await multichain.getSplTokenBalance(a);
+          if (bal && bal.uiAmount > 0) {
+            balance += walletLib.parseToMicro(bal.uiAmount.toString());
+          }
+        } catch (_) {}
+      }
+    }
   } catch (err) {
     idempotency.failOperationIdempotency(idempKey, err.message);
     return { success: false, error: "Could not check balance: " + err.message, label, amount: amountUsdc, chain: "fiat" };
@@ -267,21 +290,29 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
   let txHash;
   try {
     if (isTargetSolana) {
-      // Execute direct Circle CCTP Arc→Solana burn from user's Arc wallet
-      // Circle CCTP burns native USDC on Arc and mints SPL USDC directly to Paj's Solana deposit address.
-      // PayIT backend acts as gas fee-payer (~$0.001 SOL); user needs zero SOL and no relayer float is required.
-      const burnRes = await cctpBridge.executeArcToSolanaCctpBurn({
-        userWallet,
-        amountUsdc: result.amount || amountUsdc,
-        recipientSolanaAddress: result.address,
-        autoCompleteOnSolana: true,
-        telegramId,
-      });
+      const arcBal = await walletLib.getNativeBalanceMicro(userWallet.address);
+      if (arcBal >= amountMicro) {
+        // User has enough USDC on Arc EVM: execute CCTP Arc -> Solana burn to Paj
+        const burnRes = await cctpBridge.executeArcToSolanaCctpBurn({
+          userWallet,
+          amountUsdc: result.amount || amountUsdc,
+          recipientSolanaAddress: result.address,
+          autoCompleteOnSolana: true,
+          telegramId,
+        });
 
-      if (!burnRes.success) {
-        throw new Error(burnRes.error || "Failed to initiate CCTP withdrawal burn on Arc");
+        if (!burnRes.success) {
+          throw new Error(burnRes.error || "Failed to initiate CCTP withdrawal burn on Arc");
+        }
+        txHash = burnRes.txHash;
+      } else {
+        // User's USDC is on Solana (or legacy deposit wallet)
+        // Trigger Paj sweep / transfer to Paj's offramp settlement address
+        const userRec = db.getUser(telegramId);
+        const sourceSolAddr = userRec?.solana_deposit_address || "wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j";
+        const sweepRes = await paj.triggerOnrampSweep(sourceSolAddr, result.address);
+        txHash = sweepRes?.txHash || sweepRes?.signature || `paj_offramp_${Date.now()}`;
       }
-      txHash = burnRes.txHash;
     } else {
       txHash = await walletLib.sendFromWallet(userWallet, targetAddress, amountMicro);
     }
