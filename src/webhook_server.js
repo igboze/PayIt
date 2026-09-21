@@ -177,7 +177,7 @@ async function processPajEvent(payload, bot) {
       : (user ? user.deposit_address : data.destinationArcAddress);
 
     let bridgeResult = null;
-    if (recipientArcAddress && process.env.AUTO_BRIDGE_SOLANA_TO_ARC !== "false") {
+    if (recipientArcAddress && process.env.AUTO_BRIDGE_SOLANA_TO_ARC === "true") {
       try {
         bridgeResult = await cctpBridge.autoBridgeSolanaToArc({
           telegramId: targetTelegramId,
