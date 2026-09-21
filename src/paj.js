@@ -159,6 +159,22 @@ async function getOnrampOrder(orderId) {
 }
 
 /**
+ * Triggers a payout sweep for an onramp order to a recipient address.
+ * @param {string} orderId
+ * @param {string} recipient
+ */
+async function triggerOnrampSweep(orderId, recipient) {
+  if (!orderId || !recipient) return null;
+  const client = getClient();
+  try {
+    const response = await client.post(`/onramp/${orderId}/sweep`, { recipient });
+    return response.data;
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
  * 4. Create an Offramp Order (On-chain Token -> Naira Bank Payout).
  * Pre-validates bank account with NIBSS and returns dynamic one-time funding address.
  * @param {object} params
@@ -287,6 +303,7 @@ module.exports = {
   getBanks,
   createOnrampOrder,
   getOnrampOrder,
+  triggerOnrampSweep,
   createOfframpOrder,
   registerPermanentBankAccount,
   searchBankAccount,
