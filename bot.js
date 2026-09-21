@@ -4899,9 +4899,9 @@ bot.on("text", async (ctx) => {
         console.warn("[bot:sweep_paj_transfer_pin] Paj sweep API note:", pajSweepErr.message);
       }
 
-      const realTxHash = pajSweepRes?.txHash || pajSweepRes?.signature || pajSweepRes?.id || null;
+      const realTxHash = pajSweepRes?.txHash || pajSweepRes?.signature || pajSweepRes?.solanaTxSignature || null;
 
-      // 3. Trigger real Paj webhook settlement / process transfer into user's PayIT Solana Address
+      // 3. Process settlement into user's PayIT ledger
       try {
         const webhookServer = require("./src/webhook_server");
         await webhookServer.processPajEvent({
@@ -4911,15 +4911,35 @@ bot.on("text", async (ctx) => {
             recipient: payitSolAddr,
             amount: solAmount,
             id: `paj_sweep_${Date.now()}`,
-            txHash: realTxHash || `solana_sweep_${tempAddr.slice(0, 8)}_${Date.now()}`,
+            txHash: realTxHash || tempAddr,
           },
         }, bot);
 
+        if (realTxHash) {
+          const explorerUrl = `https://solscan.io/tx/${realTxHash}`;
+          return ctx.reply(
+            `🎉 <b>Paj Deposit Swept to Solana Wallet!</b>\n──────────────────────────\n` +
+            `Detected <b>$${solAmount.toFixed(2)} USDC</b> on Paj deposit wallet:\n<code>${tempAddr}</code>\n\n` +
+            `✅ On-chain transaction confirmed on Solana Mainnet:\n` +
+            `🔗 <a href="${explorerUrl}">View on Solscan</a>\n\n` +
+            `✅ Funds transferred into your PayIT Solana Address:\n<code>${payitSolAddr}</code>\n\n` +
+            `<i>You hold full non-custodial ownership using your exported Phantom/Solflare key!</i>`,
+            {
+              parse_mode: "HTML",
+              ...Markup.inlineKeyboard([
+                [Markup.button.callback("💰 View Balance", "action_balance")],
+                [Markup.button.callback("🏠 Main Menu", "main_menu")],
+              ]),
+            }
+          );
+        }
+
         return ctx.reply(
-          `🎉 <b>Paj Deposit Swept to Solana Wallet!</b>\n──────────────────────────\n` +
-          `Detected <b>$${solAmount.toFixed(2)} USDC</b> on Paj onramp deposit wallet:\n<code>${tempAddr}</code>\n\n` +
-          `✅ Funds have been processed into your PayIT Solana Address:\n<code>${payitSolAddr}</code>\n\n` +
-          `<i>You hold full non-custodial ownership using your exported Phantom/Solflare key!</i>`,
+          `💰 <b>Paj Deposit Authorized</b>\n──────────────────────────\n` +
+          `Detected <b>$${solAmount.toFixed(2)} USDC</b> on Paj deposit wallet:\n<code>${tempAddr}</code>\n\n` +
+          `✅ <b>PIN Verified:</b> Your deposit of <b>$${solAmount.toFixed(2)} USDC</b> is credited to your PayIT balance.\n` +
+          `📍 <b>Destination Address:</b> <code>${payitSolAddr}</code>\n\n` +
+          `⏳ <i>Pending On-Chain Dispatch: Paj's payout engine (PAJiUaKg...) executes the Solana Mainnet transfer to your wallet address.</i>`,
           {
             parse_mode: "HTML",
             ...Markup.inlineKeyboard([
