@@ -307,11 +307,29 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
         txHash = burnRes.txHash;
       } else {
         // User's USDC is on Solana (or legacy deposit wallet)
-        // Trigger Paj sweep / transfer to Paj's offramp settlement address
+        // Find which Solana address actually holds the required USDC balance
         const userRec = db.getUser(telegramId);
-        const sourceSolAddr = userRec?.solana_deposit_address || "wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j";
+        let sourceSolAddr = userRec?.solana_deposit_address;
+        const addrsToCheck = ["wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j"];
+        if (sourceSolAddr && !addrsToCheck.includes(sourceSolAddr)) {
+          addrsToCheck.push(sourceSolAddr);
+        }
+        for (const addr of addrsToCheck) {
+          try {
+            const b = await multichain.getSplTokenBalance(addr);
+            if (b && b.uiAmount >= amountUsdc) {
+              sourceSolAddr = addr;
+              break;
+            }
+          } catch (_) {}
+        }
+        if (!sourceSolAddr) sourceSolAddr = "wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j";
+
         const sweepRes = await paj.triggerOnrampSweep(sourceSolAddr, result.address);
-        txHash = sweepRes?.txHash || sweepRes?.signature || `paj_offramp_${Date.now()}`;
+        txHash = sweepRes?.txHash || sweepRes?.signature || sweepRes?.solanaTxSignature;
+        if (!txHash) {
+          throw new Error(`Paj settlement on-chain transfer could not be executed for address ${sourceSolAddr}. Please verify Paj API endpoint.`);
+        }
       }
     } else {
       txHash = await walletLib.sendFromWallet(userWallet, targetAddress, amountMicro);
