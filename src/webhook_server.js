@@ -227,6 +227,20 @@ async function processPajEvent(payload, bot) {
             `<i>Your balance is updated and ready to spend, save, or send!</i>`,
             { parse_mode: "HTML" }
           );
+        } else if (process.env.AUTO_BRIDGE_SOLANA_TO_ARC === "false") {
+          const solAddress = user ? (isBizAccount ? user.biz_solana_deposit_address : user.solana_deposit_address) : null;
+          const solAddrLine = solAddress ? `\n📍 <b>Solana Address:</b> <code>${solAddress}</code>` : "";
+          await bot.telegram.sendMessage(
+            targetTelegramId,
+            `🎉 <b>Deposit Settled on Solana (${accountLabel})!</b>\n` +
+            `──────────────────────────\n` +
+            `💵 <b>Amount Deposited:</b> ₦${fiatAmount ? fiatAmount.toLocaleString() : "..."}\n` +
+            `💰 <b>USDC Received:</b> $${amountUsdc.toFixed(2)} USDC\n` +
+            `💼 <b>Account:</b> ${accountLabel}\n` +
+            `☀️ <b>Network:</b> Solana Mainnet${solAddrLine}\n\n` +
+            `<i>Your funds are available directly in your Solana wallet!</i>`,
+            { parse_mode: "HTML" }
+          );
         } else {
           await bot.telegram.sendMessage(
             targetTelegramId,
