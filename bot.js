@@ -633,7 +633,8 @@ async function showBalance(ctx) {
     const rate      = await fx.getUsdToNgnRate();
 
     let solUsdc = 0;
-    const solAddrsToCheck = [solAddress, "wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j"];
+    const solAddrsToCheck = [];
+    if (solAddress) solAddrsToCheck.push(solAddress);
     if (user.solana_deposit_address && !solAddrsToCheck.includes(user.solana_deposit_address)) {
       solAddrsToCheck.push(user.solana_deposit_address);
     }
@@ -700,7 +701,8 @@ async function showBizBalance(ctx) {
     const rate      = await fx.getUsdToNgnRate();
 
     let solUsdc = 0;
-    const bizSolAddrs = [solAddress, "wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j"];
+    const bizSolAddrs = [];
+    if (solAddress) bizSolAddrs.push(solAddress);
     if (user.biz_solana_deposit_address && !bizSolAddrs.includes(user.biz_solana_deposit_address)) {
       bizSolAddrs.push(user.biz_solana_deposit_address);
     }
@@ -1348,9 +1350,9 @@ async function handleSweepDeposits(ctx) {
     let solanaBridged = false;
     let solAmount = 0;
 
-    // Check if user has an old/Paj-issued Solana address (like wr1Uud...) with USDC balance
-    const pajTempAddrs = ["wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j"];
-    if (user.solana_deposit_address && !pajTempAddrs.includes(user.solana_deposit_address)) {
+    // Check if user has a saved Solana deposit address with USDC balance
+    const pajTempAddrs = [];
+    if (user.solana_deposit_address) {
       pajTempAddrs.push(user.solana_deposit_address);
     }
 
@@ -4466,9 +4468,25 @@ bot.on("text", async (ctx) => {
       try { amountMicro = walletLib.parseToMicro(amount.toString()); } catch {
         return ctx.reply("Invalid amount. Try again.");
       }
-      const balance = await walletLib.getNativeBalanceMicro(address);
-      if (balance < amountMicro) {
-        return ctx.reply(`Not enough dollars. You have $${parseFloat(walletLib.formatMicro(balance)).toFixed(2)}.`);
+      const evmMicro = await walletLib.getNativeBalanceMicro(address);
+      let totalUsdc = parseFloat(walletLib.formatMicro(evmMicro));
+
+      const solAddress = getOrDeriveSolanaAddress(user);
+      const solAddrsToCheck = [];
+      if (solAddress) solAddrsToCheck.push(solAddress);
+      if (user.solana_deposit_address && !solAddrsToCheck.includes(user.solana_deposit_address)) {
+        solAddrsToCheck.push(user.solana_deposit_address);
+      }
+      for (const a of solAddrsToCheck) {
+        if (!a) continue;
+        try {
+          const bal = await multichain.getSplTokenBalance(a);
+          if (bal && bal.uiAmount > 0) totalUsdc += bal.uiAmount;
+        } catch (_) {}
+      }
+
+      if (totalUsdc < amount) {
+        return ctx.reply(`Not enough dollars. You have $${totalUsdc.toFixed(2)}.`);
       }
       const rate      = await fx.getUsdToNgnRate();
       const nairaEst  = rate ? fx.formatNaira(amount * rate) : null;
