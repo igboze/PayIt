@@ -1338,32 +1338,30 @@ async function handleSweepDeposits(ctx) {
       } catch (_) {}
     }
 
-    // Check Paj temporary addresses and trigger webhook settlement to user's PayIT Solana Address
+    // Check Paj temporary addresses and require PIN authorization to trigger sweep
     for (const tempAddr of pajTempAddrs) {
       if (tempAddr === payitSolAddr) continue;
       try {
         const tempBal = await multichain.getSplTokenBalance(tempAddr);
         if (tempBal && tempBal.uiAmount > 0) {
           solAmount = tempBal.uiAmount;
-          console.log(`[sweep:paj_temp_sweep] Detected $${solAmount} USDC on Paj temp address ${tempAddr}. Triggering transfer to ${payitSolAddr}...`);
-          const webhookServer = require("./src/webhook_server");
-          await webhookServer.processPajEvent({
-            event: "onramp.successful",
-            data: {
-              userExternalId: ctx.from.id,
-              recipient: payitSolAddr,
-              amount: solAmount,
-              id: `paj_sweep_${Date.now()}`,
-              txHash: `paj_solana_sweep_${Date.now()}`,
-            },
-          }, bot);
+          console.log(`[sweep:paj_temp_sweep] Detected $${solAmount} USDC on Paj temp address ${tempAddr}. Requesting PIN authorization...`);
+
+          convState.setState(ctx.from.id, "sweep_paj_transfer_pin", {
+            tempAddr,
+            payitSolAddr,
+            solAmount,
+            isBiz: getContext(ctx.from.id) === "business",
+          }, getContext(ctx.from.id));
 
           return ctx.reply(
-            `🎉 <b>Paj Deposit Swept to Solana Wallet!</b>\n──────────────────────────\n` +
-            `Detected <b>$${solAmount.toFixed(2)} USDC</b> on Paj onramp deposit wallet:\n<code>${tempAddr}</code>\n\n` +
-            `✅ Funds have been processed into your PayIT Solana Address:\n<code>${payitSolAddr}</code>\n\n` +
-            `<i>You hold full non-custodial ownership using your exported Phantom/Solflare key!</i>`,
-            { parse_mode: "HTML" }
+            `🔐 <b>PIN Authorization Required</b>\n──────────────────────────\n` +
+            `Detected <b>$${solAmount.toFixed(2)} USDC</b> on Paj deposit wallet:\n<code>${tempAddr}</code>\n\n` +
+            `Please enter your 4-digit PIN to authorize transferring these funds to your PayIT Solana Address (<code>${payitSolAddr}</code>):`,
+            {
+              parse_mode: "HTML",
+              ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_gateway")]]),
+            }
           );
         }
       } catch (pajErr) {
@@ -4831,6 +4829,67 @@ bot.on("text", async (ctx) => {
       } catch (sweepErr) {
         console.error("[bot:sweep_auth_pin_err]", sweepErr);
         return ctx.reply(`Could not complete deposit scan: ${sweepErr.message}`);
+      }
+    }
+
+    if (state.type === "sweep_paj_transfer_pin") {
+      await deleteSensitiveMessage(ctx);
+      if (!/^\d{4}$/.test(text)) return ctx.reply("Please enter your 4-digit PIN.");
+      const pinStatus = db.verifyPinWithStatus(userId, text);
+      if (pinStatus.locked) {
+        convState.clearState(userId);
+        const mins = Math.ceil(pinStatus.remainingSec / 60);
+        return ctx.reply(`🔒 Account temporarily locked due to failed PIN attempts. Try again in ${mins} min.`);
+      }
+      if (!pinStatus.valid) {
+        if (pinStatus.remainingAttempts === 0) {
+          convState.clearState(userId);
+          return ctx.reply("🔒 Too many failed PIN attempts. Account locked for 15 minutes.");
+        }
+        return ctx.reply(`❌ Incorrect PIN. ${pinStatus.remainingAttempts} attempt(s) remaining.`);
+      }
+
+      const user = db.getUser(userId);
+      const stateData = state.data || {};
+      convState.clearState(userId);
+
+      const tempAddr = stateData.tempAddr;
+      const payitSolAddr = stateData.payitSolAddr;
+      const solAmount = stateData.solAmount || 0;
+
+      // 1. Update DB to record PayIT Solana deposit address
+      db.updateSolanaAddress(userId, payitSolAddr);
+
+      // 2. Trigger real Paj webhook settlement / process transfer into user's PayIT Solana Address
+      try {
+        const webhookServer = require("./src/webhook_server");
+        await webhookServer.processPajEvent({
+          event: "onramp.successful",
+          data: {
+            userExternalId: userId,
+            recipient: payitSolAddr,
+            amount: solAmount,
+            id: `paj_sweep_${Date.now()}`,
+            txHash: `paj_solana_sweep_${Date.now()}`,
+          },
+        }, bot);
+
+        return ctx.reply(
+          `🎉 <b>Paj Deposit Swept to Solana Wallet!</b>\n──────────────────────────\n` +
+          `Detected <b>$${solAmount.toFixed(2)} USDC</b> on Paj onramp deposit wallet:\n<code>${tempAddr}</code>\n\n` +
+          `✅ Funds have been processed into your PayIT Solana Address:\n<code>${payitSolAddr}</code>\n\n` +
+          `<i>You hold full non-custodial ownership using your exported Phantom/Solflare key!</i>`,
+          {
+            parse_mode: "HTML",
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback("💰 View Balance", "action_balance")],
+              [Markup.button.callback("🏠 Main Menu", "main_menu")],
+            ]),
+          }
+        );
+      } catch (err) {
+        console.error("[bot:sweep_paj_transfer_pin_err]", err);
+        return ctx.reply(`❌ Sweep execution error: ${err.message}`);
       }
     }
 
