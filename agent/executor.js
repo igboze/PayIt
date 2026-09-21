@@ -290,23 +290,31 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
   let txHash;
   try {
     if (isTargetSolana) {
-      const arcBal = await walletLib.getNativeBalanceMicro(userWallet.address);
+      let cctpSuccess = false;
       if (arcBal >= amountMicro) {
-        // User has enough USDC on Arc EVM: execute CCTP Arc -> Solana burn to Paj
-        const burnRes = await cctpBridge.executeArcToSolanaCctpBurn({
-          userWallet,
-          amountUsdc: result.amount || amountUsdc,
-          recipientSolanaAddress: result.address,
-          autoCompleteOnSolana: true,
-          telegramId,
-        });
+        try {
+          // User has enough USDC on Arc EVM: attempt CCTP Arc -> Solana burn to Paj
+          const burnRes = await cctpBridge.executeArcToSolanaCctpBurn({
+            userWallet,
+            amountUsdc: result.amount || amountUsdc,
+            recipientSolanaAddress: result.address,
+            autoCompleteOnSolana: true,
+            telegramId,
+          });
 
-        if (!burnRes.success) {
-          throw new Error(burnRes.error || "Failed to initiate CCTP withdrawal burn on Arc");
+          if (burnRes && burnRes.success && burnRes.txHash) {
+            txHash = burnRes.txHash;
+            cctpSuccess = true;
+          } else {
+            console.warn(`[executor:offramp] CCTP burn unconfirmed or failed (${burnRes?.error || "unknown"}), falling back to direct Solana Paj offramp.`);
+          }
+        } catch (cctpErr) {
+          console.warn(`[executor:offramp] CCTP exception (${cctpErr.message}), falling back to direct Solana Paj offramp.`);
         }
-        txHash = burnRes.txHash;
-      } else {
-        // User's USDC is on Solana (or legacy deposit wallet)
+      }
+
+      if (!cctpSuccess) {
+        // Direct Off-ramp through Paj on Solana
         // Find which Solana address actually holds the required USDC balance
         const userRec = db.getUser(telegramId);
         let sourceSolAddr = userRec?.solana_deposit_address;
@@ -325,8 +333,25 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
         }
         if (!sourceSolAddr) sourceSolAddr = "wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j";
 
-        const sweepRes = await paj.triggerOnrampSweep(sourceSolAddr, result.address);
-        txHash = sweepRes?.txHash || sweepRes?.signature || sweepRes?.solanaTxSignature;
+        // Try direct Solana SPL token transfer if derived keypair owns sourceSolAddr
+        let directSolTx = null;
+        try {
+          const solData = multichain.deriveSolanaFromEvmKey(userWallet.privateKey);
+          if (solData && solData.solanaAddress === sourceSolAddr) {
+            directSolTx = await multichain.sendSolanaTransfer(solData.keypair, result.address, amountUsdc);
+          }
+        } catch (solErr) {
+          console.warn("[executor:offramp] Direct Solana keypair transfer attempt:", solErr.message);
+        }
+
+        txHash = directSolTx?.txHash || directSolTx?.signature;
+
+        if (!txHash) {
+          // Trigger Paj sweep API to move tokens from sourceSolAddr to result.address
+          const sweepRes = await paj.triggerOnrampSweep(sourceSolAddr, result.address);
+          txHash = sweepRes?.txHash || sweepRes?.signature || sweepRes?.solanaTxSignature;
+        }
+
         if (!txHash) {
           throw new Error(`Paj settlement on-chain transfer could not be executed for address ${sourceSolAddr}. Please verify Paj API endpoint.`);
         }
