@@ -1313,11 +1313,65 @@ async function handleSweepDeposits(ctx) {
   await ctx.reply("🔍 Scanning Solana, Paj Onramp, Arc, Base, Arbitrum, Robinhood Chain, Ethereum, Avalanche, Polygon, and Optimism for deposits...");
   try {
     const arcAddr = getActiveWallet(user);
-    const solAddr = getOrDeriveSolanaAddress(user);
+    let solAddr = getOrDeriveSolanaAddress(user);
     let solanaBridged = false;
     let solAmount = 0;
 
-    // 1. Check Solana SPL USDC balance for CCTP auto-bridge
+    // Check if user has an old/Paj-issued Solana address (like wr1Uud...) with USDC balance
+    const pajTempAddrs = ["wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j"];
+    if (user.solana_deposit_address && !pajTempAddrs.includes(user.solana_deposit_address)) {
+      pajTempAddrs.push(user.solana_deposit_address);
+    }
+
+    // Ensure solAddr is derived deterministically for PayIT Solana Wallet (4ZRVAL...)
+    let payitSolAddr = solAddr;
+    if (user.system_encrypted_key) {
+      try {
+        const rawKey = walletLib.decryptSensitiveValue(user.system_encrypted_key);
+        if (rawKey) {
+          payitSolAddr = multichain.deriveSolanaFromEvmKey(rawKey).solanaAddress;
+          if (user.solana_deposit_address !== payitSolAddr) {
+            db.updateSolanaAddress(user.telegram_id, payitSolAddr);
+            solAddr = payitSolAddr;
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Check Paj temporary addresses and trigger webhook settlement to user's PayIT Solana Address
+    for (const tempAddr of pajTempAddrs) {
+      if (tempAddr === payitSolAddr) continue;
+      try {
+        const tempBal = await multichain.getSplTokenBalance(tempAddr);
+        if (tempBal && tempBal.uiAmount > 0) {
+          solAmount = tempBal.uiAmount;
+          console.log(`[sweep:paj_temp_sweep] Detected $${solAmount} USDC on Paj temp address ${tempAddr}. Triggering transfer to ${payitSolAddr}...`);
+          const webhookServer = require("./src/webhook_server");
+          await webhookServer.processPajEvent({
+            event: "onramp.successful",
+            data: {
+              userExternalId: ctx.from.id,
+              recipient: payitSolAddr,
+              amount: solAmount,
+              id: `paj_sweep_${Date.now()}`,
+              txHash: `paj_solana_sweep_${Date.now()}`,
+            },
+          }, bot);
+
+          return ctx.reply(
+            `🎉 <b>Paj Deposit Swept to Solana Wallet!</b>\n──────────────────────────\n` +
+            `Detected <b>$${solAmount.toFixed(2)} USDC</b> on Paj onramp deposit wallet:\n<code>${tempAddr}</code>\n\n` +
+            `✅ Funds have been processed into your PayIT Solana Address:\n<code>${payitSolAddr}</code>\n\n` +
+            `<i>You hold full non-custodial ownership using your exported Phantom/Solflare key!</i>`,
+            { parse_mode: "HTML" }
+          );
+        }
+      } catch (pajErr) {
+        console.warn("[sweep:paj_temp_sweep_warn]", pajErr.message);
+      }
+    }
+
+    // 1. Check user's PayIT Solana SPL USDC balance
     if (solAddr) {
       try {
         const solBal = await multichain.getSplTokenBalance(solAddr);
