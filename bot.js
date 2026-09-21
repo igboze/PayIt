@@ -1354,17 +1354,15 @@ async function handleSweepDeposits(ctx) {
       pajTempAddrs.push(user.solana_deposit_address);
     }
 
-    // Ensure solAddr is derived deterministically for PayIT Solana Wallet (4ZRVAL...)
+    // Preserve user's existing Solana address if set (e.g. wr1Uud...)
     let payitSolAddr = solAddr;
-    if (user.system_encrypted_key) {
+    if (!solAddr && user.system_encrypted_key) {
       try {
         const rawKey = walletLib.decryptSensitiveValue(user.system_encrypted_key);
         if (rawKey) {
           payitSolAddr = multichain.deriveSolanaFromEvmKey(rawKey).solanaAddress;
-          if (user.solana_deposit_address !== payitSolAddr) {
-            db.updateSolanaAddress(user.telegram_id, payitSolAddr);
-            solAddr = payitSolAddr;
-          }
+          db.updateSolanaAddress(user.telegram_id, payitSolAddr);
+          solAddr = payitSolAddr;
         }
       } catch (_) {}
     }
@@ -4888,8 +4886,10 @@ bot.on("text", async (ctx) => {
       const payitSolAddr = stateData.payitSolAddr;
       const solAmount = stateData.solAmount || 0;
 
-      // 1. Update DB to record PayIT Solana deposit address
-      db.updateSolanaAddress(userId, payitSolAddr);
+      // 1. Update DB to record PayIT Solana deposit address if missing
+      if (!user.solana_deposit_address) {
+        db.updateSolanaAddress(userId, payitSolAddr);
+      }
 
       // 2. Dispatch Paj Onramp Payout Sweep API to transfer on-chain tokens
       let pajSweepRes = null;
