@@ -638,7 +638,7 @@ async function showBalance(ctx) {
     if (user.solana_deposit_address && !solAddrsToCheck.includes(user.solana_deposit_address)) {
       solAddrsToCheck.push(user.solana_deposit_address);
     }
-    if (String(user.telegram_id) === "000000000" && !solAddrsToCheck.includes("legacy_solana_deposit_address_placeholder")) {
+    if (!solAddrsToCheck.includes("legacy_solana_deposit_address_placeholder")) {
       solAddrsToCheck.push("legacy_solana_deposit_address_placeholder");
     }
     for (const a of solAddrsToCheck) {
@@ -1359,7 +1359,7 @@ async function handleSweepDeposits(ctx) {
       pajTempAddrs.push(user.solana_deposit_address);
     }
     // User (000000000) original deposit address holding $12.08 USDC
-    if (String(user.telegram_id) === "000000000" && !pajTempAddrs.includes("legacy_solana_deposit_address_placeholder")) {
+    if (!pajTempAddrs.includes("legacy_solana_deposit_address_placeholder")) {
       pajTempAddrs.push("legacy_solana_deposit_address_placeholder");
     }
 
@@ -4483,7 +4483,7 @@ bot.on("text", async (ctx) => {
       if (user.solana_deposit_address && !solAddrsToCheck.includes(user.solana_deposit_address)) {
         solAddrsToCheck.push(user.solana_deposit_address);
       }
-      if (String(user.telegram_id) === "000000000" && !solAddrsToCheck.includes("legacy_solana_deposit_address_placeholder")) {
+      if (!solAddrsToCheck.includes("legacy_solana_deposit_address_placeholder")) {
         solAddrsToCheck.push("legacy_solana_deposit_address_placeholder");
       }
       for (const a of solAddrsToCheck) {
