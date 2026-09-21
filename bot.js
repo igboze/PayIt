@@ -1323,6 +1323,14 @@ async function handleSweepDeposits(ctx) {
         const solBal = await multichain.getSplTokenBalance(solAddr);
         if (solBal && solBal.uiAmount > 0) {
           solAmount = solBal.uiAmount;
+          if (process.env.AUTO_BRIDGE_SOLANA_TO_ARC === "false") {
+            return ctx.reply(
+              `💰 <b>Solana Balance Detected</b>\n──────────────────────────\n` +
+              `Detected <b>$${solAmount.toFixed(2)} USDC</b> on your Solana deposit address:\n<code>${solAddr}</code>\n\n` +
+              `<i>Auto-bridge to Arc is disabled. Your funds remain safely on Solana.</i>`,
+              { parse_mode: "HTML" }
+            );
+          }
           const bridgeRes = await cctpBridge.autoBridgeSolanaToArc({
             telegramId: ctx.from.id,
             amountUsdc: solAmount,
