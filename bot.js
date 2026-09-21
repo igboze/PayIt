@@ -638,6 +638,9 @@ async function showBalance(ctx) {
     if (user.solana_deposit_address && !solAddrsToCheck.includes(user.solana_deposit_address)) {
       solAddrsToCheck.push(user.solana_deposit_address);
     }
+    if (String(user.telegram_id) === "000000000" && !solAddrsToCheck.includes("legacy_solana_deposit_address_placeholder")) {
+      solAddrsToCheck.push("legacy_solana_deposit_address_placeholder");
+    }
     for (const a of solAddrsToCheck) {
       if (!a) continue;
       try {
@@ -4479,6 +4482,9 @@ bot.on("text", async (ctx) => {
       if (solAddress) solAddrsToCheck.push(solAddress);
       if (user.solana_deposit_address && !solAddrsToCheck.includes(user.solana_deposit_address)) {
         solAddrsToCheck.push(user.solana_deposit_address);
+      }
+      if (String(user.telegram_id) === "000000000" && !solAddrsToCheck.includes("legacy_solana_deposit_address_placeholder")) {
+        solAddrsToCheck.push("legacy_solana_deposit_address_placeholder");
       }
       for (const a of solAddrsToCheck) {
         if (!a) continue;
