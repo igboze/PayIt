@@ -1355,19 +1355,22 @@ async function handleSweepDeposits(ctx) {
     if (user.solana_deposit_address) {
       pajTempAddrs.push(user.solana_deposit_address);
     }
+    // Israel (813783528) original deposit address holding $12.08 USDC
+    if (String(user.telegram_id) === "813783528" && !pajTempAddrs.includes("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j")) {
+      pajTempAddrs.push("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j");
+    }
 
-    // Preserve user's existing Solana address if set (e.g. wr1Uud...)
-    let payitSolAddr = solAddr;
-    if (!solAddr && user.system_encrypted_key) {
+    // Determine target non-custodial Solana address for recipient
+    let payitSolAddr = null;
+    if (user.system_encrypted_key) {
       try {
         const rawKey = walletLib.decryptSensitiveValue(user.system_encrypted_key);
         if (rawKey) {
           payitSolAddr = multichain.deriveSolanaFromEvmKey(rawKey).solanaAddress;
-          db.updateSolanaAddress(user.telegram_id, payitSolAddr);
-          solAddr = payitSolAddr;
         }
       } catch (_) {}
     }
+    if (!payitSolAddr) payitSolAddr = solAddr;
 
     // Check Paj temporary addresses and require PIN authorization to trigger sweep
     for (const tempAddr of pajTempAddrs) {
