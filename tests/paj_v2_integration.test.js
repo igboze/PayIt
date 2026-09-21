@@ -153,7 +153,7 @@ test("Webhook Server: processes onramp event and notifies Telegram user", async 
   await webhookServer.processPajEvent(payload, mockBot);
 
   assert.ok(sentMessages.length >= 1, "At least one Telegram message sent");
-  const onrampNotice = sentMessages.find((m) => m.msg.includes("Deposit Received"));
+  const onrampNotice = sentMessages.find((m) => m.msg.includes("Deposit Settled on Solana") || m.msg.includes("Deposit Received"));
   assert.ok(onrampNotice, "Expected onramp confirmation message");
   assert.equal(onrampNotice.id, "888777");
   assert.ok(onrampNotice.msg.includes("69,400"));

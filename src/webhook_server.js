@@ -227,7 +227,7 @@ async function processPajEvent(payload, bot) {
             `<i>Your balance is updated and ready to spend, save, or send!</i>`,
             { parse_mode: "HTML" }
           );
-        } else if (process.env.AUTO_BRIDGE_SOLANA_TO_ARC === "false") {
+        } else if (process.env.AUTO_BRIDGE_SOLANA_TO_ARC !== "true") {
           const solAddress = user ? (isBizAccount ? user.biz_solana_deposit_address : user.solana_deposit_address) : null;
           const solAddrLine = solAddress ? `\n📍 <b>Solana Address:</b> <code>${solAddress}</code>` : "";
           await bot.telegram.sendMessage(
