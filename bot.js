@@ -22,6 +22,7 @@ const walletLib     = require("./src/wallet");
 const offrampLib    = require("./src/offramp");
 const paj           = require("./src/paj");
 const multichain    = require("./src/multichain");
+const solAddrLib    = require("./src/solana_address");
 const cctpBridge    = require("./src/cctp_bridge");
 const fx            = require("./src/fx");
 const otp           = require("./src/otp");
@@ -589,32 +590,12 @@ bot.hears("🔁 Switch Account", async (ctx) => {
 
 function getOrDeriveSolanaAddress(user) {
   if (!user) return null;
-  const context = getContext(user.telegram_id);
-  const isBiz = context === "business";
-  let solAddress = isBiz ? user.biz_solana_deposit_address : user.solana_deposit_address;
-  if (solAddress) return solAddress;
-
-  try {
-    let rawKey = null;
-    if (isBiz && user.biz_system_encrypted_key) {
-      rawKey = walletLib.decryptSensitiveValue(user.biz_system_encrypted_key);
-    } else if (user.system_encrypted_key) {
-      rawKey = walletLib.decryptSensitiveValue(user.system_encrypted_key);
-    }
-    if (rawKey) {
-      const derived = multichain.deriveSolanaFromEvmKey(rawKey);
-      solAddress = derived.solanaAddress;
-      if (isBiz) {
-        db.updateBizSolanaAddress(user.telegram_id, solAddress);
-      } else {
-        db.updateSolanaAddress(user.telegram_id, solAddress);
-      }
-      return solAddress;
-    }
-  } catch (err) {
-    console.warn("[solana_derive_address_warn]", err.message);
-  }
-  return null;
+  const isBiz = getContext(user.telegram_id) === "business";
+  // Always prefer the address derived from the user's CURRENT key. The stored column is only a
+  // last-resort fallback for display (for example a legacy user who has not entered a PIN yet).
+  const derived = solAddrLib.resolveSolanaRecipient(user, { isBiz });
+  if (derived) return derived;
+  return (isBiz ? user.biz_solana_deposit_address : user.solana_deposit_address) || null;
 }
 
 async function showBalance(ctx) {
@@ -4378,25 +4359,17 @@ bot.on("text", async (ctx) => {
         const context = state.context || getContext(userId);
         const isBiz = context === "business";
 
-        // Derive user's Solana address deterministically based on account
-        let solAddr = isBiz ? user.biz_solana_deposit_address : user.solana_deposit_address;
+        // The recipient MUST be the address derived from the user's CURRENT key.
+        // Never use the stored column here: it can be stale, and USDC sent to a stale
+        // address cannot be signed for by the bot.
+        const solAddr = solAddrLib.resolveSolanaRecipient(user, { isBiz });
         if (!solAddr) {
-          try {
-            let rawKey = null;
-            const encKey = isBiz ? (user.biz_system_encrypted_key || user.system_encrypted_key) : user.system_encrypted_key;
-            if (encKey) {
-              rawKey = walletLib.decryptSensitiveValue(encKey);
-            }
-            if (rawKey) {
-              const derivedSol = multichain.deriveSolanaFromEvmKey(rawKey);
-              solAddr = derivedSol.solanaAddress;
-              if (isBiz) {
-                db.updateBizSolanaAddress(userId, solAddr);
-              } else {
-                db.updateSolanaAddress(userId, solAddr);
-              }
-            }
-          } catch (_) {}
+          console.error(`[onramp_blocked] TG:${userId} no verifiable Solana address (system key missing or unreadable)`);
+          convState.clearState(userId);
+          return ctx.reply(
+            "🔐 For your safety, we must verify your wallet before creating a deposit account. " +
+            "Please complete one PIN-confirmed action and try again, or contact support."
+          );
         }
 
         const externalId = isBiz ? `${userId}-biz` : String(userId);
