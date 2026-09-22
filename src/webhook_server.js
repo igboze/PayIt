@@ -44,11 +44,16 @@ async function processPajEvent(payload, bot) {
   console.log(`[webhook_server] Received Paj v2 event: "${event}"`);
 
   // 0. Strict Webhook Idempotency: Prevent replay attacks or duplicate processing
-  const eventId = data.id || payload.id || data.reference || data.txHash || `${event}_${Date.now()}`;
+  const eventId = data.id || payload.id || data.reference || data.txHash;
+  if (!eventId) {
+    console.error("[webhook_server] Cannot process event: no stable identifier present", payload);
+    return { success: false, error: "missing stable event id" };
+  }
   if (idempotency.isWebhookProcessed(eventId)) {
     console.log(`[webhook_server] Webhook event ${eventId} already processed, ignoring duplicate.`);
     return { success: true, duplicate: true };
   }
+  idempotency.markWebhookProcessed(eventId, event, data.id);
 
   // Detect onramp completion
   if (
