@@ -219,6 +219,18 @@ async function depositIntoVault(privateKey, vaultAddress, amountUsdc) {
     const amountMicro = walletLib.parseToMicro(amountUsdc.toString());
     const vaultContract = new Contract(vaultAddress, ERC4626_ABI, userWallet);
 
+    const assetAddress = await vaultContract.asset();
+    const erc20Abi = [
+      "function allowance(address owner, address spender) view returns (uint256)",
+      "function approve(address spender, uint256 amount) returns (bool)",
+    ];
+    const assetContract = new Contract(assetAddress, erc20Abi, userWallet);
+    const allowance = await assetContract.allowance(userWallet.address, vaultAddress);
+    if (allowance < amountMicro) {
+      const approveTx = await assetContract.approve(vaultAddress, amountMicro);
+      await approveTx.wait();
+    }
+
     const tx = await vaultContract.deposit(amountMicro, userWallet.address);
     const receipt = await tx.wait();
     return {
@@ -231,7 +243,8 @@ async function depositIntoVault(privateKey, vaultAddress, amountUsdc) {
   } catch (contractErr) {
     console.warn("[savings:deposit] Direct ERC-4626 deposit note:", contractErr.message);
     return {
-      success: true,
+      success: false,
+      error: contractErr.message,
       txHash: null,
       vaultAddress,
       amountUsdc,
@@ -285,7 +298,8 @@ async function withdrawFromVault(privateKey, vaultAddress, amountUsdc) {
   } catch (contractErr) {
     console.warn("[savings:withdraw] Direct ERC-4626 withdraw note:", contractErr.message);
     return {
-      success: true,
+      success: false,
+      error: contractErr.message,
       txHash: null,
       vaultAddress,
       amountUsdc,
@@ -321,13 +335,18 @@ async function withdrawFromVaultWithFee({ userWallet, position, feeRecipientAddr
   const totalUserPayout = parseFloat((position.amount_usdc + netYield).toFixed(6));
 
   // 1. Withdraw principal + gross yield from vault back to user's wallet
-  let withdrawTxHash = null;
+  let withdrawRes = null;
   try {
-    const withdrawRes = await withdrawFromVault(userWallet.privateKey, vaultAddress, position.amount_usdc);
-    withdrawTxHash = withdrawRes?.txHash || withdrawRes?.hash || null;
+    withdrawRes = await withdrawFromVault(userWallet.privateKey, vaultAddress, position.amount_usdc);
   } catch (err) {
-    console.warn("[savings] Vault withdrawal warning:", err.message);
+    throw new Error(`Vault withdrawal failed: ${err.message}`);
   }
+
+  if (!withdrawRes || !withdrawRes.success) {
+    throw new Error(`Vault withdrawal failed: ${withdrawRes?.error || "Unknown error"}`);
+  }
+
+  const withdrawTxHash = withdrawRes.txHash || withdrawRes.hash || null;
 
   // 2. Route Dev Fee on-chain to project fee address
   let feeTxHash = null;

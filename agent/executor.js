@@ -291,6 +291,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
   try {
     if (isTargetSolana) {
       let cctpSuccess = false;
+      const arcBal = await walletLib.getNativeBalanceMicro(userWallet.address);
       if (arcBal >= amountMicro) {
         try {
           // User has enough USDC on Arc EVM: attempt CCTP Arc -> Solana burn to Paj
@@ -314,31 +315,19 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
       }
 
       if (!cctpSuccess) {
-        // Direct Off-ramp through Paj on Solana
-        // Find which Solana address actually holds the required USDC balance
+        // Direct Off-ramp through Paj on Solana (if derived keypair controls the funds)
         const userRec = db.getUser(telegramId);
-        let sourceSolAddr = userRec?.solana_deposit_address;
-        const addrsToCheck = ["wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j"];
-        if (sourceSolAddr && !addrsToCheck.includes(sourceSolAddr)) {
-          addrsToCheck.push(sourceSolAddr);
-        }
-        for (const addr of addrsToCheck) {
-          try {
-            const b = await multichain.getSplTokenBalance(addr);
-            if (b && b.uiAmount >= amountUsdc) {
-              sourceSolAddr = addr;
-              break;
-            }
-          } catch (_) {}
-        }
-        if (!sourceSolAddr) sourceSolAddr = "wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j";
+        const sourceSolAddr = userRec?.solana_deposit_address;
 
-        // Try direct Solana SPL token transfer if derived keypair owns sourceSolAddr
         let directSolTx = null;
         try {
           const solData = multichain.deriveSolanaFromEvmKey(userWallet.privateKey);
-          if (solData && solData.solanaAddress === sourceSolAddr) {
-            directSolTx = await multichain.sendSolanaTransfer(solData.keypair, result.address, amountUsdc);
+          if (solData && (!sourceSolAddr || solData.solanaAddress === sourceSolAddr)) {
+            directSolTx = await multichain.sendSolanaTransfer({
+              keypair: solData.keypair,
+              recipientAddress: result.address,
+              amount: amountUsdc,
+            });
           }
         } catch (solErr) {
           console.warn("[executor:offramp] Direct Solana keypair transfer attempt:", solErr.message);
@@ -347,13 +336,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
         txHash = directSolTx?.txHash || directSolTx?.signature;
 
         if (!txHash) {
-          // Trigger Paj sweep API to move tokens from sourceSolAddr to result.address
-          const sweepRes = await paj.triggerOnrampSweep(sourceSolAddr, result.address);
-          txHash = sweepRes?.txHash || sweepRes?.signature || sweepRes?.solanaTxSignature;
-        }
-
-        if (!txHash) {
-          throw new Error(`Paj settlement on-chain transfer could not be executed for address ${sourceSolAddr}. Please verify Paj API endpoint.`);
+          throw new Error("Cash out could not be completed: the CCTP transfer failed and no automatic recovery path exists. Please try again or contact support.");
         }
       }
     } else {

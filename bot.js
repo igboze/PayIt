@@ -4917,27 +4917,11 @@ bot.on("text", async (ctx) => {
         console.warn("[bot:sweep_paj_transfer_pin] Direct Solana keypair transfer note:", solErr.message);
       }
 
-      if (!realTxHash) {
-        realTxHash = `paj_sweep_${Date.now()}`;
-      }
-
-      try {
-        const webhookServer = require("./src/webhook_server");
-        await webhookServer.processPajEvent({
-          event: "onramp.successful",
-          data: {
-            userExternalId: userId,
-            recipient: payitSolAddr,
-            amount: solAmount,
-            id: `paj_sweep_${Date.now()}`,
-            txHash: realTxHash,
-          },
-        }, bot);
-
+      if (realTxHash) {
         const explorerUrl = `https://solscan.io/tx/${realTxHash}`;
         return ctx.reply(
-          `🎉 <b>Paj Deposit Swept to Solana Wallet!</b>\n──────────────────────────\n` +
-          `Detected <b>$${solAmount.toFixed(2)} USDC</b> on Paj deposit wallet:\n<code>${tempAddr}</code>\n\n` +
+          `🎉 <b>Deposit Swept to Solana Wallet!</b>\n──────────────────────────\n` +
+          `Detected <b>$${solAmount.toFixed(2)} USDC</b> on deposit wallet:\n<code>${tempAddr}</code>\n\n` +
           `✅ On-chain transaction confirmed on Solana Mainnet:\n` +
           `🔗 <a href="${explorerUrl}">View on Solscan</a>\n\n` +
           `✅ Funds transferred into your PayIT Solana Address:\n<code>${payitSolAddr}</code>\n\n` +
@@ -4950,10 +4934,22 @@ bot.on("text", async (ctx) => {
             ]),
           }
         );
-      } catch (err) {
-        console.error("[bot:sweep_paj_transfer_pin_err]", err);
-        return ctx.reply(`❌ Sweep execution error: ${err.message}`);
       }
+
+      return ctx.reply(
+        `⚙️ <b>Address Reconciled</b>\n──────────────────────────\n` +
+        `Your active PayIT Solana address is updated to your non-custodial key:\n<code>${payitSolAddr}</code>\n\n` +
+        `Archived legacy address: <code>${tempAddr}</code>\n` +
+        `Legacy USDC Balance: <b>$${solAmount.toFixed(2)} USDC</b>\n\n` +
+        `<i>Because <code>${tempAddr}</code> is a Paj deposit wallet, moving these funds requires Paj payout processing or admin key recovery.</i>`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback("💰 View Balance", "action_balance")],
+            [Markup.button.callback("🏠 Main Menu", "main_menu")],
+          ]),
+        }
+      );
     }
 
     if (state.type === "confirm_yield_deposit") {

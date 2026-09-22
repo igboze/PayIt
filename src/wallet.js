@@ -114,19 +114,8 @@ function formatMicro(microAmount) {
 const ARC_USDC_ABI = ["function balanceOf(address owner) view returns (uint256)"];
 
 async function getNativeBalanceMicro(address) {
-  const net = getNetworkConfig();
   const provider = getProvider();
-
-  // Prefer ERC-20 USDC balance on Arc (6 decimals → scale to 18 for formatMicro compat)
-  try {
-    const usdcContract = new Contract(net.usdcAddress, ARC_USDC_ABI, provider);
-    const raw = await usdcContract.balanceOf(address); // BigInt, 6 decimals
-    // Scale 6-decimal value to 18-decimal "micro" representation
-    return raw * 1_000_000_000_000n; // ×10^12
-  } catch {
-    // Fallback: native gas balance (for networks where USDC IS the native token)
-    return await provider.getBalance(address);
-  }
+  return await provider.getBalance(address);
 }
 
 // ─── Source-chain ERC-20 USDC balance (6 decimals) ───────────────────────────
