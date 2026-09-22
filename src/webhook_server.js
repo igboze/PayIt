@@ -12,6 +12,7 @@ const invoiceDb = require("./invoice_db");
 const bizDb = require("./biz_db");
 const evmDepositSweeper = require("./evm_deposit_sweeper");
 const walletLib = require("./wallet");
+const solAddrLib = require("./solana_address");
 
 function verifyAlchemySignature(rawBody, headers, signingKey) {
   if (!signingKey) return true;
@@ -170,6 +171,20 @@ async function processPajEvent(payload, bot) {
     const externalIdStr = String(data.userExternalId || data.metadata?.telegramId || "");
     const isBizAccount = data.accountType === "business" || data.metadata?.accountType === "business" || externalIdStr.endsWith("-biz");
     const accountLabel = isBizAccount ? "Business Treasury" : "Personal Wallet";
+
+    // Safety net: Paj reports the exact address it paid. It must be the address our key controls.
+    if (user && recipient) {
+      const expectedSol = solAddrLib.getDerivedSolanaAddress(user, { isBiz: isBizAccount });
+      if (expectedSol && recipient !== expectedSol) {
+        console.error(
+          `[webhook_server:ADDRESS_MISMATCH] TG:${user.telegram_id} Paj paid ${recipient} but the bot controls ${expectedSol} (order ${data.id}, $${amountUsdc})`
+        );
+        await solAddrLib.alertAdmins(
+          bot,
+          `⚠️ Paj on-ramp paid an address the bot cannot sign for.\nTG: ${user.telegram_id}\nOrder: ${data.id}\nAmount: $${amountUsdc}\nPaid to: ${recipient}\nExpected: ${expectedSol}`
+        );
+      }
+    }
 
     const targetTelegramId = user ? user.telegram_id : telegramId;
     const recipientArcAddress = isBizAccount
@@ -348,13 +363,17 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
       req.on("end", async () => {
         const rawBody = Buffer.concat(chunks);
 
-        // Verify cryptographic signature if secret and signature header provided
-        let isValid = true;
-        if (secret && (req.headers["x-paj-signature"] || req.headers["X-PAJ-Signature"])) {
-          isValid = paj.verifyWebhookSignature(rawBody, req.headers, secret);
-          if (!isValid) {
-            console.warn("[webhook_server] Notice: Paj webhook HMAC signature mismatch with configured secret.");
+        // Reject unsigned or badly signed webhooks. Without this, anyone who knows the URL can
+        // POST a fake "order.successful" event. Enforced when PAJ_WEBHOOK_SECRET (whsec_...) is set.
+        const strictSecret = process.env.PAJ_WEBHOOK_SECRET || "";
+        if (strictSecret) {
+          if (!paj.verifyWebhookSignature(rawBody, req.headers, strictSecret)) {
+            console.warn("[webhook_server] Rejected Paj webhook: missing or invalid signature.");
+            res.writeHead(401, { "Content-Type": "application/json" });
+            return res.end(JSON.stringify({ error: "invalid signature" }));
           }
+        } else {
+          console.warn("[webhook_server] WARNING: PAJ_WEBHOOK_SECRET is not set. Paj webhooks are NOT authenticated.");
         }
 
         // Return 200 immediately to acknowledge Paj
