@@ -665,6 +665,14 @@ function verifyPinWithStatus(telegramId, pin) {
       }
     }
 
+    // Keep the stored Solana deposit address in sync with the key that was just unlocked.
+    // Lazy require avoids a circular import at load time.
+    try {
+      require("./solana_address").reconcileUser(user);
+    } catch (e) {
+      console.warn("[db] Solana address reconcile warning:", e.message);
+    }
+
     resetPinLockout(telegramId);
     return { valid: true, locked: false, remainingAttempts: MAX_FAILED_PIN_ATTEMPTS, remainingSec: 0 };
   } catch {
