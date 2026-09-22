@@ -101,9 +101,8 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
     const rate = rates?.onRampRate?.rate || 1388.75;
     const fiatAmount = Math.round(Number(totalUsdc) * rate);
 
-    const solAddr =
-      user.solana_deposit_address ||
-      multichain.deriveSolanaFromEvmKey(decryptedPrivateKey).solanaAddress;
+    // Always derive from the key in hand. The stored column can be stale.
+    const solAddr = multichain.deriveSolanaFromEvmKey(decryptedPrivateKey).solanaAddress;
 
     const order = await paj.createOnrampOrder({
       fiatAmount,
@@ -223,9 +222,8 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
     const rate = rates?.onRampRate?.rate || 1388.75;
     const fiatAmount = Math.round(Number(totalUsdc) * rate);
 
-    const solAddr =
-      user.solana_deposit_address ||
-      multichain.deriveSolanaFromEvmKey(decryptedBizKey).solanaAddress;
+    // Always derive from the key in hand. The stored column can be stale.
+    const solAddr = multichain.deriveSolanaFromEvmKey(decryptedBizKey).solanaAddress;
 
     const order = await paj.createOnrampOrder({
       fiatAmount,
