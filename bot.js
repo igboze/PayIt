@@ -80,6 +80,16 @@ if (!process.env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN.includes("
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
+// Global Telegraf error handler: prevents update timeouts or network RPC exceptions from terminating the Node process
+bot.catch((err, ctx) => {
+  const updateId = ctx?.update?.update_id || "unknown";
+  console.error(`[bot:catch] Handled error during update ${updateId}:`, err?.message || err);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[process:unhandledRejection]", reason?.message || reason);
+});
+
 // Wrap Telegraf callback query responses so stale or invalid callback IDs do not crash the bot.
 bot.use(async (ctx, next) => {
   if (ctx.from?.id) {
@@ -5001,14 +5011,24 @@ bot.on("text", async (ctx) => {
       }
 
       let depositTxHash = null;
+      let depositResult = null;
       const vaultAddress = state.data.pool?.address || state.data.pool?.id;
       if (vaultAddress) {
         try {
-          const depositResult = await savings.depositIntoVault(pk, vaultAddress, state.data.amountUsdc);
+          depositResult = await savings.depositIntoVault(pk, vaultAddress, state.data.amountUsdc);
           depositTxHash = depositResult?.hash || depositResult?.txHash || null;
         } catch (err) {
           console.warn("[bot:earn_deposit] On-chain vault deposit note:", err.message);
+          depositResult = { success: false, error: err.message };
         }
+      } else {
+        depositResult = { success: false, error: "Invalid vault address" };
+      }
+
+      if (!depositResult || !depositResult.success) {
+        const errorMsg = depositResult?.error ? `: ${depositResult.error}` : ".";
+        idempotency.failOperationIdempotency(idemKey, depositResult?.error || "Vault deposit failed");
+        return ctx.reply(`❌ Your deposit could not be completed${errorMsg} No funds were moved into the vault.`);
       }
 
       savings.openYieldPosition(userId, state.data.amountUsdc, state.data.pool, {

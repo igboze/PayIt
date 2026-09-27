@@ -1,0 +1,850 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PayIT — Architecture & Feature Flow Visualizer</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: #111827;
+      --card-border: #1f293d;
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --accent-glow: rgba(59, 130, 246, 0.25);
+      --success: #10b981;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      background: linear-gradient(180deg, #111827 0%, rgba(17, 24, 39, 0.8) 100%);
+      border-bottom: 1px solid var(--card-border);
+      padding: 1.25rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(12px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .badge {
+      background: linear-gradient(135deg, #2563eb, #3b82f6);
+      color: #fff;
+      font-weight: 700;
+      font-size: 0.8rem;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      font-size: 1.35rem;
+      font-weight: 800;
+      background: linear-gradient(90deg, #ffffff, #93c5fd);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .container {
+      display: flex;
+      flex: 1;
+      height: calc(100vh - 73px);
+    }
+
+    /* Sidebar Navigation */
+    aside {
+      width: 320px;
+      background: #0d121f;
+      border-right: 1px solid var(--card-border);
+      overflow-y: auto;
+      padding: 1rem 0.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .nav-header {
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #6b7280;
+      padding: 0.5rem 0.75rem 0.25rem;
+    }
+
+    .nav-btn {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0.65rem 0.85rem;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: #9ca3af;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      text-align: left;
+      transition: all 0.15s ease;
+      width: 100%;
+    }
+
+    .nav-btn:hover {
+      background: #172033;
+      color: #e5e7eb;
+    }
+
+    .nav-btn.active {
+      background: #1e293b;
+      color: #60a5fa;
+      border-color: #3b82f6;
+      box-shadow: 0 0 15px var(--accent-glow);
+      font-weight: 600;
+    }
+
+    .nav-num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.05);
+      font-size: 0.72rem;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .nav-btn.active .nav-num {
+      background: #2563eb;
+      color: #fff;
+    }
+
+    /* Main Diagram Viewport */
+    main {
+      flex: 1;
+      overflow-y: auto;
+      padding: 2rem;
+      background: radial-gradient(circle at 50% 10%, #172033 0%, var(--bg) 60%);
+    }
+
+    .diagram-panel {
+      display: none;
+      animation: fadeIn 0.25s ease-out forwards;
+    }
+
+    .diagram-panel.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .panel-header {
+      margin-bottom: 1.5rem;
+    }
+
+    .panel-title {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .panel-desc {
+      color: #9ca3af;
+      font-size: 0.95rem;
+      margin-top: 6px;
+      line-height: 1.5;
+    }
+
+    .files-tag {
+      margin-top: 10px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .file-pill {
+      background: #1f293d;
+      border: 1px solid #374151;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-family: 'JetBrains Mono', monospace;
+      color: #93c5fd;
+    }
+
+    .canvas-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 2rem;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+      overflow-x: auto;
+      display: flex;
+      justify-content: center;
+    }
+
+    .mermaid {
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <span class="badge">PayIT Architecture</span>
+      <h1>Interactive Architectural Flow Visualizer</h1>
+    </div>
+    <div style="font-size: 0.85rem; color: #9ca3af;">
+      Circle Arc L1 • Solana • Paj v2 • Multimodal AI
+    </div>
+  </header>
+
+  <div class="container">
+    <aside>
+      <div class="nav-header">Full System</div>
+      <button class="nav-btn active" onclick="showTab('full')">
+        <span class="nav-num">✦</span>
+        <span>End-to-End System Flow</span>
+      </button>
+
+      <div class="nav-header">Individual Features</div>
+      <button class="nav-btn" onclick="showTab('f1')">
+        <span class="nav-num">01</span>
+        <span>Dual-Wallet & PIN Keystore</span>
+      </button>
+      <button class="nav-btn" onclick="showTab('f2')">
+        <span class="nav-num">02</span>
+        <span>Multimodal AI Intent Router</span>
+      </button>
+      <button class="nav-btn" onclick="showTab('f3')">
+        <span class="nav-num">03</span>
+        <span>On-Chain Transfers & Paymaster</span>
+      </button>
+      <button class="nav-btn" onclick="showTab('f4')">
+        <span class="nav-num">04</span>
+        <span>Fiat ON/OFF-Ramp (Naira)</span>
+      </button>
+      <button class="nav-btn" onclick="showTab('f5')">
+        <span class="nav-num">05</span>
+        <span>Circle CCTP Cross-Chain Bridge</span>
+      </button>
+      <button class="nav-btn" onclick="showTab('f6')">
+        <span class="nav-num">06</span>
+        <span>Automated EVM Sweeper & Swapper</span>
+      </button>
+      <button class="nav-btn" onclick="showTab('f7')">
+        <span class="nav-num">07</span>
+        <span>SME Invoicing & HD Settlement</span>
+      </button>
+      <button class="nav-btn" onclick="showTab('f8')">
+        <span class="nav-num">08</span>
+        <span>DeFi Savings & Auto-Earn Daemon</span>
+      </button>
+      <button class="nav-btn" onclick="showTab('f9')">
+        <span class="nav-num">09</span>
+        <span>Business Suite (Payroll & Tax)</span>
+      </button>
+      <button class="nav-btn" onclick="showTab('f10')">
+        <span class="nav-num">10</span>
+        <span>Agentic Shopping Agent</span>
+      </button>
+    </aside>
+
+    <main>
+      <!-- TAB: FULL -->
+      <div id="full" class="diagram-panel active">
+        <div class="panel-header">
+          <div class="panel-title">Full System Architectural Flow</div>
+          <p class="panel-desc">Complete end-to-end topology of PayIT connecting Telegram clients, multimodal AI parsers, non-custodial keystores, Arc L1, Solana, multi-chain sweepers, and the Paj Cash banking gateway.</p>
+          <div class="files-tag">
+            <span class="file-pill">bot.js</span>
+            <span class="file-pill">src/webhook_server.js</span>
+            <span class="file-pill">agent/orchestrator.js</span>
+            <span class="file-pill">src/cctp_bridge.js</span>
+            <span class="file-pill">src/paj.js</span>
+          </div>
+        </div>
+        <div class="canvas-card">
+          <pre class="mermaid">
+flowchart TB
+    subgraph INGESTION ["1. Ingestion Layer"]
+        TG_USER["Telegram User / SME Owner<br/>(Text, Voice, Photos, PDF, Excel)"]
+        WEBHOOK_EXT["External Webhooks<br/>(Paj Cash v2, Alchemy, QuickNode, CCTP)"]
+    end
+
+    subgraph CONTROLLERS ["2. Controller & Session Layer"]
+        BOT_MAIN["bot.js<br/>Telegraf Dispatcher & Command Router"]
+        WEBHOOK_SRV["src/webhook_server.js<br/>HTTP Server (Port 3000)"]
+        CONV_STATE["src/conversation_state.js<br/>Clarification Session State"]
+        IDEMPOTENCY["src/idempotency.js<br/>Replay Defense & Deduplication"]
+    end
+
+    subgraph AGENT_CORE ["3. Multimodal Agent Core"]
+        ROUTER["agent/intent_router.js<br/>Heuristics + LLM Classifier"]
+        VOICE["agent/voice_parser.js<br/>Whisper Voice Transcription"]
+        VISION["agent/vision_parser.js<br/>GPT-4o / Gemini Vision OCR"]
+        FILE_P["agent/file_parser.js<br/>Excel, CSV, PDF, PPTX Parsers"]
+        SHOP_AI["agent/shopping_agent.js<br/>Shopping & Catalog Agent"]
+        INV_AI["agent/smart_invoice_agent.js<br/>Smart Invoice Generator"]
+        ORCH["agent/orchestrator.js<br/>Structured Payment Plan Builder"]
+    end
+
+    subgraph SECURITY_EXEC ["4. Security & Execution Layer"]
+        WALLET_LIB["src/wallet.js<br/>scrypt + AES-256-GCM Keystore"]
+        PIN_SEC["src/db.js (pin_security)<br/>Failed Attempts & Brute-Force Lockout"]
+        PAYMASTER["src/paymaster.js<br/>Arc ERC-4337 Gas Sponsorship"]
+        EXECUTOR["agent/executor.js<br/>Payment & Offramp Executor"]
+        SCHEDULER["agent/scheduler.js<br/>node-cron Recurring Jobs"]
+    end
+
+    subgraph SETTLEMENT ["5. Multi-Chain Settlement"]
+        ARC_CHAIN["Arc Network (Domain ID 26)<br/>Circle EVM L1 (Native Gas = USDC)"]
+        SOL_CHAIN["Solana Mainnet<br/>Ed25519 Derived Keypair, SPL USDC"]
+        EVM_SWEEP["src/evm_deposit_sweeper.js<br/>Base, Arbitrum, Optimism Sweeper"]
+        CCTP_BRIDGE["src/cctp_bridge.js<br/>Circle CCTP Protocol + Iris Relayer"]
+        CONTRACT_INV["contracts/InvoiceSettlement.sol<br/>On-Chain Invoice Settlement Contract"]
+    end
+
+    subgraph FIAT_GATEWAY ["6. Fiat Gateway (NGN)"]
+        PAJ_CORE["src/paj.js<br/>Paj v2 API (Virtual Accounts & Payouts)"]
+        BANK_RES["src/bank_resolver.js<br/>NIBSS Bank & FinTech Directory"]
+    end
+
+    subgraph BIZ_DEFI ["7. Business Suite & DeFi Yield"]
+        HD_INV["src/invoice_hd.js<br/>BIP-44 Child Addresses + Cards"]
+        INV_LISTENER["agent/invoice_listener.js<br/>Mempool & Block Scanner"]
+        BIZ_DB["src/biz_db.js<br/>SME Accounting & Tax Engine"]
+        SAVINGS["src/savings.js<br/>Circle EarnKit Morpho Vaults"]
+        AUTO_EARN["src/auto_earn.js<br/>2-Hour Idle Liquidity Harvester"]
+    end
+
+    TG_USER --> BOT_MAIN
+    WEBHOOK_EXT --> WEBHOOK_SRV
+    WEBHOOK_SRV --> IDEMPOTENCY
+    WEBHOOK_SRV --> BOT_MAIN
+    BOT_MAIN <--> CONV_STATE
+
+    BOT_MAIN --> VOICE & VISION & FILE_P & ROUTER
+    VOICE & VISION & FILE_P --> ROUTER
+    ROUTER --> SHOP_AI & INV_AI & ORCH
+
+    ORCH --> BOT_MAIN
+    BOT_MAIN --> PIN_SEC
+    PIN_SEC --> WALLET_LIB
+    WALLET_LIB --> EXECUTOR
+    EXECUTOR --> PAYMASTER & SCHEDULER
+
+    EXECUTOR --> ARC_CHAIN & SOL_CHAIN & CCTP_BRIDGE & PAJ_CORE
+    WEBHOOK_SRV --> EVM_SWEEP
+    EVM_SWEEP --> CCTP_BRIDGE
+    CCTP_BRIDGE <--> ARC_CHAIN & SOL_CHAIN
+
+    PAJ_CORE <--> BANK_RES
+    BOT_MAIN --> HD_INV
+    HD_INV --> CONTRACT_INV
+    INV_LISTENER --> ARC_CHAIN & BOT_MAIN
+
+    BOT_MAIN --> SAVINGS & BIZ_DB
+    AUTO_EARN --> SAVINGS
+    SAVINGS --> ARC_CHAIN
+          </pre>
+        </div>
+      </div>
+
+      <!-- TAB: F1 -->
+      <div id="f1" class="diagram-panel">
+        <div class="panel-header">
+          <div class="panel-title">Feature 1: Non-Custodial Dual-Wallet & PIN Security</div>
+          <p class="panel-desc">Independent wallet generation, scrypt key derivation, AES-256-GCM encryption, in-memory transient decryption, and rate-limited PIN security.</p>
+          <div class="files-tag">
+            <span class="file-pill">src/wallet.js</span>
+            <span class="file-pill">src/db.js</span>
+            <span class="file-pill">src/multichain.js</span>
+          </div>
+        </div>
+        <div class="canvas-card">
+          <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor User as Telegram User
+    participant Bot as bot.js
+    participant DB as src/db.js (pin_security)
+    participant Wallet as src/wallet.js
+    participant Multi as src/multichain.js
+
+    Note over User,Wallet: 1. Wallet Generation Flow (/start)
+    User->>Bot: /start
+    Bot->>Wallet: ethers.Wallet.createRandom()
+    Wallet->>Wallet: Generate Random Salt
+    User->>Bot: Enters 4-digit PIN (e.g. 1234)
+    Bot->>Wallet: scrypt(PIN, salt) → 256-bit AES Key
+    Wallet->>Wallet: AES-256-GCM encrypt(PrivateKey)
+    Wallet->>Multi: deriveSolanaFromEvmKey(PrivateKey)
+    Multi-->>Wallet: Deterministic Solana Ed25519 Address
+    Wallet->>DB: Save { personal_address, solana_address, encrypted_blob, salt }
+    Bot-->>User: Wallet Initialized (Keys self-destruct after 60s)
+
+    Note over User,Wallet: 2. Transient Key Decryption Flow
+    User->>Bot: Request On-Chain Transfer / Withdrawal
+    Bot->>DB: Verify lockout threshold (attempts < 5)
+    User->>Bot: Enters 4-digit PIN
+    Bot->>Wallet: scrypt(PIN, salt)
+    Wallet->>Wallet: Decrypt blob with AES-256-GCM
+    alt PIN Incorrect
+        DB->>DB: Increment failed_attempts (Lockout up to 1 hr if >= 5)
+        Bot-->>User: ❌ Incorrect PIN
+    else PIN Valid
+        DB->>DB: Reset failed_attempts to 0
+        Wallet->>Wallet: Sign transaction in RAM
+        Wallet->>Wallet: Wipe plaintext private key from RAM immediately
+        Wallet-->>Bot: Signed Transaction Payload
+    end
+          </pre>
+        </div>
+      </div>
+
+      <!-- TAB: F2 -->
+      <div id="f2" class="diagram-panel">
+        <div class="panel-header">
+          <div class="panel-title">Feature 2: Multimodal AI Intent Router & Clarification Flow</div>
+          <p class="panel-desc">Understands voice notes (Whisper), invoice photos (GPT-4o Vision), documents (PDF/Excel), and prompts interactive buttons when details are missing.</p>
+          <div class="files-tag">
+            <span class="file-pill">agent/intent_router.js</span>
+            <span class="file-pill">agent/voice_parser.js</span>
+            <span class="file-pill">agent/vision_parser.js</span>
+            <span class="file-pill">agent/file_parser.js</span>
+            <span class="file-pill">src/conversation_state.js</span>
+          </div>
+        </div>
+        <div class="canvas-card">
+          <pre class="mermaid">
+flowchart TD
+    INPUT[User Input in Telegram] --> TYPE{Detect Input Type}
+
+    TYPE -->|Voice Note .ogg| VOICE[agent/voice_parser.js<br/>Whisper API Transcription]
+    TYPE -->|Photo / Image| VISION[agent/vision_parser.js<br/>GPT-4o / Gemini Vision OCR]
+    TYPE -->|PDF / Excel / PPTX| FILE_P[agent/file_parser.js<br/>pdf-parse / exceljs / jszip]
+    TYPE -->|Text / Command| TEXT[Raw Text Message]
+
+    VOICE --> TEXT
+    VISION --> EXTRACT_IMG[Extract: Recipient, Amount, Currency, Due Date]
+    FILE_P --> EXTRACT_FILE[Extract Payroll Rows / Invoices]
+
+    TEXT --> FAST_PATH{Regex Fast-Path Match?}
+    FAST_PATH -->|'balance', 'history', 'send $X to 0x...'| PLAN_READY[Instant Execution Plan]
+    FAST_PATH -->|Complex / Natural Language| LLM[agent/ai_provider.js<br/>Groq / Gemini / OpenAI]
+
+    LLM --> CLASSIFIED[Classified Intent + Extracted Entities]
+    EXTRACT_IMG --> CLASSIFIED
+    EXTRACT_FILE --> CLASSIFIED
+
+    CLASSIFIED --> VALIDATE{Missing Details?<br/>recipient, amount, or bank}
+    VALIDATE -->|Missing Info| CLARIFY[agent/intent_router.js getMissingQuestion]
+    CLARIFY --> BUTTONS[Render Telegram Inline Buttons<br/>👥 Choose Contact | 📋 Paste Address | 🏦 Bank]
+    BUTTONS --> SAVE_STATE[src/conversation_state.js<br/>Preserve Partial Plan in SQLite]
+    SAVE_STATE -.->|User Taps Button / Replies| INPUT
+
+    VALIDATE -->|Complete Info| PLAN_READY
+    PLAN_READY --> ORCH[agent/orchestrator.js<br/>Build Structured Payment Plan]
+    ORCH --> CONFIRM[Send Summary & Prompt 4-Digit PIN]
+          </pre>
+        </div>
+      </div>
+
+      <!-- TAB: F3 -->
+      <div id="f3" class="diagram-panel">
+        <div class="panel-header">
+          <div class="panel-title">Feature 3: On-Chain Transfer Execution & Paymaster Gas Sponsorship</div>
+          <p class="panel-desc">Direct execution on Circle's Arc L1 (Chain ID 5042002) with ERC-4337 Account Abstraction zero-gas sponsorship and instant receipt image generation.</p>
+          <div class="files-tag">
+            <span class="file-pill">agent/executor.js</span>
+            <span class="file-pill">src/paymaster.js</span>
+            <span class="file-pill">src/receipt_generator.js</span>
+          </div>
+        </div>
+        <div class="canvas-card">
+          <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor User as Telegram User
+    participant Bot as bot.js
+    participant Exec as agent/executor.js
+    participant PM as src/paymaster.js
+    participant RPC as Arc RPC Node (Chain 5042002)
+    participant Rec as src/receipt_generator.js
+
+    User->>Bot: Enters PIN to confirm Payment Plan
+    Bot->>Exec: executePlan(plan, pin, user)
+    Exec->>Exec: Decrypt sender wallet in RAM
+    alt Arc Paymaster Enabled (Zero-Gas Sponsorship)
+        Exec->>PM: sponsorTransaction(txPayload)
+        PM->>PM: Sign UserOperation via Paymaster Policy
+        PM-->>Exec: Sponsored UserOp
+        Exec->>RPC: Broadcast via Bundler RPC
+    else Standard Arc RPC (Native USDC Gas)
+        Exec->>RPC: ethers.Wallet.sendTransaction(tx)
+    end
+    RPC-->>Exec: Transaction Hash (0x...)
+    Exec->>Exec: Wait 1 confirmation block
+    Exec->>Rec: generateReceiptPNG(txDetails, qrCode)
+    Rec-->>Bot: Branded Receipt PNG Image Buffer
+    Bot-->>User: ✅ Payment Sent + Receipt Image with QR
+          </pre>
+        </div>
+      </div>
+
+      <!-- TAB: F4 -->
+      <div id="f4" class="diagram-panel">
+        <div class="panel-header">
+          <div class="panel-title">Feature 4: Fiat ON/OFF-Ramp System (Naira via Paj Cash v2)</div>
+          <p class="panel-desc">Seamless off-ramping from Arc USDC to Nigerian bank accounts (NIBSS) with automated bank code resolution across commercial and neobanks.</p>
+          <div class="files-tag">
+            <span class="file-pill">src/paj.js</span>
+            <span class="file-pill">src/bank_resolver.js</span>
+            <span class="file-pill">src/webhook_server.js</span>
+          </div>
+        </div>
+        <div class="canvas-card">
+          <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor User as User
+    participant Bot as bot.js
+    participant Resolver as src/bank_resolver.js
+    participant Paj as src/paj.js (Paj v2 API)
+    participant CCTP as src/cctp_bridge.js
+    participant Webhook as src/webhook_server.js
+    participant Bank as Nigerian Banking System (NIBSS)
+
+    Note over User,Bank: OFF-RAMP (USDC → Naira Bank Transfer)
+    User->>Bot: "Withdraw 50 USDC to Kuda 2001234567"
+    Bot->>Resolver: resolveBankNameOrCode("kuda")
+    Resolver-->>Bot: NIBSS Code 090267 (Kuda MFB)
+    Bot->>Paj: getRates("NGN")
+    Paj-->>Bot: Rate = ₦1,650/USDC
+    Bot-->>User: Confirm payout: ₦82,500 to Kuda (PIN required)
+    User->>Bot: Enters PIN
+    Bot->>CCTP: executeArcToSolanaCctpBurn(50 USDC, PajOfframpSolAddress)
+    CCTP-->>Bot: Burn Tx Confirmed
+    Bot->>Paj: createOfframpOrder(recipientBank, accountNumber, amount)
+    Paj->>Bank: Disburse NGN via NIBSS
+    Paj->>Webhook: POST /webhook/paj (HMAC-SHA256 Signed: order.successful)
+    Webhook->>Webhook: idempotency.isWebhookProcessed(eventId)
+    Webhook->>Bot: Notify User: ₦82,500 Delivered to Kuda Bank
+    Bot-->>User: 🔔 Instant Telegram Alert + Receipt
+          </pre>
+        </div>
+      </div>
+
+      <!-- TAB: F5 -->
+      <div id="f5" class="diagram-panel">
+        <div class="panel-header">
+          <div class="panel-title">Feature 5: Circle CCTP Cross-Chain Bridge</div>
+          <p class="panel-desc">Trustless 1:1 USDC burn and mint protocol between Arc (Domain 26), Solana (Domain 5), and EVM networks with automated Iris attestation polling.</p>
+          <div class="files-tag">
+            <span class="file-pill">src/cctp_bridge.js</span>
+            <span class="file-pill">src/multichain.js</span>
+            <span class="file-pill">src/gateway.js</span>
+          </div>
+        </div>
+        <div class="canvas-card">
+          <pre class="mermaid">
+flowchart LR
+    subgraph SOURCE ["Source Chain (Solana / Arc / Base)"]
+        BURN["TokenMessenger.depositForBurn()<br/>USDC Burned on-chain"]
+        EMIT["Emit MessageSent Event<br/>(messageBytes, nonce)"]
+    end
+
+    subgraph CIRCLE_RELAY ["Circle Attestation Service"]
+        IRIS["Circle Iris API v2 / v1<br/>(/messages/{domain}/{txHash})"]
+        POLL["cctp_bridge.pollCctpAttestation()<br/>Wait for 'complete' status"]
+        SIG["Circle Schnorr/ECDSA Attestation Signature"]
+    end
+
+    subgraph DESTINATION ["Destination Chain (Arc Mainnet / Solana)"]
+        RECEIVE["MessageTransmitter.receiveMessage()<br/>Submit (messageBytes, attestationSignature)"]
+        MINT["TokenMinter Mints 1:1 Native USDC<br/>Directly to Recipient Wallet"]
+        ATA["Multichain Fee-Payer Creates ATA<br/>(if Solana destination, zero user SOL needed)"]
+    end
+
+    BURN --> EMIT
+    EMIT --> IRIS
+    IRIS --> POLL
+    POLL --> SIG
+    SIG --> RECEIVE
+    RECEIVE --> MINT
+    MINT --> ATA
+          </pre>
+        </div>
+      </div>
+
+      <!-- TAB: F6 -->
+      <div id="f6" class="diagram-panel">
+        <div class="panel-header">
+          <div class="panel-title">Feature 6: Automated EVM Multi-Chain Sweeper & DEX Swapper</div>
+          <p class="panel-desc">Monitors deposits across Base, Arbitrum, Optimism, and Ethereum via webhooks, executes Uniswap V3 native-to-USDC swaps, and bridges directly to Arc.</p>
+          <div class="files-tag">
+            <span class="file-pill">src/evm_deposit_sweeper.js</span>
+            <span class="file-pill">src/webhook_server.js</span>
+            <span class="file-pill">src/cctp_bridge.js</span>
+          </div>
+        </div>
+        <div class="canvas-card">
+          <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor ExternalPayer as External Payer
+    participant EVMWallet as User's EVM Address (Base / Arb / ETH)
+    participant Alchemy as Alchemy / QuickNode Webhook
+    participant Server as src/webhook_server.js
+    participant Sweeper as src/evm_deposit_sweeper.js
+    participant Uniswap as Uniswap V3 SwapRouter02
+    participant CCTP as src/cctp_bridge.js
+    participant Arc as User's Arc L1 Wallet
+
+    ExternalPayer->>EVMWallet: Sends 0.05 ETH on Base
+    Alchemy->>Server: POST /webhook/alchemy (Activity Webhook)
+    Server->>Server: verifyAlchemySignature()
+    Server->>Sweeper: processEvmDeposit({ network: "base", asset: "ETH", value: 0.05 })
+    Sweeper->>Sweeper: calculateGasReserve() (~0.0001 ETH for gas)
+    Sweeper->>Uniswap: swapNativeToUsdc(0.0499 ETH → USDC)
+    Uniswap-->>Sweeper: Returns ~165.20 USDC
+    Sweeper->>CCTP: executeEvmCctpBurn(165.20 USDC, userArcAddress)
+    CCTP->>Arc: Auto-Redeem / Direct Disburse on Arc
+    Arc-->>Sweeper: Arc Credit Confirmed
+    Sweeper->>Server: Notify Telegram User
+    Server-->>ExternalPayer: (Telegram User receives: 💰 165.20 USDC credited from Base deposit!)
+          </pre>
+        </div>
+      </div>
+
+      <!-- TAB: F7 -->
+      <div id="f7" class="diagram-panel">
+        <div class="panel-header">
+          <div class="panel-title">Feature 7: SME Invoicing, HD Child Addresses & Settlement</div>
+          <p class="panel-desc">Generates BIP-44 child payment addresses and dedicated Wema Bank virtual accounts, renders QR cards, and auto-settles via background block listeners.</p>
+          <div class="files-tag">
+            <span class="file-pill">src/invoice_hd.js</span>
+            <span class="file-pill">src/invoice_generator.js</span>
+            <span class="file-pill">agent/invoice_listener.js</span>
+            <span class="file-pill">contracts/InvoiceSettlement.sol</span>
+          </div>
+        </div>
+        <div class="canvas-card">
+          <pre class="mermaid">
+flowchart TD
+    SME[SME Owner] -->|'Invoice Acme Corp $200 for Web Design'| BIZ_AI[agent/smart_invoice_agent.js]
+    BIZ_AI --> HD[src/invoice_hd.js createCompleteBizInvoice]
+
+    subgraph DUAL_RAILS ["Dual-Rail Invoice Generation"]
+        HD -->|Derivation Index i| DERIVE_EVM[BIP-44 Child Arc Address<br/>0xPaymentAddress_i]
+        HD -->|Paj v2 Dynamic Account| DERIVE_FIAT[Wema Bank Virtual Account<br/>Account #782019283]
+    end
+
+    DERIVE_EVM --> PNG[src/invoice_generator.js<br/>Render 1200x800 Branded PNG Card]
+    DERIVE_FIAT --> PNG
+    PNG --> QR[Embed Dual QR Codes<br/>(Arc USDC URI + Bank Transfer Details)]
+
+    PNG --> DB[(Save to biz_invoices in DB)]
+    DB --> SEND_CLIENT[Send Branded Invoice Card to Telegram Chat]
+
+    subgraph SETTLEMENT_WATCHERS ["Settlement Detection"]
+        CLIENT_CRYPTO[Client Pays 200 USDC to 0xPaymentAddress_i] --> INV_LISTEN[agent/invoice_listener.js<br/>Background Polling & Event Watcher]
+        CLIENT_FIAT[Client Transfers ₦330,000 to Wema Account] --> WEBHOOK[src/webhook_server.js<br/>Paj v2 Order Webhook]
+    end
+
+    INV_LISTEN --> SETTLE[Mark Invoice PAID in DB]
+    WEBHOOK --> SETTLE
+    SETTLE --> SWEEP[Auto-forward funds from child address to SME primary wallet]
+    SETTLE --> ALERT[Send Real-time Telegram Receipt & Notify SME Owner]
+          </pre>
+        </div>
+      </div>
+
+      <!-- TAB: F8 -->
+      <div id="f8" class="diagram-panel">
+        <div class="panel-header">
+          <div class="panel-title">Feature 8: DeFi Savings, Morpho Yield & Auto-Earn Daemon</div>
+          <p class="panel-desc">Scans for funds sitting idle for 2+ hours, auto-deposits into Morpho ERC-4626 vaults, and auto-liquidates upon user spending with 10% dev fee routing.</p>
+          <div class="files-tag">
+            <span class="file-pill">src/savings.js</span>
+            <span class="file-pill">src/auto_earn.js</span>
+            <span class="file-pill">@circle-fin/earn-kit</span>
+          </div>
+        </div>
+        <div class="canvas-card">
+          <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant Daemon as src/auto_earn.js (Cron Daemon)
+    participant DB as src/db.js (yield_positions)
+    participant Kit as @circle-fin/earn-kit (Arc Morpho Vaults)
+    participant Vault as ERC-4626 Vault Contract on Arc
+    actor User as Telegram User
+    participant Bot as bot.js
+
+    Note over Daemon,Vault: Background Auto-Allocation (2-Hour Idle Funds)
+    Daemon->>DB: getIdleUsersForAutoEarn(idleHours >= 2)
+    DB-->>Daemon: List of users with idle USDC > $5.00
+    Daemon->>Kit: getYieldPools() → Best APY Vault (e.g. 8.4% APY)
+    loop For Each Idle User
+        Daemon->>Vault: deposit(balance - $0.50 gasBuffer)
+        Vault-->>Daemon: Mint ERC-4626 Shares
+        Daemon->>DB: openYieldPosition(isAutoEarn = true, principal)
+    end
+
+    Note over User,Vault: Instant Auto-Liquidation on Spend
+    User->>Bot: Initiates Payment / Transfer ($50)
+    Bot->>DB: Check Liquid Balance
+    alt Insufficient Liquid Balance & Active Yield Position Exists
+        Bot->>Vault: redeem(shares) / withdraw(assets)
+        Vault-->>Bot: Principal + Accrued Interest
+        Bot->>Bot: Calculate 10% Dev Fee on Accrued Profit
+        Bot->>DB: Route 10% Fee to PayIT Treasury, 90% Profit to User
+        Bot->>DB: closeYieldPosition()
+        Bot-->>User: ⚡ Liquidated auto-earn vault ($50.24 returned)
+    end
+          </pre>
+        </div>
+      </div>
+
+      <!-- TAB: F9 -->
+      <div id="f9" class="diagram-panel">
+        <div class="panel-header">
+          <div class="panel-title">Feature 9: Business Financial Suite (Payroll, Expenses & Tax)</div>
+          <p class="panel-desc">Upload payroll spreadsheets, manage recurring payments via cron schedules, categorize expenses with VAT/WHT tax deductions, and export cashflow reports.</p>
+          <div class="files-tag">
+            <span class="file-pill">src/biz_db.js</span>
+            <span class="file-pill">src/cashflow.js</span>
+            <span class="file-pill">src/payee_book.js</span>
+            <span class="file-pill">agent/scheduler.js</span>
+          </div>
+        </div>
+        <div class="canvas-card">
+          <pre class="mermaid">
+flowchart TD
+    SME_INPUT[SME Owner Commands & Documents] --> ROUTE{Select Feature}
+
+    ROUTE -->|Upload payroll.csv / payroll.xlsx| PARSE_PAYROLL[agent/file_parser.js<br/>Detect Columns: Name, Wallet/Bank, Amount]
+    PARSE_PAYROLL --> PAYEE[src/payee_book.js<br/>Match or Save to Payee Directory]
+    PAYEE --> SCHED{Execution Mode?}
+    SCHED -->|Immediate| EXEC_BATCH[agent/executor.js<br/>Sequential Batch Transfer with PIN]
+    SCHED -->|Recurring| CRON[agent/scheduler.js & store.js<br/>node-cron Schedule e.g. '0 9 28 * *']
+
+    ROUTE -->|Photo of Receipt / 'Spent ₦15,000 on Fuel'| EXPENSE[src/biz_db.js recordExpense]
+    EXPENSE --> TAX[Tax Engine<br/>Calculate 7.5% VAT & 5-10% WHT Deductions]
+    TAX --> EXP_TABLE[(biz_expenses in DB)]
+
+    ROUTE -->|'Cashflow' or 'Report'| CASHFLOW[src/cashflow.js generateCashflowReport]
+    EXP_TABLE --> CASHFLOW
+    DB_INVOICES[(biz_invoices in DB)] --> CASHFLOW
+    CASHFLOW --> REPORT[Structured Financial Report<br/>Total Inflow vs Outflow, Net Burn, Tax Obligations]
+    REPORT --> TG_DISPLAY[Telegram Interactive Dashboard]
+          </pre>
+        </div>
+      </div>
+
+      <!-- TAB: F10 -->
+      <div id="f10" class="diagram-panel">
+        <div class="panel-header">
+          <div class="panel-title">Feature 10: Agentic Shopping & Merchant Purchases</div>
+          <p class="panel-desc">Conversational product search, budget and delivery filtering, merchant quotation lookups, and one-tap cryptographic checkout.</p>
+          <div class="files-tag">
+            <span class="file-pill">agent/shopping_agent.js</span>
+            <span class="file-pill">agent/intent_router.js</span>
+            <span class="file-pill">agent/executor.js</span>
+          </div>
+        </div>
+        <div class="canvas-card">
+          <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor User as Telegram User
+    participant Router as agent/intent_router.js
+    participant ShopAI as agent/shopping_agent.js
+    participant Exec as agent/executor.js
+    participant Merchant as Merchant / Escrow Endpoint
+
+    User->>Router: "Find me a MacBook Pro M2 under $900 deliver to Ikeja Lagos"
+    Router->>ShopAI: parseShoppingIntent(message)
+    ShopAI->>ShopAI: Extract: { product: "MacBook Pro M2", maxPrice: 900, currency: "USDC", delivery: "Ikeja Lagos" }
+    ShopAI->>ShopAI: searchForProduct() (Catalog & quotes lookup)
+    ShopAI-->>Router: Product matches with shipping & price
+    Router-->>User: 🛍️ Found MacBook Pro M2 ($849 USDC)\nDelivery: Ikeja Lagos\n[🛒 Buy Now] [❌ Cancel]
+    User->>Router: Taps [🛒 Buy Now] & enters PIN
+    Router->>Exec: executePlan(merchantPaymentPlan)
+    Exec->>Merchant: Settle payment via Arc USDC / Paj NGN Rail
+    Exec-->>User: ✅ Order Confirmed! Tracking Reference: #SHP-92014
+          </pre>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'dark',
+      themeVariables: {
+        darkMode: true,
+        background: '#111827',
+        primaryColor: '#1e40af',
+        primaryTextColor: '#f3f4f6',
+        primaryBorderColor: '#3b82f6',
+        lineColor: '#60a5fa',
+        secondaryColor: '#1e293b',
+        tertiaryColor: '#0f172a'
+      },
+      flowchart: { curve: 'basis' }
+    });
+
+    function showTab(tabId) {
+      document.querySelectorAll('.diagram-panel').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
+
+      const activePanel = document.getElementById(tabId);
+      if (activePanel) {
+        activePanel.classList.add('active');
+      }
+
+      event.currentTarget.classList.add('active');
+    }
+  </script>
+</body>
+</html>

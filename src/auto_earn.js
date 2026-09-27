@@ -49,22 +49,31 @@ async function checkAndRunAutoEarn(options = {}) {
         if (balanceUsdc >= MIN_AUTO_EARN_BALANCE) {
           const depositAmount = parseFloat((balanceUsdc - GAS_BUFFER_USDC).toFixed(2));
           if (depositAmount >= 1.0) {
-            savings.openYieldPosition(user.telegram_id, depositAmount, bestPool, {
-              isAutoEarn: true,
-              depositTxHash: null,
-              accountType: "personal",
-            });
+            const privateKey = db.getSystemDecryptedPrivateKey(user, "personal");
+            const vaultAddress = bestPool.vaultAddress || bestPool.address || bestPool.id;
+            const depositResult = await savings.depositIntoVault(privateKey, vaultAddress, depositAmount);
 
-            db.recordTransaction(
-              user.telegram_id,
-              "auto_earn_deposit",
-              BigInt(Math.round(depositAmount * 1e18)),
-              "confirmed",
-              null,
-              "personal"
-            );
+            if (depositResult && depositResult.success) {
+              const depositTxHash = depositResult.hash || depositResult.txHash || null;
+              savings.openYieldPosition(user.telegram_id, depositAmount, bestPool, {
+                isAutoEarn: true,
+                depositTxHash,
+                accountType: "personal",
+              });
 
-            allocatedCount++;
+              db.recordTransaction(
+                user.telegram_id,
+                "auto_earn_deposit",
+                BigInt(Math.round(depositAmount * 1e18)),
+                "confirmed",
+                depositTxHash,
+                "personal"
+              );
+
+              allocatedCount++;
+            } else {
+              console.warn(`[auto_earn] Personal allocation failed for user ${user.telegram_id}:`, depositResult?.error || "Deposit failed");
+            }
           }
         }
       }
@@ -84,22 +93,31 @@ async function checkAndRunAutoEarn(options = {}) {
         if (balanceUsdc >= MIN_AUTO_EARN_BALANCE) {
           const depositAmount = parseFloat((balanceUsdc - GAS_BUFFER_USDC).toFixed(2));
           if (depositAmount >= 1.0) {
-            savings.openYieldPosition(user.telegram_id, depositAmount, bestPool, {
-              isAutoEarn: true,
-              depositTxHash: null,
-              accountType: "business",
-            });
+            const privateKey = db.getSystemDecryptedPrivateKey(user, "business");
+            const vaultAddress = bestPool.vaultAddress || bestPool.address || bestPool.id;
+            const depositResult = await savings.depositIntoVault(privateKey, vaultAddress, depositAmount);
 
-            db.recordTransaction(
-              user.telegram_id,
-              "auto_earn_deposit",
-              BigInt(Math.round(depositAmount * 1e18)),
-              "confirmed",
-              null,
-              "business"
-            );
+            if (depositResult && depositResult.success) {
+              const depositTxHash = depositResult.hash || depositResult.txHash || null;
+              savings.openYieldPosition(user.telegram_id, depositAmount, bestPool, {
+                isAutoEarn: true,
+                depositTxHash,
+                accountType: "business",
+              });
 
-            allocatedCount++;
+              db.recordTransaction(
+                user.telegram_id,
+                "auto_earn_deposit",
+                BigInt(Math.round(depositAmount * 1e18)),
+                "confirmed",
+                depositTxHash,
+                "business"
+              );
+
+              allocatedCount++;
+            } else {
+              console.warn(`[auto_earn] Business allocation failed for user ${user.telegram_id}:`, depositResult?.error || "Deposit failed");
+            }
           }
         }
       }
