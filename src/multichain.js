@@ -153,7 +153,7 @@ function createSplTokenTransferInstruction(sourceAta, destAta, owner, amountBase
  * @param {string} [params.currency="USDC"] - Currency ("USDC" or "SOL")
  * @returns {Promise<{ success: boolean, txHash?: string, error?: string, amount?: number, to?: string, currency?: string }>}
  */
-async function sendSolanaTransfer({ keypair, recipientAddress, amount, currency = "USDC" }) {
+async function sendSolanaTransfer({ keypair, recipientAddress, amount, currency = "USDC", feePayerKeypair }) {
   if (!keypair) {
     return { success: false, error: "Solana keypair required for Solana transfer" };
   }
@@ -165,20 +165,34 @@ async function sendSolanaTransfer({ keypair, recipientAddress, amount, currency 
   const connection = getSolanaConnection();
 
   try {
-    const recipientPubKey = new PublicKey(recipientAddress);
-    const latestBlockhash = await connection.getLatestBlockhash();
-    const transaction = new Transaction({
-      feePayer: keypair.publicKey,
-      recentBlockhash: latestBlockhash.blockhash,
-    });
+    let payer = feePayerKeypair;
+    if (!payer && process.env.SOLANA_FEE_PAYER_KEY) {
+      try {
+        const bs58Decode = bs58.default ? bs58.default.decode : bs58.decode;
+        payer = Keypair.fromSecretKey(bs58Decode(process.env.SOLANA_FEE_PAYER_KEY));
+      } catch (keyErr) {
+        console.warn("[multichain:sendSolanaTransfer] Failed to parse SOLANA_FEE_PAYER_KEY:", keyErr.message);
+      }
+    }
 
     const solBalance = await connection.getBalance(keypair.publicKey);
-    if (solBalance === 0) {
+    // If user has insufficient SOL (< 0.003 SOL) and we have a fee payer relayer, sponsor the fee
+    let effectiveFeePayer = keypair;
+    if (payer && (solBalance < 3000000 || payer !== keypair)) {
+      effectiveFeePayer = payer;
+    } else if (solBalance === 0) {
       return {
         success: false,
         error: `Insufficient SOL on sender account ${keypair.publicKey.toBase58()} to cover transaction fee.`,
       };
     }
+
+    const recipientPubKey = new PublicKey(recipientAddress);
+    const latestBlockhash = await connection.getLatestBlockhash();
+    const transaction = new Transaction({
+      feePayer: effectiveFeePayer.publicKey,
+      recentBlockhash: latestBlockhash.blockhash,
+    });
 
     if (isSplUsdc) {
       // ── SPL USDC Transfer ──
@@ -186,11 +200,11 @@ async function sendSolanaTransfer({ keypair, recipientAddress, amount, currency 
       const sourceAta = getAssociatedTokenAddress(keypair.publicKey, mint);
       const destAta = getAssociatedTokenAddress(recipientPubKey, mint);
 
-      // Check if recipient ATA exists, create if missing
+      // Check if recipient ATA exists, create if missing (effectiveFeePayer pays ATA rent if needed)
       const destAccountInfo = await connection.getAccountInfo(destAta);
       if (!destAccountInfo) {
         transaction.add(
-          createAssociatedTokenAccountInstruction(keypair.publicKey, destAta, recipientPubKey, mint)
+          createAssociatedTokenAccountInstruction(effectiveFeePayer.publicKey, destAta, recipientPubKey, mint)
         );
       }
 
@@ -201,6 +215,12 @@ async function sendSolanaTransfer({ keypair, recipientAddress, amount, currency 
       );
     } else {
       // ── Native SOL Transfer ──
+      if (solBalance < Math.round(amount * 1e9)) {
+        return {
+          success: false,
+          error: `Insufficient SOL on sender account ${keypair.publicKey.toBase58()} to cover transfer amount.`,
+        };
+      }
       transaction.add(
         SystemProgram.transfer({
           fromPubkey: keypair.publicKey,
@@ -210,7 +230,13 @@ async function sendSolanaTransfer({ keypair, recipientAddress, amount, currency 
       );
     }
 
-    transaction.sign(keypair);
+    const signers = [keypair];
+    if (effectiveFeePayer.publicKey.toBase58() !== keypair.publicKey.toBase58()) {
+      signers.push(effectiveFeePayer);
+    }
+    const uniqueSigners = Array.from(new Set(signers));
+    transaction.sign(...uniqueSigners);
+
     const signature = await connection.sendRawTransaction(transaction.serialize());
     try {
       await Promise.race([
