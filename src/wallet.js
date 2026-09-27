@@ -6,16 +6,37 @@
 //      (Sepolia, Base Sepolia, Fuji) using 6 decimals — NOT provider.getBalance()
 //      which only returns the native gas token (ETH/AVAX), not USDC.
 
-const { Wallet, JsonRpcProvider, Contract, parseUnits, formatUnits } = require("ethers");
+const { Wallet, JsonRpcProvider, FallbackProvider, FetchRequest, Contract, parseUnits, formatUnits } = require("ethers");
 const crypto = require("crypto");
 
-const { getNetworkConfig } = require("./network");
+const { getNetworkConfig, NETWORKS } = require("./network");
 
 let _provider = null;
+
+function createFastJsonRpcProvider(url, chainId) {
+  const req = new FetchRequest(url);
+  req.timeout = 7000;
+  req.retryLimit = 1;
+  return new JsonRpcProvider(req, chainId, { staticNetwork: true });
+}
+
 function getProvider() {
   const net = getNetworkConfig();
   if (!_provider || _provider._network?.chainId !== BigInt(net.chainId)) {
-    _provider = new JsonRpcProvider(net.rpcUrl, net.chainId, { staticNetwork: true });
+    const primary = createFastJsonRpcProvider(net.rpcUrl, net.chainId);
+    const fallbackUrl = net.isTestnet ? NETWORKS.testnet.rpcUrl : NETWORKS.mainnet.rpcUrl;
+    if (fallbackUrl && fallbackUrl !== net.rpcUrl) {
+      const fallback = createFastJsonRpcProvider(fallbackUrl, net.chainId);
+      _provider = new FallbackProvider(
+        [
+          { provider: primary, priority: 1, weight: 1, stallTimeout: 2500 },
+          { provider: fallback, priority: 2, weight: 1 },
+        ],
+        net.chainId
+      );
+    } else {
+      _provider = primary;
+    }
   }
   return _provider;
 }
