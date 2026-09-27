@@ -322,12 +322,15 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
         let directSolTx = null;
         try {
           const solData = multichain.deriveSolanaFromEvmKey(userWallet.privateKey);
-          if (solData && (!sourceSolAddr || solData.solanaAddress === sourceSolAddr)) {
-            directSolTx = await multichain.sendSolanaTransfer({
-              keypair: solData.keypair,
-              recipientAddress: result.address,
-              amount: amountUsdc,
-            });
+          if (solData) {
+            const solBal = await multichain.getSplTokenBalance(solData.solanaAddress);
+            if ((solBal && solBal.uiAmount >= amountUsdc) || !sourceSolAddr || solData.solanaAddress === sourceSolAddr) {
+              directSolTx = await multichain.sendSolanaTransfer({
+                keypair: solData.keypair,
+                recipientAddress: result.address,
+                amount: amountUsdc,
+              });
+            }
           }
         } catch (solErr) {
           console.warn("[executor:offramp] Direct Solana keypair transfer attempt:", solErr.message);
@@ -336,7 +339,8 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
         txHash = directSolTx?.txHash || directSolTx?.signature;
 
         if (!txHash) {
-          throw new Error("Cash out could not be completed: the CCTP transfer failed and no automatic recovery path exists. Please try again or contact support.");
+          const detail = directSolTx?.error ? `: ${directSolTx.error}` : ".";
+          throw new Error(`Cash out could not be completed${detail} Please try again or contact support.`);
         }
       }
     } else {
