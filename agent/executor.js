@@ -176,38 +176,64 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
   });
 
 
-  let balance;
+  // ── Rail selection: cash out directly from whichever chain holds the funds ──
+  // rail: "arc" | "solana" | "auto" (options.rail; default "auto").
+  // If a Paj order reservation already exists, its address format is the
+  // source of truth for the rail (reservations are created per-chain).
+  let rail = options.rail || "auto";
+  if (bankDetails && bankDetails.orderAddress) {
+    rail = multichain.isSolanaAddress(bankDetails.orderAddress) ? "solana" : "arc";
+  }
+
+  const arcRailEnabled = paj.isArcRailEnabled();
+
+  // Per-chain balances (source of truth = on-chain, no third-party addresses).
+  let arcBalanceMicro;
+  let solBalanceMicro = 0n;
   try {
-    balance = await walletLib.getNativeBalanceMicro(userWallet.address);
-    // Include multi-chain Solana USDC balance for user
+    arcBalanceMicro = await walletLib.getNativeBalanceMicro(userWallet.address);
     const user = db.getUser(telegramId);
     if (user) {
-      const multichain = require("../src/multichain");
       const solAddress = multichain.getOrDeriveSolanaAddress ? multichain.getOrDeriveSolanaAddress(user) : null;
       const solAddrsToCheck = [];
       if (solAddress) solAddrsToCheck.push(solAddress);
       if (user.solana_deposit_address && !solAddrsToCheck.includes(user.solana_deposit_address)) {
         solAddrsToCheck.push(user.solana_deposit_address);
       }
-      if (!solAddrsToCheck.includes("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j")) {
-        solAddrsToCheck.push("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j");
-      }
+      let solUsdc = 0;
       for (const a of solAddrsToCheck) {
         if (!a) continue;
         try {
           const bal = await multichain.getSplTokenBalance(a);
-          if (bal && bal.uiAmount > 0) {
-            balance += walletLib.parseToMicro(bal.uiAmount.toString());
-          }
+          if (bal && bal.uiAmount > 0) solUsdc += bal.uiAmount;
         } catch (_) {}
       }
+      solBalanceMicro = walletLib.parseToMicro(solUsdc.toFixed(6));
     }
   } catch (err) {
     idempotency.failOperationIdempotency(idempKey, err.message);
     return { success: false, error: "Could not check balance: " + err.message, label, amount: amountUsdc, chain: "fiat" };
   }
 
-  if (balance < amountMicro) {
+  if (rail === "auto") {
+    if (arcRailEnabled && arcBalanceMicro >= amountMicro) rail = "arc";
+    else if (solBalanceMicro >= amountMicro) rail = "solana";
+    else rail = arcRailEnabled ? "arc" : "solana";
+  }
+  if (rail === "arc" && !arcRailEnabled) {
+    if (options.rail === "arc") {
+      idempotency.failOperationIdempotency(idempKey, "Arc rail not enabled");
+      return {
+        success: false,
+        error: "Arc cash-out is not enabled yet (PAJ_ARC_OFFRAMP_ENABLED). Cash out via Solana instead.",
+        label, amount: amountUsdc, chain: "fiat",
+      };
+    }
+    rail = "solana";
+  }
+
+  let balance = rail === "arc" ? arcBalanceMicro : solBalanceMicro;
+  if (balance < amountMicro && rail === "arc") {
     const autoEarn = require("../src/auto_earn");
     const liqRes = await autoEarn.ensureLiquidBalance({
       userWallet,
@@ -217,23 +243,28 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
     });
     if (liqRes.liquidated) {
       try {
-        balance = await walletLib.getNativeBalanceMicro(userWallet.address);
+        arcBalanceMicro = await walletLib.getNativeBalanceMicro(userWallet.address);
+        balance = arcBalanceMicro;
       } catch {}
     }
   }
 
   if (balance < amountMicro) {
     idempotency.failOperationIdempotency(idempKey, "Insufficient funds");
+    const railName = rail === "arc" ? "Arc" : "Solana";
     return {
       success: false,
-      error: `Not enough USDC. You have ${walletLib.formatMicro(balance)} USDC, need ${amountUsdc}.`,
+      error:
+        `Not enough USDC on ${railName}. You have $${walletLib.formatMicro(balance)} there ` +
+        `(Arc: $${walletLib.formatMicro(arcBalanceMicro)} · Solana: $${walletLib.formatMicro(solBalanceMicro)}), need ${amountUsdc}. ` +
+        `Use "Move Funds" to rebalance between chains.`,
       label,
       amount: amountUsdc,
       chain: "fiat",
     };
   }
 
-  const txId = db.recordTransaction(telegramId, "offramp", amountMicro, "pending", null, options.accountType || "personal");
+  const txId = db.recordTransaction(telegramId, "offramp", amountMicro, "pending", null, options.accountType || "personal", 18, rail);
 
   // Step 1: Create or reuse existing offramp order via Paj v2
   let result;
@@ -253,12 +284,15 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
       if (!bankDetails?.accountNumber || !bankDetails?.bankCode) {
         throw new Error("Missing bank account number or bank code for cash out payout");
       }
+      const railCfg = paj.RAILS[rail] || paj.RAILS.solana;
       result = await offramp.requestOfframp(telegramId, amountMicro, {
         accountNumber: bankDetails.accountNumber,
         bankCode:      bankDetails.bankCode,
         accountName:   bankDetails.accountName,
         fiatAmount:    bankDetails.fiatAmount,
         accountType:   options.accountType       || "personal",
+        chain:         railCfg.chain,
+        mint:          railCfg.mint,
       });
       if (!result.success) {
         db.updateTransactionStatus(txId, "failed");
@@ -272,78 +306,35 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
     }
   }
 
-  // Step 2: On-chain send to offramp destination address
-  const offrampAddress = process.env.PAJCASH_OFFRAMP_ADDRESS || process.env.APP_FEE_RECIPIENT_ADDRESS;
-  const isTargetSolana = result.address && multichain.isSolanaAddress(result.address);
-  const targetAddress = isTargetSolana
-    ? result.address
-    : (result.address && walletLib.isValidAddress(result.address)
-        ? result.address
-        : (offrampAddress && walletLib.isValidAddress(offrampAddress) ? offrampAddress : null));
+  // Step 2: On-chain send to the rail-specific settlement address.
+  // No CCTP bridging here — funds already sit on the rail's chain and move
+  // in a single transfer (Arc: native USDC ~1s; Solana: SPL USDC).
+  const isTargetSolana = rail === "solana";
+  const targetAddress = result.address || null;
 
-  if (!targetAddress) {
+  if (!targetAddress || (!isTargetSolana && !walletLib.isValidAddress(targetAddress))) {
     db.updateTransactionStatus(txId, "failed");
     idempotency.failOperationIdempotency(idempKey, "No valid settlement deposit address");
-    return { success: false, error: "No valid deposit address provided for cash out settlement", label, amount: amountUsdc, chain: "fiat" };
+    return { success: false, error: "Paj did not return a valid settlement address for this cash out", label, amount: amountUsdc, chain: "fiat" };
   }
 
   let txHash;
   try {
     if (isTargetSolana) {
-      let cctpSuccess = false;
-      const arcBal = await walletLib.getNativeBalanceMicro(userWallet.address);
-      if (arcBal >= amountMicro) {
-        try {
-          // User has enough USDC on Arc EVM: attempt CCTP Arc -> Solana burn to Paj
-          const burnRes = await cctpBridge.executeArcToSolanaCctpBurn({
-            userWallet,
-            amountUsdc: result.amount || amountUsdc,
-            recipientSolanaAddress: result.address,
-            autoCompleteOnSolana: true,
-            telegramId,
-          });
-
-          if (burnRes && burnRes.success && burnRes.txHash) {
-            txHash = burnRes.txHash;
-            cctpSuccess = true;
-          } else {
-            console.warn(`[executor:offramp] CCTP burn unconfirmed or failed (${burnRes?.error || "unknown"}), falling back to direct Solana Paj offramp.`);
-          }
-        } catch (cctpErr) {
-          console.warn(`[executor:offramp] CCTP exception (${cctpErr.message}), falling back to direct Solana Paj offramp.`);
-        }
-      }
-
-      if (!cctpSuccess) {
-        // Direct Off-ramp through Paj on Solana (if derived keypair controls the funds)
-        const userRec = db.getUser(telegramId);
-        const sourceSolAddr = userRec?.solana_deposit_address;
-
-        let directSolTx = null;
-        try {
-          const solData = multichain.deriveSolanaFromEvmKey(userWallet.privateKey);
-          if (solData) {
-            const solBal = await multichain.getSplTokenBalance(solData.solanaAddress);
-            if ((solBal && solBal.uiAmount >= amountUsdc) || !sourceSolAddr || solData.solanaAddress === sourceSolAddr) {
-              directSolTx = await multichain.sendSolanaTransfer({
-                keypair: solData.keypair,
-                recipientAddress: result.address,
-                amount: amountUsdc,
-              });
-            }
-          }
-        } catch (solErr) {
-          console.warn("[executor:offramp] Direct Solana keypair transfer attempt:", solErr.message);
-        }
-
-        txHash = directSolTx?.txHash || directSolTx?.signature;
-
-        if (!txHash) {
-          const detail = directSolTx?.error ? `: ${directSolTx.error}` : ".";
-          throw new Error(`Cash out could not be completed${detail} Please try again or contact support.`);
-        }
+      // Direct SPL USDC transfer from the derived keypair to Paj's order address.
+      const solData = multichain.deriveSolanaFromEvmKey(userWallet.privateKey);
+      const directSolTx = await multichain.sendSolanaTransfer({
+        keypair: solData.keypair,
+        recipientAddress: targetAddress,
+        amount: result.amount || amountUsdc,
+      });
+      txHash = directSolTx?.txHash || directSolTx?.signature;
+      if (!txHash) {
+        const detail = directSolTx?.error ? `: ${directSolTx.error}` : ".";
+        throw new Error(`Solana transfer could not be completed${detail}`);
       }
     } else {
+      // Arc rail: plain native-USDC transfer on Arc (~1s finality, zero bridging).
       txHash = await walletLib.sendFromWallet(userWallet, targetAddress, amountMicro);
     }
 
@@ -367,6 +358,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
       bankName: bankDetails.bankName,
       bankDetails,
       accountType: options.accountType || "personal",
+      rail,
       chain: "fiat",
       currency: "NGN",
     };
@@ -375,6 +367,213 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
     idempotency.failOperationIdempotency(idempKey, err.message);
     return { success: false, error: "Transfer failed: " + err.message, label, amount: amountUsdc, chain: "fiat" };
   }
+}
+
+// ─── Move Funds: user-triggered CCTP rebalancing between Arc and Solana ───────
+
+/**
+ * Move USDC between the user's Arc (EVM) wallet and their derived Solana
+ * address via Circle CCTP.  Balances are on-chain (no internal ledger), so a
+ * move simply burns on the source chain and mints to the user's own address
+ * on the destination chain.
+ *
+ * @param {object} userWallet  — ethers Wallet on Arc (source for arc_to_solana,
+ *                               recipient for solana_to_arc)
+ * @param {object} params
+ * @param {string} params.direction   — "arc_to_solana" | "solana_to_arc"
+ * @param {number} params.amountUsdc  — amount to move
+ * @param {number} params.telegramId
+ * @param {string} [params.accountType]
+ * @param {object} [params.bot]       — Telegram bot (user notification on mint)
+ * @returns {Promise<object>}
+ */
+async function moveFundsBetweenChains(userWallet, { direction, amountUsdc, telegramId, accountType = "personal", bot = null }) {
+  let amountMicro;
+  try {
+    amountMicro = walletLib.parseToMicro(Number(amountUsdc).toFixed(6));
+  } catch (err) {
+    return { success: false, error: "Invalid amount: " + err.message, amount: amountUsdc, direction };
+  }
+
+  // Idempotency: an identical move (same direction + amount) already processing
+  // is rejected; a completed one returns the cached result.
+  const idempKey = `move:${telegramId}:${direction}:${amountUsdc}`;
+  const existing = idempotency.checkOperationIdempotency(idempKey);
+  if (existing && existing.status === "completed") {
+    return { success: true, duplicate: true, direction, amount: amountUsdc, ...(existing.responseData || {}) };
+  }
+  if (existing && existing.status === "pending") {
+    return { success: false, error: "An identical move is already processing. Please wait for it to finish.", direction, amount: amountUsdc };
+  }
+  idempotency.startOperationIdempotency(idempKey, {
+    scope: "move_funds",
+    telegramId,
+    accountType,
+    amount: amountUsdc,
+  });
+
+  // ── Arc → Solana: burn native USDC on Arc, mint SPL USDC to derived address ──
+  if (direction === "arc_to_solana") {
+    let arcBalanceMicro;
+    try {
+      arcBalanceMicro = await walletLib.getNativeBalanceMicro(userWallet.address);
+    } catch (err) {
+      idempotency.failOperationIdempotency(idempKey, err.message);
+      return { success: false, error: "Could not check Arc balance: " + err.message, amount: amountUsdc, direction };
+    }
+    if (arcBalanceMicro < amountMicro) {
+      idempotency.failOperationIdempotency(idempKey, "Insufficient Arc balance");
+      return {
+        success: false,
+        error: `Not enough USDC on Arc. You have $${walletLib.formatMicro(arcBalanceMicro)}, need $${Number(amountUsdc).toFixed(2)}.`,
+        amount: amountUsdc,
+        direction,
+      };
+    }
+
+    let recipientSolanaAddress;
+    try {
+      recipientSolanaAddress = multichain.deriveSolanaFromEvmKey(userWallet.privateKey).solanaAddress;
+    } catch (err) {
+      idempotency.failOperationIdempotency(idempKey, err.message);
+      return { success: false, error: "Could not derive your Solana address: " + err.message, amount: amountUsdc, direction };
+    }
+
+    const txId = db.recordTransaction(telegramId, "move_funds", amountMicro, "pending", null, accountType, 18, "arc");
+    try {
+      const result = await cctpBridge.executeArcToSolanaCctpBurn({
+        userWallet,
+        amountUsdc: Number(amountUsdc),
+        recipientSolanaAddress,
+        autoCompleteOnSolana: true,
+        telegramId,
+      });
+      if (!result || result.success === false) {
+        db.updateTransactionStatus(txId, "failed");
+        idempotency.failOperationIdempotency(idempKey, (result && result.error) || "Arc burn failed");
+        return { success: false, error: (result && result.error) || "Arc burn failed", amount: amountUsdc, direction };
+      }
+      db.updateTransactionStatus(txId, "submitted", result.txHash || null);
+      idempotency.completeOperationIdempotency(idempKey, {
+        txHash: result.txHash,
+        responseData: { txHash: result.txHash, recipient: recipientSolanaAddress, fromChain: "arc", toChain: "solana" },
+      });
+      return {
+        success: true,
+        txHash: result.txHash,
+        amount: amountUsdc,
+        direction,
+        fromChain: "arc",
+        toChain: "solana",
+        recipient: recipientSolanaAddress,
+      };
+    } catch (err) {
+      db.updateTransactionStatus(txId, "failed");
+      idempotency.failOperationIdempotency(idempKey, err.message);
+      return { success: false, error: "Move failed: " + err.message, amount: amountUsdc, direction };
+    }
+  }
+
+  // ── Solana → Arc: burn SPL USDC on derived address, mint native USDC on Arc ──
+  if (direction === "solana_to_arc") {
+    let solData;
+    try {
+      solData = multichain.deriveSolanaFromEvmKey(userWallet.privateKey);
+    } catch (err) {
+      idempotency.failOperationIdempotency(idempKey, err.message);
+      return { success: false, error: "Could not derive your Solana keypair: " + err.message, amount: amountUsdc, direction };
+    }
+    const solanaAddress = solData.keypair.publicKey.toBase58();
+
+    // SPL balance check on the derived address (source of truth = on-chain).
+    let splUsdc = 0;
+    try {
+      const bal = await multichain.getSplTokenBalance(solanaAddress);
+      if (bal && bal.uiAmount > 0) splUsdc = bal.uiAmount;
+    } catch (err) {
+      idempotency.failOperationIdempotency(idempKey, err.message);
+      return { success: false, error: "Could not check Solana balance: " + err.message, amount: amountUsdc, direction };
+    }
+    if (splUsdc < Number(amountUsdc)) {
+      idempotency.failOperationIdempotency(idempKey, "Insufficient Solana balance");
+      return {
+        success: false,
+        error: `Not enough USDC on Solana. You have $${splUsdc.toFixed(2)}, need $${Number(amountUsdc).toFixed(2)}.`,
+        amount: amountUsdc,
+        direction,
+      };
+    }
+
+    // Pre-flight: Solana fee payer must have SOL before we burn.
+    const feeCheck = await cctpBridge.checkSolanaFeePayerBalance();
+    if (!feeCheck.ok) {
+      idempotency.failOperationIdempotency(idempKey, "Solana fee payer low");
+      return {
+        success: false,
+        error: `Solana fee-payer wallet (${feeCheck.address}) has insufficient SOL for gas. Your funds remain safe on Solana (${solanaAddress}).`,
+        amount: amountUsdc,
+        direction,
+      };
+    }
+
+    const txId = db.recordTransaction(telegramId, "move_funds", amountMicro, "pending", null, accountType, 18, "solana");
+
+    // Ledger row BEFORE burn (recovery worker picks up anything stuck).
+    const inboundId = db.recordInboundCctpTransfer({
+      telegramId,
+      solanaAddress,
+      arcAddress: userWallet.address,
+      amountUsdc: Number(amountUsdc),
+      solanaBurnSig: null,
+      status: "initiated",
+    });
+
+    const burnResult = await multichain.executeSolanaCctpBurn({
+      userKeypair: solData.keypair,
+      amountUsdc: Number(amountUsdc),
+      recipientArcAddress: userWallet.address,
+    });
+    if (!burnResult || !burnResult.success) {
+      db.updateInboundCctpTransfer(inboundId, { status: "failed_burn" });
+      db.updateTransactionStatus(txId, "failed");
+      idempotency.failOperationIdempotency(idempKey, (burnResult && burnResult.error) || "Solana burn failed");
+      return { success: false, error: "Solana CCTP burn failed: " + ((burnResult && burnResult.error) || "unknown"), amount: amountUsdc, direction };
+    }
+
+    const solanaBurnSig = burnResult.txSignature;
+    // Stash the burn sig as the tx hash so the background flow's
+    // updateTransactionByTxHash(solanaBurnSig, "confirmed", arcTxHash) matches.
+    db.updateInboundCctpTransfer(inboundId, { solana_burn_sig: solanaBurnSig, status: "burned" });
+    db.updateTransactionStatus(txId, "submitted", solanaBurnSig);
+
+    // Background: poll Iris attestation + receiveMessage on Arc.  Notifies the
+    // user on mint.  The recovery worker also picks this row up if it stalls.
+    cctpBridge.completeInboundCctpTransferFlow({
+      inboundId,
+      solanaBurnSig,
+      recipientArcAddress: userWallet.address,
+      amountUsdc: Number(amountUsdc),
+      telegramId,
+      bot,
+    }).catch((err) => console.warn("[executor:move_funds] inbound completion note:", err.message));
+
+    idempotency.completeOperationIdempotency(idempKey, {
+      txHash: solanaBurnSig,
+      responseData: { txHash: solanaBurnSig, inboundId, fromChain: "solana", toChain: "arc" },
+    });
+    return {
+      success: true,
+      txHash: solanaBurnSig,
+      amount: amountUsdc,
+      direction,
+      fromChain: "solana",
+      toChain: "arc",
+      inboundId,
+    };
+  }
+
+  idempotency.failOperationIdempotency(idempKey, "Unknown direction");
+  return { success: false, error: `Unknown direction "${direction}". Use "arc_to_solana" or "solana_to_arc".`, amount: amountUsdc };
 }
 
 // ─── Plan executor (multi-rail & idempotent) ──────────────────────────────────
@@ -665,5 +864,6 @@ module.exports = {
   executePlan,
   executeOnchainPayment,
   executeOfframp,
+  moveFundsBetweenChains,
   formatResults,
 };

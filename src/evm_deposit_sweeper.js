@@ -1014,22 +1014,37 @@ let _monitorTimer = null;
 /**
  * Start the background polling monitor for active users.
  */
+/**
+ * One sweep pass over recently-active users. Extracted from the monitor so the
+ * settlement daemon can own the schedule (and tests can call it directly).
+ */
+async function runEvmSweepOnce({ bot = null, maxUsers = 20 } = {}) {
+  // Find users active in the last 48 hours
+  const activeUsers = db.getAllUsers().filter((u) => {
+    if (!u.last_activity_at) return false;
+    const last = new Date(u.last_activity_at).getTime();
+    return Date.now() - last < 48 * 3600 * 1000;
+  });
+
+  let swept = 0;
+  for (const user of activeUsers.slice(0, maxUsers)) {
+    try {
+      await sweepUserDeposits(user.telegram_id, bot);
+      swept++;
+    } catch (err) {
+      console.warn(`[evm_sweeper] sweep error for TG:${user.telegram_id}:`, err.message);
+    }
+  }
+  return { activeUsers: activeUsers.length, swept };
+}
+
 function startEvmDepositMonitor({ bot, intervalMs = 90000 } = {}) {
   if (_monitorTimer) return;
   console.log(`[evm_sweeper] Starting background EVM deposit monitor (interval: ${intervalMs}ms)...`);
 
   _monitorTimer = setInterval(async () => {
     try {
-      // Find users active in the last 48 hours
-      const activeUsers = db.getAllUsers().filter((u) => {
-        if (!u.last_activity_at) return false;
-        const last = new Date(u.last_activity_at).getTime();
-        return Date.now() - last < 48 * 3600 * 1000;
-      });
-
-      for (const user of activeUsers.slice(0, 20)) {
-        await sweepUserDeposits(user.telegram_id, bot);
-      }
+      await runEvmSweepOnce({ bot });
     } catch (err) {
       console.warn("[evm_sweeper:monitor_error]", err.message);
     }
@@ -1055,6 +1070,7 @@ module.exports = {
   bridgeRobinhoodViaRelay,
   processEvmDeposit,
   sweepUserDeposits,
+  runEvmSweepOnce,
   startEvmDepositMonitor,
   stopEvmDepositMonitor,
 };

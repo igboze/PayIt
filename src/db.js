@@ -314,6 +314,7 @@ function ensureTransactionsSchema() {
   if (!cols.includes("status")) db.exec("ALTER TABLE transactions ADD COLUMN status TEXT DEFAULT 'pending'");
   if (!cols.includes("type")) db.exec("ALTER TABLE transactions ADD COLUMN type TEXT DEFAULT 'general'");
   if (!cols.includes("decimals")) db.exec("ALTER TABLE transactions ADD COLUMN decimals INTEGER NOT NULL DEFAULT 18");
+  if (!cols.includes("chain")) db.exec("ALTER TABLE transactions ADD COLUMN chain TEXT NOT NULL DEFAULT 'arc'");
 }
 
 function ensureCctpPendingSchema() {
@@ -377,6 +378,8 @@ ensureInvoicesSchema();
 ensureTransactionsSchema();
 ensureCctpPendingSchema();
 ensureCctpInboundSchema();
+ensureNearDepositsSchema();
+ensureSettlementRunsSchema();
 
 // ─── User helpers ─────────────────────────────────────────────────────────────
 
@@ -821,10 +824,10 @@ function isBlocked(telegramId) {
 }
 // ─── Transactions ─────────────────────────────────────────────────────────────
 
-function recordTransaction(telegramId, type, amountMicro, status, txHash, accountType = "personal", decimals = 18) {
+function recordTransaction(telegramId, type, amountMicro, status, txHash, accountType = "personal", decimals = 18, chain = "arc") {
   const result = db.prepare(
-    "INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, account_type, decimals) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  ).run(telegramId, type, amountMicro.toString(), status, txHash || null, accountType, decimals);
+    "INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, account_type, decimals, chain) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(telegramId, type, amountMicro.toString(), status, txHash || null, accountType, decimals, chain);
   return result.lastInsertRowid;
 }
 
@@ -1651,6 +1654,214 @@ function getPendingInboundCctpTransfers() {
   }
 }
 
+/**
+ * Retrieve a user's most recent Arc→Solana CCTP burns (any status), newest
+ * first, for the "Move Funds" status screen.
+ */
+function getRecentCctpBurnsByUser(telegramId, limit = 5) {
+  try {
+    return db.prepare(`
+      SELECT * FROM cctp_pending_burns
+      WHERE telegram_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(telegramId, limit);
+  } catch (err) {
+    console.warn("[db:cctp_pending] getRecentCctpBurnsByUser error:", err.message);
+    return [];
+  }
+}
+
+/**
+ * Retrieve a user's most recent Solana→Arc inbound CCTP transfers (any
+ * status), newest first, for the "Move Funds" status screen.
+ */
+function getRecentInboundByUser(telegramId, limit = 5) {
+  try {
+    return db.prepare(`
+      SELECT * FROM cctp_inbound_transfers
+      WHERE telegram_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(telegramId, limit);
+  } catch (err) {
+    console.warn("[db:cctp_inbound] getRecentInboundByUser error:", err.message);
+    return [];
+  }
+}
+
+// ─── NEAR Intents (1Click) deposits ────────────────────────────────────────────
+
+function ensureNearDepositsSchema() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS near_deposits (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id        INTEGER NOT NULL,
+        account_type       TEXT NOT NULL DEFAULT 'personal',
+        origin_asset       TEXT NOT NULL,
+        amount_usdc        REAL NOT NULL,
+        amount_out         REAL,
+        recipient_address  TEXT NOT NULL,
+        refund_to          TEXT NOT NULL,
+        deposit_address    TEXT,
+        deposit_memo       TEXT,
+        correlation_id     TEXT,
+        deadline           TEXT,
+        quote_json         TEXT,
+        status             TEXT NOT NULL DEFAULT 'quoting',
+        error              TEXT,
+        retry_count        INTEGER NOT NULL DEFAULT 0,
+        created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    const cols = db.prepare("PRAGMA table_info(near_deposits)").all().map((r) => r.name);
+    if (!cols.includes("quote_json")) db.exec("ALTER TABLE near_deposits ADD COLUMN quote_json TEXT");
+    if (!cols.includes("retry_count")) db.exec("ALTER TABLE near_deposits ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0");
+  } catch (err) {
+    console.warn("[db] ensureNearDepositsSchema note:", err.message);
+  }
+}
+
+function createNearDeposit({ telegramId, accountType = "personal", originAsset, amountUsdc, recipientAddress, refundTo, status = "quoting" }) {
+  const result = db.prepare(
+    `INSERT INTO near_deposits (telegram_id, account_type, origin_asset, amount_usdc, recipient_address, refund_to, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(telegramId, accountType, originAsset, amountUsdc, recipientAddress, refundTo, status);
+  return Number(result.lastInsertRowid);
+}
+
+function updateNearDeposit(id, fields) {
+  const allowed = ["status", "deposit_address", "deposit_memo", "amount_out", "quote_json", "deadline", "correlation_id", "error", "retry_count"];
+  const sets = [];
+  const vals = [];
+  for (const [k, v] of Object.entries(fields || {})) {
+    if (!allowed.includes(k)) continue;
+    sets.push(`${k} = ?`);
+    vals.push(typeof v === "object" && v !== null ? JSON.stringify(v) : v);
+  }
+  if (!sets.length) return;
+  sets.push("updated_at = datetime('now')");
+  vals.push(id);
+  db.prepare(`UPDATE near_deposits SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+}
+
+function getNearDepositById(id) {
+  return db.prepare("SELECT * FROM near_deposits WHERE id = ?").get(id) || null;
+}
+
+function getActiveNearDeposits() {
+  return db.prepare(
+    `SELECT * FROM near_deposits
+     WHERE status NOT IN ('SUCCESS', 'REFUNDED', 'FAILED', 'expired')
+       AND created_at >= datetime('now', '-24 hours')
+     ORDER BY id ASC`
+  ).all();
+}
+
+function getStaleNearDeposits() {
+  return db.prepare(
+    `SELECT * FROM near_deposits
+     WHERE status = 'awaiting_deposit' AND deadline IS NOT NULL AND deadline < datetime('now')`
+  ).all();
+}
+
+// ─── Settlement daemon ledger ────────────────────────────────────────────────
+
+function ensureSettlementRunsSchema() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS settlement_runs (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        task        TEXT NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'running',
+        error       TEXT,
+        result      TEXT,
+        started_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        finished_at TEXT
+      )
+    `);
+  } catch (err) {
+    console.warn("[db:settlement_runs] ensureSettlementRunsSchema note:", err.message);
+  }
+}
+
+/**
+ * Claim a ledger row for a task run. Returns the run id, or null when another
+ * run of the same task is still marked 'running' (e.g. left by a crash — the
+ * daemon interrupts stale rows at startup before claiming new ones).
+ */
+function beginSettlementRun(task) {
+  try {
+    const existing = db.prepare(
+      "SELECT id FROM settlement_runs WHERE task = ? AND status = 'running' ORDER BY id DESC LIMIT 1"
+    ).get(task);
+    if (existing) return null;
+    const info = db.prepare(
+      "INSERT INTO settlement_runs (task, status) VALUES (?, 'running')"
+    ).run(task);
+    return Number(info.lastInsertRowid);
+  } catch (err) {
+    console.warn("[db:settlement_runs] beginSettlementRun error:", err.message);
+    return null;
+  }
+}
+
+function finishSettlementRun(id, { status = "succeeded", error = null, result = null } = {}) {
+  try {
+    if (!id) return;
+    const resultStr = result ? JSON.stringify(result).slice(0, 4000) : null;
+    db.prepare(
+      "UPDATE settlement_runs SET status = ?, error = ?, result = ?, finished_at = datetime('now') WHERE id = ?"
+    ).run(status, error, resultStr, id);
+  } catch (err) {
+    console.warn("[db:settlement_runs] finishSettlementRun error:", err.message);
+  }
+}
+
+/**
+ * Mark 'running' rows older than maxAgeMinutes as interrupted (crash recovery).
+ */
+function interruptStaleSettlementRuns(maxAgeMinutes = 15) {
+  try {
+    const info = db.prepare(
+      "UPDATE settlement_runs SET status = 'interrupted', finished_at = datetime('now') WHERE status = 'running' AND started_at < datetime('now', ?)"
+    ).run(`-${Number(maxAgeMinutes) || 15} minutes`);
+    return info.changes || 0;
+  } catch (err) {
+    console.warn("[db:settlement_runs] interruptStaleSettlementRuns error:", err.message);
+    return 0;
+  }
+}
+
+function getRecentSettlementRuns(task = null, limit = 20) {
+  try {
+    if (task) {
+      return db.prepare("SELECT * FROM settlement_runs WHERE task = ? ORDER BY id DESC LIMIT ?").all(task, limit);
+    }
+    return db.prepare("SELECT * FROM settlement_runs ORDER BY id DESC LIMIT ?").all(limit);
+  } catch (err) {
+    console.warn("[db:settlement_runs] getRecentSettlementRuns error:", err.message);
+    return [];
+  }
+}
+
+/**
+ * Keep the most recent `keep` finished rows (running rows are never pruned).
+ */
+function pruneSettlementRuns(keep = 500) {
+  try {
+    db.prepare(`
+      DELETE FROM settlement_runs
+      WHERE id NOT IN (SELECT id FROM settlement_runs WHERE status = 'running')
+        AND id <= (SELECT COALESCE(MAX(id), 0) FROM settlement_runs) - ?
+    `).run(Number(keep) || 500);
+  } catch (err) {
+    console.warn("[db:settlement_runs] pruneSettlementRuns error:", err.message);
+  }
+}
+
 module.exports = {
   db,
   resolveDbPath,
@@ -1715,6 +1926,19 @@ module.exports = {
   updateInboundCctpTransfer,
   completeInboundCctpTransfer,
   getPendingInboundCctpTransfers,
+  getRecentCctpBurnsByUser,
+  getRecentInboundByUser,
+  beginSettlementRun,
+  finishSettlementRun,
+  interruptStaleSettlementRuns,
+  getRecentSettlementRuns,
+  pruneSettlementRuns,
+  ensureSettlementRunsSchema,
+  createNearDeposit,
+  updateNearDeposit,
+  getNearDepositById,
+  getActiveNearDeposits,
+  getStaleNearDeposits,
   getSystemDecryptedPrivateKey,
   _db: db,
   prepare: (...args) => db.prepare(...args),

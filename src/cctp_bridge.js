@@ -1622,6 +1622,7 @@ module.exports = {
   redeemOnArc,
   disburseDirectOnArc,
   autoBridgeSolanaToArc,
+  completeInboundCctpTransferFlow,
   executeArcToSolanaCctpBurn,
   completeCctpWithdrawalOnSolana,
   executeEvmCctpBurn,

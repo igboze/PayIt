@@ -20,6 +20,7 @@ const https = require("https");
 const db            = require("./src/db");
 const walletLib     = require("./src/wallet");
 const offrampLib    = require("./src/offramp");
+const nearLib       = require("./src/near");
 const paj           = require("./src/paj");
 const multichain    = require("./src/multichain");
 const solAddrLib    = require("./src/solana_address");
@@ -42,12 +43,15 @@ const { generateReceiptPNG }   = require("./src/receipt_generator");
 const paymaster = require("./src/paymaster");
 const bankResolver = require("./src/bank_resolver");
 const evmDepositSweeper = require("./src/evm_deposit_sweeper");
+const settlementDaemon  = require("./src/settlement_daemon");
+const chains            = require("./src/chains");
+const flowsMultichain   = require("./src/flows_multichain");
 const autoEarn = require("./src/auto_earn");
 const cashflow = require("./src/cashflow");
 
 // ── Agent modules ─────────────────────────────────────────────────────────────
 const { parsePaymentIntent }      = require("./agent/orchestrator");
-const { executePlan, executeOfframp, formatResults } = require("./agent/executor");
+const { executePlan, executeOfframp, moveFundsBetweenChains, formatResults } = require("./agent/executor");
 const { startJob, cancelJob, reloadAll, describeSchedule } = require("./agent/scheduler");
 const { saveSchedule, removeSchedule, getUserSchedules }   = require("./agent/store");
 const { parseSmartInvoiceIntent } = require("./agent/smart_invoice_agent");
@@ -617,28 +621,12 @@ async function showBalance(ctx) {
   const label   = context === "business" ? "💼 Business" : "👤 Personal";
 
   try {
-    const usdcMicro = await walletLib.getNativeBalanceMicro(address);
-    const usdc      = parseFloat(walletLib.formatMicro(usdcMicro));
-    const eurcMicro = await tokens.getEurcBalance(address);
-    const eurc      = parseFloat(walletLib.formatMicro(eurcMicro));
+    // Unified balance read path (Phase 4): Arc + Solana + pending NEAR in one call
+    const unified   = await chains.getUnifiedBalance(user, context);
+    const usdc      = unified.arc.usdc;
+    const solUsdc   = unified.solana.usdc;
+    const eurc      = unified.arc.eurc;
     const rate      = await fx.getUsdToNgnRate();
-
-    let solUsdc = 0;
-    const solAddrsToCheck = [];
-    if (solAddress) solAddrsToCheck.push(solAddress);
-    if (user.solana_deposit_address && !solAddrsToCheck.includes(user.solana_deposit_address)) {
-      solAddrsToCheck.push(user.solana_deposit_address);
-    }
-    if (!solAddrsToCheck.includes("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j")) {
-      solAddrsToCheck.push("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j");
-    }
-    for (const a of solAddrsToCheck) {
-      if (!a) continue;
-      try {
-        const bal = await multichain.getSplTokenBalance(a);
-        if (bal && bal.uiAmount > 0) solUsdc += bal.uiAmount;
-      } catch (_) {}
-    }
 
     const totalUsdc = usdc + solUsdc;
     const solDetail = solUsdc > 0 ? ` (Arc: $${usdc.toFixed(2)} | Solana: $${solUsdc.toFixed(2)})` : "";
@@ -663,10 +651,11 @@ async function showBalance(ctx) {
            Markup.button.callback("📤 Send Money",      "action_send_menu")],
           [Markup.button.callback("💵 Cash Out to Naira", "action_withdraw_menu"),
            Markup.button.callback("📈 Earn Interest",   "action_yields")],
-          [Markup.button.callback("🌐 Crypto Deposit",  "action_gateway"),
-           Markup.button.callback("🔑 Export Keys",     "action_export_keys")],
-          [Markup.button.callback("🔄 Scan & Sweep",    "action_sweep_deposits"),
-           Markup.button.callback("📋 History",         "action_history")],
+          [Markup.button.callback("🔀 Move Funds",      "action_move_funds"),
+           Markup.button.callback("🌐 Crypto Deposit",  "action_gateway")],
+          [Markup.button.callback("🔑 Export Keys",     "action_export_keys"),
+           Markup.button.callback("🔄 Scan & Sweep",    "action_sweep_deposits")],
+          [Markup.button.callback("📋 History",         "action_history")],
         ]),
       }
     );
@@ -688,25 +677,12 @@ async function showBizBalance(ctx) {
   try {
     const addr      = user.business_deposit_address;
     const solAddress = getOrDeriveSolanaAddress(user);
-    const usdcMicro = await walletLib.getNativeBalanceMicro(addr);
-    const usdc      = parseFloat(walletLib.formatMicro(usdcMicro));
-    const eurcMicro = await tokens.getEurcBalance(addr);
-    const eurc      = parseFloat(walletLib.formatMicro(eurcMicro));
+    // Unified balance read path (Phase 4)
+    const unified   = await chains.getUnifiedBalance(user, "business");
+    const usdc      = unified.arc.usdc;
+    const solUsdc   = unified.solana.usdc;
+    const eurc      = unified.arc.eurc;
     const rate      = await fx.getUsdToNgnRate();
-
-    let solUsdc = 0;
-    const bizSolAddrs = [];
-    if (solAddress) bizSolAddrs.push(solAddress);
-    if (user.biz_solana_deposit_address && !bizSolAddrs.includes(user.biz_solana_deposit_address)) {
-      bizSolAddrs.push(user.biz_solana_deposit_address);
-    }
-    for (const a of bizSolAddrs) {
-      if (!a) continue;
-      try {
-        const bal = await multichain.getSplTokenBalance(a);
-        if (bal && bal.uiAmount > 0) solUsdc += bal.uiAmount;
-      } catch (_) {}
-    }
 
     const totalUsdc = usdc + solUsdc;
     const solDetail = solUsdc > 0 ? ` (Arc: $${usdc.toFixed(2)} | Solana: $${solUsdc.toFixed(2)})` : "";
@@ -759,7 +735,8 @@ async function showReceive(ctx) {
     `Choose your preferred deposit method:\n\n` +
     `• 🇳🇬 <b>Bank Transfer (Naira)</b>: Pay from your Nigerian bank app (Kuda, GTBank, Opay, PalmPay) to get Dollars.\n` +
     `• 💳 <b>Card or Apple Pay</b>: Direct purchase with Visa, Mastercard, or Apple Pay.\n` +
-    `• 🌐 <b>Crypto & Web3 Deposit</b>: Send crypto directly from Binance, Coinbase, or any Web3 wallet.\n\n` +
+    `• 🌐 <b>Crypto & Web3 Deposit</b>: Send crypto directly from Binance, Coinbase, or any Web3 wallet.\n` +
+    `• Ⓝ <b>Deposit from NEAR</b>: Send USDC from any NEAR wallet — it auto-bridges to your Arc balance.\n\n` +
     `Your PayIT Account Number (tap to copy):\n<code>${address}</code>`,
     {
       parse_mode: "HTML",
@@ -767,6 +744,7 @@ async function showReceive(ctx) {
         [Markup.button.callback("🇳🇬 Deposit Naira (Bank Transfer)", "action_paj_onramp")],
         [Markup.button.callback("💳 Pay with Card / Apple Pay",     "gateway_onramp")],
         [Markup.button.callback("🌐 Crypto & Web3 Deposit",        "action_gateway")],
+        [Markup.button.callback("Ⓝ Deposit from NEAR",             "action_near_deposit")],
         [Markup.button.callback("🔄 Scan & Sweep Deposits",        "action_sweep_deposits")],
         [Markup.button.callback("💰 Check Balance",                 "action_balance")],
         [Markup.button.callback("🏠 Main Menu",                     "main_menu")],
@@ -1869,6 +1847,17 @@ bot.action("action_paj_onramp", async (ctx) => {
   }
 });
 
+// ─── Multichain flows (Phase 4): NEAR deposits + Move Funds live in
+// src/flows_multichain.js — here we only wire them into the bot, passing the
+// bot-local helpers they need.
+flowsMultichain.registerMultichainFlows(bot, {
+  requireUser,
+  getContext,
+  getActiveWallet,
+  getOrDeriveSolanaAddress,
+  deleteSensitiveMessage,
+  backToMenu,
+});
 
 // ─── Withdraw / Cash Out ──────────────────────────────────────────────────────
 
@@ -1883,6 +1872,40 @@ bot.action("action_withdraw_menu", (ctx) => {
     Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
   );
 });
+
+// Rail picker: user has funds on both Arc and Solana — ask which chain funds the cash out.
+for (const [rail, label] of [["arc", "⚡ Arc"], ["solana", "☀️ Solana"]]) {
+  bot.action(`action_withdraw_rail_${rail}`, async (ctx) => {
+    ctx.answerCbQuery();
+    const userId = ctx.from.id;
+    const state = convState.getState(userId);
+    if (!state || state.type !== "await_withdraw_rail" || !state.data?.amountUsdc) {
+      return ctx.reply("Session expired. Start a new cash out.", backToMenu);
+    }
+    try {
+      const rate = await fx.getUsdToNgnRate();
+      const nairaEst = rate ? fx.formatNaira(state.data.amountUsdc * rate) : null;
+      const rateNote = rate ? `Today's rate: ₦${Math.round(rate).toLocaleString()}/$\nYou'll receive: ~${nairaEst}` : "";
+      convState.setState(userId, "await_withdraw_bank", { amountUsdc: state.data.amountUsdc, rail }, state.context);
+      return ctx.reply(
+        `💵 Cash Out $${state.data.amountUsdc.toFixed(2)} ${rail === "arc" ? "⚡ via Arc" : "☀️ via Solana"}\n──────────────────────────\n` +
+        `${rateNote}\n\n` +
+        `Which bank account should we pay the Naira into?\n` +
+        `Type it like this: Bank name · Account number · Account name\n\nFor example: GTBank · 0123456789 · Emeka Johnson`,
+        Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+      );
+    } catch (err) {
+      console.warn("[action_withdraw_rail]", err.message);
+      convState.setState(userId, "await_withdraw_bank", { amountUsdc: state.data.amountUsdc, rail }, state.context);
+      return ctx.reply(
+        `💵 Cash Out $${state.data.amountUsdc.toFixed(2)} ${rail === "arc" ? "⚡ via Arc" : "☀️ via Solana"}\n──────────────────────────\n` +
+        `Which bank account should we pay the Naira into?\n` +
+        `Type it like this: Bank name · Account number · Account name\n\nFor example: GTBank · 0123456789 · Emeka Johnson`,
+        Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+      );
+    }
+  });
+}
 
 // ─── Send to external wallet ──────────────────────────────────────────────────
 
@@ -4439,7 +4462,12 @@ bot.on("text", async (ctx) => {
       }
     }
 
-    // ── Withdraw amount ──────────────────────────────────────────────────────
+    // ── Multichain text states (NEAR deposit, Move Funds) — logic lives in
+    // src/flows_multichain.js; bot.js delegates. ───────────────────────────
+
+    if (flowsMultichain.handlesState(state.type)) {
+      return flowsMultichain.handleMultichainState(bot, ctx, state, text, userId);
+    }
 
     if (state.type === "await_withdraw_amount") {
       const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
@@ -4452,41 +4480,63 @@ bot.on("text", async (ctx) => {
       }
       const user = requireUser(ctx);
       if (!user) return;
-      const address     = getActiveWallet(user);
       let amountMicro;
       try { amountMicro = walletLib.parseToMicro(amount.toString()); } catch {
         return ctx.reply("Invalid amount. Try again.");
       }
-      const evmMicro = await walletLib.getNativeBalanceMicro(address);
-      let totalUsdc = parseFloat(walletLib.formatMicro(evmMicro));
 
-      const solAddress = getOrDeriveSolanaAddress(user);
-      const solAddrsToCheck = [];
-      if (solAddress) solAddrsToCheck.push(solAddress);
-      if (user.solana_deposit_address && !solAddrsToCheck.includes(user.solana_deposit_address)) {
-        solAddrsToCheck.push(user.solana_deposit_address);
-      }
-      if (!solAddrsToCheck.includes("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j")) {
-        solAddrsToCheck.push("wr1UudCbdBs1yEXf2dVoKnceeRWcX47Hi2Wzaz66C7j");
-      }
-      for (const a of solAddrsToCheck) {
-        if (!a) continue;
-        try {
-          const bal = await multichain.getSplTokenBalance(a);
-          if (bal && bal.uiAmount > 0) totalUsdc += bal.uiAmount;
-        } catch (_) {}
-      }
+      // Unified balance read path (Phase 4): Arc + Solana in one call
+      const unified = await chains.getUnifiedBalance(user, state.context || "personal");
+      const arcUsdc = unified.arc.usdc;
+      const solUsdc = unified.solana.usdc;
 
+      const totalUsdc = arcUsdc + solUsdc;
       if (totalUsdc < amount) {
-        return ctx.reply(`Not enough dollars. You have $${totalUsdc.toFixed(2)}.`);
+        return ctx.reply(
+          `Not enough dollars. You have $${totalUsdc.toFixed(2)} ` +
+          `(Arc: $${arcUsdc.toFixed(2)} · Solana: $${solUsdc.toFixed(2)}).`
+        );
       }
+
+      // Rail selection: ask only when both chains can fund the cash out.
+      const arcRailUsable = paj.isArcRailEnabled() && arcUsdc >= amount;
+      const solRailUsable = solUsdc >= amount;
+      if (arcRailUsable && solRailUsable) {
+        convState.setState(userId, "await_withdraw_rail", { amountUsdc: amount, arcUsdc, solUsdc }, state.context);
+        return ctx.reply(
+          `💵 Cash Out $${amount.toFixed(2)}\n──────────────────────────\n` +
+          `You have funds on both chains:\n` +
+          `⚡ <b>Arc:</b> $${arcUsdc.toFixed(2)} — fastest (~1s on-chain)\n` +
+          `☀️ <b>Solana:</b> $${solUsdc.toFixed(2)}\n\n` +
+          `Which chain should fund this cash out?`,
+          {
+            parse_mode: "HTML",
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback("⚡ Arc (fastest)", "action_withdraw_rail_arc")],
+              [Markup.button.callback("☀️ Solana", "action_withdraw_rail_solana")],
+              [Markup.button.callback("❌ Cancel", "main_menu")],
+            ]),
+          }
+        );
+      }
+
+      let rail;
+      if (arcRailUsable) rail = "arc";
+      else if (solRailUsable) rail = "solana";
+      else {
+        return ctx.reply(
+          `You have $${totalUsdc.toFixed(2)} total, but not $${amount.toFixed(2)} on a single chain ` +
+          `(Arc: $${arcUsdc.toFixed(2)} · Solana: $${solUsdc.toFixed(2)}). ` +
+          `Use "Move Funds" to consolidate, or enter a smaller amount.`
+        );
+      }
+      convState.setState(userId, "await_withdraw_bank", { amountUsdc: amount, rail }, state.context);
       const rate      = await fx.getUsdToNgnRate();
       const nairaEst  = rate ? fx.formatNaira(amount * rate) : null;
       const rateNote  = rate ? `Today's rate: ₦${Math.round(rate).toLocaleString()}/$\nYou'll receive: ~${nairaEst}` : "";
 
-      convState.setState(userId, "await_withdraw_bank", { amountUsdc: amount }, state.context);
       return ctx.reply(
-        `💵 Cash Out $${amount.toFixed(2)}\n──────────────────────────\n` +
+        `💵 Cash Out $${amount.toFixed(2)}${rail === "arc" ? " ⚡ via Arc" : " ☀️ via Solana"}\n──────────────────────────\n` +
         `${rateNote}\n\n` +
         `Which bank account should we pay the Naira into?\n` +
         `Type it like this: Bank name · Account number · Account name\n\nFor example: GTBank · 0123456789 · Emeka Johnson`,
@@ -4517,10 +4567,13 @@ bot.on("text", async (ctx) => {
       let liveAccountName = parsed.accountName;
       let orderReservation = null;
       try {
+        const railCfg = paj.RAILS[state.data.rail || "solana"] || paj.RAILS.solana;
         orderReservation = await paj.createOfframpOrder({
           accountNumber: parsed.accountNumber,
           bankCode: parsed.bankCode,
           amount: state.data.amountUsdc,
+          chain: railCfg.chain,
+          mint: railCfg.mint,
         });
         if (orderReservation && orderReservation.accountName) {
           liveAccountName = orderReservation.accountName;
@@ -4546,6 +4599,7 @@ bot.on("text", async (ctx) => {
 
       convState.setState(userId, "confirm_withdraw", {
         amountUsdc: state.data.amountUsdc,
+        rail: state.data.rail || "solana",
         bankName: parsed.bankName,
         bankCode: parsed.bankCode,
         accountNumber: parsed.accountNumber,
@@ -4558,11 +4612,13 @@ bot.on("text", async (ctx) => {
 
       const acctNameLine = liveAccountName ? `👤 <b>Account Name:</b> ${liveAccountName}\n` : "";
       const nairaEst = orderReservation?.fiatAmount ? ` (approx. ₦${Number(orderReservation.fiatAmount).toLocaleString()})` : "";
+      const railTag = (state.data.rail || "solana") === "arc" ? " ⚡ via Arc" : " ☀️ via Solana";
 
       return ctx.reply(
         `💵 <b>Confirm Cash Out</b>\n` +
         `──────────────────────────\n` +
         `💰 <b>Amount:</b> $${state.data.amountUsdc.toFixed(2)}${nairaEst}\n` +
+        `🔀 <b>Rail:</b> ${railTag.trim()}\n` +
         `🏦 <b>Bank:</b> ${parsed.bankName}\n` +
         `🔢 <b>Account Number:</b> <code>${parsed.accountNumber}</code>\n` +
         acctNameLine + `\n` +
@@ -4609,7 +4665,7 @@ bot.on("text", async (ctx) => {
           },
           userId,
           "Cash Out",
-          { accountType: context }
+          { accountType: context, rail: state.data.rail || "solana" }
         );
 
         if (result.success) {
@@ -6364,36 +6420,27 @@ async function startBot() {
     console.warn("[bot] Auto-earn worker notice:", err.message);
   }
 
-  // Start automated EVM cross-chain deposit monitor (monitors incoming transfers)
+  // Settlement daemon: owns ALL background money movement — EVM sweep,
+  // CCTP inbound recovery, Arc→Solana burn retry, NEAR poll/expiry — with a
+  // per-run ledger (replaces the scattered monitors that used to live here).
   try {
-    evmDepositSweeper.startEvmDepositMonitor({ bot, intervalMs: 90000 });
+    settlementDaemon.startSettlementDaemon({ bot });
   } catch (err) {
-    console.warn("[bot] EVM deposit monitor notice:", err.message);
-  }
-
-  // Start automated CCTP inbound settlement recovery worker (guarantees zero token loss)
-  try {
-    cctpBridge.recoverPendingInboundCctpTransfers(bot).catch(() => {});
-    const inboundRecoveryInterval = setInterval(() => {
-      cctpBridge.recoverPendingInboundCctpTransfers(bot).catch(() => {});
-    }, 20000);
-    inboundRecoveryInterval.unref();
-  } catch (err) {
-    console.warn("[bot] CCTP inbound recovery worker notice:", err.message);
+    console.warn("[bot] Settlement daemon notice:", err.message);
   }
 }
 
 startBot();
 
 process.once("SIGINT", () => {
-  evmDepositSweeper.stopEvmDepositMonitor();
+  settlementDaemon.stopSettlementDaemon();
   autoEarn.stopAutoEarnWorker();
   cashflow.stopCashFlowScheduler();
   webhookServer.stopWebhookServer();
   bot.stop("SIGINT");
 });
 process.once("SIGTERM", () => {
-  evmDepositSweeper.stopEvmDepositMonitor();
+  settlementDaemon.stopSettlementDaemon();
   autoEarn.stopAutoEarnWorker();
   cashflow.stopCashFlowScheduler();
   webhookServer.stopWebhookServer();
