@@ -1279,12 +1279,14 @@ bot.action("action_gateway", async (ctx) => {
     `  ▫️ <b>Avalanche C-Chain</b> (Native AVAX & USDC)\n` +
     (solAddress ? `  ▫️ <b>Solana</b> (SPL USDC & SOL)\n` : "") +
     `• <b>Accepted Assets:</b> Native tokens (ETH, AVAX, POL/MATIC${solAddress ? ", SOL" : ""}), USDG, and USDC/EURC\n` +
+    `• <b>NEAR:</b> Tap "Ⓝ Deposit from NEAR" below for a one-time address — USDC/USDT auto-bridges to your Arc balance (~2–5 min).\n` +
     `• <b>Zero Bridge Hassle:</b> Native tokens and cross-chain assets are automatically swapped to USDC and bridged to Arc Mainnet with <b>zero user gas or signing required</b>!\n` +
-    `• <b>Instant Settlement:</b> Native USDC is credited to your PayIT balance automatically.\n\n` +
+    `• <b>Instant Settlement:</b> Native USDC is credited to your PayIT balance automatically (no manual sweep needed — "Scan & Sweep" is just an optional accelerator).\n\n` +
     `<i>Send any amount to your address above, or tap below to scan for recent transfers.</i>`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
+        [Markup.button.callback("Ⓝ Deposit from NEAR", "action_near_deposit")],
         [Markup.button.callback("🔄 Scan & Sweep Deposits", "action_sweep_deposits")],
         [Markup.button.callback("🔑 Export Wallet Keys", "action_export_keys")],
         [Markup.button.callback("💳 Buy USDC with Card (Onramp)", "gateway_onramp")],
