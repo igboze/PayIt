@@ -29,6 +29,10 @@ async function requestOfframp(telegramId, amountMicro, bankDetails) {
       bankCode: String(bankDetails.bankCode).trim(),
       currency: "NGN",
       description: `PayIT Cash Out - TG:${telegramId}`,
+      // Explicit settlement rail (defaults to Solana rail for backward compatibility).
+      // Pass { rail: "arc", chain, mint } to cash out directly on Arc via Paj.
+      ...(bankDetails.chain ? { chain: bankDetails.chain } : {}),
+      ...(bankDetails.mint ? { mint: bankDetails.mint } : {}),
     };
 
     if (bankDetails && bankDetails.fiatAmount) {

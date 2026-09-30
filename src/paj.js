@@ -38,6 +38,24 @@ function getClient() {
 
 const ONRAMP_FEE_NGN_PER_USD = Number(process.env.ONRAMP_FEE_NGN_PER_USD ?? 5.0);
 
+// Settlement rails supported by Paj.
+// `solana` is the battle-tested rail; `arc` is gated by PAJ_ARC_OFFRAMP_ENABLED
+// and requires PAJ_ARC_CHAIN / PAJ_ARC_MINT to be confirmed with Paj docs.
+const RAILS = {
+  solana: {
+    chain: process.env.PAJ_SOLANA_CHAIN || "SOLANA",
+    mint: process.env.PAJ_SOLANA_MINT || "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  },
+  arc: {
+    chain: process.env.PAJ_ARC_CHAIN || "ARC",
+    mint: process.env.PAJ_ARC_MINT || "",
+  },
+};
+
+function isArcRailEnabled() {
+  return process.env.PAJ_ARC_OFFRAMP_ENABLED === "true" && Boolean(RAILS.arc.mint);
+}
+
 /**
  * 1. Fetch live conversion rates for onramp and offramp.
  * Applies PayIT's ₦5/USD onramp fee markup while preserving market offramp rate.
@@ -104,8 +122,8 @@ async function createOnrampOrder(params) {
   const payload = {
     currency: params.currency || "NGN",
     recipient: params.recipient,
-    mint: params.mint || "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-    chain: params.chain || "SOLANA",
+    mint: params.mint || RAILS.solana.mint,
+    chain: params.chain || RAILS.solana.chain,
     webhookURL: params.webhookURL || process.env.PAJ_WEBHOOK_URL || undefined,
     userExternalId: params.userExternalId ? String(params.userExternalId) : undefined,
     businessUSDCFee: typeof params.businessUSDCFee === "number" ? params.businessUSDCFee : 0,
@@ -206,8 +224,8 @@ async function createOfframpOrder(params) {
     accountNumber: String(params.accountNumber).trim(),
     bankCode: String(params.bankCode).trim(),
     currency: params.currency || "NGN",
-    mint: params.mint || "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-    chain: params.chain || "SOLANA",
+    mint: params.mint || RAILS.solana.mint,
+    chain: params.chain || RAILS.solana.chain,
     webhookURL: params.webhookURL || process.env.PAJ_WEBHOOK_URL || undefined,
     businessUSDCFee: typeof params.businessUSDCFee === "number" ? params.businessUSDCFee : 0,
     description: params.description || "PayIT Cashout",
@@ -309,6 +327,8 @@ function verifyWebhookSignature(rawBody, headers, webhookSecret) {
 }
 
 module.exports = {
+  RAILS,
+  isArcRailEnabled,
   getRates,
   getBanks,
   createOnrampOrder,
