@@ -158,3 +158,50 @@ test("Webhook Server: processes onramp event and notifies Telegram user", async 
   assert.equal(onrampNotice.id, "888777");
   assert.ok(onrampNotice.msg.includes("69,400"));
 });
+
+test("Paj Arc Rail: isArcOnrampEnabled and isArcOfframpEnabled are true with configured mint", () => {
+  assert.equal(paj.isArcOnrampEnabled(), true);
+  assert.equal(paj.isArcOfframpEnabled(), true);
+  assert.equal(paj.isArcRailEnabled(), true);
+  assert.equal(paj.RAILS.arc.chain, "ARC");
+  assert.equal(paj.RAILS.arc.mint, "0x3600000000000000000000000000000000000000");
+});
+
+test("Webhook Server: processes direct Arc onramp and settles without CCTP bridge", async () => {
+  const sentMessages = [];
+  const mockBot = {
+    telegram: {
+      sendMessage: async (id, msg) => {
+        sentMessages.push({ id: String(id), msg });
+        return { message_id: 2 };
+      },
+    },
+  };
+
+  const evmWallet = Wallet.createRandom();
+  const testTgId = Date.now() + 100;
+  db.createUserWithWallet(testTgId, "arctestuser", evmWallet.address, evmWallet.privateKey, "1234");
+
+  const dynamicOrderId = `paj_arc_order_${Date.now()}`;
+  const payload = {
+    event: "onramp.successful",
+    data: {
+      id: dynamicOrderId,
+      amount: 10.0,
+      fiatAmount: 14000,
+      recipient: evmWallet.address,
+      chain: "ARC",
+      txHash: `0xarcTxHash_${Date.now()}`,
+    },
+  };
+
+  await webhookServer.processPajEvent(payload, mockBot);
+
+  assert.ok(sentMessages.length >= 1, "At least one Telegram message sent");
+  const arcNotice = sentMessages.find((m) => m.msg.includes("Arc Mainnet"));
+  assert.ok(arcNotice, "Expected direct Arc settlement confirmation message");
+  assert.equal(arcNotice.id, String(testTgId));
+  assert.ok(arcNotice.msg.includes("14,000"));
+  assert.ok(arcNotice.msg.includes("10.00 USDC"));
+});
+

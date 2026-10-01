@@ -143,7 +143,8 @@ async function processPajEvent(payload, bot) {
         }
       }
 
-      if (mainSettlementAddress) {
+      const isDirectArcInvoice = recipient && recipient.startsWith("0x");
+      if (!isDirectArcInvoice && mainSettlementAddress) {
         try {
           const bridgeResult = await cctpBridge.autoBridgeSolanaToArc({
             telegramId: merchantTelegramId,
@@ -169,7 +170,12 @@ async function processPajEvent(payload, bot) {
       if (!isNaN(parsedTgId)) user = db.getUser(parsedTgId);
     }
     if (!user && recipient) {
-      user = db.getUserBySolanaAddress ? db.getUserBySolanaAddress(recipient) : null;
+      if (recipient.startsWith("0x") && db.getUserByDepositAddress) {
+        user = db.getUserByDepositAddress(recipient);
+      }
+      if (!user && db.getUserBySolanaAddress) {
+        user = db.getUserBySolanaAddress(recipient);
+      }
     }
 
     // Determine whether this was a personal or business onramp
@@ -179,15 +185,35 @@ async function processPajEvent(payload, bot) {
 
     // Safety net: Paj reports the exact address it paid. It must be the address our key controls.
     if (user && recipient) {
-      const expectedSol = solAddrLib.getDerivedSolanaAddress(user, { isBiz: isBizAccount });
-      if (expectedSol && recipient !== expectedSol) {
-        console.error(
-          `[webhook_server:ADDRESS_MISMATCH] TG:${user.telegram_id} Paj paid ${recipient} but the bot controls ${expectedSol} (order ${data.id}, $${amountUsdc})`
-        );
-        await solAddrLib.alertAdmins(
-          bot,
-          `⚠️ Paj on-ramp paid an address the bot cannot sign for.\nTG: ${user.telegram_id}\nOrder: ${data.id}\nAmount: $${amountUsdc}\nPaid to: ${recipient}\nExpected: ${expectedSol}`
-        );
+      const isArcRecipient = recipient.startsWith("0x");
+      if (isArcRecipient) {
+        const expectedArc = isBizAccount
+          ? (user.business_deposit_address || user.deposit_address)
+          : user.deposit_address;
+        if (expectedArc && recipient.toLowerCase() !== expectedArc.toLowerCase()) {
+          console.error(
+            `[webhook_server:ADDRESS_MISMATCH] TG:${user.telegram_id} Paj paid Arc address ${recipient} but user wallet is ${expectedArc} (order ${data.id}, $${amountUsdc})`
+          );
+          if (solAddrLib && typeof solAddrLib.alertAdmins === "function") {
+            await solAddrLib.alertAdmins(
+              bot,
+              `⚠️ Paj on-ramp paid an Arc address the bot cannot sign for.\nTG: ${user.telegram_id}\nOrder: ${data.id}\nAmount: $${amountUsdc}\nPaid to: ${recipient}\nExpected: ${expectedArc}`
+            );
+          }
+        }
+      } else {
+        const expectedSol = solAddrLib.getDerivedSolanaAddress(user, { isBiz: isBizAccount });
+        if (expectedSol && recipient !== expectedSol) {
+          console.error(
+            `[webhook_server:ADDRESS_MISMATCH] TG:${user.telegram_id} Paj paid ${recipient} but the bot controls ${expectedSol} (order ${data.id}, $${amountUsdc})`
+          );
+          if (solAddrLib && typeof solAddrLib.alertAdmins === "function") {
+            await solAddrLib.alertAdmins(
+              bot,
+              `⚠️ Paj on-ramp paid an address the bot cannot sign for.\nTG: ${user.telegram_id}\nOrder: ${data.id}\nAmount: $${amountUsdc}\nPaid to: ${recipient}\nExpected: ${expectedSol}`
+            );
+          }
+        }
       }
     }
 
@@ -197,7 +223,8 @@ async function processPajEvent(payload, bot) {
       : (user ? user.deposit_address : data.destinationArcAddress);
 
     let bridgeResult = null;
-    if (recipientArcAddress && process.env.AUTO_BRIDGE_SOLANA_TO_ARC === "true") {
+    const isDirectArcDeposit = recipient && recipient.startsWith("0x");
+    if (!isDirectArcDeposit && recipientArcAddress && process.env.AUTO_BRIDGE_SOLANA_TO_ARC === "true") {
       try {
         bridgeResult = await cctpBridge.autoBridgeSolanaToArc({
           telegramId: targetTelegramId,
@@ -212,17 +239,18 @@ async function processPajEvent(payload, bot) {
       }
     }
 
-    const isDirectlySettled = bridgeResult && bridgeResult.status === "completed" && bridgeResult.arcTxHash;
+    const isDirectlySettled = isDirectArcDeposit || (bridgeResult && bridgeResult.status === "completed" && bridgeResult.arcTxHash);
     const amountMicro = walletLib.parseToMicro(amountUsdc.toFixed(6));
 
     // Record onramp transaction in ledger
+    const settlementTxHash = (bridgeResult && bridgeResult.arcTxHash) || solanaTxSignature || data.id;
     try {
       db.recordTransaction(
         targetTelegramId,
         "deposit_naira",
         amountMicro,
         isDirectlySettled ? "confirmed" : "pending_bridge",
-        isDirectlySettled ? bridgeResult.arcTxHash : (solanaTxSignature || data.id),
+        settlementTxHash,
         isBizAccount ? "business" : "personal"
       );
     } catch (recErr) {
@@ -233,8 +261,9 @@ async function processPajEvent(payload, bot) {
     if (bot && targetTelegramId) {
       try {
         if (isDirectlySettled) {
-          const explorerLink = bridgeResult.explorerUrl
-            ? `\n🔗 <a href="${bridgeResult.explorerUrl}">View on Arcscan</a>`
+          const explorerUrl = bridgeResult?.explorerUrl || (settlementTxHash && settlementTxHash.startsWith("0x") ? `${process.env.ARC_EXPLORER_URL || "https://explorer.arc.io"}/tx/${settlementTxHash}` : null);
+          const explorerLink = explorerUrl
+            ? `\n🔗 <a href="${explorerUrl}">View on Arcscan</a>`
             : "";
           await bot.telegram.sendMessage(
             targetTelegramId,

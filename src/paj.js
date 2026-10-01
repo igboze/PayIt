@@ -48,12 +48,24 @@ const RAILS = {
   },
   arc: {
     chain: process.env.PAJ_ARC_CHAIN || "ARC",
-    mint: process.env.PAJ_ARC_MINT || "",
+    mint: process.env.PAJ_ARC_MINT || "0x3600000000000000000000000000000000000000",
   },
 };
 
+function isArcOfframpEnabled() {
+  if (process.env.PAJ_ARC_OFFRAMP_ENABLED === "false") return false;
+  const isEnabled = process.env.PAJ_ARC_OFFRAMP_ENABLED === "true" || process.env.PAJ_ARC_ENABLED === "true";
+  return isEnabled && Boolean(RAILS.arc.mint);
+}
+
+function isArcOnrampEnabled() {
+  if (process.env.PAJ_ARC_ONRAMP_ENABLED === "false") return false;
+  const isEnabled = process.env.PAJ_ARC_ONRAMP_ENABLED === "true" || process.env.PAJ_ARC_ENABLED === "true";
+  return isEnabled && Boolean(RAILS.arc.mint);
+}
+
 function isArcRailEnabled() {
-  return process.env.PAJ_ARC_OFFRAMP_ENABLED === "true" && Boolean(RAILS.arc.mint);
+  return isArcOfframpEnabled();
 }
 
 /**
@@ -329,6 +341,8 @@ function verifyWebhookSignature(rawBody, headers, webhookSecret) {
 module.exports = {
   RAILS,
   isArcRailEnabled,
+  isArcOfframpEnabled,
+  isArcOnrampEnabled,
   getRates,
   getBanks,
   createOnrampOrder,
