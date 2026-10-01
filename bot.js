@@ -4409,17 +4409,44 @@ bot.on("text", async (ctx) => {
 
         const externalId = isBiz ? `${userId}-biz` : String(userId);
         const webhookURL = process.env.PAJ_WEBHOOK_URL || (process.env.WEBHOOK_URL ? `${process.env.WEBHOOK_URL.replace(/\/$/, "")}/webhook/paj` : undefined);
-        const order = await paj.createOnrampOrder({
-          fiatAmount,
-          currency: "NGN",
-          recipient: solAddr,
-          mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-          chain: "SOLANA",
-          webhookURL,
-          userExternalId: externalId,
-          businessUSDCFee: 0,
-          metadata: { accountType: context },
-        });
+        const arcAddr = isBiz ? (user.business_deposit_address || user.deposit_address) : user.deposit_address;
+
+        let order = null;
+        let settlementRail = "solana";
+
+        if (paj.isArcOnrampEnabled() && arcAddr) {
+          try {
+            order = await paj.createOnrampOrder({
+              fiatAmount,
+              currency: "NGN",
+              recipient: arcAddr,
+              mint: paj.RAILS.arc.mint,
+              chain: paj.RAILS.arc.chain,
+              webhookURL,
+              userExternalId: externalId,
+              businessUSDCFee: 0,
+              metadata: { accountType: context, rail: "arc" },
+            });
+            settlementRail = "arc";
+          } catch (arcErr) {
+            console.warn(`[onramp] Arc rail failed for TG:${userId} (${arcErr.message}), falling back to Solana rail`);
+          }
+        }
+
+        if (!order) {
+          order = await paj.createOnrampOrder({
+            fiatAmount,
+            currency: "NGN",
+            recipient: solAddr,
+            mint: paj.RAILS.solana.mint,
+            chain: paj.RAILS.solana.chain,
+            webhookURL,
+            userExternalId: externalId,
+            businessUSDCFee: 0,
+            metadata: { accountType: context, rail: "solana" },
+          });
+          settlementRail = "solana";
+        }
 
         convState.clearState(userId);
 
@@ -4441,6 +4468,7 @@ bot.on("text", async (ctx) => {
           `🇳🇬 <b>Bank Transfer Instructions</b>\n` +
           `──────────────────────────\n` +
           `💼 <b>Account:</b> ${isBiz ? "Business Treasury" : "Personal Wallet"}\n` +
+          `🏛 <b>Settlement Rail:</b> ${settlementRail === "arc" ? "⚡ Arc Mainnet (Instant USDC)" : "☀️ Solana"}\n` +
           `🏦 <b>Bank Name:</b> ${order.bank || "PalmPay"}\n` +
           `🔢 <b>Account Number:</b> <code>${order.accountNumber}</code> <i>(Tap to copy)</i>\n` +
           `👤 <b>Account Name:</b> ${order.accountName || "PayIT / Paj Settlement"}\n` +

@@ -101,18 +101,38 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
     const rate = rates?.onRampRate?.rate || 1388.75;
     const fiatAmount = Math.round(Number(totalUsdc) * rate);
 
-    // Always derive from the key in hand. The stored column can be stale.
-    const solAddr = multichain.deriveSolanaFromEvmKey(decryptedPrivateKey).solanaAddress;
+    let order = null;
+    if (paj.isArcOnrampEnabled() && walletAddress) {
+      try {
+        order = await paj.createOnrampOrder({
+          fiatAmount,
+          currency: "NGN",
+          recipient: walletAddress,
+          mint: paj.RAILS.arc.mint,
+          chain: paj.RAILS.arc.chain,
+          userExternalId: invoiceNumber,
+          description: `Payment for Invoice #${invoiceNumber}`,
+          businessUSDCFee: 0,
+        });
+      } catch (arcErr) {
+        console.warn("[invoice_hd] Dynamic Arc fiat onramp fallback to Solana:", arcErr.message);
+      }
+    }
 
-    const order = await paj.createOnrampOrder({
-      fiatAmount,
-      currency: "NGN",
-      recipient: solAddr,
-      chain: "SOLANA",
-      userExternalId: invoiceNumber,
-      description: `Payment for Invoice #${invoiceNumber}`,
-      businessUSDCFee: 0,
-    });
+    if (!order) {
+      // Always derive from the key in hand. The stored column can be stale.
+      const solAddr = multichain.deriveSolanaFromEvmKey(decryptedPrivateKey).solanaAddress;
+      order = await paj.createOnrampOrder({
+        fiatAmount,
+        currency: "NGN",
+        recipient: solAddr,
+        chain: paj.RAILS.solana.chain,
+        mint: paj.RAILS.solana.mint,
+        userExternalId: invoiceNumber,
+        description: `Payment for Invoice #${invoiceNumber}`,
+        businessUSDCFee: 0,
+      });
+    }
 
     if (order && order.accountNumber) {
       fiatDetails = {
@@ -222,18 +242,38 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
     const rate = rates?.onRampRate?.rate || 1388.75;
     const fiatAmount = Math.round(Number(totalUsdc) * rate);
 
-    // Always derive from the key in hand. The stored column can be stale.
-    const solAddr = multichain.deriveSolanaFromEvmKey(decryptedBizKey).solanaAddress;
+    let order = null;
+    if (paj.isArcOnrampEnabled() && bizWalletAddress) {
+      try {
+        order = await paj.createOnrampOrder({
+          fiatAmount,
+          currency: "NGN",
+          recipient: bizWalletAddress,
+          mint: paj.RAILS.arc.mint,
+          chain: paj.RAILS.arc.chain,
+          userExternalId: invoiceNumber,
+          description: `Payment for Invoice #${invoiceNumber}`,
+          businessUSDCFee: 0,
+        });
+      } catch (arcErr) {
+        console.warn("[biz_invoice_hd] Dynamic Arc fiat onramp fallback to Solana:", arcErr.message);
+      }
+    }
 
-    const order = await paj.createOnrampOrder({
-      fiatAmount,
-      currency: "NGN",
-      recipient: solAddr,
-      chain: "SOLANA",
-      userExternalId: invoiceNumber,
-      description: `Payment for Invoice #${invoiceNumber}`,
-      businessUSDCFee: 0,
-    });
+    if (!order) {
+      // Always derive from the key in hand. The stored column can be stale.
+      const solAddr = multichain.deriveSolanaFromEvmKey(decryptedBizKey).solanaAddress;
+      order = await paj.createOnrampOrder({
+        fiatAmount,
+        currency: "NGN",
+        recipient: solAddr,
+        chain: paj.RAILS.solana.chain,
+        mint: paj.RAILS.solana.mint,
+        userExternalId: invoiceNumber,
+        description: `Payment for Invoice #${invoiceNumber}`,
+        businessUSDCFee: 0,
+      });
+    }
 
     if (order && order.accountNumber) {
       fiatDetails = {
