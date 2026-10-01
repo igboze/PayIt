@@ -582,7 +582,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
           const relayerKey = options?.overridePrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
           if (relayerKey) {
             const relayer = new Wallet(relayerKey, provider);
-            const dripAmount = parseUnits("0.00015", 18);
+            const dripAmount = parseUnits("0.0003", 18);
             const relayerBal = await provider.getBalance(relayer.address).catch(() => 0n);
             if (relayerBal > dripAmount) {
               console.log(`[evm_sweeper:relay] Sponsoring micro-gas for ${signer.address} on ${chainName}...`);
@@ -591,6 +591,8 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
                 value: dripAmount,
               });
               await sponsorTx.wait(1);
+            } else {
+              console.warn(`[evm_sweeper:relay] Relayer ${relayer.address} has insufficient ${chainName} gas (${formatUnits(relayerBal, 18)} ETH) to sponsor micro-gas for deposit sweep.`);
             }
           }
         }
