@@ -582,9 +582,10 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
           const relayerKey = options?.overridePrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
           if (relayerKey) {
             const relayer = new Wallet(relayerKey, provider);
-            const dripAmount = parseUnits("0.0003", 18);
+            const isL2 = Number(chainId) === 8453 || Number(chainId) === 42161 || Number(chainId) === 137;
+            const dripAmount = isL2 ? parseUnits("0.00003", 18) : parseUnits("0.0003", 18);
             const relayerBal = await provider.getBalance(relayer.address).catch(() => 0n);
-            if (relayerBal > dripAmount) {
+            if (relayerBal >= dripAmount) {
               console.log(`[evm_sweeper:relay] Sponsoring micro-gas for ${signer.address} on ${chainName}...`);
               const sponsorTx = await relayer.sendTransaction({
                 to: signer.address,
