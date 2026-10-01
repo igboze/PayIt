@@ -17,8 +17,7 @@ const fx = require("./fx");
 const nearLib = require("./near");
 const chains = require("./chains");
 const convState = require("./conversation_state");
-const { shouldReprocessConversationState } = require("./conversation_flow");
-const { moveFundsBetweenChains } = require("../agent/executor");
+const { moveFundsBetweenChains, executeCrossChainWithdrawal } = require("../agent/executor");
 
 // Bot-local helpers, injected by bot.js at registration time.
 let deps = {};
@@ -28,6 +27,7 @@ function registerMultichainFlows(bot, depsIn = {}) {
   registerNearDepositActions(bot);
   registerSolanaDepositActions(bot);
   registerMoveFundsActions(bot);
+  registerCrossChainWithdrawActions(bot);
 }
 
 // ─── NEAR Intents deposit (Phase 3 + Multi-token support) ───────────────────
@@ -373,12 +373,129 @@ function registerMoveFundsActions(bot) {
   });
 }
 
+// ─── Cross-Chain Withdraw / Send to Any Chain (Tier 1 CCTP + Tier 2 Intents) ─
+
+const CCW_CHAINS = {
+  solana:    { name: "Solana",     label: "☀️ Solana",     token: "USDC (SPL)",   icon: "☀️", example: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", engine: "CCTP" },
+  base:      { name: "Base",       label: "🔵 Base",       token: "USDC",         icon: "🔵", example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", engine: "CCTP" },
+  arbitrum:  { name: "Arbitrum",   label: "🔷 Arbitrum",   token: "USDC",         icon: "🔷", example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", engine: "CCTP" },
+  optimism:  { name: "Optimism",   label: "🔴 Optimism",   token: "USDC",         icon: "🔴", example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", engine: "CCTP" },
+  polygon:   { name: "Polygon",    label: "🟣 Polygon",    token: "USDC",         icon: "🟣", example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", engine: "CCTP" },
+  avalanche: { name: "Avalanche",  label: "🔺 Avalanche",  token: "USDC",         icon: "🔺", example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", engine: "CCTP" },
+  ethereum:  { name: "Ethereum",   label: "🌐 Ethereum",   token: "USDC",         icon: "🌐", example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", engine: "CCTP" },
+  bitcoin:   { name: "Bitcoin",    label: "₿ Bitcoin",     token: "BTC (Native)", icon: "₿",  example: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh", engine: "NEAR_INTENTS" },
+  tron:      { name: "Tron",       label: "💎 Tron",       token: "USDT (TRC20)", icon: "💎", example: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", engine: "NEAR_INTENTS" },
+  near:      { name: "NEAR",       label: "Ⓝ NEAR",       token: "NEAR",         icon: "Ⓝ",  example: "alice.near", engine: "NEAR_INTENTS" },
+};
+
+function validateAddressForChain(chainKey, addr) {
+  const clean = String(addr || "").trim();
+  if (!clean) return false;
+  if (chainKey === "solana") {
+    return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(clean);
+  }
+  if (["base", "arbitrum", "optimism", "polygon", "avalanche", "ethereum"].includes(chainKey)) {
+    return /^0x[a-fA-F0-9]{40}$/.test(clean);
+  }
+  if (chainKey === "bitcoin" || chainKey === "btc") {
+    return /^(bc1[a-zA-HJ-NP-Z0-9]{25,90}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/.test(clean);
+  }
+  if (chainKey === "tron") {
+    return /^T[a-km-zA-HJ-NP-Z1-9]{33}$/.test(clean);
+  }
+  if (chainKey === "near") {
+    return /^(([a-z0-9_-]+\.)*near|[a-f0-9]{64})$/.test(clean);
+  }
+  return true;
+}
+
+function registerCrossChainWithdrawActions(bot) {
+  const { requireUser, getContext } = deps;
+
+  bot.action("action_crosschain_withdraw", async (ctx) => {
+    ctx.answerCbQuery();
+    const user = requireUser(ctx);
+    if (!user) return;
+    return showCrossChainWithdrawChainSelection(ctx);
+  });
+
+  bot.action(/^action_ccw_chain_([a-z0-9_-]+)$/, async (ctx) => {
+    ctx.answerCbQuery();
+    const user = requireUser(ctx);
+    if (!user) return;
+    const chainKey = ctx.match[1];
+    const chainInfo = CCW_CHAINS[chainKey];
+    if (!chainInfo) return ctx.reply("Unsupported destination chain.", deps.backToMenu);
+
+    convState.setState(
+      ctx.from.id,
+      "await_ccw_address",
+      { destinationChain: chainKey, chainInfo },
+      getContext(ctx.from.id)
+    );
+
+    return ctx.reply(
+      `📤 <b>Withdraw to ${chainInfo.label}</b>\n──────────────────────────\n` +
+      `Asset to receive: <b>${chainInfo.token}</b>\n\n` +
+      `Paste the <b>${chainInfo.name} address</b> you want to withdraw to:\n\n` +
+      `<i>Example: <code>${chainInfo.example}</code></i>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([[Markup.button.callback("« Back to Chains", "action_crosschain_withdraw")]]),
+      }
+    );
+  });
+}
+
+async function showCrossChainWithdrawChainSelection(ctx) {
+  const keyboard = [
+    [
+      Markup.button.callback("☀️ Solana (USDC)",   "action_ccw_chain_solana"),
+      Markup.button.callback("🔵 Base (USDC)",     "action_ccw_chain_base"),
+    ],
+    [
+      Markup.button.callback("🔷 Arbitrum (USDC)", "action_ccw_chain_arbitrum"),
+      Markup.button.callback("🔴 Optimism (USDC)", "action_ccw_chain_optimism"),
+    ],
+    [
+      Markup.button.callback("🟣 Polygon (USDC)",  "action_ccw_chain_polygon"),
+      Markup.button.callback("🔺 Avalanche (USDC)","action_ccw_chain_avalanche"),
+    ],
+    [
+      Markup.button.callback("🌐 Ethereum (USDC)", "action_ccw_chain_ethereum"),
+      Markup.button.callback("₿ Bitcoin (BTC)",    "action_ccw_chain_bitcoin"),
+    ],
+    [
+      Markup.button.callback("💎 Tron (USDT)",     "action_ccw_chain_tron"),
+      Markup.button.callback("Ⓝ NEAR Protocol",   "action_ccw_chain_near"),
+    ],
+    [
+      Markup.button.callback("❌ Cancel", "main_menu"),
+    ],
+  ];
+
+  return ctx.reply(
+    `📤 <b>Withdraw to External Chain / Wallet</b>\n──────────────────────────\n` +
+    `Withdraw your Arc balance to <b>any chain</b> with zero bridge hassle.\n\n` +
+    `• <b>Solana & EVMs:</b> Instant Circle CCTP (100% native USDC, 0 slippage)\n` +
+    `• <b>Bitcoin, Tron & NEAR:</b> NEAR Intent routing (auto-swapped & delivered)\n\n` +
+    `Select destination chain:`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard(keyboard),
+    }
+  );
+}
+
 // ─── Text-state handlers (called from bot.js's text middleware) ───────────────
 
 const HANDLED_STATES = new Set([
   "await_near_amount",
   "await_near_custom_token",
   "await_solana_amount",
+  "await_ccw_address",
+  "await_ccw_amount",
+  "confirm_ccw",
   "move_funds_amount",
   "move_funds_confirm",
 ]);
@@ -594,6 +711,172 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
         ]),
       }
     );
+  }
+
+  // ── Cross-Chain Withdraw: Address input ──────────────────────────────────
+  if (state.type === "await_ccw_address") {
+    const input = text.trim();
+    if (shouldReprocessConversationState("await_ccw_address", text)) {
+      convState.clearState(userId);
+      return bot.handleUpdate({ update_id: ctx.update.update_id, message: ctx.message });
+    }
+
+    const chainKey = state.data?.destinationChain;
+    const chainInfo = state.data?.chainInfo || CCW_CHAINS[chainKey];
+
+    if (!validateAddressForChain(chainKey, input)) {
+      return ctx.reply(
+        `❌ Invalid ${chainInfo?.name || "destination"} address.\n\n` +
+        `Please enter a valid address (e.g. <code>${chainInfo?.example || ""}</code>). Type cancel to return.`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_crosschain_withdraw")]]),
+        }
+      );
+    }
+
+    convState.setState(
+      userId,
+      "await_ccw_amount",
+      {
+        destinationChain: chainKey,
+        chainInfo,
+        destinationAddress: input,
+      },
+      state.context || getContext(userId)
+    );
+
+    return ctx.reply(
+      `📤 <b>Withdraw to ${chainInfo.label}</b>\n──────────────────────────\n` +
+      `📍 <b>Destination:</b> <code>${input}</code>\n` +
+      `🪙 <b>Receiving:</b> ${chainInfo.token}\n\n` +
+      `How much USD would you like to withdraw? (min $1.00)`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_crosschain_withdraw")]]),
+      }
+    );
+  }
+
+  // ── Cross-Chain Withdraw: Amount input ───────────────────────────────────
+  if (state.type === "await_ccw_amount") {
+    const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
+    const chainKey = state.data?.destinationChain;
+    const chainInfo = state.data?.chainInfo || CCW_CHAINS[chainKey];
+    const destinationAddress = state.data?.destinationAddress;
+
+    if (isNaN(amount) || amount < 1) {
+      if (shouldReprocessConversationState("await_ccw_amount", text)) {
+        convState.clearState(userId);
+        return bot.handleUpdate({ update_id: ctx.update.update_id, message: ctx.message });
+      }
+      return ctx.reply("Enter a valid amount of at least $1.00. Type cancel to stop.");
+    }
+
+    const user = requireUser(ctx);
+    if (!user) return;
+    const context = state.context || "personal";
+    const sourceAddress = getActiveWallet(user);
+
+    // Balance check on Arc
+    let arcBalance = 0;
+    try {
+      const micro = await walletLib.getNativeBalanceMicro(sourceAddress);
+      arcBalance = parseFloat(walletLib.formatMicro(micro));
+    } catch (_) {}
+
+    if (arcBalance < amount) {
+      return ctx.reply(
+        `Not enough USDC on Arc. You have $${arcBalance.toFixed(2)}, need $${amount.toFixed(2)}. ` +
+        `Enter a smaller amount or type cancel.`
+      );
+    }
+
+    convState.setState(
+      userId,
+      "confirm_ccw",
+      {
+        destinationChain: chainKey,
+        chainInfo,
+        destinationAddress,
+        amountUsdc: amount,
+      },
+      context
+    );
+
+    const estTime = chainInfo.engine === "CCTP" ? "~1–3 minutes" : "~2–5 minutes";
+    const routeDesc = chainInfo.engine === "CCTP"
+      ? "Circle CCTP (100% native USDC, 0 slippage)"
+      : "NEAR Intents (auto-swap & bridge)";
+
+    return ctx.reply(
+      `📤 <b>Confirm Cross-Chain Withdrawal</b>\n──────────────────────────\n` +
+      `🌐 <b>Destination Chain:</b> ${chainInfo.label}\n` +
+      `📍 <b>To Address:</b>\n<code>${destinationAddress}</code>\n` +
+      `💰 <b>Amount:</b> $${amount.toFixed(2)} USDC\n` +
+      `🪙 <b>Receiving:</b> ${chainInfo.token}\n` +
+      `⏱️ <b>Est. Time:</b> ${estTime}\n` +
+      `🌉 <b>Route:</b> ${routeDesc}\n\n` +
+      `Enter your 4-digit PIN to confirm:`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]),
+      }
+    );
+  }
+
+  // ── Cross-Chain Withdraw: PIN Confirmation & Execution ───────────────────
+  if (state.type === "confirm_ccw") {
+    await deleteSensitiveMessage(ctx);
+    if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
+    if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN. Try again."); }
+    const user = db.getUser(userId);
+    convState.clearState(userId);
+    await ctx.reply("⏳ Processing cross-chain withdrawal…");
+    const context = state.context || "personal";
+    let userWallet;
+    try {
+      const pk = context === "business" && user.business_deposit_address
+        ? db.decryptBusinessPrivateKey(text, user)
+        : db.decryptPrivateKey(text, user);
+      userWallet = walletLib.walletFromPrivateKey(pk);
+    } catch {
+      return ctx.reply("Couldn't unlock your wallet with that PIN.");
+    }
+
+    try {
+      const result = await executeCrossChainWithdrawal(userWallet, {
+        destinationChain: state.data.destinationChain,
+        destinationAddress: state.data.destinationAddress,
+        amountUsdc: state.data.amountUsdc,
+        telegramId: userId,
+        accountType: context,
+        bot,
+      });
+
+      if (result.success) {
+        const chainInfo = state.data.chainInfo || CCW_CHAINS[state.data.destinationChain];
+        return ctx.reply(
+          `✅ <b>Withdrawal Submitted!</b>\n──────────────────────────\n` +
+          `🌐 <b>Destination:</b> ${chainInfo?.label || state.data.destinationChain}\n` +
+          `💰 <b>Amount:</b> $${Number(result.amount).toFixed(2)} USDC\n` +
+          `📍 <b>Recipient:</b> <code>${state.data.destinationAddress}</code>\n` +
+          (result.txHash ? `🔗 <b>Transaction Hash:</b>\n<code>${result.txHash}</code>\n` : "") +
+          `\n<i>Funds typically arrive on the destination chain in 1–5 minutes.</i>`,
+          {
+            parse_mode: "HTML",
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback("💰 Check Balance", "action_balance")],
+              [Markup.button.callback("🏠 Main Menu", "main_menu")],
+            ]),
+          }
+        );
+      }
+      return ctx.reply(`❌ ${result.error}`, deps.backToMenu);
+    } catch (err) {
+      console.error("[flows_multichain:confirm_ccw:error]", err);
+      return ctx.reply(`❌ Withdrawal could not be completed: ${err.message || "An unexpected error occurred"}`, deps.backToMenu);
+    }
   }
 
   // ── Move Funds: amount + PIN confirmation ────────────────────────────────
