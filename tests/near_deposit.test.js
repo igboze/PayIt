@@ -148,3 +148,90 @@ test("REFUNDED deposits notify with the refund address", async () => {
     near.getExecutionStatus = originalGetStatus;
   }
 });
+
+// ─── 4. toBaseUnits unit tests ───────────────────────────────────────────────
+
+test("toBaseUnits: accurately converts amounts across varying token decimals", () => {
+  assert.equal(near.toBaseUnits(5, 6), "5000000", "USDC 6 dec");
+  assert.equal(near.toBaseUnits("5.0", 6), "5000000", "USDC 6 dec string");
+  assert.equal(near.toBaseUnits(2.5, 24), "2500000000000000000000000", "NEAR 24 dec");
+  assert.equal(near.toBaseUnits("0.005", 18), "5000000000000000", "WETH 18 dec");
+  assert.equal(near.toBaseUnits("0.12345678", 8), "12345678", "WBTC 8 dec");
+});
+
+// ─── 5. Token resolution ─────────────────────────────────────────────────────
+
+test("resolveNearToken: resolves standard tokens, symbols, and custom NEP-141", async () => {
+  const nearTok = await near.resolveNearToken("NEAR");
+  assert.equal(nearTok.symbol, "NEAR");
+  assert.equal(nearTok.decimals, 24);
+  assert.equal(nearTok.assetId, near.ASSETS.NEAR_WNEAR);
+
+  const usdtTok = await near.resolveNearToken("usdt");
+  assert.equal(usdtTok.symbol, "USDT");
+  assert.equal(usdtTok.decimals, 6);
+
+  const custom = await near.resolveNearToken("nep141:custom-token.near");
+  assert.equal(custom.assetId, "nep141:custom-token.near");
+  assert.equal(custom.decimals, 18);
+});
+
+// ─── 6. Multi-token deposit quote & conversion into Base USDC ───────────────
+
+test("createNearDeposit with non-USDC token (e.g. NEAR): converts to 24-dec base units and quotes Base USDC", async () => {
+  const originalGetQuote = near.getQuote;
+  const originalGetStatus = near.getExecutionStatus;
+  const sentMessages = [];
+  const mockBot = {
+    telegram: { sendMessage: async (chatId, text) => { sentMessages.push({ chatId, text }); } },
+  };
+
+  db.db.prepare("DELETE FROM near_deposits WHERE telegram_id = ?").run(testUserId);
+
+  try {
+    near.getQuote = async ({ amount, recipient, refundTo, originAsset, destinationAsset }) => {
+      assert.equal(originAsset, near.ASSETS.NEAR_WNEAR, "origin asset must be wNEAR");
+      assert.equal(destinationAsset, near.ASSETS.BASE_USDC, "destination asset must be Base USDC");
+      assert.equal(amount, "2500000000000000000000000", "2.5 NEAR in 24 decimals");
+      assert.equal(recipient, "0x2222222222222222222222222222222222222222");
+      return {
+        correlationId: "corr-near-multi",
+        quoteRequest: { deadline: "2099-01-01T00:00:00Z" },
+        quote: {
+          depositAddress: "nearMultitokenDeposit.testnet",
+          amountOut: "12500000", // $12.50 USDC
+          amountOutFormatted: "12.50",
+        },
+      };
+    };
+
+    near.getExecutionStatus = async () => ({ status: "SUCCESS" });
+
+    const row = await near.createNearDeposit({
+      telegramId: testUserId,
+      accountType: "personal",
+      originAsset: near.ASSETS.NEAR_WNEAR,
+      originSymbol: "NEAR",
+      originDecimals: 24,
+      amount: 2.5,
+      recipientAddress: "0x2222222222222222222222222222222222222222",
+      refundTo: "ee".repeat(32),
+    });
+
+    assert.equal(row.status, "awaiting_deposit");
+    assert.equal(row.origin_symbol, "NEAR");
+    assert.equal(row.deposit_address, "nearMultitokenDeposit.testnet");
+    assert.equal(row.amount_out, 12.5);
+
+    await near.pollPendingNearDeposits(mockBot);
+    const msg = sentMessages.find((m) => m.text.includes("NEAR Deposit Bridged"));
+    assert.ok(msg, "must notify with converted output");
+    assert.match(msg.text, /2\.5 NEAR/, "message should mention deposited token and amount");
+    assert.match(msg.text, /\$12\.50 USDC/, "message should mention received USDC");
+  } finally {
+    near.getQuote = originalGetQuote;
+    near.getExecutionStatus = originalGetStatus;
+    db.db.prepare("DELETE FROM near_deposits WHERE telegram_id = ?").run(testUserId);
+  }
+});
+

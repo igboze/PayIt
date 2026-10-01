@@ -29,7 +29,7 @@ function registerMultichainFlows(bot, depsIn = {}) {
   registerMoveFundsActions(bot);
 }
 
-// ─── NEAR Intents deposit (Phase 3) ──────────────────────────────────────────
+// ─── NEAR Intents deposit (Phase 3 + Multi-token support) ───────────────────
 
 function registerNearDepositActions(bot) {
   const { requireUser, getContext } = deps;
@@ -38,15 +38,50 @@ function registerNearDepositActions(bot) {
     ctx.answerCbQuery();
     const user = requireUser(ctx);
     if (!user) return;
-    convState.setState(ctx.from.id, "await_near_amount", {}, getContext(ctx.from.id));
+    return showNearTokenSelection(ctx);
+  });
+
+  bot.action(/^action_near_tok_([A-Za-z0-9_-]+)$/, async (ctx) => {
+    ctx.answerCbQuery();
+    const user = requireUser(ctx);
+    if (!user) return;
+    const sym = ctx.match[1];
+
+    if (sym === "custom") {
+      convState.setState(ctx.from.id, "await_near_custom_token", {}, getContext(ctx.from.id));
+      return ctx.reply(
+        `🔍 <b>Custom NEAR Token</b>\n──────────────────────────\n` +
+        `Enter the token symbol (e.g. <code>AURORA</code>, <code>DAI</code>) or NEP-141 contract address (e.g. <code>wrap.near</code> or <code>nep141:...</code>):\n\n` +
+        `<i>Type cancel to return.</i>`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_near_deposit")]]),
+        }
+      );
+    }
+
+    const token = await nearLib.resolveNearToken(sym);
+    if (!token) return ctx.reply("Token not found. Please choose from the list.", deps.backToMenu);
+
+    convState.setState(
+      ctx.from.id,
+      "await_near_amount",
+      {
+        originAsset: token.assetId,
+        originSymbol: token.symbol,
+        originDecimals: token.decimals,
+        minDeposit: token.minDeposit || 1,
+      },
+      getContext(ctx.from.id)
+    );
+
     return ctx.reply(
-      `Ⓝ <b>Deposit from NEAR</b>\n──────────────────────────\n` +
-      `Send USDC from any NEAR wallet and it lands in your PayIT balance automatically ` +
-      `(via NEAR Intents → Base → Arc, ~2–5 minutes).\n\n` +
-      `How much USDC would you like to deposit? (minimum $2)`,
+      `Ⓝ <b>Deposit ${token.name || token.symbol}</b>\n──────────────────────────\n` +
+      `How much <b>${token.symbol}</b> would you like to deposit? (min ${token.minDeposit || 1} ${token.symbol})\n\n` +
+      `<i>NEAR Intents will auto-convert your ${token.symbol} into USDC and sweep it to your Arc balance.</i>`,
       {
         parse_mode: "HTML",
-        ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]),
+        ...Markup.inlineKeyboard([[Markup.button.callback("« Back to Tokens", "action_near_deposit")]]),
       }
     );
   });
@@ -67,13 +102,16 @@ function registerNearDepositActions(bot) {
       } catch (_) {}
     }
 
+    const inAmount = row.amount_token !== undefined && row.amount_token !== null ? Number(row.amount_token) : Number(row.amount_usdc);
+    const inSymbol = row.origin_symbol || (row.origin_asset?.includes("usdc") ? "USDC" : "tokens");
+
     const labels = {
       quoting: "⏳ Preparing your deposit address…",
       awaiting_deposit: "⏳ Waiting for your NEAR deposit…",
       PENDING_DEPOSIT: "⏳ Waiting for deposit confirmation on NEAR…",
       KNOWN_DEPOSIT_TX: "✅ Deposit seen — confirming…",
       INCOMPLETE_DEPOSIT: "⚠️ Deposit amount didn't match exactly — refunding the difference…",
-      PROCESSING: "🌉 Bridging to Base…",
+      PROCESSING: "🌉 Converting to USDC and bridging…",
       SUCCESS: "✅ Bridged to Base — sweeping into your Arc balance…",
       REFUNDED: "↩️ Refunded to your NEAR refund address.",
       FAILED: "❌ Bridge failed — contact support.",
@@ -82,8 +120,8 @@ function registerNearDepositActions(bot) {
 
     return ctx.reply(
       `Ⓝ <b>NEAR Deposit Status</b>\n──────────────────────────\n` +
-      `💰 <b>Amount:</b> $${Number(row.amount_usdc).toFixed(2)} USDC\n` +
-      (row.amount_out ? `💵 <b>You receive:</b> ~$${Number(row.amount_out).toFixed(2)} USDC\n` : "") +
+      `📥 <b>Depositing:</b> ${inAmount} ${inSymbol}\n` +
+      (row.amount_out ? `💵 <b>Converted to:</b> ~$${Number(row.amount_out).toFixed(2)} USDC (Arc)\n` : "") +
       `📊 <b>Status:</b> ${labels[status] || status}\n\n` +
       (status === "SUCCESS"
         ? `<i>Your Arc credit confirmation arrives separately once the sweep completes.</i>`
@@ -98,6 +136,39 @@ function registerNearDepositActions(bot) {
       }
     );
   });
+}
+
+async function showNearTokenSelection(ctx) {
+  const keyboard = [
+    [
+      Markup.button.callback("💵 USDC", "action_near_tok_USDC"),
+      Markup.button.callback("🟢 USDT", "action_near_tok_USDT"),
+    ],
+    [
+      Markup.button.callback("Ⓝ NEAR", "action_near_tok_NEAR"),
+      Markup.button.callback("🪙 WBTC", "action_near_tok_WBTC"),
+    ],
+    [
+      Markup.button.callback("🔷 WETH", "action_near_tok_WETH"),
+      Markup.button.callback("🟡 DAI", "action_near_tok_DAI"),
+    ],
+    [
+      Markup.button.callback("🔍 Other / Custom Token", "action_near_tok_custom"),
+    ],
+    [
+      Markup.button.callback("❌ Cancel", "main_menu"),
+    ],
+  ];
+
+  return ctx.reply(
+    `Ⓝ <b>Deposit from NEAR (All Tokens Supported)</b>\n──────────────────────────\n` +
+    `Deposit <b>any token</b> on NEAR Protocol. NEAR Intents will automatically convert your deposit into <b>USDC</b> and sweep it to your <b>Arc</b> balance (~2–5 minutes).\n\n` +
+    `Select a token to deposit:`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard(keyboard),
+    }
+  );
 }
 
 // ─── Move Funds: CCTP rebalancing between Arc and Solana (Phase 2) ───────────
@@ -211,7 +282,12 @@ function registerMoveFundsActions(bot) {
 
 // ─── Text-state handlers (called from bot.js's text middleware) ───────────────
 
-const HANDLED_STATES = new Set(["await_near_amount", "move_funds_amount", "move_funds_confirm"]);
+const HANDLED_STATES = new Set([
+  "await_near_amount",
+  "await_near_custom_token",
+  "move_funds_amount",
+  "move_funds_confirm",
+]);
 
 function handlesState(stateType) {
   return HANDLED_STATES.has(stateType);
@@ -220,16 +296,61 @@ function handlesState(stateType) {
 async function handleMultichainState(bot, ctx, state, text, userId) {
   const { requireUser, getContext, getActiveWallet, getOrDeriveSolanaAddress, deleteSensitiveMessage } = deps;
 
+  // ── NEAR custom token entry ──────────────────────────────────────────────
+
+  if (state.type === "await_near_custom_token") {
+    const input = text.trim();
+    if (shouldReprocessConversationState("await_near_custom_token", text)) {
+      convState.clearState(userId);
+      return bot.handleUpdate({ update_id: ctx.update.update_id, message: ctx.message });
+    }
+
+    const token = await nearLib.resolveNearToken(input);
+    if (!token) {
+      return ctx.reply(
+        `❌ Could not resolve token "${input}". Please enter a valid symbol (e.g. DAI) or contract (e.g. wrap.near). Type cancel to stop.`
+      );
+    }
+
+    convState.setState(
+      userId,
+      "await_near_amount",
+      {
+        originAsset: token.assetId,
+        originSymbol: token.symbol,
+        originDecimals: token.decimals,
+        minDeposit: token.minDeposit || 0.001,
+      },
+      state.context || getContext(userId)
+    );
+
+    return ctx.reply(
+      `Ⓝ <b>Deposit ${token.name || token.symbol}</b>\n──────────────────────────\n` +
+      `Asset ID: <code>${token.assetId}</code>\n` +
+      `How much <b>${token.symbol}</b> would you like to deposit?\n\n` +
+      `<i>NEAR Intents will auto-convert your ${token.symbol} into USDC and sweep it to your Arc balance.</i>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([[Markup.button.callback("« Back to Tokens", "action_near_deposit")]]),
+      }
+    );
+  }
+
   // ── NEAR deposit amount ──────────────────────────────────────────────────
 
   if (state.type === "await_near_amount") {
     const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
-    if (isNaN(amount) || amount < 2) {
+    const tokenSymbol = state.data?.originSymbol || "USDC";
+    const originAsset = state.data?.originAsset || nearLib.ASSETS.NEAR_USDC;
+    const originDecimals = state.data?.originDecimals || 6;
+    const minDeposit = state.data?.minDeposit ?? (tokenSymbol === "USDC" || tokenSymbol === "USDT" ? 2 : 0.001);
+
+    if (isNaN(amount) || amount <= 0 || (minDeposit && amount < minDeposit)) {
       if (shouldReprocessConversationState("await_near_amount", text)) {
         convState.clearState(userId);
         return bot.handleUpdate({ update_id: ctx.update.update_id, message: ctx.message });
       }
-      return ctx.reply("Enter a valid amount (minimum $2). Type cancel to stop.");
+      return ctx.reply(`Enter a valid amount of ${tokenSymbol} (minimum ${minDeposit} ${tokenSymbol}). Type cancel to stop.`);
     }
     const user = requireUser(ctx);
     if (!user) return;
@@ -250,37 +371,41 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
       );
     }
 
-    await ctx.reply("⏳ Generating your one-time NEAR deposit address…");
+    await ctx.reply(`⏳ Requesting NEAR Intent quote to convert ${amount} ${tokenSymbol} to USDC…`);
     let row;
     try {
       row = await nearLib.createNearDeposit({
         telegramId: userId,
         accountType: context,
-        originAsset: nearLib.ASSETS.NEAR_USDC,
+        originAsset,
+        originSymbol: tokenSymbol,
+        originDecimals,
+        amount,
         amountUsdc: amount,
         recipientAddress,
         refundTo,
       });
     } catch (err) {
       convState.clearState(userId);
-      return ctx.reply(`❌ Could not open a NEAR deposit for this amount: ${err.message}`, deps.backToMenu);
+      return ctx.reply(`❌ Could not open a NEAR deposit: ${err.message}`, deps.backToMenu);
     }
     convState.clearState(userId);
 
     if (!row || !row.deposit_address) {
-      return ctx.reply("❌ The bridge could not quote this amount right now. Try again in a few minutes.", deps.backToMenu);
+      return ctx.reply("❌ The bridge could not quote this token right now. Try again in a few minutes.", deps.backToMenu);
     }
 
     const expireIn = process.env.NEAR_INTENT_DEADLINE_MIN || 30;
     return ctx.reply(
       `Ⓝ <b>NEAR Deposit Instructions</b>\n──────────────────────────\n` +
-      `💰 <b>Send exactly:</b> $${amount.toFixed(2)} USDC\n` +
-      (row.amount_out ? `💵 <b>You receive:</b> ~$${Number(row.amount_out).toFixed(2)} USDC\n` : "") +
+      `💰 <b>Send exactly:</b> ${amount} ${tokenSymbol}\n` +
+      (row.amount_out ? `💵 <b>Estimated Received:</b> ~$${Number(row.amount_out).toFixed(2)} USDC on Arc\n` : "") +
       `📍 <b>NEAR address (one-time):</b> <code>${row.deposit_address}</code>\n` +
       (row.deposit_memo ? `📝 <b>Memo (required):</b> <code>${row.deposit_memo}</code>\n` : "") +
       `⏰ <b>Valid for:</b> ${expireIn} minutes\n\n` +
-      `⚠️ <i>Send USDC on NEAR only, exact amount, before expiry. ` +
-      `If anything goes wrong, funds auto-refund to your NEAR address.</i>`,
+      `🔄 <b>Auto-Conversion:</b> NEAR Intents will auto-convert your ${tokenSymbol} into Base USDC and auto-sweep it to Arc.\n` +
+      `⚠️ <i>Send ${tokenSymbol} on NEAR only, exact amount, before expiry. ` +
+      `If anything goes wrong, funds auto-refund to your NEAR address: <code>${refundTo}</code></i>`,
       {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard([

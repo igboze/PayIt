@@ -1719,21 +1719,58 @@ function ensureNearDepositsSchema() {
     const cols = db.prepare("PRAGMA table_info(near_deposits)").all().map((r) => r.name);
     if (!cols.includes("quote_json")) db.exec("ALTER TABLE near_deposits ADD COLUMN quote_json TEXT");
     if (!cols.includes("retry_count")) db.exec("ALTER TABLE near_deposits ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0");
+    if (!cols.includes("origin_symbol")) db.exec("ALTER TABLE near_deposits ADD COLUMN origin_symbol TEXT");
+    if (!cols.includes("amount_token")) db.exec("ALTER TABLE near_deposits ADD COLUMN amount_token REAL");
   } catch (err) {
     console.warn("[db] ensureNearDepositsSchema note:", err.message);
   }
 }
 
-function createNearDeposit({ telegramId, accountType = "personal", originAsset, amountUsdc, recipientAddress, refundTo, status = "quoting" }) {
-  const result = db.prepare(
-    `INSERT INTO near_deposits (telegram_id, account_type, origin_asset, amount_usdc, recipient_address, refund_to, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(telegramId, accountType, originAsset, amountUsdc, recipientAddress, refundTo, status);
+function createNearDeposit({
+  telegramId,
+  accountType = "personal",
+  originAsset,
+  originSymbol = null,
+  amountToken = null,
+  amountUsdc,
+  recipientAddress,
+  refundTo,
+  status = "quoting",
+}) {
+  const finalSymbol = originSymbol || (originAsset?.includes("usdc") ? "USDC" : "TOKEN");
+  const finalAmountUsdc = amountUsdc !== undefined && amountUsdc !== null ? Number(amountUsdc) : (amountToken !== null ? Number(amountToken) : 0);
+  const finalAmountToken = amountToken !== undefined && amountToken !== null ? Number(amountToken) : finalAmountUsdc;
+
+  const cols = db.prepare("PRAGMA table_info(near_deposits)").all().map((r) => r.name);
+  let result;
+  if (cols.includes("origin_symbol") && cols.includes("amount_token")) {
+    result = db.prepare(
+      `INSERT INTO near_deposits (telegram_id, account_type, origin_asset, origin_symbol, amount_token, amount_usdc, recipient_address, refund_to, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(telegramId, accountType, originAsset, finalSymbol, finalAmountToken, finalAmountUsdc, recipientAddress, refundTo, status);
+  } else {
+    result = db.prepare(
+      `INSERT INTO near_deposits (telegram_id, account_type, origin_asset, amount_usdc, recipient_address, refund_to, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(telegramId, accountType, originAsset, finalAmountUsdc, recipientAddress, refundTo, status);
+  }
   return Number(result.lastInsertRowid);
 }
 
 function updateNearDeposit(id, fields) {
-  const allowed = ["status", "deposit_address", "deposit_memo", "amount_out", "quote_json", "deadline", "correlation_id", "error", "retry_count"];
+  const allowed = [
+    "status",
+    "deposit_address",
+    "deposit_memo",
+    "amount_out",
+    "quote_json",
+    "deadline",
+    "correlation_id",
+    "error",
+    "retry_count",
+    "origin_symbol",
+    "amount_token",
+  ];
   const sets = [];
   const vals = [];
   for (const [k, v] of Object.entries(fields || {})) {
