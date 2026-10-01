@@ -1,5 +1,5 @@
 // bot.js
-// PayIT — Agentic Stablecoins Payment Solution inside Telegram
+// Proxim — Agentic Stablecoins Payment Solution inside Telegram
 // Personal + Business accounts · dollar + euro wallets · Arc Testnet
 //
 // Architecture:
@@ -202,7 +202,7 @@ bot.use(async (ctx, next) => {
     return next();
   }
 
-  await ctx.reply("⚠️ Your PayIT account is locked. Send /unlock to restore access.");
+  await ctx.reply("⚠️ Your Proxim account is locked. Send /unlock to restore access.");
   return;
 });
 
@@ -262,7 +262,7 @@ function requireUser(ctx) {
   const user = db.getUser(ctx.from?.id);
   if (!user) {
     ctx.reply(
-      "Welcome to PayIT!\n\nSend /start to set up your Account in under a minute."
+      "Welcome to Proxim!\n\nSend /start to set up your Account in under a minute."
     );
     return null;
   }
@@ -435,7 +435,7 @@ bot.start(async (ctx) => {
   const existing = db.getUser(ctx.from.id);
   if (existing) {
     if (existing.is_blocked) {
-      return ctx.reply("⚠️ Your PayIT account is locked. Send /unlock to restore access.");
+      return ctx.reply("⚠️ Your Proxim account is locked. Send /unlock to restore access.");
     }
 
     const context = existing.active_context || "personal";
@@ -465,10 +465,10 @@ bot.start(async (ctx) => {
 
   return ctx.reply(
     `${referralGreeting}` +
-    `👋 Welcome to PayIT.\n\n` +
+    `👋 Welcome to Proxim.\n\n` +
     `Save in dollars. Spend in Naira.\n` +
     `Everything right here in Telegram.\n\n` +
-    `Earn points while you use PayIT:\n` +
+    `Earn points while you use Proxim:\n` +
     `• 5 points for Cash Out\n` +
     `• 4 points for sending money\n` +
     `• 10 points for creating an invoice\n` +
@@ -476,8 +476,8 @@ bot.start(async (ctx) => {
     `• 5 points for saving to interest\n` +
     `• 3 points for withdrawing savings\n` +
     `• 20 points when a friend you refer earns their first point\n\n` +
-    `Your money stays yours — PayIT never holds it for you.\n\n` +
-    `How will you use PayIT?`,
+    `Your money stays yours — Proxim never holds it for you.\n\n` +
+    `How will you use Proxim?`,
     Markup.inlineKeyboard([
       [Markup.button.callback("👤 Personal",  "onboard_personal")],
       [Markup.button.callback("💼 Business",  "onboard_business")],
@@ -642,7 +642,7 @@ async function showBalance(ctx) {
     await ctx.reply(
       `💰 ${label} Balance\n──────────────────────────\n` +
       `$${totalUsdc.toFixed(2)} dollars${solDetail}${eurcLine}\n${nairaLine}\n\n` +
-      `<b>Your PayIT Account Number (EVM - tap to copy):</b>\n<code>${address}</code>` +
+      `<b>Your Proxim Account Number (EVM - tap to copy):</b>\n<code>${address}</code>` +
       `${solanaLine}`,
       {
         parse_mode: "HTML",
@@ -737,7 +737,7 @@ async function showReceive(ctx) {
     `• 💳 <b>Card or Apple Pay</b>: Direct purchase with Visa, Mastercard, or Apple Pay.\n` +
     `• 🌐 <b>Crypto & Web3 Deposit</b>: Send crypto directly from Binance, Coinbase, or any Web3 wallet.\n` +
     `• Ⓝ <b>Deposit from NEAR</b>: Send USDC from any NEAR wallet — it auto-bridges to your Arc balance.\n\n` +
-    `Your PayIT Account Number (tap to copy):\n<code>${address}</code>`,
+    `Your Proxim Account Number (tap to copy):\n<code>${address}</code>`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
@@ -819,7 +819,7 @@ async function showSettings(ctx) {
     `Gas Sponsorship: ${paymasterStatus}\n` +
     `Phone: ${phone}\n` +
     `Rewards: ${points} points (${formatPointValue(points)})\n\n` +
-    `PayIT never holds your money. Your PIN is the only key to your funds.`,
+    `Proxim never holds your money. Your PIN is the only key to your funds.`,
 
     Markup.inlineKeyboard([
       [Markup.button.callback("🔁 Switch Account",              "action_switch_account")],
@@ -867,8 +867,8 @@ async function showReferralMenu(ctx) {
   const referralCode = user.referral_code || `ref${user.telegram_id}`;
   const botUsername = await resolveBotUsername(ctx);
   const shareLink = `https://t.me/${botUsername}?start=${referralCode}`;
-  const shareText = `Join me on PayIT! Save in USD and spend in Naira directly on Telegram: ${shareLink}`;
-  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(shareLink)}&text=${encodeURIComponent("Join me on PayIT! Save in USD and spend in Naira directly on Telegram.")}`;
+  const shareText = `Join me on Proxim! Save in USD and spend in Naira directly on Telegram: ${shareLink}`;
+  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(shareLink)}&text=${encodeURIComponent("Join me on Proxim! Save in USD and spend in Naira directly on Telegram.")}`;
 
   await ctx.reply(
     `👥 <b>Invite Friends & Earn</b>\n` +
@@ -898,7 +898,7 @@ async function showRewardsMenu(ctx) {
   const balance = db.getPointsBalance(ctx.from.id);
 
   await ctx.reply(
-    `🏅 PayIT Rewards
+    `🏅 Proxim Rewards
 ──────────────────────────
 ` +
     `Points balance: ${balance}
@@ -1062,7 +1062,7 @@ bot.action("lock_account", async (ctx) => {
   convState.setState(ctx.from.id, "confirm_lock", {}, getContext(ctx.from.id));
   return ctx.reply(
     `Enter your PIN to lock your account.\n\n` +
-    `This will disable PayIT until you send /unlock and confirm your PIN.`
+    `This will disable Proxim until you send /unlock and confirm your PIN.`
   );
 });
 
@@ -1072,7 +1072,7 @@ function showHelp(ctx) {
   const context = getContext(ctx.from?.id);
   if (context === "business") {
     return ctx.reply(
-      `📖 PayIT for Business\n──────────────────────────\n` +
+      `📖 Proxim for Business\n──────────────────────────\n` +
       `🧾 New Invoice — describe it in plain English, get a PDF\n` +
       `📋 My Invoices — track and manage what's owed to you\n` +
       `💸 Log Expense — record a business spend quickly\n` +
@@ -1081,12 +1081,12 @@ function showHelp(ctx) {
       `💰 Business Savings — set aside money for tax or goals\n` +
       `📤 Send Payment — pay suppliers in dollars\n` +
       `💵 Cash Out — convert dollars to Naira\n\n` +
-      `You can also just type what you want to do — PayIT understands plain English and Pidgin.`,
+      `You can also just type what you want to do — Proxim understands plain English and Pidgin.`,
       mainMenu(context)
     );
   }
   return ctx.reply(
-    `📖 How to Use PayIT\n──────────────────────────\n` +
+    `📖 How to Use Proxim\n──────────────────────────\n` +
     `💰 My Money — your dollar and euro balance\n` +
     `📥 Add Money — your account number to receive\n` +
     `📤 Send Money — send to a saved contact or account number\n` +
@@ -1097,7 +1097,7 @@ function showHelp(ctx) {
     `🌍 Add from Abroad — bring money from Binance, Coinbase, MetaMask\n\n` +
     `You can also just type what you want — "send 10 dollars to Emeka", ` +
     `"cash out 50 to my GTBank account", "invoice TechCorp 200 for design work".\n\n` +
-    `You can even send a photo of a bill or invoice and PayIT will read it.`,
+    `You can even send a photo of a bill or invoice and Proxim will read it.`,
     mainMenu(context)
   );
 }
@@ -1105,7 +1105,7 @@ function showHelp(ctx) {
 function showFeatures(ctx) {
   const context = getContext(ctx.from?.id);
   return ctx.reply(
-    `✨ What's live on PayIT:\n\n` +
+    `✨ What's live on Proxim:\n\n` +
     `✅ Personal and Business accounts (one PIN)\n` +
     `✅ Agentic Stablecoins Payment Solution\n` +
     `✅ Add money from Binance, Coinbase, MetaMask and more\n` +
@@ -1114,7 +1114,7 @@ function showFeatures(ctx) {
     `✅ Create professional invoices in plain English\n` +
     `✅ Auto-payments — schedule recurring transfers\n` +
     `✅ Business tools: invoices, expenses, payroll, cash flow\n` +
-    `✅ Send a photo of a bill and PayIT reads and pays it\n` +
+    `✅ Send a photo of a bill and Proxim reads and pays it\n` +
     `✅ Upload a spreadsheet to bulk pay your team\n` +
     `✅ Save contacts — send to "Emeka" instead of a long account number\n\n` +
     `🚧 Coming soon:\n` +
@@ -1138,7 +1138,7 @@ async function showContacts(ctx) {
       `Save someone by typing:\n` +
       `"Save 0xABC... as Emeka"\n` +
       `"Add Amara — GTBank 0123456789"\n\n` +
-      `Once saved, just say "send 50 to Emeka" and PayIT knows who you mean.`,
+      `Once saved, just say "send 50 to Emeka" and Proxim knows who you mean.`,
       backToMenu
     );
   }
@@ -1163,7 +1163,7 @@ bot.action("add_contact", (ctx) => {
     `Type their details in plain English:\n\n` +
     `• "Save 0xABC...123 as Emeka"\n` +
     `• "Add Amara — GTBank account 0123456789"\n` +
-    `• "Save john@payit.app as John for invoices"`,
+    `• "Save john@proxim.app as John for invoices"`,
     Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
   );
 });
@@ -1216,7 +1216,7 @@ bot.action("toggle_auto_earn", async (ctx) => {
   db.updateAutoEarnSetting(ctx.from.id, nextVal);
   await ctx.reply(
     nextVal
-      ? "🟢 <b>Auto-Earn Enabled!</b>\n\nWhen your dollars sit idle on PayIT for 2+ hours, they automatically earn interest in high-yield daily savings. You keep 90% of the interest earned upon withdrawal, and your money is always 100% available whenever you make a payment!"
+      ? "🟢 <b>Auto-Earn Enabled!</b>\n\nWhen your dollars sit idle on Proxim for 2+ hours, they automatically earn interest in high-yield daily savings. You keep 90% of the interest earned upon withdrawal, and your money is always 100% available whenever you make a payment!"
       : "⚪ <b>Auto-Earn Disabled.</b>\n\nYour funds will remain in your standard wallet balance without earning interest.",
     { parse_mode: "HTML" }
   );
@@ -1264,7 +1264,7 @@ bot.action("action_gateway", async (ctx) => {
   await ctx.reply(
     `🌐 <b>Crypto & Web3 Deposit (Multi-Chain)</b>\n` +
     `──────────────────────────\n` +
-    `Deposit crypto from Robinhood, Binance, Coinbase, Bybit, OKX, or any Web3 wallet directly into your PayIT balance.\n\n` +
+    `Deposit crypto from Robinhood, Binance, Coinbase, Bybit, OKX, or any Web3 wallet directly into your Proxim balance.\n\n` +
     `<b>Your Unified EVM Deposit Address (tap to copy):</b>\n` +
     `<code>${arcAddress}</code>\n` +
     (solAddress ? `\n<b>Your Solana Deposit Address (tap to copy):</b>\n<code>${solAddress}</code>\n` : "") +
@@ -1283,7 +1283,7 @@ bot.action("action_gateway", async (ctx) => {
     `• <b>NEAR:</b> Tap "Ⓝ Deposit from NEAR" below for a one-time address — USDC/USDT auto-bridges to your Arc balance (~2–5 min).\n` +
     `• <b>Solana:</b> Tap "☀️ Deposit from Solana" to deposit SOL, USDC, USDT, BONK, WIF, JUP, and more — auto-swapped to USDC and swept to Arc via NEAR Intents.\n` +
     `• <b>Zero Bridge Hassle:</b> Native tokens and cross-chain assets are automatically swapped to USDC and bridged to Arc Mainnet with <b>zero user gas or signing required</b>!\n` +
-    `• <b>Instant Settlement:</b> Native USDC is credited to your PayIT balance automatically (no manual sweep needed — "Scan & Sweep" is just an optional accelerator).\n\n` +
+    `• <b>Instant Settlement:</b> Native USDC is credited to your Proxim balance automatically (no manual sweep needed — "Scan & Sweep" is just an optional accelerator).\n\n` +
     `<i>Send any amount to your address above, or tap below to scan for recent transfers.</i>`,
     {
       parse_mode: "HTML",
@@ -1368,7 +1368,7 @@ async function handleSweepDeposits(ctx) {
           return ctx.reply(
             `🔐 <b>PIN Authorization Required</b>\n──────────────────────────\n` +
             `Detected <b>$${solAmount.toFixed(2)} USDC</b> on Paj deposit wallet:\n<code>${tempAddr}</code>\n\n` +
-            `Please enter your 4-digit PIN to authorize transferring these funds to your PayIT Solana Address (<code>${payitSolAddr}</code>):`,
+            `Please enter your 4-digit PIN to authorize transferring these funds to your Proxim Solana Address (<code>${payitSolAddr}</code>):`,
             {
               parse_mode: "HTML",
               ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_gateway")]]),
@@ -1380,7 +1380,7 @@ async function handleSweepDeposits(ctx) {
       }
     }
 
-    // 1. Check user's PayIT Solana SPL USDC balance
+    // 1. Check user's Proxim Solana SPL USDC balance
     if (solAddr) {
       try {
         const solBal = await multichain.getSplTokenBalance(solAddr);
@@ -1518,7 +1518,7 @@ bot.action("gateway_onramp", async (ctx) => {
 
   await ctx.reply(
     `💳 Buy USDC directly on Arc\n──────────────────────────\n` +
-    `Use Circle Onramp to purchase USDC straight into your PayIT wallet without bridging.\n\n` +
+    `Use Circle Onramp to purchase USDC straight into your Proxim wallet without bridging.\n\n` +
     `• <b>Network:</b> ${onramp.networkName}\n` +
     `• <b>Destination:</b> <code>${arcAddress}</code>\n` +
     `• <b>Payment Methods:</b> Visa, Mastercard, Apple Pay, Google Pay\n` +
@@ -1561,7 +1561,7 @@ bot.action("gateway_copy_arc", async (ctx) => {
   await ctx.reply(
     `📋 Your Arc Depositor ID\n──────────────────────────\n` +
     `Tap to copy:\n\n<code>${arcAddress}</code>\n\n` +
-    `This is your PayIT account number on Arc. Gateway uses it to credit your balance after deposit.`,
+    `This is your Proxim account number on Arc. Gateway uses it to credit your balance after deposit.`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
@@ -1634,7 +1634,7 @@ bot.action("gateway_balance", async (ctx) => {
     .join("\n");
 
   await ctx.reply(
-    `Incoming Gateway balance:\n\n${lines}\n\nTap <b>Transfer to Arc</b> to move this into your PayIT balance.`,
+    `Incoming Gateway balance:\n\n${lines}\n\nTap <b>Transfer to Arc</b> to move this into your Proxim balance.`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
@@ -1709,7 +1709,7 @@ bot.action(/^gateway_dep_chain_(\d+)$/, async (ctx) => {
     `Gas available: <b>${gas}</b> ${chain.symbol}${gasWarning}\n` +
     `How much USDC do you want to deposit into Gateway?\n` +
     `(e.g. <code>5</code> or <code>10.50</code>)\n\n` +
-    `PayIT will approve + call deposit() for you.`,
+    `Proxim will approve + call deposit() for you.`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_gateway")]]),
@@ -1729,7 +1729,7 @@ bot.action("gateway_transfer_arc", async (ctx) => {
 
   await ctx.reply(
     `⚡ Transfer to Arc\n──────────────────────────\n` +
-    `Move your Gateway USDC into PayIT on Arc.\n\n` +
+    `Move your Gateway USDC into Proxim on Arc.\n\n` +
     `Only works after your deposit has finalised on the source chain:\n` +
     `• Sepolia ~12 min\n• Base Sepolia ~2 min\n• Fuji ~instant\n\n` +
     `Pick the source chain:`,
@@ -1844,7 +1844,7 @@ bot.action("action_paj_onramp", async (ctx) => {
       `🇳🇬 <b>Deposit Naira to Get Dollars ($)</b>\n──────────────────────────\n` +
       `Live rate: <b>$1.00 = ₦${Number(onRampRate).toLocaleString()}</b>\n\n` +
       `How much Naira would you like to deposit? (e.g. <code>25000</code> or <code>50000</code>)\n` +
-      `<i>PayIT will generate a dedicated bank transfer account for you.</i>`,
+      `<i>Proxim will generate a dedicated bank transfer account for you.</i>`,
       {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]),
@@ -2158,7 +2158,7 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
         `🔐 <b>One-Time Authorization Required</b>\n` +
         `──────────────────────────\n` +
         `We detected your deposit of <b>$${amountToBridge.toFixed(2)} USDC</b> on Solana.\n\n` +
-        `To authorize cross-chain delivery directly to your Arc Mainnet wallet (<code>${arcAddr.slice(0, 6)}...${arcAddr.slice(-4)}</code>), please enter your <b>4-digit PayIT PIN</b>:`,
+        `To authorize cross-chain delivery directly to your Arc Mainnet wallet (<code>${arcAddr.slice(0, 6)}...${arcAddr.slice(-4)}</code>), please enter your <b>4-digit Proxim PIN</b>:`,
         {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
@@ -2929,7 +2929,7 @@ bot.action("image_payment_manual", (ctx) => {
   ctx.answerCbQuery();
   convState.clearState(ctx.from.id);
   return ctx.reply(
-    "No problem — just type what you'd like to do and PayIT will take it from there.",
+    "No problem — just type what you'd like to do and Proxim will take it from there.",
     backToMenu
   );
 });
@@ -3250,7 +3250,7 @@ bot.hears("💰 Business Savings", async (ctx) => {
     `💰 Business Savings\n──────────────────────────\n` +
     `Current balance: $${saved.toFixed(2)}\n` +
     (goal ? `Auto-save rule: ${goal.percentage}% of every invoice → ${goal.label}` : "No auto-save rule set yet.") +
-    `\n\nSet a rule like "Save 20% of every invoice for tax" and PayIT handles it automatically.`,
+    `\n\nSet a rule like "Save 20% of every invoice for tax" and Proxim handles it automatically.`,
     Markup.inlineKeyboard([
       [Markup.button.callback("⚙️ Set Auto-Save Rule", "set_savings_goal")],
       [Markup.button.callback("📈 Earn Interest on Savings", "action_yields")],
@@ -3335,7 +3335,7 @@ bot.command("paymaster", (ctx) => {
     `Policy ID: \`${cfg.policyId}\`\n` +
     `EntryPoint: \`${cfg.entryPoint}\`\n` +
     `Chain ID: \`${cfg.chainId}\`\n\n` +
-    `Transactions sent via PayIT are automatically gas-sponsored when active.`,
+    `Transactions sent via Proxim are automatically gas-sponsored when active.`,
     { parse_mode: "Markdown" }
   );
 });
@@ -3392,7 +3392,7 @@ bot.action("admin_export_points", async (ctx) => {
   ];
 
   const csv = csvLines.join("\n");
-  await ctx.replyWithDocument({ source: Buffer.from(csv, "utf8"), filename: "payit_user_points.csv" });
+  await ctx.replyWithDocument({ source: Buffer.from(csv, "utf8"), filename: "proxim_user_points.csv" });
   return ctx.reply("Export complete.", Markup.inlineKeyboard([[Markup.button.callback("« Back", "admin_menu")]]));
 });
 
@@ -3454,7 +3454,7 @@ function renderVolumeDashboard() {
     : "  No data yet";
 
   let message =
-    `📊 <b>PayIT Volume Dashboard</b>\n` +
+    `📊 <b>Proxim Volume Dashboard</b>\n` +
     `──────────────────────────\n` +
     formatVolRow("🇳🇬 Naira Onramp", onramp) +
     formatVolRow("🌐 Crypto Deposit", crypto) +
@@ -3584,7 +3584,7 @@ bot.action("admin_volume_csv", async (ctx) => {
     const csv = csvLines.join("\n");
     await ctx.replyWithDocument({
       source: Buffer.from(csv, "utf8"),
-      filename: `payit_volume_${new Date().toISOString().slice(0, 10)}.csv`,
+      filename: `proxim_volume_${new Date().toISOString().slice(0, 10)}.csv`,
     });
     return ctx.reply("Volume export complete.", Markup.inlineKeyboard([[Markup.button.callback("« Back", "admin_volume")]]));
   } catch (err) {
@@ -3862,7 +3862,7 @@ bot.on("text", async (ctx) => {
         if (isBusiness && state.data.businessAddress) {
           // Verify their existing PIN first
           if (!db.verifyPin(userId, text)) {
-            return ctx.reply("Incorrect PIN. Please enter your existing PayIT PIN:");
+            return ctx.reply("Incorrect PIN. Please enter your existing Proxim PIN:");
           }
           db.addBusinessWallet(userId, state.data.businessAddress, state.data.businessPrivateKey, text);
         }
@@ -4063,7 +4063,7 @@ bot.on("text", async (ctx) => {
         bizSol = multichain.deriveSolanaFromEvmKey(bizEvmPk);
       }
 
-      let keyMsg = `🔑 <b>Your Exported PayIT Wallet Keys</b>\n`;
+      let keyMsg = `🔑 <b>Your Exported Proxim Wallet Keys</b>\n`;
       keyMsg += `──────────────────────────\n`;
       keyMsg += `⚠️ <b>DO NOT SHARE THESE KEYS!</b> Anyone with these keys can access and withdraw all your funds.\n\n`;
 
@@ -4266,7 +4266,7 @@ bot.on("text", async (ctx) => {
         `🚀 Confirm Gateway Deposit\n──────────────────────────\n` +
         `Chain: ${chainName}\n` +
         `Amount: ${amount.toFixed(2)} USDC\n\n` +
-        `PayIT will approve + deposit into Circle Gateway.\n` +
+        `Proxim will approve + deposit into Circle Gateway.\n` +
         `You need USDC + gas on ${chainName}.\n\n` +
         `Enter your PIN to confirm:`,
         Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_gateway")]])
@@ -4478,7 +4478,7 @@ bot.on("text", async (ctx) => {
           `🏛 <b>Settlement Rail:</b> ${settlementRail === "arc" ? "⚡ Arc Mainnet (Instant USDC)" : "☀️ Solana"}\n` +
           `🏦 <b>Bank Name:</b> ${order.bank || "PalmPay"}\n` +
           `🔢 <b>Account Number:</b> <code>${order.accountNumber}</code> <i>(Tap to copy)</i>\n` +
-          `👤 <b>Account Name:</b> ${order.accountName || "PayIT / Paj Settlement"}\n` +
+          `👤 <b>Account Name:</b> ${order.accountName || "Proxim / Paj Settlement"}\n` +
           `💵 <b>Amount to Send:</b> <b>₦${Number(fiatAmount).toLocaleString()}</b>\n` +
           `💰 <b>Dollars to Receive:</b> ~$${tokenAmount}\n\n` +
           `⚠️ <i>Transfer the EXACT amount (<b>₦${Number(fiatAmount).toLocaleString()}</b>) from your banking app (Kuda, GTBank, Opay, PalmPay, etc.).\n` +
@@ -4714,7 +4714,7 @@ bot.on("text", async (ctx) => {
           try {
             const receiptPath = await generateReceiptPNG({
               receiptId:        result.reference || result.txHash?.slice(0, 10) || `CO-${Date.now()}`,
-              senderName:       "PayIT Wallet",
+              senderName:       "Proxim Wallet",
               senderAddress:    getActiveWallet(user),
               recipientName:    state.data.accountName || state.data.bankName || "Bank Account",
               recipientAddress: state.data.accountNumber,
@@ -4820,7 +4820,7 @@ bot.on("text", async (ctx) => {
         try {
           const receiptPath = await generateReceiptPNG({
             receiptId:        results[0].txHash?.slice(0, 10) || `TX-${Date.now()}`,
-            senderName:       "PayIT Wallet",
+            senderName:       "Proxim Wallet",
             senderAddress:    getActiveWallet(user),
             recipientName:    state.data.recipientName || state.data.walletAddress,
             recipientAddress: state.data.walletAddress,
@@ -4989,7 +4989,7 @@ bot.on("text", async (ctx) => {
       const payitSolAddr = stateData.payitSolAddr;
       const solAmount = stateData.solAmount || 0;
 
-      // 1. Update DB to record PayIT Solana deposit address if missing
+      // 1. Update DB to record Proxim Solana deposit address if missing
       if (!user.solana_deposit_address) {
         db.updateSolanaAddress(userId, payitSolAddr);
       }
@@ -5027,7 +5027,7 @@ bot.on("text", async (ctx) => {
           `Detected <b>$${solAmount.toFixed(2)} USDC</b> on deposit wallet:\n<code>${tempAddr}</code>\n\n` +
           `✅ On-chain transaction confirmed on Solana Mainnet:\n` +
           `🔗 <a href="${explorerUrl}">View on Solscan</a>\n\n` +
-          `✅ Funds transferred into your PayIT Solana Address:\n<code>${payitSolAddr}</code>\n\n` +
+          `✅ Funds transferred into your Proxim Solana Address:\n<code>${payitSolAddr}</code>\n\n` +
           `<i>You hold full non-custodial ownership using your exported Phantom/Solflare key!</i>`,
           {
             parse_mode: "HTML",
@@ -5041,7 +5041,7 @@ bot.on("text", async (ctx) => {
 
       return ctx.reply(
         `⚙️ <b>Address Reconciled</b>\n──────────────────────────\n` +
-        `Your active PayIT Solana address is updated to your non-custodial key:\n<code>${payitSolAddr}</code>\n\n` +
+        `Your active Proxim Solana address is updated to your non-custodial key:\n<code>${payitSolAddr}</code>\n\n` +
         `Archived legacy address: <code>${tempAddr}</code>\n` +
         `Legacy USDC Balance: <b>$${solAmount.toFixed(2)} USDC</b>\n\n` +
         `<i>Because <code>${tempAddr}</code> is a Paj deposit wallet, moving these funds requires Paj payout processing or admin key recovery.</i>`,
@@ -5240,7 +5240,7 @@ bot.on("text", async (ctx) => {
         txLinks += `\n\n🔗 <a href="${netConfig.explorerUrl}/tx/${withdrawTx}">View Withdrawal on Arc Explorer</a>`;
       }
       if (feeTx) {
-        txLinks += `\n🔗 <a href="${netConfig.explorerUrl}/tx/${feeTx}">View PayIT Service Fee on Arc Explorer</a>`;
+        txLinks += `\n🔗 <a href="${netConfig.explorerUrl}/tx/${feeTx}">View Proxim Service Fee on Arc Explorer</a>`;
       }
 
       return ctx.reply(
@@ -5795,7 +5795,7 @@ bot.on("text", async (ctx) => {
         `⚙️ Specifications:\n${product.specs}\n\n` +
         `🏪 Merchant: ${product.store} ${product.isVerified ? "✓" : ""}\n` +
         `🛡️ Returns: ${product.returnPolicy}\n` +
-        `🔒 Protection: PayIT 100% Escrow Guarantee\n\n` +
+        `🔒 Protection: Proxim 100% Escrow Guarantee\n\n` +
         `💲 Price: $${product.price} ${product.currency}${discountText}\n` +
         `🚚 Delivery: ${product.delivery_time}\n\n` +
         `📍 ` + (parsed.delivery_address ? `Deliver to: ${parsed.delivery_address}` : `Deliver to: your saved address`) + `\n\n` +
@@ -6103,7 +6103,7 @@ bot.on("text", async (ctx) => {
   const user = db.getUser(userId);
   if (!user) {
     return ctx.reply(
-      "Send /start to set up your PayIT wallet.",
+      "Send /start to set up your Proxim wallet.",
       Markup.inlineKeyboard([[Markup.button.callback("Get Started", "noop")]])
     );
   }
@@ -6261,7 +6261,7 @@ bot.on("text", async (ctx) => {
       });
       return ctx.reply(
         `✅ ${saveName} saved to your contacts!\n\n` +
-        `Now you can say "send $50 to ${saveName}" and PayIT knows who you mean.`,
+        `Now you can say "send $50 to ${saveName}" and Proxim knows who you mean.`,
         Markup.inlineKeyboard([
           [Markup.button.callback("👥 All Contacts", "add_contact")],
           [Markup.button.callback("🏠 Main Menu",    "main_menu")],
@@ -6402,21 +6402,21 @@ async function startBot() {
     const fullWebhookUrl = `${WEBHOOK_URL}${webhookPath}`;
     try {
       await bot.telegram.setWebhook(fullWebhookUrl);
-      console.log(`PayIT is running via webhook at ${fullWebhookUrl}`);
+      console.log(`Proxim is running via webhook at ${fullWebhookUrl}`);
     } catch (whErr) {
       console.error("[bot] Failed to set webhook, falling back to polling:", whErr.message);
       try {
         await bot.telegram.deleteWebhook({ drop_pending_updates: false });
       } catch {}
       await bot.launch();
-      console.log("PayIT is running via polling fallback.");
+      console.log("Proxim is running via polling fallback.");
     }
   } else {
     try {
       await bot.telegram.deleteWebhook({ drop_pending_updates: false });
     } catch {}
     await bot.launch();
-    console.log("PayIT is running via polling.");
+    console.log("Proxim is running via polling.");
   }
 
   // Populate bot info eagerly so referral links and username are always resolved

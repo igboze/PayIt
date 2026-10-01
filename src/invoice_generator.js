@@ -102,7 +102,7 @@ function buildSvg(opts) {
     <rect x="30" y="${paySectionY}" width="620" height="${fiatBoxHeight}" fill="#eff6ff" rx="8" stroke="#93c5fd" stroke-width="1"/>
     <text x="45" y="${paySectionY + 22}" font-size="12" font-weight="bold" fill="#1e40af" font-family="${FONT}">🇳🇬 Option 1: Nigerian Bank Transfer (Direct Naira Settlement)</text>
     <text x="45" y="${paySectionY + 44}" font-size="11" fill="#334155" font-family="${FONT}">Bank: <tspan font-weight="bold" fill="#1e293b">${escape(fiatDetails.bankName || "Wema Bank PLC")}</tspan>   ·   Account No: <tspan font-weight="bold" fill="#1e40af" font-family="${FONT_MONO}">${escape(fiatDetails.accountNumber)}</tspan></text>
-    <text x="45" y="${paySectionY + 63}" font-size="11" fill="#334155" font-family="${FONT}">Name: <tspan font-weight="bold" fill="#1e293b">${escape(fiatDetails.accountName || "PayIT / " + clientName)}</tspan>   ·   Amount: <tspan font-weight="bold" fill="#15803d">₦${Number(fiatDetails.fiatAmount || 0).toLocaleString()}</tspan></text>
+    <text x="45" y="${paySectionY + 63}" font-size="11" fill="#334155" font-family="${FONT}">Name: <tspan font-weight="bold" fill="#1e293b">${escape(fiatDetails.accountName || "Proxim / " + clientName)}</tspan>   ·   Amount: <tspan font-weight="bold" fill="#15803d">₦${Number(fiatDetails.fiatAmount || 0).toLocaleString()}</tspan></text>
   `
     : "";
 
@@ -186,7 +186,7 @@ function buildSvg(opts) {
 
   <!-- Footer -->
   <line x1="30" y1="${footerY}" x2="650" y2="${footerY}" stroke="#e2e8f0" stroke-width="1"/>
-  <text x="340" y="${footerY + 24}" font-size="11" fill="#94a3b8" font-family="${FONT}" text-anchor="middle">Powered by PayIT · Non-Custodial Multi-Currency Payments</text>
+  <text x="340" y="${footerY + 24}" font-size="11" fill="#94a3b8" font-family="${FONT}" text-anchor="middle">Powered by Proxim · Non-Custodial Multi-Currency Payments</text>
 
 </svg>`;
 }

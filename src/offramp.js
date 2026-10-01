@@ -1,5 +1,5 @@
 // src/offramp.js
-// Production Paj v2 Off-Ramp Wrapper for PayIT
+// Production Paj v2 Off-Ramp Wrapper for Proxim
 // Uses the official Paj v2 API (https://docs.paj.cash)
 
 const paj = require("./paj");
@@ -28,7 +28,7 @@ async function requestOfframp(telegramId, amountMicro, bankDetails) {
       accountNumber: String(bankDetails.accountNumber).trim(),
       bankCode: String(bankDetails.bankCode).trim(),
       currency: "NGN",
-      description: `PayIT Cash Out - TG:${telegramId}`,
+      description: `Proxim Cash Out - TG:${telegramId}`,
       // Explicit settlement rail (defaults to Solana rail for backward compatibility).
       // Pass { rail: "arc", chain, mint } to cash out directly on Arc via Paj.
       ...(bankDetails.chain ? { chain: bankDetails.chain } : {}),

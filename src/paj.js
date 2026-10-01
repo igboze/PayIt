@@ -70,7 +70,7 @@ function isArcRailEnabled() {
 
 /**
  * 1. Fetch live conversion rates for onramp and offramp.
- * Applies PayIT's ₦5/USD onramp fee markup while preserving market offramp rate.
+ * Applies Proxim's ₦5/USD onramp fee markup while preserving market offramp rate.
  * @param {string} currency - e.g. "NGN"
  * @returns {Promise<{ onRampRate: object, offRampRate: object }>}
  */
@@ -240,7 +240,7 @@ async function createOfframpOrder(params) {
     chain: params.chain || RAILS.solana.chain,
     webhookURL: params.webhookURL || process.env.PAJ_WEBHOOK_URL || undefined,
     businessUSDCFee: typeof params.businessUSDCFee === "number" ? params.businessUSDCFee : 0,
-    description: params.description || "PayIT Cashout",
+    description: params.description || "Proxim Cashout",
   };
 
   if (params.amount !== undefined && params.amount !== null) {

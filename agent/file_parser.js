@@ -173,7 +173,7 @@ async function buildFilePaymentPlan(rows, instruction, userContext = {}) {
 
   const batchId = userContext.batchId || `batch_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
 
-  const systemPrompt = `You are a payment planning assistant for PayIT, a Nigerian multi-chain and fiat wallet bot.
+  const systemPrompt = `You are a payment planning assistant for Proxim, a Nigerian multi-chain and fiat wallet bot.
 
 Users attach files containing payroll/payment rows and instructions.
 Each row can specify payment in Nigerian Naira (NGN bank transfer) or on-chain (Arc EVM USDC/EURC or Solana USDC).
@@ -428,7 +428,7 @@ function mapSpreadsheetRows(rows) {
 // ─── LLM structuring fallback ─────────────────────────────────────────────────
 
 async function structureWithLLM(rawText, fileType) {
-  const systemPrompt = `You are a payroll and bulk payment extraction assistant for PayIT.
+  const systemPrompt = `You are a payroll and bulk payment extraction assistant for Proxim.
 Extract payment records from the following ${fileType} content.
 Supports multi-rail payments: Nigerian Bank (NGN), Arc EVM (USDC/EURC), and Solana (USDC).
 

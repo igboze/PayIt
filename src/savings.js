@@ -9,7 +9,7 @@ const { getNetworkConfig } = require("./network");
 const db = require("./db");
 const walletLib = require("./wallet");
 
-const PAYIT_FEE_FRACTION = 0.10; // PayIT keeps 10% of APY profit on withdrawal
+const PAYIT_FEE_FRACTION = 0.10; // Proxim keeps 10% of APY profit on withdrawal
 const DEMO_SPEED = parseFloat(process.env.SAVINGS_DEMO_SPEED || "1");
 
 let _earnKit = null;

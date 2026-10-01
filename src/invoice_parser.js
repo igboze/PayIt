@@ -21,7 +21,7 @@ const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 async function parseInvoiceIntent(userMessage, businessInfo) {
   const today = new Date().toISOString().split("T")[0];
 
-  const prompt = `You are an invoice assistant for PayIT, a USDC payment bot.
+  const prompt = `You are an invoice assistant for Proxim, a USDC payment bot.
 
 Parse the following invoice instruction into a structured JSON object.
 Return ONLY valid JSON — no markdown, no code fences, no explanation.
