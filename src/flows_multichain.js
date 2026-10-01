@@ -26,6 +26,7 @@ let deps = {};
 function registerMultichainFlows(bot, depsIn = {}) {
   deps = { bot, ...depsIn };
   registerNearDepositActions(bot);
+  registerSolanaDepositActions(bot);
   registerMoveFundsActions(bot);
 }
 
@@ -171,6 +172,98 @@ async function showNearTokenSelection(ctx) {
   );
 }
 
+// ─── Solana Deposit via NEAR Intents (1Click) ────────────────────────────────
+
+function registerSolanaDepositActions(bot) {
+  const { requireUser, getContext, getOrDeriveSolanaAddress } = deps;
+
+  bot.action("action_solana_deposit", async (ctx) => {
+    ctx.answerCbQuery();
+    const user = requireUser(ctx);
+    if (!user) return;
+    const solAddress = getOrDeriveSolanaAddress(user);
+    if (!solAddress) {
+      return ctx.reply(
+        `☀️ <b>Solana Deposit</b>\n──────────────────────────\n` +
+        `❌ No Solana address found for your account.\n` +
+        `<i>Please contact support if you believe this is an error.</i>`,
+        { parse_mode: "HTML", ...Markup.inlineKeyboard([[Markup.button.callback("🏠 Main Menu", "main_menu")]]) }
+      );
+    }
+    return showSolanaTokenSelection(ctx);
+  });
+
+  bot.action(/^action_sol_tok_([A-Za-z0-9_]+)$/, async (ctx) => {
+    ctx.answerCbQuery();
+    const user = requireUser(ctx);
+    if (!user) return;
+    const sym = ctx.match[1];
+
+    const token = await nearLib.resolveSolanaToken(sym);
+    if (!token) return ctx.reply("Token not found. Please choose from the list.", deps.backToMenu);
+
+    convState.setState(
+      ctx.from.id,
+      "await_solana_amount",
+      {
+        originAsset: token.assetId,
+        originSymbol: token.symbol,
+        originDecimals: token.decimals,
+        minDeposit: token.minDeposit || 1,
+      },
+      getContext(ctx.from.id)
+    );
+
+    return ctx.reply(
+      `☀️ <b>Deposit ${token.name || token.symbol} from Solana</b>\n──────────────────────────\n` +
+      `How much <b>${token.symbol}</b> would you like to deposit? (min ${token.minDeposit || 1} ${token.symbol})\n\n` +
+      `<i>NEAR Intents will auto-convert your ${token.symbol} into USDC and sweep it to your Arc balance.\nYou just need to send — no extra steps.</i>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([[Markup.button.callback("« Back to Tokens", "action_solana_deposit")]]),
+      }
+    );
+  });
+
+  // Reuse the existing near_status button for Solana deposits (same DB table)
+  // action_near_status_N already handles both NEAR and Solana rows
+}
+
+async function showSolanaTokenSelection(ctx) {
+  const keyboard = [
+    [
+      Markup.button.callback("☀️ SOL",   "action_sol_tok_SOL"),
+      Markup.button.callback("💵 USDC",  "action_sol_tok_USDC"),
+    ],
+    [
+      Markup.button.callback("🟢 USDT",  "action_sol_tok_USDT"),
+      Markup.button.callback("🐕 BONK",  "action_sol_tok_BONK"),
+    ],
+    [
+      Markup.button.callback("🎩 WIF",   "action_sol_tok_WIF"),
+      Markup.button.callback("🪐 JUP",   "action_sol_tok_JUP"),
+    ],
+    [
+      Markup.button.callback("🔮 PYTH",  "action_sol_tok_PYTH"),
+    ],
+    [
+      Markup.button.callback("❌ Cancel", "main_menu"),
+    ],
+  ];
+
+  return ctx.reply(
+    `☀️ <b>Deposit from Solana</b>\n──────────────────────────\n` +
+    `Send any supported Solana token to a <b>one-time deposit address</b>.\n` +
+    `NEAR Intents automatically swaps it to <b>USDC on Base</b> and sweeps it to your <b>Arc</b> balance (~2–5 min).\n\n` +
+    `<b>You just send — nothing else needed.</b>\n\n` +
+    `Select a token to deposit:`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard(keyboard),
+    }
+  );
+}
+
 // ─── Move Funds: CCTP rebalancing between Arc and Solana (Phase 2) ───────────
 
 function registerMoveFundsActions(bot) {
@@ -285,6 +378,7 @@ function registerMoveFundsActions(bot) {
 const HANDLED_STATES = new Set([
   "await_near_amount",
   "await_near_custom_token",
+  "await_solana_amount",
   "move_funds_amount",
   "move_funds_confirm",
 ]);
@@ -406,6 +500,91 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
       `🔄 <b>Auto-Conversion:</b> NEAR Intents will auto-convert your ${tokenSymbol} into Base USDC and auto-sweep it to Arc.\n` +
       `⚠️ <i>Send ${tokenSymbol} on NEAR only, exact amount, before expiry. ` +
       `If anything goes wrong, funds auto-refund to your NEAR address: <code>${refundTo}</code></i>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("🔄 Check Bridge Status", `action_near_status_${row.id}`)],
+          [Markup.button.callback("💰 Check Balance", "action_balance")],
+          [Markup.button.callback("🏠 Main Menu", "main_menu")],
+        ]),
+      }
+    );
+  }
+
+  // ── Solana deposit amount (via NEAR Intents 1Click) ─────────────────────
+
+  if (state.type === "await_solana_amount") {
+    const { getOrDeriveSolanaAddress, getActiveWallet } = deps;
+    const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
+    const tokenSymbol = state.data?.originSymbol || "SOL";
+    const originAsset = state.data?.originAsset;
+    const originDecimals = state.data?.originDecimals || 9;
+    const minDeposit = state.data?.minDeposit ?? 0.02;
+
+    if (isNaN(amount) || amount <= 0 || (minDeposit && amount < minDeposit)) {
+      if (shouldReprocessConversationState("await_solana_amount", text)) {
+        convState.clearState(userId);
+        return bot.handleUpdate({ update_id: ctx.update.update_id, message: ctx.message });
+      }
+      return ctx.reply(`Enter a valid amount of ${tokenSymbol} (minimum ${minDeposit} ${tokenSymbol}). Type cancel to stop.`);
+    }
+
+    const user = requireUser(ctx);
+    if (!user) return;
+    const context = state.context || "personal";
+    const recipientAddress = getActiveWallet(user);
+
+    // Refund address = user's derived Solana address
+    // If user sends to the Solana deposit address and the swap fails,
+    // 1Click refunds back to their Solana wallet — zero friction.
+    const refundTo = getOrDeriveSolanaAddress(user);
+    if (!refundTo) {
+      convState.clearState(userId);
+      return ctx.reply(
+        "❌ We could not find your Solana address to use as a refund address. " +
+        "Please contact support.",
+        deps.backToMenu
+      );
+    }
+
+    await ctx.reply(`⏳ Requesting NEAR Intents quote for ${amount} ${tokenSymbol} → Base USDC…`);
+    let row;
+    try {
+      row = await nearLib.createSolanaDeposit({
+        telegramId: userId,
+        accountType: context,
+        originAsset,
+        originSymbol: tokenSymbol,
+        originDecimals,
+        amount,
+        recipientAddress,
+        refundTo,
+      });
+    } catch (err) {
+      convState.clearState(userId);
+      return ctx.reply(`❌ Could not open a Solana deposit: ${err.message}`, deps.backToMenu);
+    }
+    convState.clearState(userId);
+
+    if (!row || !row.deposit_address) {
+      return ctx.reply(
+        "❌ The bridge could not quote this token right now. " +
+        "This token may not be supported by the solver yet — try again in a few minutes.",
+        deps.backToMenu
+      );
+    }
+
+    const expireIn = process.env.NEAR_INTENT_DEADLINE_MIN || 30;
+    return ctx.reply(
+      `☀️ <b>Solana Deposit Instructions</b>\n──────────────────────────\n` +
+      `💰 <b>Send exactly:</b> ${amount} ${tokenSymbol}\n` +
+      (row.amount_out ? `💵 <b>Estimated Received:</b> ~$${Number(row.amount_out).toFixed(2)} USDC on Arc\n` : "") +
+      `📍 <b>Solana address (one-time):</b>\n<code>${row.deposit_address}</code>\n` +
+      (row.deposit_memo ? `📝 <b>Memo (required):</b> <code>${row.deposit_memo}</code>\n` : "") +
+      `⏰ <b>Valid for:</b> ${expireIn} minutes\n\n` +
+      `🔄 <b>Auto-Conversion:</b> NEAR Intents swaps your ${tokenSymbol} → USDC on Base → sweeps to Arc.\n` +
+      `⚠️ <i>Send ${tokenSymbol} on Solana only, exact amount, before expiry.\n` +
+      `If anything goes wrong, funds auto-refund to your Solana address: <code>${refundTo}</code></i>`,
       {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard([

@@ -26,6 +26,10 @@ const ASSETS = {
   NEAR_WNEAR: process.env.NEAR_INTENTS_WNEAR || "nep141:wrap.near",
   BASE_USDC: process.env.NEAR_INTENTS_BASE_USDC || "nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near",
   ARB_USDC: process.env.NEAR_INTENTS_ARB_USDC || "nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near",
+  // Solana native tokens via NEAR Intents (omft.near bridge)
+  SOL_NATIVE: process.env.NEAR_INTENTS_SOL || "nep141:sol-5ce3bf3a31af18be40ba30f721101b4341690186.omft.near",
+  SOL_USDC: process.env.NEAR_INTENTS_SOL_USDC || "nep141:sol-epcrhbpnlmxqtqljmohe4hfzs4etwe7qkpnvqwqfqmfwjr.omft.near",
+  SOL_USDT: process.env.NEAR_INTENTS_SOL_USDT || "nep141:sol-es9vmfrzacermjfrf4h4qmzezaqsf3s9a9jiqvtqx3fcd.omft.near",
 };
 
 // Known popular NEAR tokens supported by 1Click / Defuse solvers.
@@ -80,6 +84,77 @@ const SUPPORTED_NEAR_TOKENS = [
   },
 ];
 
+/**
+ * Solana tokens supported by 1Click / NEAR Intents via omft.near bridge.
+ * assetId uses the `sol-<mint_address>.omft.near` NEP-141 wrapper format.
+ * refundType must be "ORIGIN_CHAIN" so failed swaps refund to user's Solana address.
+ */
+const SUPPORTED_SOLANA_TOKENS = [
+  {
+    symbol: "SOL",
+    name: "Solana (Native)",
+    assetId: ASSETS.SOL_NATIVE,
+    decimals: 9,
+    icon: "☀️",
+    minDeposit: 0.02,
+    blockchain: "sol",
+  },
+  {
+    symbol: "USDC",
+    name: "USD Coin (Solana)",
+    assetId: ASSETS.SOL_USDC,
+    decimals: 6,
+    icon: "💵",
+    minDeposit: 2,
+    blockchain: "sol",
+  },
+  {
+    symbol: "USDT",
+    name: "Tether USD (Solana)",
+    assetId: ASSETS.SOL_USDT,
+    decimals: 6,
+    icon: "🟢",
+    minDeposit: 2,
+    blockchain: "sol",
+  },
+  {
+    symbol: "BONK",
+    name: "Bonk",
+    assetId: process.env.NEAR_INTENTS_SOL_BONK || "nep141:sol-bonkfxp8vbpq9xtnv1mseqbm6bhkq6dkn6xxuqj2jbxs.omft.near",
+    decimals: 5,
+    icon: "🐕",
+    minDeposit: 500000,
+    blockchain: "sol",
+  },
+  {
+    symbol: "WIF",
+    name: "dogwifhat",
+    assetId: process.env.NEAR_INTENTS_SOL_WIF || "nep141:sol-ekcabpgahfkbp9b8a2lbxbkxjagxauqnqjegkqtajzxw.omft.near",
+    decimals: 6,
+    icon: "🎩",
+    minDeposit: 1,
+    blockchain: "sol",
+  },
+  {
+    symbol: "JUP",
+    name: "Jupiter",
+    assetId: process.env.NEAR_INTENTS_SOL_JUP || "nep141:sol-jupsolfjlxxbpufjp4lazamkbsfepd3ntptunnnzufka.omft.near",
+    decimals: 6,
+    icon: "🪐",
+    minDeposit: 2,
+    blockchain: "sol",
+  },
+  {
+    symbol: "PYTH",
+    name: "Pyth Network",
+    assetId: process.env.NEAR_INTENTS_SOL_PYTH || "nep141:sol-hz1jqxmjmpvwf8vfatbfwcqhebmxeqb7r7q3yfmjkxb8.omft.near",
+    decimals: 6,
+    icon: "🔮",
+    minDeposit: 2,
+    blockchain: "sol",
+  },
+];
+
 const TERMINAL_STATUSES = new Set(["SUCCESS", "REFUNDED", "FAILED"]);
 
 function getApiKey() {
@@ -107,6 +182,8 @@ function toBaseUnits(amount, decimals = 6) {
 
 let _cachedDynamicTokens = null;
 let _cachedDynamicTokensExpiry = 0;
+let _cachedSolanaTokens = null;
+let _cachedSolanaTokensExpiry = 0;
 
 /**
  * Fetch supported tokens dynamically from 1Click API `/v0/tokens` if available,
@@ -173,6 +250,93 @@ async function getSupportedNearTokens(forceRefresh = false) {
   _cachedDynamicTokens = list;
   _cachedDynamicTokensExpiry = now + 60 * 60 * 1000;
   return list;
+}
+
+/**
+ * Fetch Solana tokens supported by 1Click. Returns static catalog merged with
+ * any extra sol-blockchain tokens from the /v0/tokens endpoint.
+ */
+async function getSupportedSolanaTokens(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && _cachedSolanaTokens && now < _cachedSolanaTokensExpiry) {
+    return _cachedSolanaTokens;
+  }
+
+  // Start with static catalog
+  const tokenMap = new Map();
+  for (const t of SUPPORTED_SOLANA_TOKENS) {
+    tokenMap.set(t.symbol.toUpperCase(), { ...t });
+    tokenMap.set(t.assetId.toLowerCase(), { ...t });
+  }
+
+  try {
+    const axios = require("axios");
+    const key = getApiKey();
+    const headers = { "Content-Type": "application/json" };
+    if (key) headers["Authorization"] = `Bearer ${key}`;
+
+    const res = await axios({
+      method: "GET",
+      url: `${getApiBaseUrl()}/v0/tokens`,
+      timeout: 3500,
+      headers,
+    });
+
+    const tokens = Array.isArray(res.data) ? res.data : [];
+    for (const item of tokens) {
+      const isSol = item.blockchain === "sol" ||
+        (typeof item.assetId === "string" && item.assetId.includes("sol-") && item.assetId.endsWith(".omft.near"));
+      if (!isSol) continue;
+
+      const sym = (item.symbol || "").toUpperCase();
+      const existing = tokenMap.get(sym);
+      const entry = {
+        symbol: sym || "TOKEN",
+        name: item.name || sym,
+        assetId: item.assetId,
+        decimals: Number(item.decimals ?? 6),
+        icon: sym === "SOL" ? "☀️" : sym.includes("USD") ? "💵" : "🪙",
+        priceUsd: item.price ? Number(item.price) : undefined,
+        minDeposit: existing?.minDeposit ?? 1,
+        blockchain: "sol",
+      };
+      tokenMap.set(sym, entry);
+      tokenMap.set(item.assetId.toLowerCase(), entry);
+    }
+  } catch (_) {
+    // Fallback to static catalog
+  }
+
+  const list = [];
+  const seenAssets = new Set();
+  for (const token of tokenMap.values()) {
+    if (seenAssets.has(token.assetId)) continue;
+    seenAssets.add(token.assetId);
+    list.push(token);
+  }
+
+  _cachedSolanaTokens = list;
+  _cachedSolanaTokensExpiry = now + 60 * 60 * 1000;
+  return list;
+}
+
+/**
+ * Resolve a Solana token by symbol or assetId.
+ */
+async function resolveSolanaToken(query) {
+  if (!query) return null;
+  const q = String(query).trim();
+  const qUpper = q.toUpperCase();
+  const qLower = q.toLowerCase();
+
+  const tokens = await getSupportedSolanaTokens();
+  const bySymbol = tokens.find((t) => t.symbol.toUpperCase() === qUpper);
+  if (bySymbol) return bySymbol;
+
+  const byAssetId = tokens.find((t) => t.assetId.toLowerCase() === qLower);
+  if (byAssetId) return byAssetId;
+
+  return null;
 }
 
 /**
@@ -472,17 +636,94 @@ async function expireStaleNearDeposits(bot = null) {
   return stale.length;
 }
 
+/**
+ * Create a Solana → Base USDC → Arc deposit via NEAR Intents 1Click.
+ *
+ * The user sends Solana tokens to the returned deposit address (a Solana address).
+ * 1Click/Defuse swaps to Base USDC and delivers to the user's Arc address.
+ * On failure, funds are refunded to the user's Solana address (refundTo).
+ *
+ * @param {object} p
+ * @param {number|string} p.telegramId
+ * @param {string} [p.accountType="personal"]
+ * @param {string} p.originAsset      - Solana token assetId (sol-*.omft.near)
+ * @param {string} p.originSymbol
+ * @param {number} p.originDecimals
+ * @param {number} p.amount           - human-readable amount
+ * @param {string} p.recipientAddress - user's Arc/Base wallet (destination)
+ * @param {string} p.refundTo         - user's Solana address (refund target)
+ * @returns {Promise<object>} near_deposits row
+ */
+async function createSolanaDeposit({
+  telegramId,
+  accountType = "personal",
+  originAsset,
+  originSymbol,
+  originDecimals,
+  amount,
+  recipientAddress,
+  refundTo,
+}) {
+  if (!originAsset) throw new Error("originAsset required for Solana deposit");
+  if (!refundTo) throw new Error("refundTo (Solana address) required for Solana deposit");
+
+  const id = db.createNearDeposit({
+    telegramId,
+    accountType,
+    originAsset,
+    originSymbol,
+    amountToken: amount,
+    amountUsdc: amount,
+    recipientAddress,
+    refundTo,
+    status: "quoting",
+  });
+
+  try {
+    const baseUnits = toBaseUnits(amount, originDecimals);
+    const quoteRes = await module.exports.getQuote({
+      originAsset,
+      destinationAsset: ASSETS.BASE_USDC,
+      amount: baseUnits,
+      recipient: recipientAddress,
+      // Solana refund: refundType="ORIGIN_CHAIN" means refund to user's Solana address
+      refundTo,
+      dry: false,
+    });
+    const q = quoteRes?.quote || {};
+    db.updateNearDeposit(id, {
+      status: "awaiting_deposit",
+      deposit_address: q.depositAddress || null,
+      deposit_memo: q.depositMemo || null,
+      amount_out: q.amountOut ? Number(q.amountOut) / 1e6 : null,
+      quote_json: JSON.stringify(quoteRes),
+      deadline: quoteRes?.quoteRequest?.deadline || null,
+      correlation_id: quoteRes?.correlationId || null,
+      origin_symbol: originSymbol,
+      amount_token: Number(amount),
+    });
+    return db.getNearDepositById(id);
+  } catch (err) {
+    db.updateNearDeposit(id, { status: "failed", error: String(err.message).slice(0, 500) });
+    throw err;
+  }
+}
+
 module.exports = {
   ASSETS,
   SUPPORTED_NEAR_TOKENS,
+  SUPPORTED_SOLANA_TOKENS,
   TERMINAL_STATUSES,
   toBaseUnits,
   getSupportedNearTokens,
+  getSupportedSolanaTokens,
   resolveNearToken,
+  resolveSolanaToken,
   deriveNearAddress,
   getQuote,
   getExecutionStatus,
   createNearDeposit,
+  createSolanaDeposit,
   pollPendingNearDeposits,
   expireStaleNearDeposits,
 };
