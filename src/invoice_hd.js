@@ -101,6 +101,9 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
     const rate = rates?.onRampRate?.rate || 1388.75;
     const fiatAmount = Math.round(Number(totalUsdc) * rate);
 
+    const invoiceFeeBps = Number(process.env.INVOICE_PROCESSING_FEE_BPS ?? 50);
+    const invoiceFeeUsdc = Number((Number(totalUsdc) * (invoiceFeeBps / 10000)).toFixed(4));
+
     let order = null;
     if (paj.isArcOnrampEnabled() && walletAddress) {
       try {
@@ -112,7 +115,7 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
           chain: paj.RAILS.arc.chain,
           userExternalId: invoiceNumber,
           description: `Payment for Invoice #${invoiceNumber}`,
-          businessUSDCFee: 0,
+          businessUSDCFee: invoiceFeeUsdc,
         });
       } catch (arcErr) {
         console.warn("[invoice_hd] Dynamic Arc fiat onramp fallback to Solana:", arcErr.message);
@@ -130,7 +133,7 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
         mint: paj.RAILS.solana.mint,
         userExternalId: invoiceNumber,
         description: `Payment for Invoice #${invoiceNumber}`,
-        businessUSDCFee: 0,
+        businessUSDCFee: invoiceFeeUsdc,
       });
     }
 
@@ -242,6 +245,9 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
     const rate = rates?.onRampRate?.rate || 1388.75;
     const fiatAmount = Math.round(Number(totalUsdc) * rate);
 
+    const invoiceFeeBps = Number(process.env.INVOICE_PROCESSING_FEE_BPS ?? 50);
+    const invoiceFeeUsdc = Number((Number(totalUsdc) * (invoiceFeeBps / 10000)).toFixed(4));
+
     let order = null;
     if (paj.isArcOnrampEnabled() && bizWalletAddress) {
       try {
@@ -253,7 +259,7 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
           chain: paj.RAILS.arc.chain,
           userExternalId: invoiceNumber,
           description: `Payment for Invoice #${invoiceNumber}`,
-          businessUSDCFee: 0,
+          businessUSDCFee: invoiceFeeUsdc,
         });
       } catch (arcErr) {
         console.warn("[biz_invoice_hd] Dynamic Arc fiat onramp fallback to Solana:", arcErr.message);
@@ -271,7 +277,7 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
         mint: paj.RAILS.solana.mint,
         userExternalId: invoiceNumber,
         description: `Payment for Invoice #${invoiceNumber}`,
-        businessUSDCFee: 0,
+        businessUSDCFee: invoiceFeeUsdc,
       });
     }
 

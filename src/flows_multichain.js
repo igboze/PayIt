@@ -809,12 +809,16 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
       ? "Circle CCTP (100% native USDC, 0 slippage)"
       : "NEAR Intents (auto-swap & bridge)";
 
+    const platformFee = Number(process.env.CROSSCHAIN_WITHDRAWAL_FEE_USDC ?? 0.30);
+    const netReceived = Math.max(0, amount - platformFee);
+
     return ctx.reply(
       `📤 <b>Confirm Cross-Chain Withdrawal</b>\n──────────────────────────\n` +
       `🌐 <b>Destination Chain:</b> ${chainInfo.label}\n` +
       `📍 <b>To Address:</b>\n<code>${destinationAddress}</code>\n` +
       `💰 <b>Amount:</b> $${amount.toFixed(2)} USDC\n` +
-      `🪙 <b>Receiving:</b> ${chainInfo.token}\n` +
+      `🏷️ <b>Bridge Fee:</b> $${platformFee.toFixed(2)} USDC\n` +
+      `🪙 <b>Net Receiving:</b> ~$${netReceived.toFixed(2)} in ${chainInfo.token}\n` +
       `⏱️ <b>Est. Time:</b> ${estTime}\n` +
       `🌉 <b>Route:</b> ${routeDesc}\n\n` +
       `Enter your 4-digit PIN to confirm:`,
