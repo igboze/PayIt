@@ -1646,6 +1646,11 @@ async function executeArcToEvmCctpBurn({ userWallet, amountUsdc, destinationDoma
     const cleanRecipient = getAddress(destinationRecipientAddress);
     const mintRecipient = zeroPadValue(cleanRecipient, 32);
 
+    const TOKEN_MESSENGER_ABI = [
+      "function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes32 destinationCaller, uint256 maxFee, uint32 minFinalityThreshold) external",
+      "function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken) external returns (uint64 _nonce)",
+    ];
+
     const ERC20_ABI = [
       "function approve(address spender, uint256 amount) external returns (bool)",
       "function allowance(address owner, address spender) external view returns (uint256)",
