@@ -141,7 +141,7 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
       fiatDetails = {
         accountNumber: order.accountNumber,
         bankName: order.bank || "Wema Bank PLC",
-        accountName: order.accountName || `PayIT / ${clientName}`,
+        accountName: order.accountName || `Proxim / ${clientName}`,
         fiatAmount: order.fiatAmount || fiatAmount,
         orderId: order.id,
         rate,
@@ -285,7 +285,7 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
       fiatDetails = {
         accountNumber: order.accountNumber,
         bankName: order.bank || "Wema Bank PLC",
-        accountName: order.accountName || `${profile?.business_name || "PayIT"} / ${clientName}`,
+        accountName: order.accountName || `${profile?.business_name || "Proxim"} / ${clientName}`,
         fiatAmount: order.fiatAmount || fiatAmount,
         orderId: order.id,
         rate,

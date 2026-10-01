@@ -299,7 +299,7 @@ function registerMoveFundsActions(bot) {
       `⚡ <b>Arc:</b> $${arcUsdc.toFixed(2)}\n` +
       `☀️ <b>Solana:</b> $${solUsdc.toFixed(2)}\n\n` +
       `<i>Moves use Circle CCTP — funds arrive on the other chain in ~1–5 minutes. ` +
-      `No PayIT fee (network gas only).</i>`,
+      `No Proxim fee (network gas only).</i>`,
       { parse_mode: "HTML", ...Markup.inlineKeyboard(buttons) }
     );
   });
@@ -923,7 +923,7 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
     return ctx.reply(
       `🔀 <b>Confirm Move</b>\n──────────────────────────\n` +
       `Route: ${dirLabel}\nAmount: $${amount.toFixed(2)} USDC\n\n` +
-      `<i>Uses Circle CCTP. Funds arrive in ~1–5 minutes. Network gas only — no PayIT fee.</i>\n\n` +
+      `<i>Uses Circle CCTP. Funds arrive in ~1–5 minutes. Network gas only — no Proxim fee.</i>\n\n` +
       `Enter your PIN to confirm:`,
       {
         parse_mode: "HTML",

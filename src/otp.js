@@ -6,7 +6,7 @@ const axios = require("axios");
 
 const TERMII_BASE   = "https://api.ng.termii.com/api";
 const TERMII_KEY    = process.env.TERMII_API_KEY   || "";
-const TERMII_FROM   = process.env.TERMII_SENDER_ID || "PayIT";
+const TERMII_FROM   = process.env.TERMII_SENDER_ID || "Proxim";
 
 async function sendOtp(phoneNumber) {
   if (!TERMII_KEY) throw new Error("TERMII_API_KEY not set in .env");
@@ -20,7 +20,7 @@ async function sendOtp(phoneNumber) {
     pin_time_to_live: 10, // minutes
     pin_length: 4,
     pin_placeholder: "<>",
-    message_text: "Your PayIT verification code is <>. Valid for 10 minutes.",
+    message_text: "Your Proxim verification code is <>. Valid for 10 minutes.",
   });
   return { pinId: res.data.pinId };
 }

@@ -156,7 +156,7 @@ test("Dual-Channel Invoice: Paj Webhook auto-settles fiat payment to merchant's 
   invoiceDb.updateInvoiceFiatDetails(invoiceId, {
     fiatAccountNumber: "0123456789",
     fiatBankName: "Wema Bank PLC",
-    fiatAccountName: "PayIT / Aliko Dangote",
+    fiatAccountName: "Proxim / Aliko Dangote",
     fiatAmount: 138875,
     fiatOrderId: dynamicFiatOrderId,
     fiatRate: 1388.75,

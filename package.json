@@ -1,7 +1,7 @@
 {
-  "name": "payit-telegram-bot",
+  "name": "proxim-telegram-bot",
   "version": "0.3.0",
-  "description": "PayIT — non-custodial Telegram wallet on Arc (testnet). Personal + Business accounts, USDC + EURC, Circle Gateway, SME financial management.",
+  "description": "Proxim — non-custodial Telegram wallet on Arc (testnet). Personal + Business accounts, USDC + EURC, Circle Gateway, SME financial management.",
   "main": "bot.js",
   "type": "commonjs",
   "scripts": {

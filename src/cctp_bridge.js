@@ -935,7 +935,7 @@ async function autoBridgeSolanaToArc({
  *
  * After the burn is confirmed, this function optionally fires `completeCctpWithdrawalOnSolana`
  * in the background so the full Arc→Solana bridge completes automatically without any
- * funded relayer treasury.  PayIT's backend Solana wallet acts as the sole fee-payer
+ * funded relayer treasury.  Proxim's backend Solana wallet acts as the sole fee-payer
  * (~$0.001 per withdrawal) via the SOLANA_FEE_PAYER_KEY env variable.
  *
  * @param {object} params
@@ -1180,7 +1180,7 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
  * Steps:
  *   1. Fetch the CCTP message from Arc receipt logs or Circle Iris (domain = ARC = 26)
  *   2. Poll Circle Iris until attestation is complete (~20s on mainnet)
- *   3. Submit receiveMessage on Solana — PayIT's backend wallet pays ~$0.001 SOL
+ *   3. Submit receiveMessage on Solana — Proxim's backend wallet pays ~$0.001 SOL
  *   4. USDC is minted to the recipient's Solana token account
  *
  * The recipient (user or Paj offramp address) needs ZERO SOL at any point.
@@ -1380,7 +1380,7 @@ async function retryPendingCctpBurns(feePayerKey) {
  * Executes a CCTP depositForBurn on any source EVM chain (Base, Arbitrum, Ethereum, etc.)
  * targeting an Arc recipient address (Domain 26).
  *
- * Automatically sponsors gas from PayIT Relayer if the user's wallet has insufficient
+ * Automatically sponsors gas from Proxim Relayer if the user's wallet has insufficient
  * native token for ERC-20 approval and depositForBurn execution.
  *
  * @param {object} params

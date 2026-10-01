@@ -71,7 +71,7 @@ function normalizeShoppingParsed(parsed, rawUserMessage = "") {
 }
 
 async function parseShoppingIntent(userMessage, userContext = {}) {
-  const systemPrompt = `You are a Personal Shopper Agent for PayIT.
+  const systemPrompt = `You are a Personal Shopper Agent for Proxim.
 The user wants to buy a product online. Even if they say "search the web", treat it as a shopping request.
 Extract the relevant details to search for the product and initiate a purchase.
 

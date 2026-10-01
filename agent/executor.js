@@ -714,7 +714,7 @@ async function executeCrossChainWithdrawal(userWallet, {
 
   // ── Tier 2: Intent-based Withdrawal (BTC, Tron, NEAR) ───────────────────────
   // Step 1: Arc burns USDC to Base relayer address via CCTP
-  // Step 2: PayIT triggers 1Click Intent from Base USDC to destination chain
+  // Step 2: Proxim triggers 1Click Intent from Base USDC to destination chain
   const INTENT_CHAINS = new Set(["bitcoin", "btc", "tron", "near"]);
   if (INTENT_CHAINS.has(chainKey)) {
     const txId = db.recordTransaction(telegramId, "intent_withdraw", amountMicro, "pending", null, accountType, 18, "arc");

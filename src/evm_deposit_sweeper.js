@@ -428,7 +428,7 @@ const bridgeRobinhoodViaRelay = bridgeViaRelay;
  * 2. If native: swaps to USDC on source chain via DEX (or bridges via Relay intent)
  * 3. Bridges USDC to Arc Mainnet via Circle CCTP V2 (or settles via Relay solvers)
  * 4. Disburses native USDC on Arc to user's address
- * 5. Credits PayIT database and sends clean Telegram confirmation
+ * 5. Credits Proxim database and sends clean Telegram confirmation
  */
 async function processEvmDeposit(payload, bot = null, options = {}) {
   const chainId = payload.chainId || payload.network || 8453;
@@ -451,8 +451,8 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
   // 1. Resolve owner user from database
   const user = db.getUserByDepositAddress(toAddress);
   if (!user) {
-    console.warn(`[evm_sweeper] No PayIT user found matching address: ${toAddress}`);
-    return { success: false, error: "Recipient address not found in PayIT database" };
+    console.warn(`[evm_sweeper] No Proxim user found matching address: ${toAddress}`);
+    return { success: false, error: "Recipient address not found in Proxim database" };
   }
 
   const isBiz = user.business_deposit_address && user.business_deposit_address.toLowerCase() === toAddress.toLowerCase();
@@ -492,7 +492,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
         `🔔 <b>Deposit Received!</b>\n` +
         `──────────────────────────\n` +
         `We detected an incoming deposit of <b>${rawAmount} ${token}</b> on <b>${chainName}</b>.\n\n` +
-        `Tap below to authorize the sweep and credit your PayIT balance:`,
+        `Tap below to authorize the sweep and credit your Proxim balance:`,
         {
           parse_mode: "HTML",
           reply_markup: Markup.inlineKeyboard([
@@ -513,7 +513,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
         `🔔 <b>Deposit Detected!</b>\n` +
         `──────────────────────────\n` +
         `We detected <b>${rawAmount} ${token}</b> on <b>${chainName}</b>.\n\n` +
-        `Tap below to scan and sweep it into your PayIT balance:`,
+        `Tap below to scan and sweep it into your Proxim balance:`,
         {
           parse_mode: "HTML",
           reply_markup: Markup.inlineKeyboard([
@@ -869,7 +869,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
         `💰 <b>Credited on Arc:</b> $${effectiveAmountUsdc.toFixed(2)} native USDC\n` +
         `💼 <b>Account:</b> ${accountLabel}\n` +
         `🔗 <b>Status:</b> Ready to spend, send, or save!\n\n` +
-        `<i>Your funds were automatically bridged via Circle CCTP and are instantly available in your PayIT balance with zero user gas!</i>`,
+        `<i>Your funds were automatically bridged via Circle CCTP and are instantly available in your Proxim balance with zero user gas!</i>`,
         { parse_mode: "HTML" }
       );
     } catch (msgErr) {

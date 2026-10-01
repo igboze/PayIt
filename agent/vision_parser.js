@@ -31,7 +31,7 @@ function getVisionProvider() {
 
 // ─── System prompt (shared) ───────────────────────────────────────────────────
 
-const EXTRACTION_PROMPT = `You are a payment extraction assistant for PayIT, a dollar wallet app used in Nigeria.
+const EXTRACTION_PROMPT = `You are a payment extraction assistant for Proxim, a dollar wallet app used in Nigeria.
 
 Analyse the image and extract any payment or invoice details visible.
 

@@ -383,7 +383,7 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
       return res.end(
         JSON.stringify({
           status: "ok",
-          service: "PayIT Gateway & Paj Webhook Server",
+          service: "Proxim Gateway & Paj Webhook Server",
           time: new Date().toISOString(),
           cctpDomain: 26,
         })

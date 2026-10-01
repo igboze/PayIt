@@ -403,7 +403,7 @@ function deriveNearAddress(evmPrivateKey) {
   const cleanHex = evmPrivateKey.startsWith("0x") ? evmPrivateKey.slice(2) : evmPrivateKey;
   const keyBuffer = Buffer.from(cleanHex, "hex");
 
-  const hmac = crypto.createHmac("sha512", Buffer.from("PayIT-NEAR-Intent-Bridge-Salt", "utf8"));
+  const hmac = crypto.createHmac("sha512", Buffer.from("Proxim-NEAR-Intent-Bridge-Salt", "utf8"));
   hmac.update(keyBuffer);
   const seed32 = hmac.digest().subarray(0, 32);
 

@@ -110,7 +110,7 @@ function friendlyGatewayError(err, chainName) {
   }
   if (/insufficient funds|exceeds balance|transfer amount exceeds/i.test(msg) && /USDC/i.test(msg) === false) {
     const chain = SUPPORTED_CHAINS.find(c => c.name === chainName);
-    return `Not enough USDC on ${chainName}. Request USDC from faucet.circle.com for your PayIT address, then try again.`;
+    return `Not enough USDC on ${chainName}. Request USDC from faucet.circle.com for your Proxim address, then try again.`;
   }
   return msg;
 }
@@ -253,7 +253,7 @@ async function getDepositInfo(arcAddress) {
  * FIX 1: Actually execute the approve + deposit on-chain for a given source chain.
  *
  * This function does what the docs describe — it's what the bot must call when
- * the user initiates a cross-chain deposit from within PayIT (i.e. the user has
+ * the user initiates a cross-chain deposit from within Proxim (i.e. the user has
  * their private key stored in the bot's DB and triggers "Add from Abroad").
  *
  * NOTE: Source-chain USDC is always 6 decimals — NOT 18 like Arc's native USDC.
@@ -380,7 +380,7 @@ async function executeDeposit(privateKey, sourceChainName, amountUsdc) {
   if (usdcBal < amountBN) {
     throw new Error(
       `Not enough USDC on ${sourceChainName}. You have ${formatUnits(usdcBal, 6)} USDC but need ${amountUsdc}. ` +
-      `Get USDC from faucet.circle.com for your PayIT address.`
+      `Get USDC from faucet.circle.com for your Proxim address.`
     );
   }
   if (gasBal === 0n) {
