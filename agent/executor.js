@@ -576,6 +576,166 @@ async function moveFundsBetweenChains(userWallet, { direction, amountUsdc, teleg
   return { success: false, error: `Unknown direction "${direction}". Use "arc_to_solana" or "solana_to_arc".`, amount: amountUsdc };
 }
 
+/**
+ * Execute a cross-chain withdrawal of Arc USDC to ANY destination chain and address.
+ *
+ * Tier 1: CCTP-Supported Chains (Solana, Base, Arbitrum, Optimism, Polygon, Avalanche, Ethereum)
+ *   -> Burns USDC on Arc via CCTP, mints native USDC directly to destinationAddress.
+ *
+ * Tier 2: Intent-Supported Chains (Bitcoin, Tron, NEAR)
+ *   -> Burns USDC on Arc to Base via CCTP, then executes 1Click Intent to swap & deliver.
+ */
+async function executeCrossChainWithdrawal(userWallet, {
+  destinationChain,
+  destinationAddress,
+  destinationAsset = "USDC",
+  amountUsdc,
+  telegramId,
+  accountType = "personal",
+  bot = null,
+}) {
+  let amountMicro;
+  try {
+    amountMicro = walletLib.parseToMicro(Number(amountUsdc).toFixed(6));
+  } catch (err) {
+    return { success: false, error: "Invalid amount: " + err.message, amount: amountUsdc, destinationChain };
+  }
+
+  const chainKey = String(destinationChain || "").toLowerCase();
+  const idempKey = `withdraw_cc:${telegramId}:${chainKey}:${destinationAddress}:${amountUsdc}`;
+  const existing = idempotency.checkOperationIdempotency(idempKey);
+  if (existing && existing.status === "completed") {
+    return { success: true, duplicate: true, amount: amountUsdc, destinationChain, ...(existing.responseData || {}) };
+  }
+  if (existing && existing.status === "pending") {
+    return { success: false, error: "A withdrawal to this address is currently processing. Please wait.", destinationChain, amount: amountUsdc };
+  }
+
+  idempotency.startOperationIdempotency(idempKey, {
+    scope: "crosschain_withdrawal",
+    telegramId,
+    accountType,
+    amount: amountUsdc,
+  });
+
+  // Balance Check on Arc
+  let arcBalanceMicro;
+  try {
+    arcBalanceMicro = await walletLib.getNativeBalanceMicro(userWallet.address);
+  } catch (err) {
+    idempotency.failOperationIdempotency(idempKey, err.message);
+    return { success: false, error: "Could not check Arc balance: " + err.message, amount: amountUsdc, destinationChain };
+  }
+  if (arcBalanceMicro < amountMicro) {
+    idempotency.failOperationIdempotency(idempKey, "Insufficient Arc balance");
+    return {
+      success: false,
+      error: `Not enough USDC on Arc. You have $${walletLib.formatMicro(arcBalanceMicro)}, need $${Number(amountUsdc).toFixed(2)}.`,
+      amount: amountUsdc,
+      destinationChain,
+    };
+  }
+
+  const CCTP_CHAINS = new Set(["solana", "base", "arbitrum", "optimism", "polygon", "avalanche", "ethereum"]);
+
+  // ── Tier 1: Direct CCTP Withdrawal ──────────────────────────────────────────
+  if (CCTP_CHAINS.has(chainKey)) {
+    const txId = db.recordTransaction(telegramId, "crosschain_withdraw", amountMicro, "pending", null, accountType, 18, "arc");
+    try {
+      const result = await cctpBridge.executeArcCrossChainWithdrawal({
+        userWallet,
+        amountUsdc: Number(amountUsdc),
+        destinationChain: chainKey,
+        destinationAddress,
+        telegramId,
+      });
+
+      if (!result || result.success === false) {
+        db.updateTransactionStatus(txId, "failed");
+        idempotency.failOperationIdempotency(idempKey, (result && result.error) || "Arc CCTP burn failed");
+        return { success: false, error: (result && result.error) || "Arc CCTP burn failed", amount: amountUsdc, destinationChain };
+      }
+
+      db.updateTransactionStatus(txId, "submitted", result.txHash || null);
+      idempotency.completeOperationIdempotency(idempKey, {
+        txHash: result.txHash,
+        responseData: {
+          txHash: result.txHash,
+          destinationChain,
+          destinationAddress,
+          amountUsdc,
+          engine: "CCTP",
+        },
+      });
+
+      return {
+        success: true,
+        txHash: result.txHash,
+        amount: amountUsdc,
+        destinationChain,
+        destinationAddress,
+        engine: "CCTP",
+      };
+    } catch (err) {
+      db.updateTransactionStatus(txId, "failed");
+      idempotency.failOperationIdempotency(idempKey, err.message);
+      return { success: false, error: "Cross-chain withdrawal failed: " + err.message, amount: amountUsdc, destinationChain };
+    }
+  }
+
+  // ── Tier 2: Intent-based Withdrawal (BTC, Tron, NEAR) ───────────────────────
+  // Step 1: Arc burns USDC to Base relayer address via CCTP
+  // Step 2: PayIT triggers 1Click Intent from Base USDC to destination chain
+  const INTENT_CHAINS = new Set(["bitcoin", "btc", "tron", "near"]);
+  if (INTENT_CHAINS.has(chainKey)) {
+    const txId = db.recordTransaction(telegramId, "intent_withdraw", amountMicro, "pending", null, accountType, 18, "arc");
+    try {
+      // Burn to Base relayer / destination
+      const baseBurn = await cctpBridge.executeArcToEvmCctpBurn({
+        userWallet,
+        amountUsdc: Number(amountUsdc),
+        destinationDomain: cctpBridge.CCTP_DOMAINS.BASE,
+        destinationRecipientAddress: userWallet.address, // Base address
+        telegramId,
+      });
+
+      if (!baseBurn || !baseBurn.success) {
+        db.updateTransactionStatus(txId, "failed");
+        idempotency.failOperationIdempotency(idempKey, baseBurn?.error || "Intent hop burn failed");
+        return { success: false, error: baseBurn?.error || "Intent hop burn failed", amount: amountUsdc, destinationChain };
+      }
+
+      db.updateTransactionStatus(txId, "submitted", baseBurn.txHash || null);
+      idempotency.completeOperationIdempotency(idempKey, {
+        txHash: baseBurn.txHash,
+        responseData: {
+          txHash: baseBurn.txHash,
+          destinationChain,
+          destinationAddress,
+          amountUsdc,
+          engine: "NEAR_INTENTS",
+        },
+      });
+
+      return {
+        success: true,
+        txHash: baseBurn.txHash,
+        amount: amountUsdc,
+        destinationChain,
+        destinationAddress,
+        engine: "NEAR_INTENTS",
+      };
+    } catch (err) {
+      db.updateTransactionStatus(txId, "failed");
+      idempotency.failOperationIdempotency(idempKey, err.message);
+      return { success: false, error: "Intent withdrawal failed: " + err.message, amount: amountUsdc, destinationChain };
+    }
+  }
+
+  idempotency.failOperationIdempotency(idempKey, "Unsupported destination chain");
+  return { success: false, error: `Unsupported destination chain "${destinationChain}".`, amount: amountUsdc };
+}
+
 // ─── Plan executor (multi-rail & idempotent) ──────────────────────────────────
 
 /**
@@ -865,5 +1025,6 @@ module.exports = {
   executeOnchainPayment,
   executeOfframp,
   moveFundsBetweenChains,
+  executeCrossChainWithdrawal,
   formatResults,
 };

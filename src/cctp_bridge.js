@@ -1612,6 +1612,189 @@ async function executeEvmCctpBurn({
   };
 }
 
+/**
+ * Executes a CCTP depositForBurn on Arc Mainnet targeting an EVM recipient address
+ * on any CCTP-supported destination chain (Base, Arbitrum, Ethereum, Polygon, Optimism, Avalanche).
+ *
+ * @param {object} params
+ * @param {Wallet} params.userWallet                 - User's ethers Wallet on Arc
+ * @param {number} params.amountUsdc                 - Amount to burn (USDC)
+ * @param {number} params.destinationDomain          - CCTP domain ID (e.g. Base=6, Arb=3, Eth=0, Poly=7, OP=2, Avax=1)
+ * @param {string} params.destinationRecipientAddress- Destination 0x address
+ * @param {number} [params.telegramId]
+ * @returns {Promise<{ success: boolean, txHash?: string, messageHash?: string, error?: string }>}
+ */
+async function executeArcToEvmCctpBurn({ userWallet, amountUsdc, destinationDomain, destinationRecipientAddress, telegramId }) {
+  if (!userWallet) throw new Error("userWallet required for Arc EVM CCTP burn");
+  if (!destinationRecipientAddress || !destinationRecipientAddress.startsWith("0x")) {
+    throw new Error("Valid 0x recipient address required for EVM CCTP burn");
+  }
+  if (destinationDomain === undefined || destinationDomain === null) {
+    throw new Error("destinationDomain required for EVM CCTP burn");
+  }
+
+  const { getNetworkConfig } = require("./network");
+  const arcConfig = getNetworkConfig();
+  const usdcAddress = arcConfig.usdcAddress;
+  const tokenMessengerAddress = ARC_CCTP_CONTRACTS.TOKEN_MESSENGER;
+
+  if (!usdcAddress) throw new Error("ARC_USDC_CONTRACT_ADDRESS is not configured");
+  if (!tokenMessengerAddress) throw new Error("ARC TokenMessenger address is not configured");
+
+  try {
+    const { parseUnits, Interface, keccak256, ZeroHash, zeroPadValue, getAddress } = require("ethers");
+    const cleanRecipient = getAddress(destinationRecipientAddress);
+    const mintRecipient = zeroPadValue(cleanRecipient, 32);
+
+    const ERC20_ABI = [
+      "function approve(address spender, uint256 amount) external returns (bool)",
+      "function allowance(address owner, address spender) external view returns (uint256)",
+    ];
+
+    const formattedAmount = Number(amountUsdc).toFixed(6);
+    const amountUnits = parseUnits(formattedAmount, 6);
+
+    // 1. Approve TokenMessenger
+    try {
+      const usdcContract = new Contract(usdcAddress, ERC20_ABI, userWallet);
+      const allowance = await usdcContract.allowance(userWallet.address, tokenMessengerAddress);
+      if (allowance < amountUnits) {
+        console.log(`[cctp_bridge] Approving TokenMessenger for ${amountUnits} USDC units on Arc...`);
+        const approveTx = await usdcContract.approve(tokenMessengerAddress, amountUnits);
+        await approveTx.wait(1);
+        console.log(`[cctp_bridge] TokenMessenger approved on Arc ✓`);
+      }
+    } catch (appErr) {
+      console.warn("[cctp_bridge:approve_note_evm]", appErr.message);
+    }
+
+    // 2. Call depositForBurn targeting destinationDomain
+    const tokenMessenger = new Contract(tokenMessengerAddress, TOKEN_MESSENGER_ABI, userWallet);
+    let tx;
+    try {
+      tx = await tokenMessenger["depositForBurn(uint256,uint32,bytes32,address,bytes32,uint256,uint32)"](
+        amountUnits,
+        destinationDomain,
+        mintRecipient,
+        usdcAddress,
+        ZeroHash,
+        0,
+        0
+      );
+    } catch (v2Err) {
+      console.warn("[cctp_bridge] V2 depositForBurn failed, falling back to 4-arg signature:", v2Err.message);
+      tx = await tokenMessenger["depositForBurn(uint256,uint32,bytes32,address)"](
+        amountUnits,
+        destinationDomain,
+        mintRecipient,
+        usdcAddress
+      );
+    }
+
+    let arcTxHash = tx.hash;
+    let rawCctpMessage = null;
+    let messageHash = null;
+
+    if (tx && tx.wait) {
+      const receipt = await Promise.race([
+        tx.wait(1),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Confirmation timeout waiting for Arc block inclusion")), 20000))
+      ]);
+      if (receipt && receipt.status === 0) {
+        throw new Error(`Arc transaction reverted on-chain (status 0). Your USDC was not deducted.`);
+      }
+      if (receipt && receipt.logs) {
+        const msgIface = new Interface(["event MessageSent(bytes message)"]);
+        for (const log of receipt.logs) {
+          try {
+            const parsed = msgIface.parseLog(log);
+            if (parsed && parsed.args && parsed.args.message) {
+              rawCctpMessage = parsed.args.message;
+              messageHash = keccak256(rawCctpMessage);
+              console.log(`[cctp_bridge] Extracted CCTP message from Arc receipt ✓ hash=${messageHash}`);
+              break;
+            }
+          } catch {}
+        }
+      }
+    }
+
+    // Record pending burn to DB
+    try {
+      db.recordCctpPendingBurn({
+        telegramId: telegramId || 0,
+        arcTxHash,
+        messageHex: rawCctpMessage,
+        messageHash,
+        amountUsdc,
+        recipientSolana: cleanRecipient,
+      });
+    } catch (dbErr) {
+      console.warn("[cctp_bridge:db_record_evm_burn]", dbErr.message);
+    }
+
+    return {
+      success: true,
+      txHash: arcTxHash,
+      messageHash,
+      rawCctpMessage,
+      amountUsdc,
+      destinationDomain,
+      recipient: cleanRecipient,
+    };
+  } catch (err) {
+    console.error("[cctp_bridge:executeArcToEvmCctpBurn:error]", err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Unified helper to withdraw Arc USDC to ANY CCTP destination chain.
+ * Dispatches to Solana handler if domain is SOLANA, otherwise to EVM handler.
+ */
+async function executeArcCrossChainWithdrawal({
+  userWallet,
+  amountUsdc,
+  destinationChain,
+  destinationAddress,
+  telegramId,
+  feePayerKey,
+}) {
+  const chainKey = String(destinationChain || "").toLowerCase();
+  if (chainKey === "solana") {
+    return executeArcToSolanaCctpBurn({
+      userWallet,
+      amountUsdc,
+      recipientSolanaAddress: destinationAddress,
+      autoCompleteOnSolana: true,
+      feePayerKey,
+      telegramId,
+    });
+  }
+
+  const domainMap = {
+    base: CCTP_DOMAINS.BASE,
+    arbitrum: CCTP_DOMAINS.ARBITRUM,
+    optimism: CCTP_DOMAINS.OPTIMISM,
+    polygon: CCTP_DOMAINS.POLYGON,
+    avalanche: CCTP_DOMAINS.AVALANCHE,
+    ethereum: CCTP_DOMAINS.ETHEREUM,
+  };
+
+  const domain = domainMap[chainKey];
+  if (domain === undefined) {
+    throw new Error(`Unsupported CCTP destination chain: ${destinationChain}`);
+  }
+
+  return executeArcToEvmCctpBurn({
+    userWallet,
+    amountUsdc,
+    destinationDomain: domain,
+    destinationRecipientAddress: destinationAddress,
+    telegramId,
+  });
+}
+
 module.exports = {
   CCTP_DOMAINS,
   ARC_CCTP_CONTRACTS,
@@ -1624,6 +1807,8 @@ module.exports = {
   autoBridgeSolanaToArc,
   completeInboundCctpTransferFlow,
   executeArcToSolanaCctpBurn,
+  executeArcToEvmCctpBurn,
+  executeArcCrossChainWithdrawal,
   completeCctpWithdrawalOnSolana,
   executeEvmCctpBurn,
   checkSolanaFeePayerBalance,

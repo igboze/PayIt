@@ -1768,13 +1768,17 @@ bot.action("action_send_menu", (ctx) => {
   const user = requireUser(ctx);
   if (!user) return;
   return ctx.reply(
-    `📤 Send Money\n──────────────────────────\nWhere are you sending to?`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("💵 Cash Out to Naira",      "action_withdraw_menu")],
-      [Markup.button.callback("👛 Send to a Wallet",       "action_sendout_menu")],
-      [Markup.button.callback("👥 Send to a Saved Contact","action_send_contact")],
-      [Markup.button.callback("🏠 Main Menu",              "main_menu")],
-    ])
+    `📤 <b>Send & Withdraw</b>\n──────────────────────────\nWhere are you sending to?`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("💵 Cash Out to Naira (Bank)", "action_withdraw_menu")],
+        [Markup.button.callback("🌐 Withdraw to External Chain (Solana, Base, BTC…)", "action_crosschain_withdraw")],
+        [Markup.button.callback("👛 Send on Arc (0x Address)", "action_sendout_menu")],
+        [Markup.button.callback("👥 Send to a Saved Contact", "action_send_contact")],
+        [Markup.button.callback("🏠 Main Menu", "main_menu")],
+      ]),
+    }
   );
 });
 
