@@ -24,6 +24,8 @@ async function getFxRates() {
   return rates?.rates?.[chain] || {};
 }
 
+const SWAP_PROTOCOL_FEE_BPS = Number(process.env.SWAP_PROTOCOL_FEE_BPS ?? 25); // 0.25% protocol fee
+
 /**
  * Get quote for swapping tokenIn -> tokenOut (USDC <-> EURC).
  */
@@ -45,11 +47,16 @@ async function getSwapQuote(tokenIn, tokenOut, amountInMicro, privateKey = null)
     ...(apiKey ? { config: { apiKey } } : {}),
   });
 
-  const outAmount = quote?.estimatedOutput?.amount || quote?.estimatedOutput || "";
+  const rawOut = quote?.estimatedOutput?.amount || quote?.estimatedOutput || "";
+  const numOut = parseFloat(rawOut);
+  const feeAmount = !isNaN(numOut) && numOut > 0 ? numOut * (SWAP_PROTOCOL_FEE_BPS / 10000) : 0;
+  const outAmount = !isNaN(numOut) && numOut > 0 ? (numOut - feeAmount).toFixed(4) : rawOut;
+
   return {
     ...quote,
     amountOut: outAmount,
     destinationAmount: outAmount,
+    protocolFee: feeAmount.toFixed(4),
     tokenIn,
     tokenOut,
   };

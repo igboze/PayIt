@@ -576,6 +576,17 @@ async function moveFundsBetweenChains(userWallet, { direction, amountUsdc, teleg
   return { success: false, error: `Unknown direction "${direction}". Use "arc_to_solana" or "solana_to_arc".`, amount: amountUsdc };
 }
 
+const CROSSCHAIN_WITHDRAWAL_FEE_USDC = Number(process.env.CROSSCHAIN_WITHDRAWAL_FEE_USDC ?? 0.30);
+const PAYROLL_PER_PAYEE_FEE_USDC = Number(process.env.PAYROLL_PER_PAYEE_FEE_USDC ?? 0.10);
+
+function getFeeRecipientAddress() {
+  return (
+    process.env.APP_FEE_RECIPIENT_ADDRESS ||
+    process.env.PAYIT_DEV_FEE_ADDRESS ||
+    "0x0077777d7EBA4688BDeF3E311b846F25870A19B9"
+  );
+}
+
 /**
  * Execute a cross-chain withdrawal of Arc USDC to ANY destination chain and address.
  *
@@ -636,6 +647,24 @@ async function executeCrossChainWithdrawal(userWallet, {
     };
   }
 
+  // Calculate protocol bridge fee (e.g. $0.30 flat)
+  const platformFee = Number(amountUsdc) > CROSSCHAIN_WITHDRAWAL_FEE_USDC
+    ? CROSSCHAIN_WITHDRAWAL_FEE_USDC
+    : 0;
+  const netAmountUsdc = Number((Number(amountUsdc) - platformFee).toFixed(6));
+
+  // Route platform fee to fee recipient address on Arc if configured
+  const feeRecipient = getFeeRecipientAddress();
+  if (platformFee > 0 && feeRecipient && walletLib.isValidAddress(feeRecipient) && userWallet.address.toLowerCase() !== feeRecipient.toLowerCase()) {
+    try {
+      const feeMicro = walletLib.parseToMicro(platformFee.toFixed(6));
+      await walletLib.sendSponsoredOrDirectTransaction(userWallet, feeRecipient, feeMicro);
+      console.log(`[executor] Collected $${platformFee} crosschain fee on Arc -> ${feeRecipient}`);
+    } catch (feeErr) {
+      console.warn("[executor:withdrawal_fee_note]", feeErr.message);
+    }
+  }
+
   const CCTP_CHAINS = new Set(["solana", "base", "arbitrum", "optimism", "polygon", "avalanche", "ethereum"]);
 
   // ── Tier 1: Direct CCTP Withdrawal ──────────────────────────────────────────
@@ -644,7 +673,7 @@ async function executeCrossChainWithdrawal(userWallet, {
     try {
       const result = await cctpBridge.executeArcCrossChainWithdrawal({
         userWallet,
-        amountUsdc: Number(amountUsdc),
+        amountUsdc: netAmountUsdc,
         destinationChain: chainKey,
         destinationAddress,
         telegramId,
