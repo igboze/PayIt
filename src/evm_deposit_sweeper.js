@@ -578,12 +578,12 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
       // Ensure signer has micro-gas to broadcast Relay approve and deposit transactions
       try {
         const gasBal = await provider.getBalance(signer.address);
-        if (gasBal < parseUnits("0.00005", 18)) {
+        if (gasBal < parseUnits("0.00008", 18)) {
           const relayerKey = options?.overridePrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
           if (relayerKey) {
             const relayer = new Wallet(relayerKey, provider);
             const isL2 = Number(chainId) === 8453 || Number(chainId) === 42161 || Number(chainId) === 137;
-            const dripAmount = isL2 ? parseUnits("0.00003", 18) : parseUnits("0.0003", 18);
+            const dripAmount = isL2 ? parseUnits("0.00008", 18) : parseUnits("0.0003", 18);
             const relayerBal = await provider.getBalance(relayer.address).catch(() => 0n);
             if (relayerBal >= dripAmount) {
               console.log(`[evm_sweeper:relay] Sponsoring micro-gas for ${signer.address} on ${chainName}...`);
@@ -957,21 +957,30 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
           if (usdcBal >= 0.5) {
             const sweepLockKey = `sweep_usdc_${cfg.chainId}_${address.toLowerCase()}_${usdcBalUnits.toString()}`;
             const lastSweep = _recentSweeps.get(sweepLockKey);
-            if (lastSweep && Date.now() - lastSweep < 3600000) {
+            if (!options?.force && lastSweep && Date.now() - lastSweep < 3600000) {
               // Already swept this exact balance recently, skip to prevent duplicate monitor spam
               continue;
             }
-            _recentSweeps.set(sweepLockKey, Date.now());
 
             console.log(`[evm_sweeper:scanner] Found $${usdcBal} USDC on ${cfg.key} for ${address}`);
-            const res = await processEvmDeposit({
-              chainId: cfg.chainId,
-              to: address,
-              token: "USDC",
-              amount: usdcBal,
-              txHash: `sweep_usdc_${cfg.chainId}_${address.toLowerCase()}_${usdcBalUnits.toString()}`,
-            }, bot, options);
-            results.push(res);
+            try {
+              const res = await processEvmDeposit({
+                chainId: cfg.chainId,
+                to: address,
+                token: "USDC",
+                amount: usdcBal,
+                txHash: `sweep_usdc_${cfg.chainId}_${address.toLowerCase()}_${usdcBalUnits.toString()}`,
+              }, bot, options);
+              if (res && res.success) {
+                _recentSweeps.set(sweepLockKey, Date.now());
+              } else {
+                _recentSweeps.delete(sweepLockKey);
+              }
+              results.push(res);
+            } catch (sweepErr) {
+              _recentSweeps.delete(sweepLockKey);
+              throw sweepErr;
+            }
           }
         }
 
@@ -982,21 +991,30 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
         if (nativeBalWei > minNativeWei) {
           const sweepLockKey = `sweep_native_${cfg.chainId}_${address.toLowerCase()}_${nativeBalWei.toString()}`;
           const lastSweep = _recentSweeps.get(sweepLockKey);
-          if (lastSweep && Date.now() - lastSweep < 3600000) {
+          if (!options?.force && lastSweep && Date.now() - lastSweep < 3600000) {
             // Already swept this exact balance recently, skip to prevent duplicate monitor spam
             continue;
           }
-          _recentSweeps.set(sweepLockKey, Date.now());
 
           console.log(`[evm_sweeper:scanner] Found ${formatUnits(nativeBalWei, 18)} native on ${cfg.key} for ${address}`);
-          const res = await processEvmDeposit({
-            chainId: cfg.chainId,
-            to: address,
-            token: dexCfg?.nativeSymbol || "ETH",
-            amount: formatUnits(nativeBalWei, 18),
-            txHash: `sweep_native_${cfg.chainId}_${address.toLowerCase()}_${nativeBalWei.toString()}`,
-          }, bot, options);
-          results.push(res);
+          try {
+            const res = await processEvmDeposit({
+              chainId: cfg.chainId,
+              to: address,
+              token: dexCfg?.nativeSymbol || "ETH",
+              amount: formatUnits(nativeBalWei, 18),
+              txHash: `sweep_native_${cfg.chainId}_${address.toLowerCase()}_${nativeBalWei.toString()}`,
+            }, bot, options);
+            if (res && res.success) {
+              _recentSweeps.set(sweepLockKey, Date.now());
+            } else {
+              _recentSweeps.delete(sweepLockKey);
+            }
+            results.push(res);
+          } catch (nativeErr) {
+            _recentSweeps.delete(sweepLockKey);
+            throw nativeErr;
+          }
         }
       } catch (chainErr) {
         console.warn(`[evm_sweeper:sweep_error] Chain ${cfg.name} scan/process error for ${address}:`, chainErr.message);
