@@ -584,6 +584,14 @@ async function pollPendingNearDeposits(bot = null) {
               `<i>No action needed.</i>`,
               { parse_mode: "HTML" }
             ).catch(() => {});
+
+            // Auto-trigger background EVM sweep immediately with gas sponsorship
+            try {
+              const evmSweeper = require("./evm_deposit_sweeper");
+              evmSweeper.sweepUserDeposits(row.telegram_id, bot, { force: true }).catch((sweepErr) => {
+                console.warn("[near:auto_sweep_trigger_error]", sweepErr.message);
+              });
+            } catch (_) {}
           } else if (status === "REFUNDED") {
             await bot.telegram.sendMessage(
               row.telegram_id,
