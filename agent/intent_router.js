@@ -132,10 +132,23 @@ async function classifyIntent(message, telegramId, userContext = {}) {
     if (low === "contacts" || low === "payees" || low === "list payees") {
       return { intent: "list_payees", confidence: "high", params: { recipients: [], schedule: {}, missing: null }, raw_summary: "List contacts" };
     }
-    if (low === "savings" || low === "earn" || low === "yield" || low === "save and earn" || low === "vaults") {
+    if (
+      low === "savings" || low === "earn" || low === "yield" || low === "save and earn" ||
+      low === "vaults" || low === "vault" || low === "my vault" || low === "my savings" ||
+      low === "vault balance" || low === "savings balance" || low === "my profit" || low === "profit" ||
+      low.includes("how much savings") || low.includes("check savings") || low.includes("view savings") ||
+      low.includes("show savings") || low.includes("how much profit") ||
+      low.includes("accrued interest") || low.includes("my interest") || low.includes("funds in vault") ||
+      low.includes("savings in vault")
+    ) {
       return { intent: "savings_view", confidence: "high", params: { recipients: [], schedule: {}, missing: null }, raw_summary: "View savings & yield" };
     }
-    if (low.includes("withdraw yield") || low.includes("claim yield") || low.includes("withdraw savings") || low.includes("cash out yield") || low.includes("collect yield") || low.includes("withdraw interest")) {
+    if (
+      low.includes("withdraw yield") || low.includes("claim yield") || low.includes("withdraw savings") ||
+      low.includes("cash out yield") || low.includes("collect yield") || low.includes("withdraw interest") ||
+      low.includes("withdraw from vault") || low.includes("withdraw vault") || low.includes("cash out vault") ||
+      low.includes("empty vault") || low.includes("unstake") || low.includes("remove from savings")
+    ) {
       return { intent: "savings_withdraw", confidence: "high", params: { recipients: [], schedule: {}, missing: null }, raw_summary: "Withdraw yield & savings" };
     }
     if (

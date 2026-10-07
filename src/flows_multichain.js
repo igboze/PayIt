@@ -314,12 +314,78 @@ function registerMoveFundsActions(bot) {
       if (!user) return;
       convState.setState(ctx.from.id, "move_funds_amount", { direction }, getContext(ctx.from.id));
       return ctx.reply(
-        `🔀 Move Funds: ${fromLabel} → ${toLabel}\n──────────────────────────\n` +
-        `How much USDC would you like to move?`,
-        Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+        `🔀 <b>Move Funds: ${fromLabel} → ${toLabel}</b>\n──────────────────────────\n` +
+        `How much USDC would you like to move?\n\n` +
+        `👉 <b>Tap a quick amount below</b>, or type your amount into the chat:\n` +
+        `💬 <i>Example: send <b>10</b> or <b>25</b></i>`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback("$5", "move_amt_5"),
+              Markup.button.callback("$10", "move_amt_10"),
+              Markup.button.callback("$25", "move_amt_25"),
+            ],
+            [
+              Markup.button.callback("$50", "move_amt_50"),
+              Markup.button.callback("$100", "move_amt_100"),
+              Markup.button.callback("💰 Max", "move_amt_max"),
+            ],
+            [Markup.button.callback("❌ Cancel", "main_menu")],
+          ])
+        }
       );
     });
   }
+
+  bot.action(/^move_amt_(\d+(?:\.\d+)?|max)$/, async (ctx) => {
+    ctx.answerCbQuery();
+    const userId = ctx.from.id;
+    const state = convState.getState(userId);
+    if (!state || state.type !== "move_funds_amount") {
+      return ctx.reply("Session expired. Start move funds again.", deps.backToMenu);
+    }
+    const user = requireUser(ctx);
+    if (!user) return;
+    const direction = state.data?.direction;
+    const param = ctx.match[1];
+
+    let available = 0;
+    try {
+      if (direction === "arc_to_solana") {
+        available = parseFloat(walletLib.formatMicro(await walletLib.getNativeBalanceMicro(getActiveWallet(user))));
+      } else {
+        const solAddress = getOrDeriveSolanaAddress(user);
+        if (solAddress) {
+          const bal = await multichain.getSplTokenBalance(solAddress);
+          if (bal && bal.uiAmount > 0) available = bal.uiAmount;
+        }
+      }
+    } catch (_) {}
+
+    let amount = param === "max" ? available : parseFloat(param);
+    if (isNaN(amount) || amount <= 0) return ctx.reply("Please enter or tap a valid amount.");
+    if (available < amount) {
+      return ctx.reply(
+        `Not enough USDC on the source chain. You have $${available.toFixed(2)} ` +
+        `${direction === "arc_to_solana" ? "on Arc" : "on Solana"}. Enter a smaller amount or tap cancel.`
+      );
+    }
+
+    convState.setState(userId, "move_funds_confirm", { direction, amountUsdc: amount }, state.context);
+    const dirLabel = direction === "arc_to_solana" ? "⚡ Arc → ☀️ Solana" : "☀️ Solana → ⚡ Arc";
+    return ctx.reply(
+      `🔀 <b>Confirm Move</b>\n──────────────────────────\n` +
+      `• <b>Route:</b> ${dirLabel}\n` +
+      `• <b>Amount:</b> $${amount.toFixed(2)} USDC\n\n` +
+      `<i>Uses Circle CCTP. Funds arrive in ~1–5 minutes. Network gas only — no Proxim fee.</i>\n\n` +
+      `💬 <i>Send your 4-digit PIN into the chat (e.g. 1234) to confirm:</i>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]),
+      }
+    );
+  });
 
   bot.action("action_move_status", async (ctx) => {
     ctx.answerCbQuery();
@@ -924,7 +990,7 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
       `🔀 <b>Confirm Move</b>\n──────────────────────────\n` +
       `Route: ${dirLabel}\nAmount: $${amount.toFixed(2)} USDC\n\n` +
       `<i>Uses Circle CCTP. Funds arrive in ~1–5 minutes. Network gas only — no Proxim fee.</i>\n\n` +
-      `Enter your PIN to confirm:`,
+      `💬 <i>Send your 4-digit PIN into the chat (e.g. 1234) to confirm:</i>`,
       {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]),
