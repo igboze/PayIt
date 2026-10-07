@@ -291,6 +291,7 @@ function ensureYieldPositionsSchema() {
   if (!cols.includes("fee_tx_hash")) db.exec("ALTER TABLE yield_positions ADD COLUMN fee_tx_hash TEXT");
   if (!cols.includes("account_type")) db.exec("ALTER TABLE yield_positions ADD COLUMN account_type TEXT DEFAULT 'personal'");
   if (!cols.includes("user_apy")) db.exec("ALTER TABLE yield_positions ADD COLUMN user_apy REAL DEFAULT 0");
+  try { db.exec("UPDATE yield_positions SET status = 'active' WHERE status IS NULL"); } catch {}
 }
 
 function ensureInvoicesSchema() {
@@ -872,17 +873,22 @@ function getTransactions(telegramId, limit = 10, accountType = null) {
 // ─── Yield positions ──────────────────────────────────────────────────────────
 
 function getOpenYieldPosition(telegramId, accountType = null) {
+  const numId = Math.round(Number(telegramId));
+  const rawId = telegramId;
+  const strId = String(numId);
+  const floatStrId = `${numId}.0`;
   if (accountType) {
     return db.prepare(
-      "SELECT * FROM yield_positions WHERE telegram_id = ? AND account_type = ? AND status = 'active' ORDER BY id DESC LIMIT 1"
-    ).get(telegramId, accountType) || null;
+      "SELECT * FROM yield_positions WHERE (telegram_id = ? OR telegram_id = ? OR telegram_id = ? OR telegram_id = ?) AND account_type = ? AND (status = 'active' OR status IS NULL) ORDER BY id DESC LIMIT 1"
+    ).get(numId, rawId, strId, floatStrId, accountType) || null;
   }
   return db.prepare(
-    "SELECT * FROM yield_positions WHERE telegram_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1"
-  ).get(telegramId) || null;
+    "SELECT * FROM yield_positions WHERE (telegram_id = ? OR telegram_id = ? OR telegram_id = ? OR telegram_id = ?) AND (status = 'active' OR status IS NULL) ORDER BY id DESC LIMIT 1"
+  ).get(numId, rawId, strId, floatStrId) || null;
 }
 
 function openYieldPosition(telegramId, amountUsdc, pool, options = {}) {
+  const normTgId = Math.round(Number(telegramId));
   const vaultAddress = pool.vaultAddress || pool.address || null;
   const isAutoEarn = options.isAutoEarn ? 1 : 0;
   const depositTxHash = options.depositTxHash || null;
@@ -896,10 +902,10 @@ function openYieldPosition(telegramId, amountUsdc, pool, options = {}) {
   if (cols.includes("user_apy")) {
     db.prepare(`
       INSERT INTO yield_positions (
-        telegram_id, amount_usdc, apy, user_apy, project, symbol, chain, vault_address, is_auto_earn, deposit_tx_hash, account_type
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        telegram_id, amount_usdc, apy, user_apy, project, symbol, chain, vault_address, is_auto_earn, deposit_tx_hash, account_type, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
     `).run(
-      telegramId,
+      normTgId,
       amountUsdc,
       apy,
       apy,
@@ -914,10 +920,10 @@ function openYieldPosition(telegramId, amountUsdc, pool, options = {}) {
   } else {
     db.prepare(`
       INSERT INTO yield_positions (
-        telegram_id, amount_usdc, apy, project, symbol, chain, vault_address, is_auto_earn, deposit_tx_hash, account_type
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        telegram_id, amount_usdc, apy, project, symbol, chain, vault_address, is_auto_earn, deposit_tx_hash, account_type, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
     `).run(
-      telegramId,
+      normTgId,
       amountUsdc,
       apy,
       project,
