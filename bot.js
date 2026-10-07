@@ -751,9 +751,15 @@ async function showBalance(ctx) {
     const eurcLine  = eurc > 0 ? `\n€${eurc.toFixed(2)} euros` : "";
 
     // Vault savings and accrued yield
-    const position = db.getOpenYieldPosition(user.telegram_id, context);
+    let position = db.getOpenYieldPosition(user.telegram_id, context);
+    if (!position) {
+      try { position = await savings.syncOnChainVaultPositions(user, context); } catch {}
+    }
     const otherContext = context === "business" ? "personal" : "business";
-    const otherPosition = !position ? db.getOpenYieldPosition(user.telegram_id, otherContext) : null;
+    let otherPosition = !position ? db.getOpenYieldPosition(user.telegram_id, otherContext) : null;
+    if (!position && !otherPosition) {
+      try { otherPosition = await savings.syncOnChainVaultPositions(user, otherContext); } catch {}
+    }
 
     let savingsSection = "";
     let effectiveTotalUsdc = totalUsdc;
@@ -1460,8 +1466,14 @@ async function showMyYield(ctx) {
   let position = db.getOpenYieldPosition(ctx.from.id, context);
   let effectiveContext = context;
   if (!position) {
+    try { position = await savings.syncOnChainVaultPositions(user, context); } catch {}
+  }
+  if (!position) {
     const otherContext = context === "business" ? "personal" : "business";
-    const otherPos = db.getOpenYieldPosition(ctx.from.id, otherContext);
+    let otherPos = db.getOpenYieldPosition(ctx.from.id, otherContext);
+    if (!otherPos) {
+      try { otherPos = await savings.syncOnChainVaultPositions(user, otherContext); } catch {}
+    }
     if (otherPos) {
       position = otherPos;
       effectiveContext = otherContext;
@@ -4450,6 +4462,10 @@ bot.command(["user", "lookup"], async (ctx) => {
     let positions = [];
     try {
       positions = db.db.prepare("SELECT * FROM yield_positions WHERE telegram_id = ? OR telegram_id = ? ORDER BY id DESC LIMIT 10").all(tgId, targetUser.telegram_id);
+      if (positions.length === 0) {
+        const synced = await savings.syncOnChainVaultPositions(targetUser, targetUser.active_context || "personal");
+        if (synced) positions = [synced];
+      }
     } catch {}
 
     let txs = [];
