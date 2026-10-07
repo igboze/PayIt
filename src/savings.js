@@ -300,7 +300,17 @@ async function withdrawFromVault(privateKey, vaultAddress, amountUsdc) {
     const amountMicro = walletLib.parseToMicro(amountUsdc.toString());
     const vaultContract = new Contract(vaultAddress, ERC4626_ABI, userWallet);
 
-    const tx = await vaultContract.withdraw(amountMicro, userWallet.address, userWallet.address);
+    let tx;
+    try {
+      tx = await vaultContract.withdraw(amountMicro, userWallet.address, userWallet.address);
+    } catch (withdrawErr) {
+      const shares = await vaultContract.balanceOf(userWallet.address);
+      if (shares > 0) {
+        tx = await vaultContract.redeem(shares, userWallet.address, userWallet.address);
+      } else {
+        throw withdrawErr;
+      }
+    }
     const receipt = await tx.wait();
     return {
       success: true,
@@ -414,6 +424,69 @@ async function withdrawFromVaultWithFee({ userWallet, position, feeRecipientAddr
   };
 }
 
+/**
+ * Automatically sync on-chain ERC-4626 / EarnKit vault balances for a user.
+ * If the user holds vault shares on-chain but the database has no active position,
+ * this restores and inserts the active position into the database.
+ */
+async function syncOnChainVaultPositions(user, context = "personal") {
+  if (!user) return null;
+  const address = context === "business" ? user.business_deposit_address : user.deposit_address;
+  if (!address || !walletLib.isValidAddress(address)) return null;
+
+  const existing = db.getOpenYieldPosition(user.telegram_id, context);
+  if (existing) return existing;
+
+  const net = getNetworkConfig();
+  const provider = new JsonRpcProvider(net.rpcUrl, net.chainId, { staticNetwork: true });
+
+  let pools = [];
+  try {
+    pools = await getYieldPools();
+  } catch {}
+
+  const candidateVaults = [
+    ...pools,
+    { vaultAddress: "0x7610094b846657dcf166d59e42973db52c7015f9", project: "Bitwise Premium RWA USDC", symbol: "USDC", userApy: 3.92, apy: 3.92 },
+    { vaultAddress: "0xa8fd51b78370c7ca948566d7ba97d252bc325124", project: "Steakhouse Prime USDC", symbol: "USDC", userApy: 1.20, apy: 1.20 }
+  ];
+
+  const seen = new Set();
+  for (const pool of candidateVaults) {
+    const vAddr = pool.vaultAddress || pool.address;
+    if (!vAddr || seen.has(vAddr.toLowerCase())) continue;
+    seen.add(vAddr.toLowerCase());
+
+    try {
+      const vContract = new Contract(vAddr, ERC4626_ABI, provider);
+      const shares = await vContract.balanceOf(address);
+      if (shares > 0) {
+        let assetsUsdc = 0;
+        try {
+          const previewAssets = await vContract.previewRedeem(shares);
+          assetsUsdc = Number(previewAssets) / 1e6;
+        } catch {
+          assetsUsdc = parseFloat(walletLib.formatMicro(shares));
+        }
+
+        if (assetsUsdc > 0.01) {
+          console.log(`[savings:sync] Restoring on-chain vault position for TG ${user.telegram_id}: $${assetsUsdc.toFixed(2)} in ${pool.project || vAddr}`);
+          openYieldPosition(user.telegram_id, parseFloat(assetsUsdc.toFixed(4)), pool, {
+            vaultAddress: vAddr,
+            isAutoEarn: false,
+            accountType: context,
+          });
+          return db.getOpenYieldPosition(user.telegram_id, context);
+        }
+      }
+    } catch (err) {
+      // ignore
+    }
+  }
+
+  return null;
+}
+
 module.exports = {
   getEarnKit,
   getYieldPools,
@@ -425,5 +498,6 @@ module.exports = {
   depositIntoVault,
   withdrawFromVault,
   withdrawFromVaultWithFee,
+  syncOnChainVaultPositions,
   PAYIT_FEE_FRACTION,
 };
