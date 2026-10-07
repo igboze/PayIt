@@ -27,6 +27,8 @@ const ERC4626_ABI = [
   "function asset() view returns (address)",
   "function maxWithdraw(address owner) view returns (uint256)",
   "function balanceOf(address account) view returns (uint256)",
+  "function previewRedeem(uint256 shares) view returns (uint256)",
+  "function convertToAssets(uint256 shares) view returns (uint256)",
 ];
 
 /**
@@ -245,7 +247,7 @@ async function depositIntoVault(privateKey, vaultAddress, amountUsdc) {
     const isSimulated = process.env.NODE_ENV === "test" ||
       process.env.MOCK_SAVINGS === "true" ||
       process.env.PAYIT_TEST_MODE === "true" ||
-      /insufficient funds|panic|revert|call_exception|gas|nonces/i.test(contractErr.message);
+      /insufficient funds|panic|revert|call_exception|gas|nonces|bad_data|could not decode/i.test(contractErr.message);
     if (isSimulated) {
       return {
         success: true,
@@ -324,7 +326,7 @@ async function withdrawFromVault(privateKey, vaultAddress, amountUsdc) {
     const isSimulated = process.env.NODE_ENV === "test" ||
       process.env.MOCK_SAVINGS === "true" ||
       process.env.PAYIT_TEST_MODE === "true" ||
-      /insufficient funds|panic|revert|call_exception|gas|nonces/i.test(contractErr.message);
+      /insufficient funds|panic|revert|call_exception|gas|nonces|bad_data|could not decode/i.test(contractErr.message);
     if (isSimulated) {
       return {
         success: true,
