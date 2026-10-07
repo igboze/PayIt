@@ -383,6 +383,12 @@ ensureSettlementRunsSchema();
 
 // ─── User helpers ─────────────────────────────────────────────────────────────
 
+function findUserByUsername(username) {
+  if (!username) return null;
+  const clean = String(username).replace(/^@/, "").trim().toLowerCase();
+  return db.prepare("SELECT * FROM users WHERE LOWER(username) = ?").get(clean) || null;
+}
+
 function getUser(telegramId) {
   return db.prepare("SELECT * FROM users WHERE telegram_id = ?").get(telegramId) || null;
 }
@@ -1903,6 +1909,7 @@ module.exports = {
   db,
   resolveDbPath,
   getUser,
+  findUserByUsername,
   getAllUsers,
   getUserByDepositAddress,
   getSystemDecryptedPrivateKey,
