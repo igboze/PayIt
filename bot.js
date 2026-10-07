@@ -4422,6 +4422,56 @@ bot.command("scan_volume", async (ctx) => {
   }
 });
 
+bot.command(["user", "lookup"], async (ctx) => {
+  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return ctx.reply("Not authorised.");
+  const textParts = ctx.message.text.trim().split(/\s+/);
+  const arg = (textParts[1] || "").trim();
+  if (!arg) {
+    return ctx.reply("Usage: /user <username or telegram_id>\nExample: /user @Ajemark");
+  }
+  let targetUser = null;
+  if (/^\d+$/.test(arg)) {
+    targetUser = db.getUser(Number(arg));
+  }
+  if (!targetUser) {
+    targetUser = db.findUserByUsername(arg);
+  }
+  if (!targetUser) {
+    return ctx.reply(`User "${arg}" not found in database.`);
+  }
+
+  const persUnified = await chains.getUnifiedBalance(targetUser, "personal");
+  const bizUnified = targetUser.business_deposit_address
+    ? await chains.getUnifiedBalance(targetUser, "business")
+    : null;
+
+  const positions = db.db.prepare("SELECT * FROM yield_positions WHERE telegram_id = ? ORDER BY id DESC LIMIT 5").all(targetUser.telegram_id);
+  const txs = db.db.prepare("SELECT * FROM transactions WHERE telegram_id = ? ORDER BY id DESC LIMIT 5").all(targetUser.telegram_id);
+
+  const yieldLines = positions.length
+    ? positions.map(p => `• #${p.id} [${p.status}] $${p.amount_usdc} USDC (${p.account_type || 'personal'}${p.is_auto_earn ? ', auto-earn' : ''}) APY: ${p.apy}%`).join("\n")
+    : "None";
+
+  const txLines = txs.length
+    ? txs.map(t => `• #${t.id} ${t.type} [${t.status}] $${t.amount_micro ? (Number(t.amount_micro) / 1e18).toFixed(2) : '0.00'} USDC (${t.account_type || 'personal'})`).join("\n")
+    : "None";
+
+  return ctx.reply(
+    `👤 <b>User Inspection: @${targetUser.username || "no_username"}</b>\n` +
+    `──────────────────────────\n` +
+    `• <b>Telegram ID:</b> <code>${targetUser.telegram_id}</code>\n` +
+    `• <b>Active Context:</b> ${targetUser.active_context || 'personal'}\n` +
+    `• <b>Auto-Earn Enabled:</b> ${targetUser.auto_earn_enabled ? 'Yes (1)' : 'No (0)'}\n\n` +
+    `👤 <b>Personal Wallet:</b>\n` +
+    `• Arc: <code>${targetUser.deposit_address}</code> ($${persUnified.arc.usdc.toFixed(2)})\n` +
+    `• Solana: <code>${persUnified.solanaAddresses[0] || 'none'}</code> ($${persUnified.solana.usdc.toFixed(2)})\n` +
+    (bizUnified ? `\n💼 <b>Business Wallet:</b>\n• Arc: <code>${targetUser.business_deposit_address}</code> ($${bizUnified.arc.usdc.toFixed(2)})\n• Solana: $${bizUnified.solana.usdc.toFixed(2)}\n` : '') +
+    `\n📈 <b>Yield Positions:</b>\n${yieldLines}\n` +
+    `\n📋 <b>Recent Transactions:</b>\n${txLines}`,
+    { parse_mode: "HTML" }
+  );
+});
+
 bot.action("admin_volume_csv", async (ctx) => {
   ctx.answerCbQuery();
   if (!ADMIN_IDS.includes(String(ctx.from?.id))) return ctx.reply("Not authorised.");
