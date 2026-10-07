@@ -2707,7 +2707,7 @@ bot.action(/^yield_amt_(\d+(?:\.\d+)?|max)$/, async (ctx) => {
   );
 });
 
-bot.action("yield_withdraw_start", (ctx) => {
+bot.action("yield_withdraw_start", async (ctx) => {
   ctx.answerCbQuery();
   const user     = requireUser(ctx);
   if (!user) return;
@@ -2715,8 +2715,14 @@ bot.action("yield_withdraw_start", (ctx) => {
   let position = db.getOpenYieldPosition(ctx.from.id, context);
   let effectiveContext = context;
   if (!position) {
+    try { position = await savings.syncOnChainVaultPositions(user, context); } catch {}
+  }
+  if (!position) {
     const otherContext = context === "business" ? "personal" : "business";
-    const otherPos = db.getOpenYieldPosition(ctx.from.id, otherContext);
+    let otherPos = db.getOpenYieldPosition(ctx.from.id, otherContext);
+    if (!otherPos) {
+      try { otherPos = await savings.syncOnChainVaultPositions(user, otherContext); } catch {}
+    }
     if (otherPos) {
       position = otherPos;
       effectiveContext = otherContext;
