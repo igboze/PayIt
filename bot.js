@@ -4461,11 +4461,15 @@ bot.command(["user", "lookup"], async (ctx) => {
     const tgId = Math.round(Number(targetUser.telegram_id));
     let positions = [];
     try {
-      positions = db.db.prepare("SELECT * FROM yield_positions WHERE telegram_id = ? OR telegram_id = ? ORDER BY id DESC LIMIT 10").all(tgId, targetUser.telegram_id);
-      if (positions.length === 0) {
-        const synced = await savings.syncOnChainVaultPositions(targetUser, targetUser.active_context || "personal");
-        if (synced) positions = [synced];
+      try {
+        await savings.syncOnChainVaultPositions(targetUser, "personal");
+        if (targetUser.business_deposit_address) {
+          await savings.syncOnChainVaultPositions(targetUser, "business");
+        }
+      } catch (syncErr) {
+        console.warn("[user:inspect] vault sync error:", syncErr.message);
       }
+      positions = db.db.prepare("SELECT * FROM yield_positions WHERE telegram_id = ? OR telegram_id = ? ORDER BY id DESC LIMIT 10").all(tgId, targetUser.telegram_id);
     } catch {}
 
     let txs = [];
