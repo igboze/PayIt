@@ -4424,59 +4424,80 @@ bot.command("scan_volume", async (ctx) => {
 
 bot.command(["user", "lookup"], async (ctx) => {
   if (!ADMIN_IDS.includes(String(ctx.from?.id))) return ctx.reply("Not authorised.");
-  const textParts = ctx.message.text.trim().split(/\s+/);
-  const arg = (textParts[1] || "").trim();
-  if (!arg) {
-    return ctx.reply("Usage: /user <username or telegram_id>\nExample: /user @Ajemark");
+  try {
+    const textParts = ctx.message.text.trim().split(/\s+/);
+    const arg = (textParts[1] || "").trim();
+    if (!arg) {
+      return ctx.reply("Usage: /user <username or telegram_id>\nExample: /user @Ajemark");
+    }
+    let targetUser = null;
+    if (/^\d+$/.test(arg)) {
+      targetUser = db.getUser(Number(arg));
+    }
+    if (!targetUser) {
+      targetUser = db.findUserByUsername(arg);
+    }
+    if (!targetUser) {
+      return ctx.reply(`User "${arg}" not found in database.`);
+    }
+
+    const persUnified = await chains.getUnifiedBalance(targetUser, "personal");
+    const bizUnified = targetUser.business_deposit_address
+      ? await chains.getUnifiedBalance(targetUser, "business")
+      : null;
+
+    const tgId = Math.round(Number(targetUser.telegram_id));
+    let positions = [];
+    try {
+      positions = db.db.prepare("SELECT * FROM yield_positions WHERE telegram_id = ? OR telegram_id = ? ORDER BY id DESC LIMIT 10").all(tgId, targetUser.telegram_id);
+    } catch {}
+
+    let txs = [];
+    try {
+      txs = db.db.prepare("SELECT * FROM transactions WHERE telegram_id = ? OR telegram_id = ? OR telegram_id = ? ORDER BY id DESC LIMIT 25").all(tgId, targetUser.telegram_id, String(tgId));
+    } catch {}
+
+    let cctpBurns = [];
+    try {
+      cctpBurns = db.db.prepare("SELECT * FROM cctp_pending_burns WHERE telegram_id = ? OR telegram_id = ? ORDER BY id DESC LIMIT 5").all(tgId, targetUser.telegram_id);
+    } catch {}
+
+    const yieldLines = positions.length
+      ? positions.map(p => `• #${p.id} [${p.status}] $${p.amount_usdc} USDC (${p.account_type || 'personal'}${p.is_auto_earn ? ', auto-earn' : ''}) APY: ${p.apy}%`).join("\n")
+      : "None";
+
+    const txLines = txs.length
+      ? txs.map(t => {
+          const hashShort = t.tx_hash ? (t.tx_hash.length > 20 ? `${t.tx_hash.slice(0, 10)}...${t.tx_hash.slice(-8)}` : t.tx_hash) : null;
+          return `• #${t.id} ${t.type} [${t.status}] $${t.amount_micro ? (Number(t.amount_micro) / 1e18).toFixed(2) : '0.00'} USDC (${t.created_at || 'n/a'})${hashShort ? `\n  hash: <code>${hashShort}</code>` : ''}`;
+        }).join("\n")
+      : "None";
+
+    const burnLines = cctpBurns.length
+      ? cctpBurns.map(b => `• #${b.id} [${b.status}] $${b.amount_usdc} USDC (arc_tx: <code>${(b.arc_tx_hash || 'none').slice(0, 10)}...</code>, sol_tx: <code>${(b.solana_tx_sig || 'none').slice(0, 10)}...</code>)`).join("\n")
+      : "None";
+
+    const cleanUsername = String(targetUser.username || "no_username").replace(/[<>&]/g, "");
+
+    return await ctx.reply(
+      `👤 <b>User Inspection: @${cleanUsername}</b>\n` +
+      `──────────────────────────\n` +
+      `• <b>Telegram ID:</b> <code>${tgId}</code>\n` +
+      `• <b>Active Context:</b> ${targetUser.active_context || 'personal'}\n` +
+      `• <b>Auto-Earn Enabled:</b> ${targetUser.auto_earn_enabled ? 'Yes (1)' : 'No (0)'}\n\n` +
+      `👤 <b>Personal Wallet:</b>\n` +
+      `• Arc: <code>${targetUser.deposit_address}</code> ($${persUnified.arc.usdc.toFixed(2)})\n` +
+      `• Solana: <code>${persUnified.solanaAddresses[0] || 'none'}</code> ($${persUnified.solana.usdc.toFixed(2)})\n` +
+      (bizUnified ? `\n💼 <b>Business Wallet:</b>\n• Arc: <code>${targetUser.business_deposit_address}</code> ($${bizUnified.arc.usdc.toFixed(2)})\n• Solana: $${bizUnified.solana.usdc.toFixed(2)}\n` : '') +
+      `\n📈 <b>Yield Positions:</b>\n${yieldLines}\n` +
+      `\n📋 <b>Recent Transactions:</b>\n${txLines}\n` +
+      `\n🌉 <b>CCTP Burns (Arc→Solana):</b>\n${burnLines}`,
+      { parse_mode: "HTML" }
+    );
+  } catch (err) {
+    console.error("[admin:user_lookup]", err);
+    return ctx.reply(`❌ Inspection error: ${err.message}`);
   }
-  let targetUser = null;
-  if (/^\d+$/.test(arg)) {
-    targetUser = db.getUser(Number(arg));
-  }
-  if (!targetUser) {
-    targetUser = db.findUserByUsername(arg);
-  }
-  if (!targetUser) {
-    return ctx.reply(`User "${arg}" not found in database.`);
-  }
-
-  const persUnified = await chains.getUnifiedBalance(targetUser, "personal");
-  const bizUnified = targetUser.business_deposit_address
-    ? await chains.getUnifiedBalance(targetUser, "business")
-    : null;
-
-  const tgId = Math.round(Number(targetUser.telegram_id));
-  const positions = db.db.prepare("SELECT * FROM yield_positions WHERE telegram_id = ? OR telegram_id = ? ORDER BY id DESC LIMIT 10").all(tgId, targetUser.telegram_id);
-  const txs = db.db.prepare("SELECT * FROM transactions WHERE telegram_id = ? OR telegram_id = ? OR telegram_id = ? ORDER BY id DESC LIMIT 20").all(tgId, targetUser.telegram_id, String(tgId));
-  const cctpBurns = db.db.prepare("SELECT * FROM cctp_burns WHERE telegram_id = ? OR telegram_id = ? ORDER BY id DESC LIMIT 5").all(tgId, targetUser.telegram_id);
-
-  const yieldLines = positions.length
-    ? positions.map(p => `• #${p.id} [${p.status}] $${p.amount_usdc} USDC (${p.account_type || 'personal'}${p.is_auto_earn ? ', auto-earn' : ''}) APY: ${p.apy}%`).join("\n")
-    : "None";
-
-  const txLines = txs.length
-    ? txs.map(t => `• #${t.id} ${t.type} [${t.status}] $${t.amount_micro ? (Number(t.amount_micro) / 1e18).toFixed(2) : '0.00'} USDC (${t.created_at || 'n/a'})${t.tx_hash ? `\n  hash: <code>${t.tx_hash}</code>` : ''}`).join("\n")
-    : "None";
-
-  const burnLines = cctpBurns.length
-    ? cctpBurns.map(b => `• #${b.id} [${b.status}] $${b.amount_usdc} USDC (arc_tx: <code>${b.arc_burn_tx_hash || 'none'}</code>, sol_tx: <code>${b.solana_tx_signature || 'none'}</code>)`).join("\n")
-    : "None";
-
-  return ctx.reply(
-    `👤 <b>User Inspection: @${targetUser.username || "no_username"}</b>\n` +
-    `──────────────────────────\n` +
-    `• <b>Telegram ID:</b> <code>${tgId}</code>\n` +
-    `• <b>Active Context:</b> ${targetUser.active_context || 'personal'}\n` +
-    `• <b>Auto-Earn Enabled:</b> ${targetUser.auto_earn_enabled ? 'Yes (1)' : 'No (0)'}\n\n` +
-    `👤 <b>Personal Wallet:</b>\n` +
-    `• Arc: <code>${targetUser.deposit_address}</code> ($${persUnified.arc.usdc.toFixed(2)})\n` +
-    `• Solana: <code>${persUnified.solanaAddresses[0] || 'none'}</code> ($${persUnified.solana.usdc.toFixed(2)})\n` +
-    (bizUnified ? `\n💼 <b>Business Wallet:</b>\n• Arc: <code>${targetUser.business_deposit_address}</code> ($${bizUnified.arc.usdc.toFixed(2)})\n• Solana: $${bizUnified.solana.usdc.toFixed(2)}\n` : '') +
-    `\n📈 <b>Yield Positions:</b>\n${yieldLines}\n` +
-    `\n📋 <b>Recent Transactions:</b>\n${txLines}\n` +
-    `\n🌉 <b>CCTP Burns (Arc→Solana):</b>\n${burnLines}`,
-    { parse_mode: "HTML" }
-  );
 });
 
 bot.action("admin_volume_csv", async (ctx) => {
