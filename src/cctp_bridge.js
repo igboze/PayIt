@@ -223,6 +223,15 @@ const MESSAGE_TRANSMITTER_ABI = [
  * @returns {Promise<{ message: string, messageHash: string, status?: string }>}
  */
 async function fetchCctpMessage(sourceDomain, txHash) {
+  // Graceful argument swap if caller passed (txHash, sourceDomain)
+  if (
+    (typeof sourceDomain === "string" && sourceDomain.startsWith("0x")) &&
+    (typeof txHash === "number" || (typeof txHash === "string" && !isNaN(txHash)))
+  ) {
+    const tmp = sourceDomain;
+    sourceDomain = txHash;
+    txHash = tmp;
+  }
   if (!txHash) throw new Error("Transaction hash required to fetch CCTP message");
 
   const url = `${CIRCLE_IRIS_API_V2}/messages/${sourceDomain}?transactionHash=${encodeURIComponent(txHash)}`;
@@ -240,6 +249,7 @@ async function fetchCctpMessage(sourceDomain, txHash) {
           message,
           messageHash,
           status: msgObj.status || "pending",
+          attestation: msgObj.attestation || null,
         };
       }
     }
@@ -1882,7 +1892,7 @@ async function completeCctpWithdrawalOnEvm({
   if (!msgDetails.message) {
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
-        const fetched = await fetchCctpMessage(arcTxHash, CCTP_DOMAINS.ARC);
+        const fetched = await fetchCctpMessage(CCTP_DOMAINS.ARC, arcTxHash);
         if (fetched?.message) {
           msgDetails = fetched;
           break;
@@ -1900,16 +1910,18 @@ async function completeCctpWithdrawalOnEvm({
 
   // Step 2: Poll Circle for attestation
   console.log(`[cctp_bridge:evm_complete] Polling Circle for attestation on ${arcTxHash}...`);
-  let attestation;
-  try {
-    ({ attestation } = await pollCctpAttestation(msgDetails.messageHash, maxAttempts, intervalMs, {
-      txHash: arcTxHash,
-      sourceDomain: CCTP_DOMAINS.ARC,
-    }));
-  } catch (attErr) {
-    const errMsg = `Attestation polling failed for ${arcTxHash}: ${attErr.message}`;
-    try { db.failCctpPendingBurn(arcTxHash, errMsg); } catch {}
-    throw new Error(errMsg);
+  let attestation = msgDetails.attestation;
+  if (!attestation) {
+    try {
+      ({ attestation } = await pollCctpAttestation(msgDetails.messageHash, maxAttempts, intervalMs, {
+        txHash: arcTxHash,
+        sourceDomain: CCTP_DOMAINS.ARC,
+      }));
+    } catch (attErr) {
+      const errMsg = `Attestation polling failed for ${arcTxHash}: ${attErr.message}`;
+      try { db.failCctpPendingBurn(arcTxHash, errMsg); } catch {}
+      throw new Error(errMsg);
+    }
   }
   console.log(`[cctp_bridge:evm_complete] Attestation received ✓ for ${arcTxHash}`);
 
