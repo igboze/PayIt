@@ -194,3 +194,72 @@ test("registerCrossChainWithdrawActions: quick amount button advances to confirm
   }
 });
 
+test("executeCrossChainWithdrawal: passes netAmountUsdc to intent burn and collects fee only after burn", async () => {
+  const executor = require("../agent/executor");
+  const cctpBridge = require("../src/cctp_bridge");
+
+  const originalGetNativeBalance = walletLib.getNativeBalanceMicro;
+  const originalSendSponsored = walletLib.sendSponsoredOrDirectTransaction;
+  const originalBurn = cctpBridge.executeArcToEvmCctpBurn;
+
+  let feeCollected = false;
+  let feeCollectedAmount = null;
+  let burnedAmount = null;
+  let burnSucceeded = true;
+
+  walletLib.getNativeBalanceMicro = async () => walletLib.parseToMicro("50");
+  walletLib.sendSponsoredOrDirectTransaction = async (wallet, recipient, micro) => {
+    feeCollected = true;
+    feeCollectedAmount = micro;
+    return { txHash: "0xfeefee", sponsored: false };
+  };
+
+  cctpBridge.executeArcToEvmCctpBurn = async ({ amountUsdc }) => {
+    burnedAmount = amountUsdc;
+    // Check that fee has NOT been collected before burn is initiated
+    assert.equal(feeCollected, false, "Fee must NOT be collected before the burn completes");
+    if (!burnSucceeded) {
+      return { success: false, error: "Simulation burn failure" };
+    }
+    return { success: true, txHash: "0xburn123" };
+  };
+
+  try {
+    const dummyWallet = { address: "0x1111111111111111111111111111111111111111" };
+
+    // Case 1: Successful Intent withdrawal (e.g. $10 to NEAR)
+    // Fee is $0.30 flat, so netAmountUsdc is $9.70
+    const res = await executor.executeCrossChainWithdrawal(dummyWallet, {
+      destinationChain: "near",
+      destinationAddress: "nackam.near",
+      amountUsdc: 10,
+      telegramId: 12345,
+    });
+
+    assert.equal(res.success, true);
+    assert.equal(burnedAmount, 9.70, "Burn amount must be net of platform fee (10 - 0.30 = 9.70)");
+    assert.equal(feeCollected, true, "Fee should be collected after successful burn");
+    assert.equal(feeCollectedAmount, walletLib.parseToMicro("0.30"));
+
+    // Case 2: Failed burn must NOT collect platform fee
+    feeCollected = false;
+    burnedAmount = null;
+    burnSucceeded = false;
+
+    const failRes = await executor.executeCrossChainWithdrawal(dummyWallet, {
+      destinationChain: "near",
+      destinationAddress: "nackam.near",
+      amountUsdc: 15,
+      telegramId: 54321,
+    });
+
+    assert.equal(failRes.success, false);
+    assert.equal(feeCollected, false, "Fee must NOT be collected if burn failed");
+  } finally {
+    walletLib.getNativeBalanceMicro = originalGetNativeBalance;
+    walletLib.sendSponsoredOrDirectTransaction = originalSendSponsored;
+    cctpBridge.executeArcToEvmCctpBurn = originalBurn;
+  }
+});
+
+

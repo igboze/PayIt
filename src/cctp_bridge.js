@@ -1105,42 +1105,32 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
     const amountUnits = parseUnits(formattedAmount, 6);
 
     // 1. Approve TokenMessenger if needed
-    try {
-      const usdcContract = new Contract(usdcAddress, ERC20_ABI, userWallet);
-      const allowance = await usdcContract.allowance(userWallet.address, tokenMessengerAddress);
-      if (allowance < amountUnits) {
-        console.log(`[cctp_bridge] Approving TokenMessenger for ${amountUnits} USDC units...`);
-        const approveTx = await usdcContract.approve(tokenMessengerAddress, amountUnits);
-        await approveTx.wait(1);
-        console.log(`[cctp_bridge] TokenMessenger approved ✓`);
+    const usdcContract = new Contract(usdcAddress, ERC20_ABI, userWallet);
+    const currentAllowance = await usdcContract.allowance(userWallet.address, tokenMessengerAddress);
+    if (currentAllowance < amountUnits) {
+      console.log(`[cctp_bridge] Approving TokenMessenger for USDC units on Arc...`);
+      const { MaxUint256 } = require("ethers");
+      const approveTx = await usdcContract.approve(tokenMessengerAddress, MaxUint256);
+      await approveTx.wait(1);
+      console.log(`[cctp_bridge] TokenMessenger approved on Arc ✓`);
+      const postAllowance = await usdcContract.allowance(userWallet.address, tokenMessengerAddress);
+      if (postAllowance < amountUnits) {
+        throw new Error(`TokenMessenger USDC allowance on Arc remains insufficient (${postAllowance} < ${amountUnits})`);
       }
-    } catch (appErr) {
-      console.warn("[cctp_bridge:approve_note]", appErr.message);
     }
 
     // 2. Call depositForBurn targeting Solana (Domain 5)
-    // Arc TokenMessenger uses CCTP V2 (7 parameters: amount, destinationDomain, mintRecipient, burnToken, destinationCaller, maxFee, minFinalityThreshold)
+    // Arc TokenMessenger implements CCTP V2 (7 parameters)
     const tokenMessenger = new Contract(tokenMessengerAddress, TOKEN_MESSENGER_ABI, userWallet);
-    let tx;
-    try {
-      tx = await tokenMessenger["depositForBurn(uint256,uint32,bytes32,address,bytes32,uint256,uint32)"](
-        amountUnits,
-        CCTP_DOMAINS.SOLANA,
-        mintRecipient,
-        usdcAddress,
-        ZeroHash,
-        0,
-        0
-      );
-    } catch (v2Err) {
-      console.warn("[cctp_bridge] V2 depositForBurn failed, falling back to 4-arg signature:", v2Err.message);
-      tx = await tokenMessenger["depositForBurn(uint256,uint32,bytes32,address)"](
-        amountUnits,
-        CCTP_DOMAINS.SOLANA,
-        mintRecipient,
-        usdcAddress
-      );
-    }
+    const tx = await tokenMessenger["depositForBurn(uint256,uint32,bytes32,address,bytes32,uint256,uint32)"](
+      amountUnits,
+      CCTP_DOMAINS.SOLANA,
+      mintRecipient,
+      usdcAddress,
+      ZeroHash,
+      0,
+      0
+    );
 
     let arcTxHash = tx.hash;
     let rawCctpMessage = null;
@@ -1707,41 +1697,32 @@ async function executeArcToEvmCctpBurn({ userWallet, amountUsdc, destinationDoma
     const amountUnits = parseUnits(formattedAmount, 6);
 
     // 1. Approve TokenMessenger
-    try {
-      const usdcContract = new Contract(usdcAddress, ERC20_ABI, userWallet);
-      const allowance = await usdcContract.allowance(userWallet.address, tokenMessengerAddress);
-      if (allowance < amountUnits) {
-        console.log(`[cctp_bridge] Approving TokenMessenger for ${amountUnits} USDC units on Arc...`);
-        const approveTx = await usdcContract.approve(tokenMessengerAddress, amountUnits);
-        await approveTx.wait(1);
-        console.log(`[cctp_bridge] TokenMessenger approved on Arc ✓`);
+    const usdcContract = new Contract(usdcAddress, ERC20_ABI, userWallet);
+    const currentAllowance = await usdcContract.allowance(userWallet.address, tokenMessengerAddress);
+    if (currentAllowance < amountUnits) {
+      console.log(`[cctp_bridge] Approving TokenMessenger for USDC units on Arc...`);
+      const { MaxUint256 } = require("ethers");
+      const approveTx = await usdcContract.approve(tokenMessengerAddress, MaxUint256);
+      await approveTx.wait(1);
+      console.log(`[cctp_bridge] TokenMessenger approved on Arc ✓`);
+      const postAllowance = await usdcContract.allowance(userWallet.address, tokenMessengerAddress);
+      if (postAllowance < amountUnits) {
+        throw new Error(`TokenMessenger USDC allowance on Arc remains insufficient (${postAllowance} < ${amountUnits})`);
       }
-    } catch (appErr) {
-      console.warn("[cctp_bridge:approve_note_evm]", appErr.message);
     }
 
     // 2. Call depositForBurn targeting destinationDomain
+    // Arc TokenMessenger implements CCTP V2 (7 parameters)
     const tokenMessenger = new Contract(tokenMessengerAddress, TOKEN_MESSENGER_ABI, userWallet);
-    let tx;
-    try {
-      tx = await tokenMessenger["depositForBurn(uint256,uint32,bytes32,address,bytes32,uint256,uint32)"](
-        amountUnits,
-        destinationDomain,
-        mintRecipient,
-        usdcAddress,
-        ZeroHash,
-        0,
-        0
-      );
-    } catch (v2Err) {
-      console.warn("[cctp_bridge] V2 depositForBurn failed, falling back to 4-arg signature:", v2Err.message);
-      tx = await tokenMessenger["depositForBurn(uint256,uint32,bytes32,address)"](
-        amountUnits,
-        destinationDomain,
-        mintRecipient,
-        usdcAddress
-      );
-    }
+    const tx = await tokenMessenger["depositForBurn(uint256,uint32,bytes32,address,bytes32,uint256,uint32)"](
+      amountUnits,
+      destinationDomain,
+      mintRecipient,
+      usdcAddress,
+      ZeroHash,
+      0,
+      0
+    );
 
     let arcTxHash = tx.hash;
     let rawCctpMessage = null;
