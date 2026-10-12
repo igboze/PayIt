@@ -379,6 +379,32 @@ ensureInvoicesSchema();
 ensureTransactionsSchema();
 ensureCctpPendingSchema();
 ensureCctpInboundSchema();
+cleanupOrphanData();
+
+function cleanupOrphanData() {
+  try {
+    db.exec("DROP TABLE IF EXISTS test_tg");
+    db.exec("DROP TABLE IF EXISTS test_match");
+    db.exec(`
+      DELETE FROM yield_positions 
+      WHERE telegram_id IS NULL 
+         OR (
+           telegram_id NOT IN (SELECT telegram_id FROM users)
+           AND CAST(telegram_id AS TEXT) NOT IN (SELECT CAST(telegram_id AS TEXT) FROM users)
+         )
+    `);
+    db.exec(`
+      DELETE FROM transactions 
+      WHERE telegram_id IS NULL 
+         OR (
+           telegram_id NOT IN (SELECT telegram_id FROM users)
+           AND CAST(telegram_id AS TEXT) NOT IN (SELECT CAST(telegram_id AS TEXT) FROM users)
+         )
+    `);
+  } catch (err) {
+    console.warn("[db] cleanupOrphanData note:", err.message);
+  }
+}
 ensureNearDepositsSchema();
 ensureSettlementRunsSchema();
 
@@ -860,22 +886,33 @@ function updateTransactionByTxHash(oldTxHash, status, newTxHash = null) {
 }
 
 function getTransactions(telegramId, limit = 10, accountType = null) {
+  if (!telegramId || telegramId === "undefined" || telegramId === "null" || Number.isNaN(Number(telegramId))) {
+    return [];
+  }
+  const numId = Math.round(Number(telegramId));
+  const rawId = telegramId;
+  const strId = String(numId || telegramId);
+  const floatStrId = `${numId}.0`;
+
   if (accountType) {
     return db.prepare(
-      "SELECT * FROM transactions WHERE telegram_id = ? AND account_type = ? ORDER BY id DESC LIMIT ?"
-    ).all(telegramId, accountType, limit);
+      "SELECT * FROM transactions WHERE (telegram_id = ? OR telegram_id = ? OR telegram_id = ? OR telegram_id = ?) AND account_type = ? ORDER BY id DESC LIMIT ?"
+    ).all(numId, rawId, strId, floatStrId, accountType, limit);
   }
   return db.prepare(
-    "SELECT * FROM transactions WHERE telegram_id = ? ORDER BY id DESC LIMIT ?"
-  ).all(telegramId, limit);
+    "SELECT * FROM transactions WHERE (telegram_id = ? OR telegram_id = ? OR telegram_id = ? OR telegram_id = ?) ORDER BY id DESC LIMIT ?"
+  ).all(numId, rawId, strId, floatStrId, limit);
 }
 
 // ─── Yield positions ──────────────────────────────────────────────────────────
 
 function getOpenYieldPosition(telegramId, accountType = null) {
+  if (!telegramId || telegramId === "undefined" || telegramId === "null" || Number.isNaN(Number(telegramId))) {
+    return null;
+  }
   const numId = Math.round(Number(telegramId));
   const rawId = telegramId;
-  const strId = String(numId);
+  const strId = String(numId || telegramId);
   const floatStrId = `${numId}.0`;
   if (accountType) {
     return db.prepare(
@@ -1911,6 +1948,118 @@ function pruneSettlementRuns(keep = 500) {
   }
 }
 
+// ─── Builder API Keys ────────────────────────────────────────────────────────
+
+function ensureApiKeysSchema() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS api_keys (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        key_id             TEXT UNIQUE NOT NULL,
+        key_hash           TEXT NOT NULL,
+        key_prefix         TEXT NOT NULL,
+        telegram_id        INTEGER NOT NULL DEFAULT 0,
+        app_name           TEXT NOT NULL,
+        allowed_features   TEXT NOT NULL DEFAULT '["all"]',
+        rate_limit_per_min INTEGER NOT NULL DEFAULT 120,
+        webhook_url        TEXT,
+        is_active          INTEGER NOT NULL DEFAULT 1,
+        created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+        last_used_at       TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+      CREATE INDEX IF NOT EXISTS idx_api_keys_telegram ON api_keys(telegram_id);
+    `);
+  } catch (err) {
+    console.warn("[db] ensureApiKeysSchema note:", err.message);
+  }
+}
+
+try {
+  ensureApiKeysSchema();
+} catch (_) {}
+
+function createApiKey({
+  keyId,
+  keyHash,
+  keyPrefix,
+  telegramId = 0,
+  appName,
+  allowedFeatures = ["all"],
+  rateLimitPerMin = 120,
+  webhookUrl = null,
+}) {
+  ensureApiKeysSchema();
+  const featJson = typeof allowedFeatures === "string" ? allowedFeatures : JSON.stringify(allowedFeatures);
+  db.prepare(`
+    INSERT INTO api_keys (key_id, key_hash, key_prefix, telegram_id, app_name, allowed_features, rate_limit_per_min, webhook_url)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(keyId, keyHash, keyPrefix, telegramId, appName, featJson, rateLimitPerMin, webhookUrl);
+  return getApiKeyById(keyId);
+}
+
+function getApiKeyByHash(keyHash) {
+  ensureApiKeysSchema();
+  const row = db.prepare("SELECT * FROM api_keys WHERE key_hash = ?").get(keyHash);
+  if (!row) return null;
+  return {
+    ...row,
+    allowed_features: JSON.parse(row.allowed_features || '["all"]'),
+  };
+}
+
+function getApiKeyById(keyId) {
+  ensureApiKeysSchema();
+  const row = db.prepare("SELECT * FROM api_keys WHERE key_id = ?").get(keyId);
+  if (!row) return null;
+  return {
+    ...row,
+    allowed_features: JSON.parse(row.allowed_features || '["all"]'),
+  };
+}
+
+function getApiKeysByTelegramId(telegramId) {
+  ensureApiKeysSchema();
+  const rows = db.prepare("SELECT * FROM api_keys WHERE telegram_id = ? ORDER BY id DESC").all(telegramId);
+  return rows.map((r) => ({
+    ...r,
+    allowed_features: JSON.parse(r.allowed_features || '["all"]'),
+  }));
+}
+
+function updateApiKey(keyId, fields = {}) {
+  ensureApiKeysSchema();
+  const allowed = ["app_name", "allowed_features", "rate_limit_per_min", "webhook_url", "is_active", "last_used_at"];
+  const sets = [];
+  const vals = [];
+  for (const [k, v] of Object.entries(fields)) {
+    if (!allowed.includes(k)) continue;
+    sets.push(`${k} = ?`);
+    vals.push(k === "allowed_features" && typeof v !== "string" ? JSON.stringify(v) : v);
+  }
+  if (!sets.length) return getApiKeyById(keyId);
+  vals.push(keyId);
+  db.prepare(`UPDATE api_keys SET ${sets.join(", ")} WHERE key_id = ?`).run(...vals);
+  return getApiKeyById(keyId);
+}
+
+function revokeApiKey(keyId, telegramId = null) {
+  ensureApiKeysSchema();
+  if (telegramId !== null && telegramId !== undefined) {
+    db.prepare("UPDATE api_keys SET is_active = 0 WHERE key_id = ? AND telegram_id = ?").run(keyId, telegramId);
+  } else {
+    db.prepare("UPDATE api_keys SET is_active = 0 WHERE key_id = ?").run(keyId);
+  }
+  return true;
+}
+
+function recordApiKeyUsage(keyId) {
+  try {
+    ensureApiKeysSchema();
+    db.prepare("UPDATE api_keys SET last_used_at = datetime('now') WHERE key_id = ?").run(keyId);
+  } catch (_) {}
+}
+
 module.exports = {
   db,
   resolveDbPath,
@@ -1990,6 +2139,14 @@ module.exports = {
   getActiveNearDeposits,
   getStaleNearDeposits,
   getSystemDecryptedPrivateKey,
+  ensureApiKeysSchema,
+  createApiKey,
+  getApiKeyByHash,
+  getApiKeyById,
+  getApiKeysByTelegramId,
+  updateApiKey,
+  revokeApiKey,
+  recordApiKeyUsage,
   _db: db,
   prepare: (...args) => db.prepare(...args),
   exec: (...args) => db.exec(...args),

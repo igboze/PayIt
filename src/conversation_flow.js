@@ -23,10 +23,23 @@ function shouldReprocessConversationState(stateType, text) {
   const normalized = String(text || "").trim();
   if (!normalized) return false;
 
-  if (stateType === "await_withdraw_amount") {
+  if (
+    stateType === "await_withdraw_amount" ||
+    stateType === "await_ccw_amount" ||
+    stateType === "await_near_amount" ||
+    stateType === "await_solana_amount" ||
+    stateType === "await_robinhood_amount" ||
+    stateType === "await_starknet_amount" ||
+    stateType === "move_funds_amount"
+  ) {
     const amount = parseFloat(normalized.replace(/[^0-9.]/g, ""));
     if (!Number.isNaN(amount) && amount > 0) return false;
     return isLikelyNewIntent(normalized) || isGeneralChat(normalized);
+  }
+
+  if (stateType === "await_ccw_address" || stateType === "await_near_custom_token") {
+    if (isGeneralChat(normalized) || /^\//.test(normalized)) return true;
+    return false;
   }
 
   if (stateType === "await_withdraw_bank") {

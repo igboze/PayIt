@@ -386,7 +386,25 @@ async function withdrawFromVaultWithFee({ userWallet, position, feeRecipientAddr
     throw new Error(`Vault withdrawal failed: ${withdrawRes?.error || "Unknown error"}`);
   }
 
-  const withdrawTxHash = withdrawRes.txHash || withdrawRes.hash || null;
+  let withdrawTxHash = withdrawRes.txHash || withdrawRes.hash || null;
+  let isSimulated = Boolean(withdrawRes.simulated || withdrawTxHash === "0xsimulated_withdraw_tx_hash");
+
+  // If vault withdrawal was simulated or fallback, disburse real USDC float to user's wallet on Arc
+  if (isSimulated && userWallet && userWallet.address) {
+    try {
+      const cctpBridge = require("./cctp_bridge");
+      const disburseHash = await cctpBridge.disburseDirectOnArc({
+        recipientArcAddress: userWallet.address,
+        amountUsdc: totalUserPayout,
+      });
+      if (disburseHash) {
+        withdrawTxHash = disburseHash;
+        isSimulated = false;
+      }
+    } catch (disburseErr) {
+      console.warn("[savings:withdraw] Direct disbursal fallback note:", disburseErr.message);
+    }
+  }
 
   // 2. Route Dev Fee on-chain to project fee address
   let feeTxHash = null;
@@ -432,11 +450,13 @@ async function withdrawFromVaultWithFee({ userWallet, position, feeRecipientAddr
  * this restores and inserts the active position into the database.
  */
 async function syncOnChainVaultPositions(user, context = "personal") {
-  if (!user) return null;
+  if (!user || !user.telegram_id) return null;
+  const normTgId = Math.round(Number(user.telegram_id));
+  if (Number.isNaN(normTgId) || normTgId <= 0) return null;
+
   const address = context === "business" ? user.business_deposit_address : user.deposit_address;
   if (!address || !walletLib.isValidAddress(address)) return null;
 
-  const normTgId = Math.round(Number(user.telegram_id));
   const existing = db.getOpenYieldPosition(normTgId, context) || db.getOpenYieldPosition(user.telegram_id, context);
   if (existing) return existing;
 

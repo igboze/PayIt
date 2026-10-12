@@ -9,6 +9,7 @@ const walletLib = require("./wallet");
 const cctpBridge = require("./cctp_bridge");
 const idempotency = require("./idempotency");
 const { getNetworkConfig, getExplorerUrl } = require("./network");
+const { generateReceiptPNG } = require("./receipt_generator");
 
 // ── DEX Router Configurations ───────────────────────────────────────────────
 const DEX_ROUTER_CONFIGS = {
@@ -533,6 +534,21 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
   let effectiveAmountUsdc = 0;
   let swapTxHash = null;
 
+  // Intermediate notification: Notify user that deposit is in progress
+  if (bot && targetTelegramId) {
+    try {
+      await bot.telegram.sendMessage(
+        targetTelegramId,
+        `⏳ <b>Transaction in Progress...</b>\n` +
+        `──────────────────────────\n` +
+        `🌐 <b>Source Network:</b> ${chainName}\n` +
+        `💵 <b>Amount Deposited:</b> ${rawAmount} ${token}\n` +
+        `🔄 <b>Status:</b> Processing deposit & transferring to your Proxim account on Arc...`,
+        { parse_mode: "HTML" }
+      ).catch(() => {});
+    } catch (_) {}
+  }
+
   // 4. Handle Robinhood Chain Relay Intent Bridge OR Standard CCTP Bridge
   if (isRelayChain) {
     if (!signer) {
@@ -623,13 +639,16 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     }
     swapTxHash = relayResult.txHash;
 
-    // Self-funding gas model: Deduct flat network fee for ERC20 USDC deposits to reimburse relayer advance
+    // Self-funding gas model & platform fee monetization
     let networkFee = 0;
     const grossAmount = parseFloat(rawAmount.toString() || effectiveAmountUsdc.toString());
     if (!isNative) {
       networkFee = CCTP_BRIDGE_FEES_USDC[Number(effectiveChainId)] ?? 0.05;
-      effectiveAmountUsdc = parseFloat(Math.max(0, effectiveAmountUsdc - networkFee).toFixed(6));
     }
+    const depositFeeBps = Number(process.env.DEPOSIT_PROTOCOL_FEE_BPS ?? 25); // 0.25% deposit protocol fee
+    const protocolDepositFee = parseFloat(((grossAmount * depositFeeBps) / 10000).toFixed(4));
+    const totalDeductedFee = parseFloat((networkFee + protocolDepositFee).toFixed(4));
+    effectiveAmountUsdc = parseFloat(Math.max(0, effectiveAmountUsdc - totalDeductedFee).toFixed(6));
 
     if (effectiveAmountUsdc < 0.5) {
       console.warn(`[evm_sweeper] Effective USDC amount too low ($${effectiveAmountUsdc}), minimum $0.50.`);
@@ -661,25 +680,53 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
       throw new Error(`CRITICAL: Failed to credit deposit ${effectiveAmountUsdc} USDC to user TG:${targetTelegramId}. Webhook will not be marked processed to allow retry.`);
     }
 
-    // Notify user
+    // Notify user with image receipt
     if (bot && targetTelegramId) {
       try {
         const displayAmount = `${rawAmount} ${token}`;
         const feeNote = !isNative && networkFee > 0
-          ? `\n⛽ <b>Network Bridging Fee:</b> $${networkFee.toFixed(2)} USDC <i>(Zero gas tokens needed!)</i>`
+          ? `\n⛽ <b>Network Fee:</b> $${networkFee.toFixed(2)} USDC`
           : "";
-        await bot.telegram.sendMessage(
-          targetTelegramId,
-          `🎉 <b>Cross-Chain Deposit Credited!</b>\n` +
+        const caption =
+          `🎉 <b>Deposit Received & Credited!</b>\n` +
           `──────────────────────────\n` +
           `🌐 <b>Source Network:</b> ${chainName}\n` +
           `💵 <b>Received:</b> ${displayAmount}${feeNote}\n` +
-          `💰 <b>Credited on Arc:</b> $${effectiveAmountUsdc.toFixed(2)} native USDC\n` +
+          `💰 <b>Credited on Arc:</b> $${effectiveAmountUsdc.toFixed(2)} USDC\n` +
           `💼 <b>Account:</b> ${accountLabel}\n` +
           `🔗 <b>Status:</b> Ready to spend, send, or save!\n\n` +
-          `<i>Your funds were automatically bridged to Arc Mainnet with zero user gas or signing required!</i>`,
-          { parse_mode: "HTML" }
-        );
+          `<i>Your funds were automatically transferred to your Proxim account with zero user gas!</i>`;
+
+        let receiptPath = null;
+        try {
+          receiptPath = await generateReceiptPNG({
+            receiptId: `DEP-${(swapTxHash || txHash || "").slice(0, 10) || Date.now()}`,
+            senderName: `${chainName} Transfer`,
+            senderAddress: signer ? signer.address : toAddress,
+            recipientName: user ? (user.business_name || user.first_name || "Proxim Account") : "Proxim Account",
+            recipientAddress: toAddress,
+            amountUsdc: effectiveAmountUsdc,
+            token: "USDC",
+            type: "Deposit",
+            timestamp: new Date().toISOString(),
+            status: "Confirmed",
+            txHash: swapTxHash || txHash || null,
+          });
+        } catch (recErr) {
+          console.warn(`[evm_sweeper] PNG receipt generation note:`, recErr.message);
+        }
+
+        if (receiptPath && typeof bot.telegram.sendPhoto === "function") {
+          await bot.telegram.sendPhoto(
+            targetTelegramId,
+            { source: receiptPath },
+            { caption, parse_mode: "HTML" }
+          ).catch(async () => {
+            await bot.telegram.sendMessage(targetTelegramId, caption, { parse_mode: "HTML" });
+          });
+        } else {
+          await bot.telegram.sendMessage(targetTelegramId, caption, { parse_mode: "HTML" });
+        }
       } catch (msgErr) {
         console.warn(`[evm_sweeper] Failed to notify user TG:${targetTelegramId}:`, msgErr.message);
       }
@@ -745,9 +792,11 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
       return { success: false, error: "Amount below minimum threshold ($1.00 USDC for gas-free bridging)" };
     }
 
-    // Deduct flat network fee to self-fund relayer gas advance
+    // Deduct flat network fee to self-fund relayer gas advance and platform deposit fee
     networkFee = CCTP_BRIDGE_FEES_USDC[Number(effectiveChainId)] ?? 0.05;
-    effectiveAmountUsdc = parseFloat(Math.max(0, grossAmountUsdc - networkFee).toFixed(6));
+    const depositFeeBps = Number(process.env.DEPOSIT_PROTOCOL_FEE_BPS ?? 25);
+    const protocolDepositFee = parseFloat(((grossAmountUsdc * depositFeeBps) / 10000).toFixed(4));
+    effectiveAmountUsdc = parseFloat(Math.max(0, grossAmountUsdc - networkFee - protocolDepositFee).toFixed(6));
   }
 
   if (effectiveAmountUsdc < 0.5) {
@@ -760,7 +809,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
   // Reimburse relayer gas fee from deposit address if direct token deposit
   if (networkFee > 0 && signer) {
     const relayerKey = options?.overridePrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
-    const feeRecipient = process.env.FEE_RECIPIENT_ADDRESS || (relayerKey ? new Wallet(relayerKey).address : null);
+    const feeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.PAYIT_DEV_FEE_ADDRESS || process.env.FEE_RECIPIENT_ADDRESS || (relayerKey ? new Wallet(relayerKey).address : null);
     if (feeRecipient && feeRecipient.toLowerCase() !== signer.address.toLowerCase()) {
       try {
         const usdcContract = new Contract(cctpConfig.usdc, ERC20_ABI, signer);
@@ -851,27 +900,56 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     throw new Error(`CRITICAL: Failed to credit deposit ${effectiveAmountUsdc} USDC to user TG:${targetTelegramId}. Webhook will not be marked processed to allow retry.`);
   }
 
-  // 7. Instant Telegram Notification with clean consumer receipt
+  // 7. Instant Telegram Notification with clean consumer receipt image
   if (bot && targetTelegramId) {
     try {
       const displayAmount = isNative ? `${rawAmount} ${token}` : `$${(parseFloat(rawAmount.toString()) || (effectiveAmountUsdc + networkFee)).toFixed(2)} USDC`;
       const swapNote = isNative ? `\n🔄 <b>Swapped:</b> ${displayAmount} → $${effectiveAmountUsdc.toFixed(2)} USDC` : "";
       const feeNote = !isNative && networkFee > 0
-        ? `\n⛽ <b>Network Bridging Fee:</b> $${networkFee.toFixed(2)} USDC <i>(Zero gas tokens needed!)</i>`
+        ? `\n⛽ <b>Network Fee:</b> $${networkFee.toFixed(2)} USDC`
         : "";
+      const txRefHash = burnResult?.instantDisburseHash || burnResult?.txHash || swapTxHash || txHash || null;
 
-      await bot.telegram.sendMessage(
-        targetTelegramId,
-        `🎉 <b>Cross-Chain Deposit Credited!</b>\n` +
+      const caption =
+        `🎉 <b>Deposit Received & Credited!</b>\n` +
         `──────────────────────────\n` +
         `🌐 <b>Source Network:</b> ${cctpConfig.name}\n` +
         `💵 <b>Received:</b> ${displayAmount}${swapNote}${feeNote}\n` +
-        `💰 <b>Credited on Arc:</b> $${effectiveAmountUsdc.toFixed(2)} native USDC\n` +
+        `💰 <b>Credited on Arc:</b> $${effectiveAmountUsdc.toFixed(2)} USDC\n` +
         `💼 <b>Account:</b> ${accountLabel}\n` +
         `🔗 <b>Status:</b> Ready to spend, send, or save!\n\n` +
-        `<i>Your funds were automatically bridged via Circle CCTP and are instantly available in your Proxim balance with zero user gas!</i>`,
-        { parse_mode: "HTML" }
-      );
+        `<i>Your funds were automatically transferred to your Proxim account with zero user gas!</i>`;
+
+      let receiptPath = null;
+      try {
+        receiptPath = await generateReceiptPNG({
+          receiptId: `DEP-${(txRefHash || "").slice(0, 10) || Date.now()}`,
+          senderName: `${cctpConfig.name} Transfer`,
+          senderAddress: signer ? signer.address : toAddress,
+          recipientName: user ? (user.business_name || user.first_name || "Proxim Account") : "Proxim Account",
+          recipientAddress: toAddress,
+          amountUsdc: effectiveAmountUsdc,
+          token: "USDC",
+          type: "Deposit",
+          timestamp: new Date().toISOString(),
+          status: "Confirmed",
+          txHash: txRefHash,
+        });
+      } catch (recErr) {
+        console.warn(`[evm_sweeper] PNG receipt generation note:`, recErr.message);
+      }
+
+      if (receiptPath && typeof bot.telegram.sendPhoto === "function") {
+        await bot.telegram.sendPhoto(
+          targetTelegramId,
+          { source: receiptPath },
+          { caption, parse_mode: "HTML" }
+        ).catch(async () => {
+          await bot.telegram.sendMessage(targetTelegramId, caption, { parse_mode: "HTML" });
+        });
+      } else {
+        await bot.telegram.sendMessage(targetTelegramId, caption, { parse_mode: "HTML" });
+      }
     } catch (msgErr) {
       console.warn(`[evm_sweeper] Failed to notify user TG:${targetTelegramId}:`, msgErr.message);
     }
