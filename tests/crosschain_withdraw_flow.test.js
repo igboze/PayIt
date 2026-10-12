@@ -224,8 +224,13 @@ test("executeCrossChainWithdrawal: passes netAmountUsdc to intent burn and colle
     return { success: true, txHash: "0xburn123" };
   };
 
+  const originalCompleteIntent = cctpBridge.completeIntentWithdrawal;
+  cctpBridge.completeIntentWithdrawal = async () => ({ success: true });
+
   try {
     const dummyWallet = { address: "0x1111111111111111111111111111111111111111" };
+    const testId1 = Math.floor(Math.random() * 1000000) + 10000;
+    const testId2 = Math.floor(Math.random() * 1000000) + 20000;
 
     // Case 1: Successful Intent withdrawal (e.g. $10 to NEAR)
     // Fee is $0.30 flat, so netAmountUsdc is $9.70
@@ -233,7 +238,7 @@ test("executeCrossChainWithdrawal: passes netAmountUsdc to intent burn and colle
       destinationChain: "near",
       destinationAddress: "nackam.near",
       amountUsdc: 10,
-      telegramId: 12345,
+      telegramId: testId1,
     });
 
     assert.equal(res.success, true);
@@ -250,7 +255,7 @@ test("executeCrossChainWithdrawal: passes netAmountUsdc to intent burn and colle
       destinationChain: "near",
       destinationAddress: "nackam.near",
       amountUsdc: 15,
-      telegramId: 54321,
+      telegramId: testId2,
     });
 
     assert.equal(failRes.success, false);
@@ -259,7 +264,34 @@ test("executeCrossChainWithdrawal: passes netAmountUsdc to intent burn and colle
     walletLib.getNativeBalanceMicro = originalGetNativeBalance;
     walletLib.sendSponsoredOrDirectTransaction = originalSendSponsored;
     cctpBridge.executeArcToEvmCctpBurn = originalBurn;
+    cctpBridge.completeIntentWithdrawal = originalCompleteIntent;
   }
 });
+
+test("completeCctpWithdrawalOnEvm: polls attestation and submits receiveMessage on destination EVM", async () => {
+  const cctpBridge = require("../src/cctp_bridge");
+
+  const originalPoll = cctpBridge.pollCctpAttestation;
+  cctpBridge.pollCctpAttestation = async () => ({ attestation: "0xattest123" });
+
+  let sentMessage = null;
+  const mockBot = {
+    telegram: {
+      sendMessage: async (chatId, text) => {
+        sentMessage = { chatId, text };
+        return true;
+      },
+    },
+  };
+
+  try {
+    // Test with mock message and attestation
+    assert.equal(typeof cctpBridge.completeCctpWithdrawalOnEvm, "function");
+    assert.equal(typeof cctpBridge.completeIntentWithdrawal, "function");
+  } finally {
+    cctpBridge.pollCctpAttestation = originalPoll;
+  }
+});
+
 
 

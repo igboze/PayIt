@@ -1363,15 +1363,11 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
  * @param {string} [feePayerKey] - Optional override for fee payer (default: env)
  * @returns {Promise<{ retried: number, succeeded: number, failed: number, skipped: number }>}
  */
-async function retryPendingCctpBurns(feePayerKey) {
-  // Safety: abort early if fee payer still has no SOL
-  const feeCheck = await checkSolanaFeePayerBalance(feePayerKey);
-  if (!feeCheck.ok) {
-    console.warn(`[cctp_bridge:retry] Fee payer ${feeCheck.address} has ${feeCheck.balanceSol} SOL — skipping retry`);
-    return { retried: 0, succeeded: 0, failed: 0, skipped: 0, feePayerSol: feeCheck.balanceSol, feePayerAddress: feeCheck.address };
-  }
-
+async function retryPendingCctpBurns(feePayerKey, bot = null) {
   const pending = db.getPendingCctpBurns();
+  if (!pending.length) {
+    return { retried: 0, succeeded: 0, failed: 0, skipped: 0 };
+  }
   console.log(`[cctp_bridge:retry] Found ${pending.length} pending CCTP burns to retry`);
 
   let succeeded = 0;
@@ -1381,21 +1377,52 @@ async function retryPendingCctpBurns(feePayerKey) {
   for (const burn of pending) {
     console.log(`[cctp_bridge:retry] Retrying arcTxHash=${burn.arc_tx_hash} (attempt ${burn.retry_count + 1})`);
     try {
-      const result = await completeCctpWithdrawalOnSolana({
-        arcTxHash: burn.arc_tx_hash,
-        messageHex: burn.message_hex || undefined,
-        messageHash: burn.message_hash || undefined,
-        feePayerKey,
-        telegramId: burn.telegram_id,
-        maxAttempts: 60,
-        intervalMs: 5000,
-      });
-      if (result.success) {
-        succeeded++;
-        console.log(`[cctp_bridge:retry] ✓ ${burn.arc_tx_hash} → Solana tx ${result.solanaTxSignature}`);
+      const recipient = String(burn.recipient_solana || "");
+      if (recipient.startsWith("0x")) {
+        // Destination is an EVM address (or Base hop)
+        const result = await completeCctpWithdrawalOnEvm({
+          arcTxHash: burn.arc_tx_hash,
+          messageHex: burn.message_hex || undefined,
+          messageHash: burn.message_hash || undefined,
+          destinationDomain: CCTP_DOMAINS.BASE,
+          destinationRecipientAddress: recipient,
+          telegramId: burn.telegram_id,
+          bot,
+          amountUsdc: burn.amount_usdc,
+          maxAttempts: 30,
+          intervalMs: 5000,
+        });
+        if (result && result.success) {
+          succeeded++;
+          console.log(`[cctp_bridge:retry] ✓ ${burn.arc_tx_hash} → EVM tx ${result.destinationTxHash}`);
+        } else {
+          failed++;
+        }
       } else {
-        failed++;
-        console.warn(`[cctp_bridge:retry] ✗ ${burn.arc_tx_hash}: completeCctpWithdrawalOnSolana returned success=false`);
+        // Destination is Solana
+        const feeCheck = await checkSolanaFeePayerBalance(feePayerKey);
+        if (!feeCheck.ok) {
+          console.warn(`[cctp_bridge:retry] Fee payer ${feeCheck.address} has ${feeCheck.balanceSol} SOL — skipping Solana burn ${burn.arc_tx_hash}`);
+          skipped++;
+          continue;
+        }
+
+        const result = await completeCctpWithdrawalOnSolana({
+          arcTxHash: burn.arc_tx_hash,
+          messageHex: burn.message_hex || undefined,
+          messageHash: burn.message_hash || undefined,
+          feePayerKey,
+          telegramId: burn.telegram_id,
+          maxAttempts: 30,
+          intervalMs: 5000,
+        });
+        if (result && result.success) {
+          succeeded++;
+          console.log(`[cctp_bridge:retry] ✓ ${burn.arc_tx_hash} → Solana tx ${result.solanaTxSignature}`);
+        } else {
+          failed++;
+          console.warn(`[cctp_bridge:retry] ✗ ${burn.arc_tx_hash}: completeCctpWithdrawalOnSolana returned success=false`);
+        }
       }
     } catch (err) {
       failed++;
@@ -1408,8 +1435,6 @@ async function retryPendingCctpBurns(feePayerKey) {
     succeeded,
     failed,
     skipped,
-    feePayerSol: feeCheck.balanceSol,
-    feePayerAddress: feeCheck.address,
   };
 }
 
@@ -1828,6 +1853,275 @@ async function executeArcCrossChainWithdrawal({
   });
 }
 
+/**
+ * Automatically completes a CCTP withdrawal on an EVM destination chain (Base, Arbitrum, Optimism, Polygon, Avalanche, Ethereum).
+ * 1. Fetches CCTP message & polls Circle Iris attestation
+ * 2. Submits MessageTransmitter.receiveMessage() on the destination chain
+ * 3. Mints native USDC directly to the recipient address on destination chain
+ * 4. Notifies user via Telegram bot if provided
+ */
+async function completeCctpWithdrawalOnEvm({
+  arcTxHash,
+  messageHex,
+  messageHash,
+  destinationDomain,
+  destinationRecipientAddress,
+  userWallet,
+  userPrivateKey,
+  telegramId,
+  bot,
+  amountUsdc,
+  chainName,
+  maxAttempts = 60,
+  intervalMs = 5000,
+}) {
+  if (!arcTxHash) throw new Error("arcTxHash is required");
+
+  // Step 1: Ensure we have the raw CCTP message
+  let msgDetails = { message: messageHex, messageHash };
+  if (!msgDetails.message) {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        const fetched = await fetchCctpMessage(arcTxHash, CCTP_DOMAINS.ARC);
+        if (fetched?.message) {
+          msgDetails = fetched;
+          break;
+        }
+      } catch (e) {}
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+
+  if (!msgDetails?.message) {
+    const errMsg = `CCTP message not found for Arc tx ${arcTxHash}`;
+    try { db.failCctpPendingBurn(arcTxHash, errMsg); } catch {}
+    throw new Error(errMsg);
+  }
+
+  // Step 2: Poll Circle for attestation
+  console.log(`[cctp_bridge:evm_complete] Polling Circle for attestation on ${arcTxHash}...`);
+  let attestation;
+  try {
+    ({ attestation } = await pollCctpAttestation(msgDetails.messageHash, maxAttempts, intervalMs, {
+      txHash: arcTxHash,
+      sourceDomain: CCTP_DOMAINS.ARC,
+    }));
+  } catch (attErr) {
+    const errMsg = `Attestation polling failed for ${arcTxHash}: ${attErr.message}`;
+    try { db.failCctpPendingBurn(arcTxHash, errMsg); } catch {}
+    throw new Error(errMsg);
+  }
+  console.log(`[cctp_bridge:evm_complete] Attestation received ✓ for ${arcTxHash}`);
+
+  // Step 3: Resolve destination chain configuration
+  const targetConfig = resolveEvmCctpConfig(destinationDomain) || resolveEvmCctpConfig(chainName);
+  if (!targetConfig) {
+    throw new Error(`Could not resolve EVM config for domain ${destinationDomain}`);
+  }
+
+  const destProvider = new JsonRpcProvider(targetConfig.rpcUrl);
+  let signer = null;
+  if (userWallet && userWallet.privateKey) {
+    signer = new Wallet(userWallet.privateKey, destProvider);
+  } else if (userPrivateKey) {
+    signer = new Wallet(userPrivateKey, destProvider);
+  } else if (process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY) {
+    signer = new Wallet(process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY, destProvider);
+  }
+
+  if (!signer) {
+    throw new Error("No signer key available to broadcast receiveMessage on destination EVM");
+  }
+
+  // Unified CCTP V2 message transmitter address across EVMs
+  const messageTransmitterV2 = "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64";
+  const transmitterAddress = targetConfig.messageTransmitterV2 || messageTransmitterV2;
+
+  const MESSAGE_TRANSMITTER_V2_ABI = [
+    "function receiveMessage(bytes calldata message, bytes calldata attestation) external returns (bool)",
+  ];
+  const transmitter = new Contract(transmitterAddress, MESSAGE_TRANSMITTER_V2_ABI, signer);
+
+  console.log(`[cctp_bridge:evm_complete] Submitting receiveMessage on ${targetConfig.name} (${transmitterAddress})...`);
+  const cleanMsg = msgDetails.message.startsWith("0x") ? msgDetails.message : "0x" + msgDetails.message;
+  const cleanAtt = attestation.startsWith("0x") ? attestation : "0x" + attestation;
+
+  let destTxHash = null;
+  try {
+    const rxTx = await transmitter.receiveMessage(cleanMsg, cleanAtt);
+    const receipt = await rxTx.wait(1);
+    console.log(`[cctp_bridge:evm_complete] USDC minted on ${targetConfig.name} ✓ tx=${receipt.hash}`);
+    destTxHash = receipt.hash;
+  } catch (rxErr) {
+    if (rxErr.message && rxErr.message.toLowerCase().includes("nonce already used")) {
+      console.log(`[cctp_bridge:evm_complete] Nonce already used on ${targetConfig.name} (already minted) ✓`);
+      destTxHash = "already_minted";
+    } else {
+      throw rxErr;
+    }
+  }
+
+  try { db.completeCctpPendingBurn(arcTxHash, destTxHash); } catch {}
+
+  // Notify user via Telegram bot if bot instance and telegramId are available
+  if (bot && telegramId) {
+    try {
+      const displayAmount = amountUsdc != null ? `$${Number(amountUsdc).toFixed(2)} USDC` : "USDC";
+      await bot.telegram.sendMessage(
+        telegramId,
+        `✅ <b>Withdrawal Completed!</b>\n──────────────────────────\n` +
+        `🌐 <b>Network:</b> ${targetConfig.name}\n` +
+        `💰 <b>Amount:</b> ${displayAmount}\n` +
+        `📍 <b>Delivered to:</b> <code>${destinationRecipientAddress}</code>\n` +
+        (destTxHash && destTxHash !== "already_minted" ? `🔗 <b>Transaction:</b> <code>${destTxHash}</code>\n\n` : "\n") +
+        `<i>Your funds have successfully arrived!</i>`,
+        { parse_mode: "HTML" }
+      );
+    } catch (notifErr) {
+      console.warn("[cctp_bridge:evm_notif_note]", notifErr.message);
+    }
+  }
+
+  return {
+    success: true,
+    arcTxHash,
+    destinationTxHash: destTxHash,
+    destinationChain: targetConfig.name,
+    recipient: destinationRecipientAddress,
+  };
+}
+
+/**
+ * Automatically completes an Intent withdrawal (NEAR, Bitcoin, Tron, Starknet).
+ * 1. Mints CCTP USDC on Base via receiveMessage
+ * 2. Fetches 1Click swap quote for target token (NEAR, BTC, USDT-TRC20, STRK)
+ * 3. Transfers Base USDC to 1Click depositAddress
+ * 4. 1Click solvers deliver tokens to user's destination address
+ * 5. Notifies user via Telegram bot
+ */
+async function completeIntentWithdrawal({
+  arcTxHash,
+  messageHex,
+  messageHash,
+  amountUsdc,
+  destinationChain,
+  destinationAddress,
+  userWallet,
+  userPrivateKey,
+  telegramId,
+  bot,
+}) {
+  if (!arcTxHash) throw new Error("arcTxHash is required");
+  const chainKey = String(destinationChain || "").toLowerCase();
+
+  // Step 1: Complete CCTP burn on Base (Domain 6)
+  console.log(`[cctp_bridge:intent_complete] Completing Base CCTP mint for ${arcTxHash}...`);
+  const effectivePrivateKey = userWallet?.privateKey || userPrivateKey;
+  const baseRecipient = userWallet?.address || (effectivePrivateKey ? new Wallet(effectivePrivateKey).address : null);
+
+  const baseCompletion = await completeCctpWithdrawalOnEvm({
+    arcTxHash,
+    messageHex,
+    messageHash,
+    destinationDomain: CCTP_DOMAINS.BASE,
+    destinationRecipientAddress: baseRecipient || destinationAddress,
+    userWallet,
+    userPrivateKey: effectivePrivateKey,
+    telegramId: null, // Don't notify yet, notify after final intent delivery
+    bot: null,
+    amountUsdc,
+    chainName: "Base",
+  });
+
+  if (!baseCompletion.success) {
+    throw new Error(`Failed to mint USDC on Base for intent withdrawal: ${baseCompletion.error}`);
+  }
+
+  console.log(`[cctp_bridge:intent_complete] Base USDC minted ✓ tx=${baseCompletion.destinationTxHash}`);
+
+  // Step 2: Route through NEAR Intents (1Click)
+  const nearLib = require("./near");
+  let targetAsset;
+  if (chainKey === "near") {
+    targetAsset = nearLib.ASSETS.NEAR_WNEAR;
+  } else if (chainKey === "bitcoin" || chainKey === "btc") {
+    targetAsset = nearLib.ASSETS.WBTC;
+  } else if (chainKey === "tron") {
+    targetAsset = nearLib.ASSETS.NEAR_USDT;
+  } else if (chainKey === "starknet") {
+    targetAsset = nearLib.ASSETS.STARKNET_STRK;
+  } else {
+    targetAsset = nearLib.ASSETS.NEAR_WNEAR;
+  }
+
+  const baseProvider = new JsonRpcProvider(EVM_CCTP_CONTRACTS.BASE.rpcUrl);
+  const signerKey = effectivePrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
+  if (!signerKey) {
+    throw new Error("No signer available to transfer Base USDC to 1Click deposit address");
+  }
+  const baseSigner = new Wallet(signerKey, baseProvider);
+
+  const { parseUnits } = require("ethers");
+  const amountUnits = parseUnits(Number(amountUsdc).toFixed(6), 6);
+  const amountUnitsStr = amountUnits.toString();
+
+  console.log(`[cctp_bridge:intent_complete] Requesting 1Click quote for ${amountUsdc} USDC -> ${destinationAddress} on ${chainKey}...`);
+  const quoteRes = await nearLib.getQuote({
+    originAsset: nearLib.ASSETS.BASE_USDC,
+    destinationAsset: targetAsset,
+    amount: amountUnitsStr,
+    recipient: destinationAddress,
+    refundTo: baseSigner.address,
+    dry: false,
+  });
+
+  const depositAddress = quoteRes?.quote?.depositAddress;
+  if (!depositAddress) {
+    throw new Error(`1Click did not return a deposit address: ${JSON.stringify(quoteRes)}`);
+  }
+
+  console.log(`[cctp_bridge:intent_complete] Transferring ${amountUsdc} Base USDC to 1Click depositAddress ${depositAddress}...`);
+  const ERC20_ABI = [
+    "function transfer(address to, uint256 amount) external returns (bool)",
+    "function balanceOf(address account) external view returns (uint256)",
+  ];
+  const baseUsdc = new Contract(EVM_CCTP_CONTRACTS.BASE.usdc, ERC20_ABI, baseSigner);
+  const transferTx = await baseUsdc.transfer(depositAddress, amountUnits);
+  const transferReceipt = await transferTx.wait(1);
+  console.log(`[cctp_bridge:intent_complete] Base USDC transferred to 1Click ✓ tx=${transferReceipt.hash}`);
+
+  // Notify user that intent has been dispatched to solvers
+  if (bot && telegramId) {
+    try {
+      const formattedExpected = quoteRes?.quote?.amountOutFormatted
+        ? ` (~${Number(quoteRes.quote.amountOutFormatted).toFixed(4)} ${chainKey.toUpperCase()})`
+        : "";
+      await bot.telegram.sendMessage(
+        telegramId,
+        `🎉 <b>Withdrawal Routing Complete!</b>\n──────────────────────────\n` +
+        `🌐 <b>Destination Chain:</b> ${chainKey.toUpperCase()}\n` +
+        `💰 <b>Amount:</b> $${Number(amountUsdc).toFixed(2)} USDC${formattedExpected}\n` +
+        `📍 <b>Recipient:</b> <code>${destinationAddress}</code>\n` +
+        `🔗 <b>Base Swap Tx:</b> <code>${transferReceipt.hash}</code>\n\n` +
+        `<i>Solvers are delivering the funds to your destination address (typically 30–60 seconds).</i>`,
+        { parse_mode: "HTML" }
+      );
+    } catch (notifErr) {
+      console.warn("[cctp_bridge:intent_notif_note]", notifErr.message);
+    }
+  }
+
+  return {
+    success: true,
+    arcTxHash,
+    baseTxHash: baseCompletion.destinationTxHash,
+    intentTransferTxHash: transferReceipt.hash,
+    destinationAddress,
+    destinationChain: chainKey,
+    amountUsdc,
+  };
+}
+
 module.exports = {
   CCTP_DOMAINS,
   ARC_CCTP_CONTRACTS,
@@ -1843,9 +2137,12 @@ module.exports = {
   executeArcToEvmCctpBurn,
   executeArcCrossChainWithdrawal,
   completeCctpWithdrawalOnSolana,
+  completeCctpWithdrawalOnEvm,
+  completeIntentWithdrawal,
   executeEvmCctpBurn,
   checkSolanaFeePayerBalance,
   retryPendingCctpBurns,
   recoverPendingInboundCctpTransfers,
   MIN_FEE_PAYER_LAMPORTS,
 };
+

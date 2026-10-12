@@ -40,7 +40,7 @@ function defaultTasks() {
     {
       name: "cctp_burn_retry",
       intervalMs: 60_000,
-      run: async () => cctpBridge.retryPendingCctpBurns(),
+      run: async ({ bot }) => cctpBridge.retryPendingCctpBurns(null, bot),
     },
     {
       name: "near_poll",

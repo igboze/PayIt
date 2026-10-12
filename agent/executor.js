@@ -689,6 +689,23 @@ async function executeCrossChainWithdrawal(userWallet, {
       db.updateTransactionStatus(txId, "submitted", result.txHash || null);
       await collectPlatformFee();
 
+      // Automatically complete on destination EVM chain if not Solana (Solana is auto-completed in executeArcToSolanaCctpBurn)
+      if (chainKey !== "solana") {
+        cctpBridge.completeCctpWithdrawalOnEvm({
+          arcTxHash: result.txHash,
+          messageHex: result.rawCctpMessage,
+          messageHash: result.messageHash,
+          destinationDomain: cctpBridge.CCTP_DOMAINS[chainKey.toUpperCase()],
+          destinationRecipientAddress,
+          userWallet,
+          userPrivateKey: userWallet.privateKey,
+          telegramId,
+          bot,
+          amountUsdc: netAmountUsdc,
+          chainName: destinationChain,
+        }).catch((err) => console.warn(`[executor:auto_complete_evm] ${err.message}`));
+      }
+
       idempotency.completeOperationIdempotency(idempKey, {
         txHash: result.txHash,
         responseData: {
@@ -739,6 +756,20 @@ async function executeCrossChainWithdrawal(userWallet, {
 
       db.updateTransactionStatus(txId, "submitted", baseBurn.txHash || null);
       await collectPlatformFee();
+
+      // Automatically complete intent routing (Base CCTP mint -> 1Click Intent swap -> destination delivery)
+      cctpBridge.completeIntentWithdrawal({
+        arcTxHash: baseBurn.txHash,
+        messageHex: baseBurn.rawCctpMessage,
+        messageHash: baseBurn.messageHash,
+        amountUsdc: netAmountUsdc,
+        destinationChain: chainKey,
+        destinationAddress,
+        userWallet,
+        userPrivateKey: userWallet.privateKey,
+        telegramId,
+        bot,
+      }).catch((err) => console.warn(`[executor:auto_complete_intent] ${err.message}`));
 
       idempotency.completeOperationIdempotency(idempKey, {
         txHash: baseBurn.txHash,
