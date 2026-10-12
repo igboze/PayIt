@@ -4629,38 +4629,40 @@ bot.command("retry_cctp", async (ctx) => {
  * Usage: /complete_withdraw [PIN]
  */
 bot.command("complete_withdraw", async (ctx) => {
-  const telegramId = ctx.from?.id;
-  const user = db.getUserByTelegramId(telegramId);
-  if (!user) return ctx.reply("Wallet not found. Please type /start first.");
-
-  const args = String(ctx.message?.text || "").trim().split(/\s+/).slice(1);
-  const pin = args[0];
-  if (!pin || pin.length < 4) {
-    return ctx.reply(
-      "ℹ️ <b>Complete In-Flight Withdrawal</b>\n" +
-      "To complete your in-flight withdrawal to NEAR or external chain, enter your PIN:\n\n" +
-      "<code>/complete_withdraw &lt;4-digit PIN&gt;</code>\n\n" +
-      "<i>Example:</i> <code>/complete_withdraw 1234</code>",
-      { parse_mode: "HTML" }
-    );
-  }
-
-  let userWallet;
   try {
-    const pk = db.decryptPrivateKey(pin, user);
-    userWallet = walletLib.walletFromPrivateKey(pk);
-  } catch (e) {
-    return ctx.reply("❌ Invalid PIN. Could not decrypt your wallet.");
-  }
+    const telegramId = ctx.from?.id;
+    const user = db.getUser(telegramId);
+    if (!user) return ctx.reply("Wallet not found. Please type /start first.");
 
-  await ctx.reply("⏳ Checking Circle attestation and submitting withdrawal to destination chain...");
+    const args = String(ctx.message?.text || "").trim().split(/\s+/).slice(1);
+    const pin = args[0];
+    if (!pin || pin.length < 4) {
+      return ctx.reply(
+        "ℹ️ <b>Complete In-Flight Withdrawal</b>\n" +
+        "To complete your in-flight withdrawal to NEAR or external chain, enter your PIN:\n\n" +
+        "<code>/complete_withdraw &lt;4-digit PIN&gt;</code>\n\n" +
+        "<i>Example:</i> <code>/complete_withdraw 1234</code>",
+        { parse_mode: "HTML" }
+      );
+    }
 
-  try {
+    let userWallet;
+    try {
+      const pk = db.decryptPrivateKey(pin, user);
+      userWallet = walletLib.walletFromPrivateKey(pk);
+    } catch (e) {
+      return ctx.reply("❌ Invalid PIN. Could not decrypt your wallet.");
+    }
+
+    await ctx.reply("⏳ Checking Circle attestation and submitting withdrawal to destination chain...");
+
     const cctpBridge = require("./src/cctp_bridge");
-    const pendingBurns = db.getPendingCctpBurns().filter(b => b.telegram_id === telegramId || b.telegram_id === 0);
+    let pendingBurns = [];
+    try { pendingBurns = db.getPendingCctpBurns() || []; } catch {}
+    const userBurns = pendingBurns.filter(b => b.telegram_id === telegramId || b.telegram_id === 0);
     const inFlightTxHash = "0x0c94d1a91970c58df0fb68fc3f9c27f6a803aa8aac5273a6601af38bb4bc4e0d";
 
-    const targetBurn = pendingBurns.find(b => b.arc_tx_hash === inFlightTxHash) || pendingBurns[0];
+    const targetBurn = userBurns.find(b => b.arc_tx_hash === inFlightTxHash) || userBurns[0];
     const arcTxHash = targetBurn?.arc_tx_hash || inFlightTxHash;
     const destChain = "near";
     const destRecipient = "nackam.near";
