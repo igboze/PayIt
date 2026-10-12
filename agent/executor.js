@@ -653,17 +653,18 @@ async function executeCrossChainWithdrawal(userWallet, {
     : 0;
   const netAmountUsdc = Number((Number(amountUsdc) - platformFee).toFixed(6));
 
-  // Route platform fee to fee recipient address on Arc if configured
-  const feeRecipient = getFeeRecipientAddress();
-  if (platformFee > 0 && feeRecipient && walletLib.isValidAddress(feeRecipient) && userWallet.address.toLowerCase() !== feeRecipient.toLowerCase()) {
-    try {
-      const feeMicro = walletLib.parseToMicro(platformFee.toFixed(6));
-      await walletLib.sendSponsoredOrDirectTransaction(userWallet, feeRecipient, feeMicro);
-      console.log(`[executor] Collected $${platformFee} crosschain fee on Arc -> ${feeRecipient}`);
-    } catch (feeErr) {
-      console.warn("[executor:withdrawal_fee_note]", feeErr.message);
+  const collectPlatformFee = async () => {
+    const feeRecipient = getFeeRecipientAddress();
+    if (platformFee > 0 && feeRecipient && walletLib.isValidAddress(feeRecipient) && userWallet.address.toLowerCase() !== feeRecipient.toLowerCase()) {
+      try {
+        const feeMicro = walletLib.parseToMicro(platformFee.toFixed(6));
+        await walletLib.sendSponsoredOrDirectTransaction(userWallet, feeRecipient, feeMicro);
+        console.log(`[executor] Collected $${platformFee} crosschain fee on Arc -> ${feeRecipient}`);
+      } catch (feeErr) {
+        console.warn("[executor:withdrawal_fee_note]", feeErr.message);
+      }
     }
-  }
+  };
 
   const CCTP_CHAINS = new Set(["solana", "base", "arbitrum", "optimism", "polygon", "avalanche", "ethereum"]);
 
@@ -686,6 +687,8 @@ async function executeCrossChainWithdrawal(userWallet, {
       }
 
       db.updateTransactionStatus(txId, "submitted", result.txHash || null);
+      await collectPlatformFee();
+
       idempotency.completeOperationIdempotency(idempKey, {
         txHash: result.txHash,
         responseData: {
@@ -722,7 +725,7 @@ async function executeCrossChainWithdrawal(userWallet, {
       // Burn to Base relayer / destination
       const baseBurn = await cctpBridge.executeArcToEvmCctpBurn({
         userWallet,
-        amountUsdc: Number(amountUsdc),
+        amountUsdc: netAmountUsdc,
         destinationDomain: cctpBridge.CCTP_DOMAINS.BASE,
         destinationRecipientAddress: userWallet.address, // Base address
         telegramId,
@@ -735,6 +738,8 @@ async function executeCrossChainWithdrawal(userWallet, {
       }
 
       db.updateTransactionStatus(txId, "submitted", baseBurn.txHash || null);
+      await collectPlatformFee();
+
       idempotency.completeOperationIdempotency(idempKey, {
         txHash: baseBurn.txHash,
         responseData: {
