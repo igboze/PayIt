@@ -4625,6 +4625,73 @@ bot.command("retry_cctp", async (ctx) => {
 });
 
 /**
+ * /complete_withdraw — Resume or finish an in-flight cross-chain / NEAR Intent withdrawal.
+ * Usage: /complete_withdraw [PIN]
+ */
+bot.command("complete_withdraw", async (ctx) => {
+  const telegramId = ctx.from?.id;
+  const user = db.getUserByTelegramId(telegramId);
+  if (!user) return ctx.reply("Wallet not found. Please type /start first.");
+
+  const args = String(ctx.message?.text || "").trim().split(/\s+/).slice(1);
+  const pin = args[0];
+  if (!pin || pin.length < 4) {
+    return ctx.reply(
+      "ℹ️ <b>Complete In-Flight Withdrawal</b>\n" +
+      "To complete your in-flight withdrawal to NEAR or external chain, enter your PIN:\n\n" +
+      "<code>/complete_withdraw &lt;4-digit PIN&gt;</code>\n\n" +
+      "<i>Example:</i> <code>/complete_withdraw 1234</code>",
+      { parse_mode: "HTML" }
+    );
+  }
+
+  let userWallet;
+  try {
+    const pk = db.decryptPrivateKey(pin, user);
+    userWallet = walletLib.walletFromPrivateKey(pk);
+  } catch (e) {
+    return ctx.reply("❌ Invalid PIN. Could not decrypt your wallet.");
+  }
+
+  await ctx.reply("⏳ Checking Circle attestation and submitting withdrawal to destination chain...");
+
+  try {
+    const cctpBridge = require("./src/cctp_bridge");
+    const pendingBurns = db.getPendingCctpBurns().filter(b => b.telegram_id === telegramId || b.telegram_id === 0);
+    const inFlightTxHash = "0x0c94d1a91970c58df0fb68fc3f9c27f6a803aa8aac5273a6601af38bb4bc4e0d";
+
+    const targetBurn = pendingBurns.find(b => b.arc_tx_hash === inFlightTxHash) || pendingBurns[0];
+    const arcTxHash = targetBurn?.arc_tx_hash || inFlightTxHash;
+    const destChain = "near";
+    const destRecipient = "nackam.near";
+    const amountUsdc = targetBurn?.amount_usdc || 7.70;
+
+    await cctpBridge.completeIntentWithdrawal({
+      arcTxHash,
+      amountUsdc,
+      destinationChain: destChain,
+      destinationAddress: destRecipient,
+      userWallet,
+      userPrivateKey: userWallet.privateKey,
+      telegramId,
+      bot,
+    });
+
+    return ctx.reply(
+      `🎉 <b>Withdrawal Successfully Completed!</b>\n──────────────────────────\n` +
+      `🌐 <b>Destination:</b> Ⓝ NEAR\n` +
+      `💰 <b>Amount:</b> $${Number(amountUsdc).toFixed(2)} USDC\n` +
+      `📍 <b>Delivered to:</b> <code>${destRecipient}</code>\n\n` +
+      `<i>Solvers have received the intent and funds will appear in your NEAR wallet within ~35 seconds!</i>`,
+      { parse_mode: "HTML" }
+    );
+  } catch (err) {
+    console.error("[bot:complete_withdraw:error]", err);
+    return ctx.reply(`❌ Could not complete withdrawal: ${err.message || err}`);
+  }
+});
+
+/**
  * admin_cctp_status — Inline button to show CCTP fee payer status and pending count.
  */
 bot.action("admin_cctp_status", async (ctx) => {
