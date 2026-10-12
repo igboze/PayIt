@@ -2064,6 +2064,7 @@ module.exports = {
   db,
   resolveDbPath,
   getUser,
+  getUserByTelegramId: getUser,
   findUserByUsername,
   getAllUsers,
   getUserByDepositAddress,
