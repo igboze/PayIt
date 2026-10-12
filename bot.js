@@ -46,6 +46,7 @@ const evmDepositSweeper = require("./src/evm_deposit_sweeper");
 const settlementDaemon  = require("./src/settlement_daemon");
 const chains            = require("./src/chains");
 const flowsMultichain   = require("./src/flows_multichain");
+const flowsDeveloper     = require("./src/flows_developer");
 const autoEarn = require("./src/auto_earn");
 const cashflow = require("./src/cashflow");
 
@@ -817,7 +818,8 @@ async function showBalance(ctx) {
        Markup.button.callback("🌐 Crypto Deposit",  "action_gateway")],
       [Markup.button.callback("🔑 Export Keys",     "action_export_keys"),
        Markup.button.callback("🔄 Scan & Sweep",    "action_sweep_deposits")],
-      [Markup.button.callback("📋 History",         "action_history")]
+      [Markup.button.callback("📋 History",         "action_history"),
+       Markup.button.callback("🛠️ Developer API",   "action_developer_menu")]
     );
 
     await ctx.reply(
@@ -943,7 +945,9 @@ async function showReceive(ctx) {
     `• 🇳🇬 <b>Bank Transfer (Naira)</b>: Pay from your Nigerian bank app (Kuda, GTBank, Opay, PalmPay) to get Dollars.\n` +
     `• 💳 <b>Card or Apple Pay</b>: Direct purchase with Visa, Mastercard, or Apple Pay.\n` +
     `• 🌐 <b>Crypto & Web3 Deposit</b>: Send crypto directly from Binance, Coinbase, or any Web3 wallet.\n` +
-    `• Ⓝ <b>Deposit from NEAR</b>: Send USDC from any NEAR wallet — it auto-bridges to your Arc balance.\n\n` +
+    `• Ⓝ <b>Deposit from NEAR</b>: Send USDC from any NEAR wallet — it auto-bridges to your Arc balance.\n` +
+    `• 🏹 <b>Deposit from Robinhood Chain</b>: Send USDG, ETH, USDe from Robinhood Chain — auto-bridges to Arc.\n` +
+    `• 🐺 <b>Deposit from Starknet</b>: Send STRK, direct ETH, ZEC, XRP from Starknet — auto-bridges to Arc.\n\n` +
     `Your Proxim Account Number (tap to copy):\n<code>${address}</code>`,
     {
       parse_mode: "HTML",
@@ -953,6 +957,8 @@ async function showReceive(ctx) {
         [Markup.button.callback("🌐 Crypto & Web3 Deposit",        "action_gateway")],
         [Markup.button.callback("Ⓝ Deposit from NEAR",             "action_near_deposit")],
         [Markup.button.callback("☀️ Deposit from Solana",          "action_solana_deposit")],
+        [Markup.button.callback("🏹 Deposit from Robinhood Chain", "action_robinhood_deposit")],
+        [Markup.button.callback("🐺 Deposit from Starknet",        "action_starknet_deposit")],
         [Markup.button.callback("🔄 Scan & Sweep Deposits",        "action_sweep_deposits")],
         [Markup.button.callback("💰 Check Balance",                 "action_balance")],
         [Markup.button.callback("🏠 Main Menu",                     "main_menu")],
@@ -1533,15 +1539,19 @@ bot.action("action_gateway", async (ctx) => {
     `• <b>Accepted Assets:</b> Native tokens (ETH, AVAX, POL/MATIC${solAddress ? ", SOL" : ""}), USDG, and USDC/EURC\n` +
     `• <b>NEAR:</b> Tap "Ⓝ Deposit from NEAR" below for a one-time address — USDC/USDT auto-bridges to your Arc balance (~2–5 min).\n` +
     `• <b>Solana:</b> Tap "☀️ Deposit from Solana" to deposit SOL, USDC, USDT, BONK, WIF, JUP, and more — auto-swapped to USDC and swept to Arc via NEAR Intents.\n` +
+    `• <b>Robinhood Chain:</b> Tap "🏹 Deposit from Robinhood Chain" to deposit USDG, ETH, WETH, USDe, PONS, or CASHCAT — auto-swapped to USDC and swept to Arc via NEAR Intents.\n` +
+    `• <b>Starknet:</b> Tap "🐺 Deposit from Starknet" to deposit STRK, direct ETH, ZEC, or XRP — auto-swapped to USDC and swept to Arc via NEAR Intents.\n` +
     `• <b>Zero Bridge Hassle:</b> Native tokens and cross-chain assets are automatically swapped to USDC and bridged to Arc Mainnet with <b>zero user gas or signing required</b>!\n` +
     `• <b>Instant Settlement:</b> Native USDC is credited to your Proxim balance automatically (no manual sweep needed — "Scan & Sweep" is just an optional accelerator).\n\n` +
     `<i>Send any amount to your address above, or tap below to scan for recent transfers.</i>`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
-        [Markup.button.callback("Ⓝ Deposit from NEAR",    "action_near_deposit")],
-        [Markup.button.callback("☀️ Deposit from Solana", "action_solana_deposit")],
-        [Markup.button.callback("🔄 Scan & Sweep Deposits", "action_sweep_deposits")],
+        [Markup.button.callback("Ⓝ Deposit from NEAR",             "action_near_deposit")],
+        [Markup.button.callback("☀️ Deposit from Solana",          "action_solana_deposit")],
+        [Markup.button.callback("🏹 Deposit from Robinhood Chain", "action_robinhood_deposit")],
+        [Markup.button.callback("🐺 Deposit from Starknet",        "action_starknet_deposit")],
+        [Markup.button.callback("🔄 Scan & Sweep Deposits",        "action_sweep_deposits")],
         [Markup.button.callback("🔑 Export Wallet Keys", "action_export_keys")],
         [Markup.button.callback("💳 Buy USDC with Card (Onramp)", "gateway_onramp")],
         [Markup.button.url("🔎 View on Explorer", getExplorerUrl(arcAddress))],
@@ -2270,6 +2280,12 @@ flowsMultichain.registerMultichainFlows(bot, {
   backToMenu,
 });
 
+flowsDeveloper.registerDeveloperFlows(bot, {
+  requireUser,
+  getContext,
+  backToMenu,
+});
+
 // ─── Withdraw / Cash Out ──────────────────────────────────────────────────────
 
 function buildWithdrawAmountKeyboard() {
@@ -2910,7 +2926,7 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
         `──────────────────────────\n` +
         `💼 <b>Account:</b> ${isBiz ? "Business Treasury" : "Personal Wallet"}\n` +
         `💰 <b>Current Balance:</b> <b>$${arcBal.toFixed(2)} USDC</b>\n` +
-        `🏛 <b>Network:</b> Arc Mainnet (Domain 26)${explorerLink}\n\n` +
+        `🏛 <b>Network:</b> Arc Mainnet${explorerLink}\n\n` +
         `<i>Your dollars have been credited and are ready to spend, save, or send!</i>`,
         {
           parse_mode: "HTML",
@@ -2948,7 +2964,7 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
         `💼 <b>Account:</b> ${isBiz ? "Business Treasury" : "Personal Wallet"}\n` +
         `💰 <b>Incoming Amount:</b> <b>$${amountToBridge.toFixed(2)} USDC</b>\n` +
         `🔄 <b>Status:</b> Cross-chain settlement to Arc Mainnet in progress...\n` +
-        `🏛 <b>Network:</b> Arc Mainnet (Domain 26)\n\n` +
+        `🏛 <b>Network:</b> Arc Mainnet\n\n` +
         `<i>Your payment was detected on Solana and is finalizing cross-chain minting to Arc Mainnet. Your balance will update automatically in approximately 1-2 minutes!</i>`,
         {
           parse_mode: "HTML",
@@ -4989,7 +5005,7 @@ bot.on("text", async (ctx) => {
             `──────────────────────────\n` +
             `💼 <b>Account:</b> ${isBiz ? "Business Treasury" : "Personal Wallet"}\n` +
             `💰 <b>Current Balance:</b> <b>$${arcBal.toFixed(2)} USDC</b>\n` +
-            `🏛 <b>Network:</b> Arc Mainnet (Domain 26)${explorerLink}\n\n` +
+            `🏛 <b>Network:</b> Arc Mainnet${explorerLink}\n\n` +
             `<i>Your dollars have been credited and are ready to spend, save, or send!</i>`,
             {
               parse_mode: "HTML",
@@ -5006,7 +5022,7 @@ bot.on("text", async (ctx) => {
             `💼 <b>Account:</b> ${isBiz ? "Business Treasury" : "Personal Wallet"}\n` +
             `💰 <b>Incoming Amount:</b> <b>$${amountToBridge.toFixed(2)} USDC</b>\n` +
             `🔄 <b>Status:</b> Cross-chain settlement to Arc Mainnet in progress...\n` +
-            `🏛 <b>Network:</b> Arc Mainnet (Domain 26)\n\n` +
+            `🏛 <b>Network:</b> Arc Mainnet\n\n` +
             `<i>Your payment was detected on Solana and is finalizing cross-chain minting to Arc Mainnet. Your balance will update automatically in approximately 1-2 minutes!</i>`,
             {
               parse_mode: "HTML",
@@ -5518,7 +5534,16 @@ bot.on("text", async (ctx) => {
     // src/flows_multichain.js; bot.js delegates. ───────────────────────────
 
     if (flowsMultichain.handlesState(state.type)) {
-      return flowsMultichain.handleMultichainState(bot, ctx, state, text, userId);
+      try {
+        return await flowsMultichain.handleMultichainState(bot, ctx, state, text, userId);
+      } catch (err) {
+        console.error(`[bot:multichain_state_error:${state.type}]`, err);
+        return ctx.reply("❌ An unexpected error occurred. Please try again or type cancel.", backToMenu);
+      }
+    }
+
+    if (state.type.startsWith("await_dev_") || state.type.startsWith("dev_")) {
+      return flowsDeveloper.handleDeveloperState(bot, ctx, state, text, userId);
     }
 
     if (state.type === "await_withdraw_amount") {
@@ -6264,6 +6289,7 @@ bot.on("text", async (ctx) => {
 
       const { Wallet } = require("ethers");
       const userWallet = new Wallet(pk, arcProvider);
+      userWallet.telegramId = userId;
       let withdrawResult = null;
       try {
         withdrawResult = await savings.withdrawFromVaultWithFee({
@@ -6273,17 +6299,37 @@ bot.on("text", async (ctx) => {
         });
       } catch (err) {
         console.warn("[bot:earn_withdraw] Notice from on-chain fee withdrawal:", err.message);
-        db.closeYieldPosition(userId, state.data.total, {
-          devFee: state.data.devFee || 0,
-          accountType: context,
-          positionId: posId,
-        });
       }
 
-      const withdrawTx = withdrawResult?.withdrawTxHash;
+      let withdrawTx = withdrawResult?.withdrawTxHash;
       const feeTx = withdrawResult?.feeTxHash;
       const devFeeAmount = withdrawResult ? withdrawResult.devFeeUsdc : (state.data.devFee || 0);
       const netPaid = withdrawResult ? withdrawResult.netUserAmountUsdc : state.data.total;
+
+      // Fallback: If withdrawal was simulated or on-chain vault tx reverted, disburse real USDC directly on Arc
+      if (!withdrawTx || withdrawTx === "0xsimulated_withdraw_tx_hash" || withdrawResult?.simulated) {
+        try {
+          const cctpBridge = require("./src/cctp_bridge");
+          const disburseHash = await cctpBridge.disburseDirectOnArc({
+            recipientArcAddress: userWallet.address,
+            amountUsdc: netPaid,
+          });
+          if (disburseHash) {
+            withdrawTx = disburseHash;
+          }
+        } catch (disbursementErr) {
+          console.warn("[bot:earn_withdraw] Relayer fallback disburse note:", disbursementErr.message);
+        }
+      }
+
+      if (!withdrawResult) {
+        db.closeYieldPosition(userId, netPaid, {
+          devFee: devFeeAmount,
+          accountType: context,
+          positionId: posId,
+          withdrawTxHash: withdrawTx,
+        });
+      }
 
       db.recordTransaction(userId, "yield_withdraw", BigInt(Math.round(netPaid * 1e18)), "confirmed", withdrawTx, context);
       idempotency.completeOperationIdempotency(idemKey, { txHash: withdrawTx });
@@ -6349,6 +6395,7 @@ bot.on("text", async (ctx) => {
         toToken: state.data.toToken,
         amountIn: amount,
         expectedOut: estReceive,
+        protocolFee: quote?.protocolFee ? parseFloat(quote.protocolFee) : 0,
       }, state.context);
 
       const payLabel = state.data.fromToken === "USDC" ? `$${amount.toFixed(2)} Dollars` : `€${amount.toFixed(2)} Euros`;
@@ -6411,6 +6458,22 @@ bot.on("text", async (ctx) => {
         "confirmed",
         null
       );
+
+      // Route swap protocol fee to platform fee recipient on Arc if configured
+      const feeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.PAYIT_DEV_FEE_ADDRESS;
+      const protocolFeeAmount = parseFloat(state.data.protocolFee || 0);
+      if (protocolFeeAmount > 0.0001 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
+        try {
+          const userWallet = walletLib.walletFromPrivateKey(pk);
+          if (userWallet.address.toLowerCase() !== feeRecipient.toLowerCase()) {
+            const feeMicro = walletLib.parseToMicro(protocolFeeAmount.toFixed(4));
+            await walletLib.sendSponsoredOrDirectTransaction(userWallet, feeRecipient, feeMicro);
+            console.log(`[bot:swap] Collected $${protocolFeeAmount} swap protocol fee -> ${feeRecipient}`);
+          }
+        } catch (feeErr) {
+          console.warn("[bot:swap_fee_route_note]", feeErr.message);
+        }
+      }
       try {
         db.awardPoints(userId, POINTS.swap || 4, "token_swap", `Swapped ${state.data.amountIn} ${state.data.fromToken}`);
       } catch (e) {}

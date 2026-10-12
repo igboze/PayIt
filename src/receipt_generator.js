@@ -51,8 +51,11 @@ function buildReceiptSvg(opts) {
     txHash       = null,
   } = opts;
 
-  const statusColor  = status === "Confirmed" ? "#16a34a" : "#d97706";
-  const statusBadge  = status === "Confirmed" ? "✓ Confirmed" : "⏳ Pending";
+  const isDeposit    = type.toLowerCase().includes("deposit") || type.toLowerCase().includes("received");
+  const amtHeader    = isDeposit ? "Amount received" : "Amount sent";
+  const isConfirmed  = status === "Confirmed" || status === "Received";
+  const statusColor  = isConfirmed ? "#16a34a" : "#d97706";
+  const statusBadge  = isConfirmed ? (isDeposit ? "✓ Received" : "✓ Confirmed") : "⏳ Pending";
   const dateStr      = new Date(timestamp).toLocaleString("en-GB", {
     day: "2-digit", month: "short", year: "numeric",
     hour: "2-digit", minute: "2-digit",
@@ -102,7 +105,7 @@ function buildReceiptSvg(opts) {
   <!-- Amount block -->
   <rect x="140" y="90" width="400" height="80" fill="#ffffff" rx="10"
         filter="url(#shadow)"/>
-  <text x="340" y="130" font-size="13" fill="#64748b" text-anchor="middle">Amount sent</text>
+  <text x="340" y="130" font-size="13" fill="#64748b" text-anchor="middle">${escape(amtHeader)}</text>
   <text x="340" y="158" font-size="30" font-weight="700" fill="#0f766e" text-anchor="middle">${Number(amountUsdc).toFixed(2)} ${escape(token)}</text>
   ${nairaLine}
 

@@ -24,7 +24,7 @@ async function getFxRates() {
   return rates?.rates?.[chain] || {};
 }
 
-const SWAP_PROTOCOL_FEE_BPS = Number(process.env.SWAP_PROTOCOL_FEE_BPS ?? 25); // 0.25% protocol fee
+const SWAP_PROTOCOL_FEE_BPS = Number(process.env.SWAP_PROTOCOL_FEE_BPS ?? 50); // 0.50% protocol fee
 
 /**
  * Get quote for swapping tokenIn -> tokenOut (USDC <-> EURC).

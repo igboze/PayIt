@@ -8,6 +8,7 @@ const { getNetworkConfig, getExplorerUrl } = require("./network");
 const gateway = require("./gateway");
 const { receiveCctpMessageOnSolana, getSolanaConnection } = require("./multichain");
 const db = require("./db");
+const { generateReceiptPNG } = require("./receipt_generator");
 
 const CIRCLE_IRIS_API_V2 = "https://iris-api.circle.com/v2";
 const CIRCLE_IRIS_API_V1 = "https://iris-api.circle.com/v1";
@@ -572,20 +573,43 @@ async function completeInboundCctpTransferFlow({
       db.updateTransactionByTxHash(solanaBurnSig, "confirmed", arcTxHash);
       console.log(`[cctp_bridge:inbound_flow] ✓ Inbound CCTP mint completed on Arc: ${arcTxHash}`);
 
-      // Send confirmation to user if Telegram bot and ID available
+      // Send confirmation to user with PNG receipt if Telegram bot and ID available
       if (bot && telegramId) {
         try {
           const explorerUrl = getExplorerUrl(arcTxHash, "tx");
-          await bot.telegram.sendMessage(
-            telegramId,
-            `🎉 <b>Deposit Settled & Credited!</b>\n` +
+          const explorerLink = explorerUrl ? `\n🔗 <a href="${explorerUrl}">View on Arcscan</a>` : "";
+          const userObj = db.getUser(telegramId);
+
+          let receiptPath = null;
+          try {
+            receiptPath = await generateReceiptPNG({
+              receiptId: `DEP-${arcTxHash ? arcTxHash.slice(0, 10) : Date.now()}`,
+              senderName: "Cross-Chain Deposit",
+              senderAddress: userObj?.deposit_address || null,
+              recipientName: userObj ? (userObj.business_name || userObj.first_name || "Proxim Account") : "Proxim Account",
+              recipientAddress: userObj?.deposit_address || null,
+              amountUsdc: Number(amountUsdc),
+              token: "USDC",
+              type: "Deposit",
+              timestamp: new Date().toISOString(),
+              status: "Confirmed",
+              txHash: arcTxHash,
+            });
+          } catch (_) {}
+
+          const caption = `🎉 <b>Deposit Received & Credited!</b>\n` +
             `──────────────────────────\n` +
             `💰 <b>Dollars Credited:</b> $${Number(amountUsdc).toFixed(2)} USDC\n` +
-            `🏛 <b>Network:</b> Arc Mainnet (Domain 26)\n` +
-            `🔗 <a href="${explorerUrl}">View on Arcscan</a>\n\n` +
-            `<i>Your balance has been updated and is ready to spend, save, or send!</i>`,
-            { parse_mode: "HTML" }
-          );
+            `🏛 <b>Network:</b> Arc Mainnet${explorerLink}\n\n` +
+            `<i>Your balance has been updated and is ready to spend, save, or send!</i>`;
+
+          if (receiptPath && typeof bot.telegram.sendPhoto === "function") {
+            await bot.telegram.sendPhoto(telegramId, { source: receiptPath }, { caption, parse_mode: "HTML" }).catch(async () => {
+              await bot.telegram.sendMessage(telegramId, caption, { parse_mode: "HTML" });
+            });
+          } else {
+            await bot.telegram.sendMessage(telegramId, caption, { parse_mode: "HTML" });
+          }
         } catch (botErr) {
           console.warn("[cctp_bridge:inbound_flow] User notification warning:", botErr.message);
         }
@@ -650,16 +674,39 @@ async function recoverPendingInboundCctpTransfers(bot = null) {
 
             if (bot && item.telegram_id) {
               const explorerUrl = getExplorerUrl(arcTxHash, "tx");
-              await bot.telegram.sendMessage(
-                item.telegram_id,
-                `🎉 <b>Deposit Settled & Credited!</b>\n` +
+              const explorerLink = explorerUrl ? `\n🔗 <a href="${explorerUrl}">View on Arcscan</a>` : "";
+              const userObj = db.getUser(item.telegram_id);
+
+              let receiptPath = null;
+              try {
+                receiptPath = await generateReceiptPNG({
+                  receiptId: `DEP-${arcTxHash ? arcTxHash.slice(0, 10) : Date.now()}`,
+                  senderName: "Cross-Chain Deposit",
+                  senderAddress: userObj?.deposit_address || null,
+                  recipientName: userObj ? (userObj.business_name || userObj.first_name || "Proxim Account") : "Proxim Account",
+                  recipientAddress: userObj?.deposit_address || null,
+                  amountUsdc: Number(item.amount_usdc),
+                  token: "USDC",
+                  type: "Deposit",
+                  timestamp: new Date().toISOString(),
+                  status: "Confirmed",
+                  txHash: arcTxHash,
+                });
+              } catch (_) {}
+
+              const caption = `🎉 <b>Deposit Received & Credited!</b>\n` +
                 `──────────────────────────\n` +
                 `💰 <b>Dollars Credited:</b> $${Number(item.amount_usdc).toFixed(2)} USDC\n` +
-                `🏛 <b>Network:</b> Arc Mainnet (Domain 26)\n` +
-                `🔗 <a href="${explorerUrl}">View on Arcscan</a>\n\n` +
-                `<i>Your balance has been updated and is ready to spend, save, or send!</i>`,
-                { parse_mode: "HTML" }
-              ).catch(() => {});
+                `🏛 <b>Network:</b> Arc Mainnet${explorerLink}\n\n` +
+                `<i>Your balance has been updated and is ready to spend, save, or send!</i>`;
+
+              if (receiptPath && typeof bot.telegram.sendPhoto === "function") {
+                await bot.telegram.sendPhoto(item.telegram_id, { source: receiptPath }, { caption, parse_mode: "HTML" }).catch(async () => {
+                  await bot.telegram.sendMessage(item.telegram_id, caption, { parse_mode: "HTML" }).catch(() => {});
+                });
+              } else {
+                await bot.telegram.sendMessage(item.telegram_id, caption, { parse_mode: "HTML" }).catch(() => {});
+              }
             }
           }
         } catch (redeemErr) {

@@ -17,6 +17,7 @@ const fx = require("./fx");
 const nearLib = require("./near");
 const chains = require("./chains");
 const convState = require("./conversation_state");
+const { shouldReprocessConversationState } = require("./conversation_flow");
 const { moveFundsBetweenChains, executeCrossChainWithdrawal } = require("../agent/executor");
 
 // Bot-local helpers, injected by bot.js at registration time.
@@ -26,6 +27,8 @@ function registerMultichainFlows(bot, depsIn = {}) {
   deps = { bot, ...depsIn };
   registerNearDepositActions(bot);
   registerSolanaDepositActions(bot);
+  registerRobinhoodDepositActions(bot);
+  registerStarknetDepositActions(bot);
   registerMoveFundsActions(bot);
   registerCrossChainWithdrawActions(bot);
 }
@@ -264,6 +267,154 @@ async function showSolanaTokenSelection(ctx) {
   );
 }
 
+// ─── Robinhood Chain Deposit via NEAR Intents (1Click) ────────────────────────
+
+function registerRobinhoodDepositActions(bot) {
+  const { requireUser, getContext } = deps;
+
+  bot.action("action_robinhood_deposit", async (ctx) => {
+    ctx.answerCbQuery();
+    const user = requireUser(ctx);
+    if (!user) return;
+    return showRobinhoodTokenSelection(ctx);
+  });
+
+  bot.action(/^action_hood_tok_([A-Za-z0-9_]+)$/, async (ctx) => {
+    ctx.answerCbQuery();
+    const user = requireUser(ctx);
+    if (!user) return;
+    const sym = ctx.match[1];
+
+    const token = await nearLib.resolveRobinhoodToken(sym);
+    if (!token) return ctx.reply("Token not found on Robinhood Chain. Please choose from the list.", deps.backToMenu);
+
+    convState.setState(
+      ctx.from.id,
+      "await_robinhood_amount",
+      {
+        originAsset: token.assetId,
+        originSymbol: token.symbol,
+        originDecimals: token.decimals,
+        minDeposit: token.minDeposit || 1,
+      },
+      getContext(ctx.from.id)
+    );
+
+    return ctx.reply(
+      `🏹 <b>Deposit ${token.name || token.symbol} from Robinhood Chain</b>\n──────────────────────────\n` +
+      `How much <b>${token.symbol}</b> would you like to deposit? (min ${token.minDeposit || 1} ${token.symbol})\n\n` +
+      `<i>NEAR Intents will auto-convert your ${token.symbol} into Base USDC and sweep it to your Arc balance.\nYou just need to send — no manual bridge needed.</i>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([[Markup.button.callback("« Back to Tokens", "action_robinhood_deposit")]]),
+      }
+    );
+  });
+}
+
+async function showRobinhoodTokenSelection(ctx) {
+  const keyboard = [
+    [
+      Markup.button.callback("💵 USDG",    "action_hood_tok_USDG"),
+      Markup.button.callback("🔷 ETH",     "action_hood_tok_ETH"),
+    ],
+    [
+      Markup.button.callback("🔷 WETH",    "action_hood_tok_WETH"),
+      Markup.button.callback("🟢 USDe",    "action_hood_tok_USDe"),
+    ],
+    [
+      Markup.button.callback("🪙 PONS",    "action_hood_tok_PONS"),
+      Markup.button.callback("🐱 CASHCAT", "action_hood_tok_CASHCAT"),
+    ],
+    [
+      Markup.button.callback("❌ Cancel",  "main_menu"),
+    ],
+  ];
+
+  return ctx.reply(
+    `🏹 <b>Deposit from Robinhood Chain</b>\n──────────────────────────\n` +
+    `Send supported tokens on <b>Robinhood Chain</b> (Ethereum L2) to a <b>one-time deposit address</b>.\n` +
+    `NEAR Intents will automatically swap it to <b>USDC on Base</b> and sweep it to your <b>Arc</b> balance (~2–5 min).\n\n` +
+    `Select a token to deposit:`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard(keyboard),
+    }
+  );
+}
+
+// ─── Starknet Chain Deposit via NEAR Intents (1Click) ─────────────────────────
+
+function registerStarknetDepositActions(bot) {
+  const { requireUser, getContext } = deps;
+
+  bot.action("action_starknet_deposit", async (ctx) => {
+    ctx.answerCbQuery();
+    const user = requireUser(ctx);
+    if (!user) return;
+    return showStarknetTokenSelection(ctx);
+  });
+
+  bot.action(/^action_stark_tok_([A-Za-z0-9_]+)$/, async (ctx) => {
+    ctx.answerCbQuery();
+    const user = requireUser(ctx);
+    if (!user) return;
+    const sym = ctx.match[1];
+
+    const token = await nearLib.resolveStarknetToken(sym);
+    if (!token) return ctx.reply("Token not found on Starknet. Please choose from the list.", deps.backToMenu);
+
+    convState.setState(
+      ctx.from.id,
+      "await_starknet_amount",
+      {
+        originAsset: token.assetId,
+        originSymbol: token.symbol,
+        originDecimals: token.decimals,
+        minDeposit: token.minDeposit || 1,
+      },
+      getContext(ctx.from.id)
+    );
+
+    return ctx.reply(
+      `🐺 <b>Deposit ${token.name || token.symbol} from Starknet</b>\n──────────────────────────\n` +
+      `How much <b>${token.symbol}</b> would you like to deposit? (min ${token.minDeposit || 1} ${token.symbol})\n\n` +
+      `<i>NEAR Intents will auto-convert your ${token.symbol} into Base USDC and sweep it to your Arc balance.\nYou just need to send — zero manual bridge needed.</i>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([[Markup.button.callback("« Back to Tokens", "action_starknet_deposit")]]),
+      }
+    );
+  });
+}
+
+async function showStarknetTokenSelection(ctx) {
+  const keyboard = [
+    [
+      Markup.button.callback("🐺 STRK", "action_stark_tok_STRK"),
+      Markup.button.callback("🔷 ETH",  "action_stark_tok_ETH"),
+    ],
+    [
+      Markup.button.callback("🛡️ ZEC",  "action_stark_tok_ZEC"),
+      Markup.button.callback("✕ XRP",   "action_stark_tok_XRP"),
+    ],
+    [
+      Markup.button.callback("❌ Cancel", "main_menu"),
+    ],
+  ];
+
+  return ctx.reply(
+    `🐺 <b>Deposit from Starknet</b>\n──────────────────────────\n` +
+    `Send supported tokens on <b>Starknet</b> (STRK, direct ETH, ZEC, XRP) to a <b>one-time deposit address</b>.\n` +
+    `NEAR Intents will automatically swap it to <b>USDC on Base</b> and sweep it to your <b>Arc</b> balance (~2–5 min).\n\n` +
+    `Select a token to deposit:`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard(keyboard),
+    }
+  );
+}
+
 // ─── Move Funds: CCTP rebalancing between Arc and Solana (Phase 2) ───────────
 
 function registerMoveFundsActions(bot) {
@@ -298,7 +449,7 @@ function registerMoveFundsActions(bot) {
       `🔀 <b>Move Funds Between Chains</b>\n──────────────────────────\n` +
       `⚡ <b>Arc:</b> $${arcUsdc.toFixed(2)}\n` +
       `☀️ <b>Solana:</b> $${solUsdc.toFixed(2)}\n\n` +
-      `<i>Moves use Circle CCTP — funds arrive on the other chain in ~1–5 minutes. ` +
+      `<i>Transfers move directly across networks — funds arrive in ~1–3 minutes. ` +
       `No Proxim fee (network gas only).</i>`,
       { parse_mode: "HTML", ...Markup.inlineKeyboard(buttons) }
     );
@@ -378,7 +529,7 @@ function registerMoveFundsActions(bot) {
       `🔀 <b>Confirm Move</b>\n──────────────────────────\n` +
       `• <b>Route:</b> ${dirLabel}\n` +
       `• <b>Amount:</b> $${amount.toFixed(2)} USDC\n\n` +
-      `<i>Uses Circle CCTP. Funds arrive in ~1–5 minutes. Network gas only — no Proxim fee.</i>\n\n` +
+      `<i>Direct transfer — funds arrive in ~1–3 minutes. Network gas only — no Proxim fee.</i>\n\n` +
       `💬 <i>Send your 4-digit PIN into the chat (e.g. 1234) to confirm:</i>`,
       {
         parse_mode: "HTML",
@@ -470,7 +621,7 @@ function validateAddressForChain(chainKey, addr) {
     return /^T[a-km-zA-HJ-NP-Z1-9]{33}$/.test(clean);
   }
   if (chainKey === "near") {
-    return /^(([a-z0-9_-]+\.)*near|[a-f0-9]{64})$/.test(clean);
+    return /^(([a-z0-9_-]+\.)*(near|tg)|[a-f0-9]{64})$/i.test(clean);
   }
   return true;
 }
@@ -482,6 +633,7 @@ function registerCrossChainWithdrawActions(bot) {
     ctx.answerCbQuery();
     const user = requireUser(ctx);
     if (!user) return;
+    convState.clearState(ctx.from.id);
     return showCrossChainWithdrawChainSelection(ctx);
   });
 
@@ -510,6 +662,18 @@ function registerCrossChainWithdrawActions(bot) {
         ...Markup.inlineKeyboard([[Markup.button.callback("« Back to Chains", "action_crosschain_withdraw")]]),
       }
     );
+  });
+
+  bot.action(/^action_ccw_amt_([0-9.]+)$/, async (ctx) => {
+    ctx.answerCbQuery();
+    const user = requireUser(ctx);
+    if (!user) return;
+    const amount = parseFloat(ctx.match[1]);
+    const state = convState.getState(ctx.from.id);
+    if (!state || state.type !== "await_ccw_amount") {
+      return ctx.reply("Session expired. Please start your withdrawal again.", deps.backToMenu);
+    }
+    return handleCrossChainWithdrawAmount(ctx, user, state, amount, ctx.from.id);
   });
 }
 
@@ -543,12 +707,71 @@ async function showCrossChainWithdrawChainSelection(ctx) {
   return ctx.reply(
     `📤 <b>Withdraw to External Chain / Wallet</b>\n──────────────────────────\n` +
     `Withdraw your Arc balance to <b>any chain</b> with zero bridge hassle.\n\n` +
-    `• <b>Solana & EVMs:</b> Instant Circle CCTP (100% native USDC, 0 slippage)\n` +
+    `• <b>Solana & Major Networks:</b> Instant Direct Transfer (100% 1:1 USDC, 0 slippage)\n` +
     `• <b>Bitcoin, Tron & NEAR:</b> NEAR Intent routing (auto-swapped & delivered)\n\n` +
     `Select destination chain:`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard(keyboard),
+    }
+  );
+}
+
+async function handleCrossChainWithdrawAmount(ctx, user, state, amount, userId) {
+  const { getActiveWallet } = deps;
+  const chainKey = state.data?.destinationChain;
+  const chainInfo = state.data?.chainInfo || CCW_CHAINS[chainKey];
+  const destinationAddress = state.data?.destinationAddress;
+  const context = state.context || "personal";
+  const sourceAddress = getActiveWallet(user);
+
+  // Balance check on Arc
+  let arcBalance = 0;
+  try {
+    const micro = await walletLib.getNativeBalanceMicro(sourceAddress);
+    arcBalance = parseFloat(walletLib.formatMicro(micro));
+  } catch (_) {}
+
+  if (arcBalance < amount) {
+    return ctx.reply(
+      `Not enough USDC on Arc. You have $${arcBalance.toFixed(2)}, need $${amount.toFixed(2)}. ` +
+      `Enter a smaller amount or type cancel.`
+    );
+  }
+
+  convState.setState(
+    userId,
+    "confirm_ccw",
+    {
+      destinationChain: chainKey,
+      chainInfo,
+      destinationAddress,
+      amountUsdc: amount,
+    },
+    context
+  );
+
+  const estTime = chainInfo.engine === "CCTP" ? "~1–3 minutes" : "~2–5 minutes";
+  const routeDesc = chainInfo.engine === "CCTP"
+    ? "Direct Instant Transfer (100% 1:1 USDC, 0 slippage)"
+    : "NEAR Intents (auto-swap & bridge)";
+
+  const platformFee = Number(process.env.CROSSCHAIN_WITHDRAWAL_FEE_USDC ?? 0.30);
+  const netReceived = Math.max(0, amount - platformFee);
+
+  return ctx.reply(
+    `📤 <b>Confirm Cross-Chain Withdrawal</b>\n──────────────────────────\n` +
+    `🌐 <b>Destination Chain:</b> ${chainInfo.label}\n` +
+    `📍 <b>To Address:</b>\n<code>${destinationAddress}</code>\n` +
+    `💰 <b>Amount:</b> $${amount.toFixed(2)} USDC\n` +
+    `🏷️ <b>Bridge Fee:</b> $${platformFee.toFixed(2)} USDC\n` +
+    `🪙 <b>Net Receiving:</b> ~$${netReceived.toFixed(2)} in ${chainInfo.token}\n` +
+    `⏱️ <b>Est. Time:</b> ${estTime}\n` +
+    `🌉 <b>Route:</b> ${routeDesc}\n\n` +
+    `Enter your 4-digit PIN to confirm:`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_crosschain_withdraw")]]),
     }
   );
 }
@@ -559,6 +782,8 @@ const HANDLED_STATES = new Set([
   "await_near_amount",
   "await_near_custom_token",
   "await_solana_amount",
+  "await_robinhood_amount",
+  "await_starknet_amount",
   "await_ccw_address",
   "await_ccw_amount",
   "confirm_ccw",
@@ -571,7 +796,8 @@ function handlesState(stateType) {
 }
 
 async function handleMultichainState(bot, ctx, state, text, userId) {
-  const { requireUser, getContext, getActiveWallet, getOrDeriveSolanaAddress, deleteSensitiveMessage } = deps;
+  try {
+    const { requireUser, getContext, getActiveWallet, getOrDeriveSolanaAddress, deleteSensitiveMessage } = deps;
 
   // ── NEAR custom token entry ──────────────────────────────────────────────
 
@@ -779,6 +1005,162 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
     );
   }
 
+  // ── Robinhood Chain deposit amount (via NEAR Intents 1Click) ───────────
+
+  if (state.type === "await_robinhood_amount") {
+    const { getActiveWallet } = deps;
+    const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
+    const tokenSymbol = state.data?.originSymbol || "USDG";
+    const originAsset = state.data?.originAsset;
+    const originDecimals = state.data?.originDecimals || 18;
+    const minDeposit = state.data?.minDeposit ?? 1;
+
+    if (isNaN(amount) || amount <= 0 || (minDeposit && amount < minDeposit)) {
+      if (shouldReprocessConversationState("await_robinhood_amount", text)) {
+        convState.clearState(userId);
+        return bot.handleUpdate({ update_id: ctx.update.update_id, message: ctx.message });
+      }
+      return ctx.reply(`Enter a valid amount of ${tokenSymbol} (minimum ${minDeposit} ${tokenSymbol}). Type cancel to stop.`);
+    }
+
+    const user = requireUser(ctx);
+    if (!user) return;
+    const context = state.context || "personal";
+    const recipientAddress = getActiveWallet(user);
+    // On Robinhood Chain (EVM L2), refund address is user's EVM address
+    const refundTo = recipientAddress;
+
+    await ctx.reply(`⏳ Requesting NEAR Intent quote to convert ${amount} ${tokenSymbol} from Robinhood Chain to USDC…`);
+    let row;
+    try {
+      row = await nearLib.createRobinhoodDeposit({
+        telegramId: userId,
+        accountType: context,
+        originAsset,
+        originSymbol: tokenSymbol,
+        originDecimals,
+        amount,
+        recipientAddress,
+        refundTo,
+      });
+    } catch (err) {
+      convState.clearState(userId);
+      return ctx.reply(`❌ Could not open a Robinhood Chain deposit: ${err.message}`, deps.backToMenu);
+    }
+    convState.clearState(userId);
+
+    if (!row || !row.deposit_address) {
+      return ctx.reply(
+        "❌ The bridge could not quote this token right now. " +
+        "This token may not be supported by the solver yet — try again in a few minutes.",
+        deps.backToMenu
+      );
+    }
+
+    const expireIn = process.env.NEAR_INTENT_DEADLINE_MIN || 30;
+    return ctx.reply(
+      `🏹 <b>Robinhood Chain Deposit Instructions</b>\n──────────────────────────\n` +
+      `💰 <b>Send exactly:</b> ${amount} ${tokenSymbol}\n` +
+      (row.amount_out ? `💵 <b>Estimated Received:</b> ~$${Number(row.amount_out).toFixed(2)} USDC on Arc\n` : "") +
+      `📍 <b>Robinhood Chain deposit address (one-time):</b>\n<code>${row.deposit_address}</code>\n` +
+      (row.deposit_memo ? `📝 <b>Memo (required):</b> <code>${row.deposit_memo}</code>\n` : "") +
+      `⏰ <b>Valid for:</b> ${expireIn} minutes\n\n` +
+      `🔄 <b>Auto-Conversion:</b> NEAR Intents swaps your ${tokenSymbol} → USDC on Base → sweeps to Arc.\n` +
+      `⚠️ <i>Send ${tokenSymbol} on Robinhood Chain only, exact amount, before expiry.\n` +
+      `If anything goes wrong, funds auto-refund to your address: <code>${refundTo}</code></i>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("🔄 Check Bridge Status", `action_near_status_${row.id}`)],
+          [Markup.button.callback("💰 Check Balance", "action_balance")],
+          [Markup.button.callback("🏠 Main Menu", "main_menu")],
+        ]),
+      }
+    );
+  }
+
+  // ── Starknet deposit amount (via NEAR Intents 1Click) ───────────
+
+  if (state.type === "await_starknet_amount") {
+    const { getActiveWallet } = deps;
+    const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
+    const tokenSymbol = state.data?.originSymbol || "STRK";
+    const originAsset = state.data?.originAsset;
+    const originDecimals = state.data?.originDecimals || 18;
+    const minDeposit = state.data?.minDeposit ?? 1;
+
+    if (isNaN(amount) || amount <= 0 || (minDeposit && amount < minDeposit)) {
+      if (shouldReprocessConversationState("await_starknet_amount", text)) {
+        convState.clearState(userId);
+        return bot.handleUpdate({ update_id: ctx.update.update_id, message: ctx.message });
+      }
+      return ctx.reply(`Enter a valid amount of ${tokenSymbol} (minimum ${minDeposit} ${tokenSymbol}). Type cancel to stop.`);
+    }
+
+    const user = requireUser(ctx);
+    if (!user) return;
+    const context = state.context || "personal";
+    const recipientAddress = getActiveWallet(user);
+
+    // Starknet refund address: derive deterministic Starknet address or fallback to EVM address
+    let refundTo = recipientAddress;
+    try {
+      const userPk = db.getSystemDecryptedPrivateKey(user, context);
+      if (userPk) {
+        const derived = nearLib.deriveStarknetAddress(userPk);
+        refundTo = derived.starknetAddress;
+      }
+    } catch (_) {}
+
+    await ctx.reply(`⏳ Requesting NEAR Intent quote to convert ${amount} ${tokenSymbol} from Starknet to USDC…`);
+    let row;
+    try {
+      row = await nearLib.createStarknetDeposit({
+        telegramId: userId,
+        accountType: context,
+        originAsset,
+        originSymbol: tokenSymbol,
+        originDecimals,
+        amount,
+        recipientAddress,
+        refundTo,
+      });
+    } catch (err) {
+      convState.clearState(userId);
+      return ctx.reply(`❌ Could not open a Starknet deposit: ${err.message}`, deps.backToMenu);
+    }
+    convState.clearState(userId);
+
+    if (!row || !row.deposit_address) {
+      return ctx.reply(
+        "❌ The bridge could not quote this token right now. " +
+        "This token may not be supported by the solver yet — try again in a few minutes.",
+        deps.backToMenu
+      );
+    }
+
+    const expireIn = process.env.NEAR_INTENT_DEADLINE_MIN || 30;
+    return ctx.reply(
+      `🐺 <b>Starknet Deposit Instructions</b>\n──────────────────────────\n` +
+      `💰 <b>Send exactly:</b> ${amount} ${tokenSymbol}\n` +
+      (row.amount_out ? `💵 <b>Estimated Received:</b> ~$${Number(row.amount_out).toFixed(2)} USDC on Arc\n` : "") +
+      `📍 <b>Starknet deposit address (one-time):</b>\n<code>${row.deposit_address}</code>\n` +
+      (row.deposit_memo ? `📝 <b>Memo (required):</b> <code>${row.deposit_memo}</code>\n` : "") +
+      `⏰ <b>Valid for:</b> ${expireIn} minutes\n\n` +
+      `🔄 <b>Auto-Conversion:</b> NEAR Intents swaps your ${tokenSymbol} → USDC on Base → sweeps to Arc.\n` +
+      `⚠️ <i>Send ${tokenSymbol} on Starknet only, exact amount, before expiry.\n` +
+      `If anything goes wrong, funds auto-refund to your address: <code>${refundTo}</code></i>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("🔄 Check Bridge Status", `action_near_status_${row.id}`)],
+          [Markup.button.callback("💰 Check Balance", "action_balance")],
+          [Markup.button.callback("🏠 Main Menu", "main_menu")],
+        ]),
+      }
+    );
+  }
+
   // ── Cross-Chain Withdraw: Address input ──────────────────────────────────
   if (state.type === "await_ccw_address") {
     const input = text.trim();
@@ -801,25 +1183,38 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
       );
     }
 
+    const destinationAddress = chainKey === "near" ? input.toLowerCase() : input;
+
     convState.setState(
       userId,
       "await_ccw_amount",
       {
         destinationChain: chainKey,
         chainInfo,
-        destinationAddress: input,
+        destinationAddress,
       },
       state.context || getContext(userId)
     );
 
     return ctx.reply(
       `📤 <b>Withdraw to ${chainInfo.label}</b>\n──────────────────────────\n` +
-      `📍 <b>Destination:</b> <code>${input}</code>\n` +
+      `📍 <b>Destination:</b> <code>${destinationAddress}</code>\n` +
       `🪙 <b>Receiving:</b> ${chainInfo.token}\n\n` +
       `How much USD would you like to withdraw? (min $1.00)`,
       {
         parse_mode: "HTML",
-        ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_crosschain_withdraw")]]),
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback("$5", "action_ccw_amt_5"),
+            Markup.button.callback("$10", "action_ccw_amt_10"),
+            Markup.button.callback("$25", "action_ccw_amt_25"),
+          ],
+          [
+            Markup.button.callback("$50", "action_ccw_amt_50"),
+            Markup.button.callback("$100", "action_ccw_amt_100"),
+          ],
+          [Markup.button.callback("❌ Cancel", "action_crosschain_withdraw")],
+        ]),
       }
     );
   }
@@ -827,10 +1222,6 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
   // ── Cross-Chain Withdraw: Amount input ───────────────────────────────────
   if (state.type === "await_ccw_amount") {
     const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
-    const chainKey = state.data?.destinationChain;
-    const chainInfo = state.data?.chainInfo || CCW_CHAINS[chainKey];
-    const destinationAddress = state.data?.destinationAddress;
-
     if (isNaN(amount) || amount < 1) {
       if (shouldReprocessConversationState("await_ccw_amount", text)) {
         convState.clearState(userId);
@@ -841,58 +1232,7 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
 
     const user = requireUser(ctx);
     if (!user) return;
-    const context = state.context || "personal";
-    const sourceAddress = getActiveWallet(user);
-
-    // Balance check on Arc
-    let arcBalance = 0;
-    try {
-      const micro = await walletLib.getNativeBalanceMicro(sourceAddress);
-      arcBalance = parseFloat(walletLib.formatMicro(micro));
-    } catch (_) {}
-
-    if (arcBalance < amount) {
-      return ctx.reply(
-        `Not enough USDC on Arc. You have $${arcBalance.toFixed(2)}, need $${amount.toFixed(2)}. ` +
-        `Enter a smaller amount or type cancel.`
-      );
-    }
-
-    convState.setState(
-      userId,
-      "confirm_ccw",
-      {
-        destinationChain: chainKey,
-        chainInfo,
-        destinationAddress,
-        amountUsdc: amount,
-      },
-      context
-    );
-
-    const estTime = chainInfo.engine === "CCTP" ? "~1–3 minutes" : "~2–5 minutes";
-    const routeDesc = chainInfo.engine === "CCTP"
-      ? "Circle CCTP (100% native USDC, 0 slippage)"
-      : "NEAR Intents (auto-swap & bridge)";
-
-    const platformFee = Number(process.env.CROSSCHAIN_WITHDRAWAL_FEE_USDC ?? 0.30);
-    const netReceived = Math.max(0, amount - platformFee);
-
-    return ctx.reply(
-      `📤 <b>Confirm Cross-Chain Withdrawal</b>\n──────────────────────────\n` +
-      `🌐 <b>Destination Chain:</b> ${chainInfo.label}\n` +
-      `📍 <b>To Address:</b>\n<code>${destinationAddress}</code>\n` +
-      `💰 <b>Amount:</b> $${amount.toFixed(2)} USDC\n` +
-      `🏷️ <b>Bridge Fee:</b> $${platformFee.toFixed(2)} USDC\n` +
-      `🪙 <b>Net Receiving:</b> ~$${netReceived.toFixed(2)} in ${chainInfo.token}\n` +
-      `⏱️ <b>Est. Time:</b> ${estTime}\n` +
-      `🌉 <b>Route:</b> ${routeDesc}\n\n` +
-      `Enter your 4-digit PIN to confirm:`,
-      {
-        parse_mode: "HTML",
-        ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]),
-      }
-    );
+    return handleCrossChainWithdrawAmount(ctx, user, state, amount, userId);
   }
 
   // ── Cross-Chain Withdraw: PIN Confirmation & Execution ───────────────────
@@ -1049,10 +1389,16 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
   }
 
   return false;
+  } catch (err) {
+    console.error(`[flows_multichain:handleMultichainState:${state?.type}]`, err);
+    return ctx.reply("❌ An unexpected error occurred while processing your request. Please try again or tap Cancel.", deps.backToMenu);
+  }
 }
 
 module.exports = {
   registerMultichainFlows,
   handleMultichainState,
   handlesState,
+  validateAddressForChain,
+  CCW_CHAINS,
 };

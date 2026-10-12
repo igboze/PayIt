@@ -13,6 +13,8 @@ const bizDb = require("./biz_db");
 const evmDepositSweeper = require("./evm_deposit_sweeper");
 const walletLib = require("./wallet");
 const solAddrLib = require("./solana_address");
+const { generateReceiptPNG } = require("./receipt_generator");
+const apiRoutes = require("./api_routes");
 
 function verifyAlchemySignature(rawBody, headers, signingKey) {
   if (!signingKey) return true;
@@ -257,7 +259,7 @@ async function processPajEvent(payload, bot) {
       console.warn("[webhook_server] Record onramp tx error:", recErr.message);
     }
 
-    // Send Telegram alert with accurate status
+    // Send Telegram alert with accurate status and PNG receipt when settled
     if (bot && targetTelegramId) {
       try {
         if (isDirectlySettled) {
@@ -265,17 +267,44 @@ async function processPajEvent(payload, bot) {
           const explorerLink = explorerUrl
             ? `\n🔗 <a href="${explorerUrl}">View on Arcscan</a>`
             : "";
-          await bot.telegram.sendMessage(
-            targetTelegramId,
-            `🎉 <b>Deposit Settled & Credited (${accountLabel})!</b>\n` +
+          const caption =
+            `🎉 <b>Deposit Received & Credited (${accountLabel})!</b>\n` +
             `──────────────────────────\n` +
             `💵 <b>Amount Deposited:</b> ₦${fiatAmount ? fiatAmount.toLocaleString() : "..."}\n` +
             `💰 <b>Dollars Credited:</b> $${amountUsdc.toFixed(2)} USDC\n` +
             `💼 <b>Account:</b> ${accountLabel}\n` +
-            `🏛 <b>Network:</b> Arc Mainnet (Domain 26)${explorerLink}\n\n` +
-            `<i>Your balance is updated and ready to spend, save, or send!</i>`,
-            { parse_mode: "HTML" }
-          );
+            `🏛 <b>Network:</b> Arc Mainnet${explorerLink}\n\n` +
+            `<i>Your balance is updated and ready to spend, save, or send!</i>`;
+
+          let receiptPath = null;
+          try {
+            receiptPath = await generateReceiptPNG({
+              receiptId: `DEP-${(settlementTxHash || "").slice(0, 10) || Date.now()}`,
+              senderName: "Bank Transfer Deposit",
+              senderAddress: recipientArcAddress,
+              recipientName: accountLabel,
+              recipientAddress: recipientArcAddress,
+              amountUsdc: amountUsdc,
+              token: "USDC",
+              nairaEquiv: fiatAmount ? `₦${fiatAmount.toLocaleString()}` : null,
+              type: "Deposit",
+              timestamp: new Date().toISOString(),
+              status: "Confirmed",
+              txHash: settlementTxHash,
+            });
+          } catch (_) {}
+
+          if (receiptPath && typeof bot.telegram.sendPhoto === "function") {
+            await bot.telegram.sendPhoto(
+              targetTelegramId,
+              { source: receiptPath },
+              { caption, parse_mode: "HTML" }
+            ).catch(async () => {
+              await bot.telegram.sendMessage(targetTelegramId, caption, { parse_mode: "HTML" });
+            });
+          } else {
+            await bot.telegram.sendMessage(targetTelegramId, caption, { parse_mode: "HTML" });
+          }
         } else if (process.env.AUTO_BRIDGE_SOLANA_TO_ARC !== "true") {
           const solAddress = user ? (isBizAccount ? user.biz_solana_deposit_address : user.solana_deposit_address) : null;
           const solAddrLine = solAddress ? `\n📍 <b>Solana Address:</b> <code>${solAddress}</code>` : "";
@@ -293,13 +322,13 @@ async function processPajEvent(payload, bot) {
         } else {
           await bot.telegram.sendMessage(
             targetTelegramId,
-            `⏳ <b>Deposit Received (${accountLabel})!</b>\n` +
+            `⏳ <b>Transaction in Progress (${accountLabel})</b>\n` +
             `──────────────────────────\n` +
             `💵 <b>Amount Deposited:</b> ₦${fiatAmount ? fiatAmount.toLocaleString() : "..."}\n` +
             `💰 <b>Incoming:</b> $${amountUsdc.toFixed(2)} USDC\n` +
             `💼 <b>Account:</b> ${accountLabel}\n` +
-            `🔄 <b>Status:</b> Bridging funds cross-chain to Arc Mainnet...\n\n` +
-            `<i>Your balance will automatically update once minted on Arc.</i>`,
+            `🔄 <b>Status:</b> Processing deposit & transferring to your Proxim account on Arc...\n\n` +
+            `<i>Your balance will automatically update once received on Arc.</i>`,
             { parse_mode: "HTML" }
           );
         }
@@ -377,6 +406,11 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
     : null;
 
   const server = http.createServer(async (req, res) => {
+    // 0. Builder REST API routes (/api/v1/*)
+    if (req.url && (req.url.startsWith("/api/v1") || req.url.startsWith("/api/v1/"))) {
+      return apiRoutes.handleApiRequest(req, res, bot);
+    }
+
     // 1. Health check
     if (req.method === "GET" && req.url === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });

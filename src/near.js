@@ -30,6 +30,18 @@ const ASSETS = {
   SOL_NATIVE: process.env.NEAR_INTENTS_SOL || "nep141:sol-5ce3bf3a31af18be40ba30f721101b4341690186.omft.near",
   SOL_USDC: process.env.NEAR_INTENTS_SOL_USDC || "nep141:sol-epcrhbpnlmxqtqljmohe4hfzs4etwe7qkpnvqwqfqmfwjr.omft.near",
   SOL_USDT: process.env.NEAR_INTENTS_SOL_USDT || "nep141:sol-es9vmfrzacermjfrf4h4qmzezaqsf3s9a9jiqvtqx3fcd.omft.near",
+  // Robinhood Chain tokens via NEAR Intents (omft.near bridge)
+  HOOD_USDG: process.env.NEAR_INTENTS_HOOD_USDG || "nep141:hood-0x5fc5360d0400a0fd4f2af552add042d716f1d168.omft.near",
+  HOOD_ETH: process.env.NEAR_INTENTS_HOOD_ETH || "nep141:hood.omft.near",
+  HOOD_WETH: process.env.NEAR_INTENTS_HOOD_WETH || "nep141:hood-0x0bd7d308f8e1639fab988df18a8011f41eacad73.omft.near",
+  HOOD_USDE: process.env.NEAR_INTENTS_HOOD_USDE || "nep141:hood-0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34.omft.near",
+  HOOD_PONS: process.env.NEAR_INTENTS_HOOD_PONS || "nep141:hood-0x39dbed3a2bd333467115de45665cc57f813c4571.omft.near",
+  HOOD_CASHCAT: process.env.NEAR_INTENTS_HOOD_CASHCAT || "nep141:hood-0x020bfc650a365f8bb26819deaabf3e21291018b4.omft.near",
+  // Starknet tokens via NEAR Intents (1Click)
+  STARKNET_STRK: process.env.NEAR_INTENTS_STARKNET_STRK || "nep141:starknet.omft.near",
+  STARKNET_ETH: process.env.NEAR_INTENTS_STARKNET_ETH || "1cs_v1:starknet:erc20:0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
+  STARKNET_ZEC: process.env.NEAR_INTENTS_STARKNET_ZEC || "1cs_v1:starknet:erc20:0x05ce53b9b68fb8e9ecab9283a96d97948914733fd6ed8d9a53a276a419497841",
+  STARKNET_XRP: process.env.NEAR_INTENTS_STARKNET_XRP || "1cs_v1:starknet:erc20:0x07bc19585817a78f2304b2f3b31f954d80e8a1eff6e8d81a84eb5cedb7267728",
 };
 
 // Known popular NEAR tokens supported by 1Click / Defuse solvers.
@@ -155,6 +167,120 @@ const SUPPORTED_SOLANA_TOKENS = [
   },
 ];
 
+/**
+ * Robinhood Chain tokens supported by 1Click / NEAR Intents.
+ * Robinhood Chain is an Arbitrum Orbit L2 (EVM).
+ * refundType is "ORIGIN_CHAIN" which refunds to the user's EVM address on Robinhood Chain.
+ */
+const SUPPORTED_ROBINHOOD_TOKENS = [
+  {
+    symbol: "USDG",
+    name: "Global Dollar (Robinhood)",
+    assetId: ASSETS.HOOD_USDG,
+    decimals: 6,
+    icon: "💵",
+    minDeposit: 1,
+    blockchain: "hood",
+    contractAddress: "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+  },
+  {
+    symbol: "ETH",
+    name: "Ethereum (Robinhood)",
+    assetId: ASSETS.HOOD_ETH,
+    decimals: 18,
+    icon: "🔷",
+    minDeposit: 0.001,
+    blockchain: "hood",
+  },
+  {
+    symbol: "WETH",
+    name: "Wrapped Ether (Robinhood)",
+    assetId: ASSETS.HOOD_WETH,
+    decimals: 18,
+    icon: "🔷",
+    minDeposit: 0.001,
+    blockchain: "hood",
+    contractAddress: "0x0bd7d308f8e1639fab988df18a8011f41eacad73",
+  },
+  {
+    symbol: "USDe",
+    name: "Ethena USDe (Robinhood)",
+    assetId: ASSETS.HOOD_USDE,
+    decimals: 18,
+    icon: "🟢",
+    minDeposit: 1,
+    blockchain: "hood",
+    contractAddress: "0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34",
+  },
+  {
+    symbol: "PONS",
+    name: "Pons (Robinhood)",
+    assetId: ASSETS.HOOD_PONS,
+    decimals: 18,
+    icon: "🪙",
+    minDeposit: 1,
+    blockchain: "hood",
+    contractAddress: "0x39dbed3a2bd333467115de45665cc57f813c4571",
+  },
+  {
+    symbol: "CASHCAT",
+    name: "Cash Cat (Robinhood)",
+    assetId: ASSETS.HOOD_CASHCAT,
+    decimals: 18,
+    icon: "🐱",
+    minDeposit: 1,
+    blockchain: "hood",
+    contractAddress: "0x020bfc650a365f8bb26819deaabf3e21291018b4",
+  },
+];
+
+/**
+ * Starknet tokens supported by 1Click / NEAR Intents.
+ * Users deposit on Starknet to a one-time Starknet address,
+ * which 1Click solvers swap to Base USDC and auto-sweep to Arc.
+ */
+const SUPPORTED_STARKNET_TOKENS = [
+  {
+    symbol: "STRK",
+    name: "Starknet Token",
+    assetId: ASSETS.STARKNET_STRK,
+    decimals: 18,
+    icon: "🐺",
+    minDeposit: 5,
+    blockchain: "starknet",
+  },
+  {
+    symbol: "ETH",
+    name: "Ethereum (Starknet)",
+    assetId: ASSETS.STARKNET_ETH,
+    decimals: 18,
+    icon: "🔷",
+    minDeposit: 0.001,
+    blockchain: "starknet",
+    contractAddress: "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
+  },
+  {
+    symbol: "ZEC",
+    name: "Zcash (Starknet)",
+    assetId: ASSETS.STARKNET_ZEC,
+    decimals: 8,
+    icon: "🛡️",
+    minDeposit: 0.01,
+    blockchain: "starknet",
+    contractAddress: "0x05ce53b9b68fb8e9ecab9283a96d97948914733fd6ed8d9a53a276a419497841",
+  },
+  {
+    symbol: "XRP",
+    name: "Ripple (Starknet)",
+    assetId: ASSETS.STARKNET_XRP,
+    decimals: 6,
+    icon: "✕",
+    minDeposit: 2,
+    blockchain: "starknet",
+    contractAddress: "0x07bc19585817a78f2304b2f3b31f954d80e8a1eff6e8d81a84eb5cedb7267728",
+  },
+];
+
 const TERMINAL_STATUSES = new Set(["SUCCESS", "REFUNDED", "FAILED"]);
 
 function getApiKey() {
@@ -163,6 +289,28 @@ function getApiKey() {
 
 function getApiBaseUrl() {
   return (process.env.NEAR_INTENTS_API_URL || DEFAULT_API_URL).replace(/\/+$/, "");
+}
+
+/**
+ * Platform fee recipient for NEAR Intents 1Click deposits.
+ * Defaults to the platform's APP_FEE_RECIPIENT_ADDRESS or PAYIT_DEV_FEE_ADDRESS.
+ */
+function getNearFeeRecipient() {
+  return (
+    process.env.NEAR_INTENT_FEE_RECIPIENT ||
+    process.env.APP_FEE_RECIPIENT_ADDRESS ||
+    process.env.PAYIT_DEV_FEE_ADDRESS ||
+    "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359"
+  );
+}
+
+/**
+ * Platform fee in basis points (BPS) collected on 1Click solver deposits.
+ * Default 50 bps (0.50%), configurable via NEAR_INTENT_FEE_BPS.
+ */
+function getNearFeeBps() {
+  const bps = Number(process.env.NEAR_INTENT_FEE_BPS ?? 50);
+  return isNaN(bps) || bps < 0 ? 50 : Math.min(bps, 500);
 }
 
 /**
@@ -184,6 +332,10 @@ let _cachedDynamicTokens = null;
 let _cachedDynamicTokensExpiry = 0;
 let _cachedSolanaTokens = null;
 let _cachedSolanaTokensExpiry = 0;
+let _cachedRobinhoodTokens = null;
+let _cachedRobinhoodTokensExpiry = 0;
+let _cachedStarknetTokens = null;
+let _cachedStarknetTokensExpiry = 0;
 
 /**
  * Fetch supported tokens dynamically from 1Click API `/v0/tokens` if available,
@@ -340,6 +492,201 @@ async function resolveSolanaToken(query) {
 }
 
 /**
+ * Fetch Robinhood Chain tokens supported by 1Click. Returns static catalog merged with
+ * any extra hood-blockchain tokens from the /v0/tokens endpoint.
+ */
+async function getSupportedRobinhoodTokens(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && _cachedRobinhoodTokens && now < _cachedRobinhoodTokensExpiry) {
+    return _cachedRobinhoodTokens;
+  }
+
+  // Start with static catalog
+  const tokenMap = new Map();
+  for (const t of SUPPORTED_ROBINHOOD_TOKENS) {
+    tokenMap.set(t.symbol.toUpperCase(), { ...t });
+    tokenMap.set(t.assetId.toLowerCase(), { ...t });
+    if (t.contractAddress) {
+      tokenMap.set(t.contractAddress.toLowerCase(), { ...t });
+    }
+  }
+
+  try {
+    const axios = require("axios");
+    const key = getApiKey();
+    const headers = { "Content-Type": "application/json" };
+    if (key) headers["Authorization"] = `Bearer ${key}`;
+
+    const res = await axios({
+      method: "GET",
+      url: `${getApiBaseUrl()}/v0/tokens`,
+      timeout: 3500,
+      headers,
+    });
+
+    const tokens = Array.isArray(res.data) ? res.data : [];
+    for (const item of tokens) {
+      const isHood = item.blockchain === "hood" ||
+        (typeof item.assetId === "string" && (item.assetId.includes("hood-") || item.assetId.startsWith("nep141:hood")));
+      if (!isHood) continue;
+
+      const sym = (item.symbol || "").toUpperCase();
+      const existing = tokenMap.get(sym);
+      const entry = {
+        symbol: sym || "TOKEN",
+        name: item.name || (sym === "USDG" ? "Global Dollar" : sym === "ETH" ? "Ethereum" : sym),
+        assetId: item.assetId,
+        decimals: Number(item.decimals ?? 18),
+        icon: sym === "USDG" || sym.includes("USD") ? "💵" : (sym === "ETH" || sym === "WETH") ? "🔷" : sym === "USDE" ? "🟢" : sym === "CASHCAT" ? "🐱" : "🪙",
+        priceUsd: item.price ? Number(item.price) : undefined,
+        minDeposit: existing?.minDeposit ?? (sym.includes("USD") ? 1 : 0.001),
+        blockchain: "hood",
+        contractAddress: item.contractAddress,
+      };
+      tokenMap.set(sym, entry);
+      tokenMap.set(item.assetId.toLowerCase(), entry);
+      if (item.contractAddress) {
+        tokenMap.set(item.contractAddress.toLowerCase(), entry);
+      }
+    }
+  } catch (_) {
+    // Fallback to static catalog
+  }
+
+  const list = [];
+  const seenAssets = new Set();
+  for (const token of tokenMap.values()) {
+    if (seenAssets.has(token.assetId)) continue;
+    seenAssets.add(token.assetId);
+    list.push(token);
+  }
+
+  _cachedRobinhoodTokens = list;
+  _cachedRobinhoodTokensExpiry = now + 60 * 60 * 1000;
+  return list;
+}
+
+/**
+ * Resolve a Robinhood Chain token by symbol, assetId or contract address.
+ */
+async function resolveRobinhoodToken(query) {
+  if (!query) return null;
+  const q = String(query).trim();
+  const qUpper = q.toUpperCase();
+  const qLower = q.toLowerCase();
+
+  const tokens = await getSupportedRobinhoodTokens();
+  const bySymbol = tokens.find((t) => t.symbol.toUpperCase() === qUpper);
+  if (bySymbol) return bySymbol;
+
+  const byAssetId = tokens.find((t) => t.assetId.toLowerCase() === qLower);
+  if (byAssetId) return byAssetId;
+
+  const byContract = tokens.find((t) => t.contractAddress && t.contractAddress.toLowerCase() === qLower);
+  if (byContract) return byContract;
+
+  return null;
+}
+
+/**
+ * Fetch Starknet tokens supported by 1Click. Returns static catalog merged with
+ * any extra starknet-blockchain tokens from the /v0/tokens endpoint.
+ */
+async function getSupportedStarknetTokens(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && _cachedStarknetTokens && now < _cachedStarknetTokensExpiry) {
+    return _cachedStarknetTokens;
+  }
+
+  // Start with static catalog
+  const tokenMap = new Map();
+  for (const t of SUPPORTED_STARKNET_TOKENS) {
+    tokenMap.set(t.symbol.toUpperCase(), { ...t });
+    tokenMap.set(t.assetId.toLowerCase(), { ...t });
+    if (t.contractAddress) {
+      tokenMap.set(t.contractAddress.toLowerCase(), { ...t });
+    }
+  }
+
+  try {
+    const axios = require("axios");
+    const key = getApiKey();
+    const headers = { "Content-Type": "application/json" };
+    if (key) headers["Authorization"] = `Bearer ${key}`;
+
+    const res = await axios({
+      method: "GET",
+      url: `${getApiBaseUrl()}/v0/tokens`,
+      timeout: 3500,
+      headers,
+    });
+
+    const tokens = Array.isArray(res.data) ? res.data : [];
+    for (const item of tokens) {
+      const isStark =
+        item.blockchain === "starknet" ||
+        (typeof item.assetId === "string" && (item.assetId.includes("starknet") || item.assetId.startsWith("1cs_v1:starknet")));
+      if (!isStark) continue;
+
+      const sym = (item.symbol || "").toUpperCase();
+      const existing = tokenMap.get(sym);
+      const entry = {
+        symbol: sym || "TOKEN",
+        name: item.name || (sym === "STRK" ? "Starknet Token" : (sym === "ETH" ? "Ethereum (Starknet)" : sym)),
+        assetId: item.assetId,
+        decimals: Number(item.decimals ?? 18),
+        icon: sym === "STRK" ? "🐺" : sym === "ETH" ? "🔷" : sym.includes("USD") ? "💵" : sym === "ZEC" ? "🛡️" : sym === "XRP" ? "✕" : "🪙",
+        priceUsd: item.price ? Number(item.price) : undefined,
+        minDeposit: existing?.minDeposit ?? (sym === "STRK" ? 5 : (sym === "ETH" ? 0.001 : 1)),
+        blockchain: "starknet",
+        ...(item.contractAddress ? { contractAddress: item.contractAddress } : {}),
+      };
+      tokenMap.set(sym, entry);
+      tokenMap.set(item.assetId.toLowerCase(), entry);
+      if (item.contractAddress) {
+        tokenMap.set(item.contractAddress.toLowerCase(), entry);
+      }
+    }
+  } catch (_) {
+    // Fallback to static catalog
+  }
+
+  const list = [];
+  const seenAssets = new Set();
+  for (const token of tokenMap.values()) {
+    if (seenAssets.has(token.assetId)) continue;
+    seenAssets.add(token.assetId);
+    list.push(token);
+  }
+
+  _cachedStarknetTokens = list;
+  _cachedStarknetTokensExpiry = now + 60 * 60 * 1000;
+  return list;
+}
+
+/**
+ * Resolve a Starknet token by symbol, assetId or contract address.
+ */
+async function resolveStarknetToken(query) {
+  if (!query) return null;
+  const q = String(query).trim();
+  const qUpper = q.toUpperCase();
+  const qLower = q.toLowerCase();
+
+  const tokens = await getSupportedStarknetTokens();
+  const bySymbol = tokens.find((t) => t.symbol.toUpperCase() === qUpper);
+  if (bySymbol) return bySymbol;
+
+  const byAssetId = tokens.find((t) => t.assetId.toLowerCase() === qLower);
+  if (byAssetId) return byAssetId;
+
+  const byContract = tokens.find((t) => t.contractAddress && t.contractAddress.toLowerCase() === qLower);
+  if (byContract) return byContract;
+
+  return null;
+}
+
+/**
  * Resolve token by symbol, assetId or contract address.
  */
 async function resolveNearToken(query) {
@@ -416,6 +763,30 @@ function deriveNearAddress(evmPrivateKey) {
   };
 }
 
+/**
+ * Derive the user's Starknet address from their EVM private key.
+ * Uses HMAC-SHA512 with domain-separated salt "Proxim-Starknet-Intent-Bridge-Salt"
+ * and returns a standard 0x-prefixed 32-byte hex string (66 chars).
+ *
+ * @param {string} evmPrivateKey - hex private key (0x-prefixed or not)
+ * @returns {{ starknetAddress: string, publicKeyHex: string }}
+ */
+function deriveStarknetAddress(evmPrivateKey) {
+  if (!evmPrivateKey) throw new Error("EVM private key required to derive Starknet address");
+  const cleanHex = evmPrivateKey.startsWith("0x") ? evmPrivateKey.slice(2) : evmPrivateKey;
+  const keyBuffer = Buffer.from(cleanHex, "hex");
+
+  const hmac = crypto.createHmac("sha512", Buffer.from("Proxim-Starknet-Intent-Bridge-Salt", "utf8"));
+  hmac.update(keyBuffer);
+  const seed32 = hmac.digest().subarray(0, 32);
+
+  const addressHex = "0x" + seed32.toString("hex").toLowerCase();
+  return {
+    starknetAddress: addressHex,
+    publicKeyHex: seed32.toString("hex").toLowerCase(),
+  };
+}
+
 function defaultDeadline() {
   const mins = Number(process.env.NEAR_INTENT_DEADLINE_MIN || 30);
   return new Date(Date.now() + mins * 60 * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -425,15 +796,25 @@ function defaultDeadline() {
  * Request a 1Click quote (dry or real).
  *
  * @param {object} p
- * @param {string} p.originAsset     - e.g. ASSETS.NEAR_USDC or any supported NEAR token
- * @param {string} p.destinationAsset- e.g. ASSETS.BASE_USDC
- * @param {string} p.amount          - base units as integer string (accounting for origin token decimals)
- * @param {string} p.recipient       - destination-chain address (user's Arc/Base address)
- * @param {string} p.refundTo        - origin-chain refund address (user's derived NEAR account)
+ * @param {string} p.originAsset      - e.g. ASSETS.NEAR_USDC or any supported token
+ * @param {string} p.destinationAsset - e.g. ASSETS.BASE_USDC
+ * @param {string} p.amount           - base units as integer string
+ * @param {string} p.recipient        - destination-chain address (user's Arc/Base address)
+ * @param {string} p.refundTo         - origin-chain refund address
  * @param {boolean} [p.dry=false]
+ * @param {Array<{recipient: string, fee: number}>} [p.appFees]
  */
-async function getQuote({ originAsset, destinationAsset, amount, recipient, refundTo, dry = false }) {
-  return apiRequest("POST", "/v0/quote", {
+async function getQuote({ originAsset, destinationAsset, amount, recipient, refundTo, dry = false, appFees = null }) {
+  let resolvedAppFees = appFees;
+  if (!resolvedAppFees) {
+    const feeRecipient = getNearFeeRecipient();
+    const feeBps = getNearFeeBps();
+    if (feeRecipient && feeBps > 0) {
+      resolvedAppFees = [{ recipient: feeRecipient, fee: feeBps }];
+    }
+  }
+
+  const payload = {
     dry,
     swapType: "EXACT_INPUT",
     slippageTolerance: Number(process.env.NEAR_INTENT_SLIPPAGE_BPS || 100),
@@ -446,7 +827,13 @@ async function getQuote({ originAsset, destinationAsset, amount, recipient, refu
     recipient,
     recipientType: "DESTINATION_CHAIN",
     deadline: defaultDeadline(),
-  });
+  };
+
+  if (resolvedAppFees && resolvedAppFees.length > 0) {
+    payload.appFees = resolvedAppFees;
+  }
+
+  return apiRequest("POST", "/v0/quote", payload);
 }
 
 /**
@@ -571,15 +958,28 @@ async function pollPendingNearDeposits(bot = null) {
           const inAmount = row.amount_token !== undefined && row.amount_token !== null ? Number(row.amount_token) : Number(row.amount_usdc);
           const inSymbol = row.origin_symbol || (row.origin_asset?.includes("usdc") ? "USDC" : "tokens");
 
+          const isHood = row.origin_asset && (row.origin_asset.includes("hood-") || row.origin_asset.includes("hood."));
+          const isSol = row.origin_asset && row.origin_asset.includes("sol-");
+          const isStark = row.origin_asset && (row.origin_asset.includes("starknet") || row.origin_asset.includes("strk") || row.origin_symbol === "STRK");
+          const chainName = isHood ? "Robinhood Chain" : (isSol ? "Solana" : (isStark ? "Starknet" : "NEAR"));
+          const routeName = isHood
+            ? "Robinhood Chain → NEAR Intents (1Click) → Base USDC"
+            : (isSol
+              ? "Solana → NEAR Intents (1Click) → Base USDC"
+              : (isStark
+                ? "Starknet → NEAR Intents (1Click) → Base USDC"
+                : "NEAR Intents (1Click) → Base USDC"));
+          const refundChainName = isHood ? "Robinhood/EVM" : (isSol ? "Solana" : (isStark ? "Starknet" : "NEAR"));
+
           if (status === "SUCCESS") {
             const out = row.amount_out ? `$${row.amount_out.toFixed(2)}` : "your USDC";
             await bot.telegram.sendMessage(
               row.telegram_id,
-              `🎉 <b>NEAR Deposit Bridged!</b>\n` +
+              `🎉 <b>${chainName} Deposit Bridged!</b>\n` +
               `──────────────────────────\n` +
               `📥 <b>Deposited:</b> ${inAmount} ${inSymbol}\n` +
               `💰 <b>Converted to:</b> ${out} USDC arriving on Base\n` +
-              `🌉 <b>Route:</b> NEAR Intents (1Click) → Base USDC\n` +
+              `🌉 <b>Route:</b> ${routeName}\n` +
               `⏳ <b>Next:</b> Auto-sweeping to your Arc balance — you'll get a credit confirmation in about a minute.\n\n` +
               `<i>No action needed.</i>`,
               { parse_mode: "HTML" }
@@ -595,9 +995,9 @@ async function pollPendingNearDeposits(bot = null) {
           } else if (status === "REFUNDED") {
             await bot.telegram.sendMessage(
               row.telegram_id,
-              `↩️ <b>NEAR Deposit Refunded</b>\n` +
+              `↩️ <b>${chainName} Deposit Refunded</b>\n` +
               `──────────────────────────\n` +
-              `Your deposit of ${inAmount} ${inSymbol} was refunded to your NEAR refund address:\n` +
+              `Your deposit of ${inAmount} ${inSymbol} was refunded to your ${refundChainName} refund address:\n` +
               `<code>${row.refund_to}</code>\n\n` +
               `<i>Contact support if you need help moving it back.</i>`,
               { parse_mode: "HTML" }
@@ -605,7 +1005,7 @@ async function pollPendingNearDeposits(bot = null) {
           } else {
             await bot.telegram.sendMessage(
               row.telegram_id,
-              `❌ <b>NEAR Deposit Failed</b>\n──────────────────────────\n` +
+              `❌ <b>${chainName} Deposit Failed</b>\n──────────────────────────\n` +
               `The bridge could not complete. Your funds were not lost — contact support with reference <code>${row.correlation_id || row.id}</code>.`,
               { parse_mode: "HTML" }
             ).catch(() => {});
@@ -632,11 +1032,17 @@ async function expireStaleNearDeposits(bot = null) {
     if (bot && row.telegram_id) {
       const inAmount = row.amount_token !== undefined && row.amount_token !== null ? Number(row.amount_token) : Number(row.amount_usdc);
       const inSymbol = row.origin_symbol || (row.origin_asset?.includes("usdc") ? "USDC" : "tokens");
+      const isHood = row.origin_asset && (row.origin_asset.includes("hood-") || row.origin_asset.includes("hood."));
+      const isSol = row.origin_asset && row.origin_asset.includes("sol-");
+      const isStark = row.origin_asset && (row.origin_asset.includes("starknet") || row.origin_asset.includes("strk") || row.origin_symbol === "STRK");
+      const chainName = isHood ? "Robinhood Chain" : (isSol ? "Solana" : (isStark ? "Starknet" : "NEAR"));
+      const refundChainName = isHood ? "Robinhood/EVM" : (isSol ? "Solana" : (isStark ? "Starknet" : "NEAR"));
+
       await bot.telegram.sendMessage(
         row.telegram_id,
-        `⏰ <b>NEAR Deposit Window Expired</b>\n──────────────────────────\n` +
+        `⏰ <b>${chainName} Deposit Window Expired</b>\n──────────────────────────\n` +
         `The deposit address for ${inAmount} ${inSymbol} was one-time and has expired.\n` +
-        `<i>If you already sent funds, don't worry — they refund automatically to your NEAR refund address.</i>`,
+        `<i>If you already sent funds, don't worry — they refund automatically to your ${refundChainName} refund address.</i>`,
         { parse_mode: "HTML" }
       ).catch(() => {});
     }
@@ -717,21 +1123,179 @@ async function createSolanaDeposit({
   }
 }
 
+/**
+ * Create a Robinhood Chain → Base USDC → Arc deposit via NEAR Intents 1Click.
+ *
+ * The user sends Robinhood Chain tokens (USDG, ETH, WETH, USDe, PONS, CASHCAT)
+ * to the returned deposit address (an EVM address on Robinhood Chain).
+ * 1Click/Defuse swaps to Base USDC and delivers to the user's Arc/Base address.
+ * On failure, funds are refunded to the user's Robinhood Chain EVM address (refundTo).
+ *
+ * @param {object} p
+ * @param {number|string} p.telegramId
+ * @param {string} [p.accountType="personal"]
+ * @param {string} p.originAsset      - Robinhood token assetId (hood-*.omft.near or hood.omft.near)
+ * @param {string} p.originSymbol
+ * @param {number} p.originDecimals
+ * @param {number} p.amount           - human-readable amount
+ * @param {string} p.recipientAddress - user's Arc/Base wallet (destination)
+ * @param {string} p.refundTo         - user's Robinhood/EVM address (refund target)
+ * @returns {Promise<object>} near_deposits row
+ */
+async function createRobinhoodDeposit({
+  telegramId,
+  accountType = "personal",
+  originAsset,
+  originSymbol,
+  originDecimals,
+  amount,
+  recipientAddress,
+  refundTo,
+}) {
+  if (!originAsset) throw new Error("originAsset required for Robinhood Chain deposit");
+  if (!refundTo) throw new Error("refundTo (Robinhood EVM address) required for Robinhood Chain deposit");
+
+  const id = db.createNearDeposit({
+    telegramId,
+    accountType,
+    originAsset,
+    originSymbol,
+    amountToken: amount,
+    amountUsdc: amount,
+    recipientAddress,
+    refundTo,
+    status: "quoting",
+  });
+
+  try {
+    const baseUnits = toBaseUnits(amount, originDecimals);
+    const quoteRes = await module.exports.getQuote({
+      originAsset,
+      destinationAsset: ASSETS.BASE_USDC,
+      amount: baseUnits,
+      recipient: recipientAddress,
+      // Robinhood refund: refundType="ORIGIN_CHAIN" means refund to user's EVM address
+      refundTo,
+      dry: false,
+    });
+    const q = quoteRes?.quote || {};
+    db.updateNearDeposit(id, {
+      status: "awaiting_deposit",
+      deposit_address: q.depositAddress || null,
+      deposit_memo: q.depositMemo || null,
+      amount_out: q.amountOut ? Number(q.amountOut) / 1e6 : null,
+      quote_json: JSON.stringify(quoteRes),
+      deadline: quoteRes?.quoteRequest?.deadline || null,
+      correlation_id: quoteRes?.correlationId || null,
+      origin_symbol: originSymbol,
+      amount_token: Number(amount),
+    });
+    return db.getNearDepositById(id);
+  } catch (err) {
+    db.updateNearDeposit(id, { status: "failed", error: String(err.message).slice(0, 500) });
+    throw err;
+  }
+}
+
+/**
+ * Create a Starknet → Base USDC → Arc deposit via NEAR Intents 1Click.
+ *
+ * The user sends Starknet tokens (STRK, ETH, etc.) to the returned deposit address (a Starknet address).
+ * 1Click/Defuse swaps to Base USDC and delivers to the user's Arc/Base address.
+ * On failure, funds are refunded to the user's Starknet address (refundTo).
+ *
+ * @param {object} p
+ * @param {number|string} p.telegramId
+ * @param {string} [p.accountType="personal"]
+ * @param {string} p.originAsset      - Starknet token assetId (nep141:starknet.omft.near or 1cs_v1:starknet:*)
+ * @param {string} p.originSymbol
+ * @param {number} p.originDecimals
+ * @param {number} p.amount           - human-readable amount
+ * @param {string} p.recipientAddress - user's Arc/Base wallet (destination)
+ * @param {string} p.refundTo         - user's Starknet address (refund target)
+ * @returns {Promise<object>} near_deposits row
+ */
+async function createStarknetDeposit({
+  telegramId,
+  accountType = "personal",
+  originAsset,
+  originSymbol,
+  originDecimals,
+  amount,
+  recipientAddress,
+  refundTo,
+}) {
+  if (!originAsset) throw new Error("originAsset required for Starknet deposit");
+  if (!refundTo) throw new Error("refundTo (Starknet address) required for Starknet deposit");
+
+  const id = db.createNearDeposit({
+    telegramId,
+    accountType,
+    originAsset,
+    originSymbol,
+    amountToken: amount,
+    amountUsdc: amount,
+    recipientAddress,
+    refundTo,
+    status: "quoting",
+  });
+
+  try {
+    const baseUnits = toBaseUnits(amount, originDecimals);
+    const quoteRes = await module.exports.getQuote({
+      originAsset,
+      destinationAsset: ASSETS.BASE_USDC,
+      amount: baseUnits,
+      recipient: recipientAddress,
+      // Starknet refund: refundType="ORIGIN_CHAIN" means refund to user's Starknet address
+      refundTo,
+      dry: false,
+    });
+    const q = quoteRes?.quote || {};
+    db.updateNearDeposit(id, {
+      status: "awaiting_deposit",
+      deposit_address: q.depositAddress || null,
+      deposit_memo: q.depositMemo || null,
+      amount_out: q.amountOut ? Number(q.amountOut) / 1e6 : null,
+      quote_json: JSON.stringify(quoteRes),
+      deadline: quoteRes?.quoteRequest?.deadline || null,
+      correlation_id: quoteRes?.correlationId || null,
+      origin_symbol: originSymbol,
+      amount_token: Number(amount),
+    });
+    return db.getNearDepositById(id);
+  } catch (err) {
+    db.updateNearDeposit(id, { status: "failed", error: String(err.message).slice(0, 500) });
+    throw err;
+  }
+}
+
 module.exports = {
   ASSETS,
   SUPPORTED_NEAR_TOKENS,
   SUPPORTED_SOLANA_TOKENS,
+  SUPPORTED_ROBINHOOD_TOKENS,
+  SUPPORTED_STARKNET_TOKENS,
   TERMINAL_STATUSES,
   toBaseUnits,
+  getNearFeeRecipient,
+  getNearFeeBps,
   getSupportedNearTokens,
   getSupportedSolanaTokens,
+  getSupportedRobinhoodTokens,
+  getSupportedStarknetTokens,
   resolveNearToken,
   resolveSolanaToken,
+  resolveRobinhoodToken,
+  resolveStarknetToken,
   deriveNearAddress,
+  deriveStarknetAddress,
   getQuote,
   getExecutionStatus,
   createNearDeposit,
   createSolanaDeposit,
+  createRobinhoodDeposit,
+  createStarknetDeposit,
   pollPendingNearDeposits,
   expireStaleNearDeposits,
 };
