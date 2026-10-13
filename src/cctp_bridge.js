@@ -1887,18 +1887,27 @@ async function completeCctpWithdrawalOnEvm({
 }) {
   if (!arcTxHash) throw new Error("arcTxHash is required");
 
+  // Helper to detect if a CCTP message has an unfinalized nonce (e.g. all zeros from an on-chain event log)
+  const isZeroNonceMsg = (hex) => {
+    if (!hex || typeof hex !== "string") return true;
+    const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
+    return clean.length >= 88 && clean.slice(24, 88) === "0".repeat(64);
+  };
+
   // Step 1: Ensure we have the raw CCTP message
   let msgDetails = { message: messageHex, messageHash };
-  if (!msgDetails.message) {
+  if (!msgDetails.message || isZeroNonceMsg(msgDetails.message)) {
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
         const fetched = await fetchCctpMessage(CCTP_DOMAINS.ARC, arcTxHash);
-        if (fetched?.message) {
+        if (fetched?.message && !isZeroNonceMsg(fetched.message)) {
           msgDetails = fetched;
           break;
+        } else if (fetched?.message && !msgDetails.message) {
+          msgDetails = fetched;
         }
       } catch (e) {}
-      await new Promise((r) => setTimeout(r, 3000));
+      await new Promise((r) => setTimeout(r, 2000));
     }
   }
 
@@ -1911,17 +1920,38 @@ async function completeCctpWithdrawalOnEvm({
   // Step 2: Poll Circle for attestation
   console.log(`[cctp_bridge:evm_complete] Polling Circle for attestation on ${arcTxHash}...`);
   let attestation = msgDetails.attestation;
-  if (!attestation) {
+  if (!attestation || isZeroNonceMsg(msgDetails.message)) {
     try {
-      ({ attestation } = await pollCctpAttestation(msgDetails.messageHash, maxAttempts, intervalMs, {
+      const attRes = await pollCctpAttestation(msgDetails.messageHash, maxAttempts, intervalMs, {
         txHash: arcTxHash,
         sourceDomain: CCTP_DOMAINS.ARC,
-      }));
+      });
+      if (attRes?.attestation) {
+        attestation = attRes.attestation;
+        if (attRes.message && !isZeroNonceMsg(attRes.message)) {
+          msgDetails.message = attRes.message;
+        }
+        if (attRes.messageHash) {
+          msgDetails.messageHash = attRes.messageHash;
+        }
+      }
     } catch (attErr) {
       const errMsg = `Attestation polling failed for ${arcTxHash}: ${attErr.message}`;
       try { db.failCctpPendingBurn(arcTxHash, errMsg); } catch {}
       throw new Error(errMsg);
     }
+  }
+
+  // Final validation: ensure message is canonical and not 0-nonce
+  if (isZeroNonceMsg(msgDetails.message)) {
+    try {
+      const irisMsg = await fetchCctpMessage(CCTP_DOMAINS.ARC, arcTxHash);
+      if (irisMsg?.message && !isZeroNonceMsg(irisMsg.message)) {
+        msgDetails.message = irisMsg.message;
+        if (irisMsg.messageHash) msgDetails.messageHash = irisMsg.messageHash;
+        if (irisMsg.attestation && !attestation) attestation = irisMsg.attestation;
+      }
+    } catch (_) {}
   }
   console.log(`[cctp_bridge:evm_complete] Attestation received ✓ for ${arcTxHash}`);
 
@@ -2397,13 +2427,26 @@ async function processPendingCrosschainWithdrawals(bot = null) {
       let msgHex = w.message_hex;
       let msgHash = w.message_hash;
 
-      if (!msgHex || !msgHash) {
+      const isZeroNonce = (hex) => {
+        if (!hex || typeof hex !== "string") return true;
+        const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
+        return clean.length >= 88 && clean.slice(24, 88) === "0".repeat(64);
+      };
+
+      if (!msgHex || !msgHash || isZeroNonce(msgHex)) {
         try {
           const res = await fetchCctpMessage(CCTP_DOMAINS.ARC, w.arc_tx_hash);
-          if (res && res.message && res.messageHash) {
+          if (res && res.message) {
             msgHex = res.message;
-            msgHash = res.messageHash;
-            db.updateCrosschainWithdrawal(w.id, { message_hex: msgHex, message_hash: msgHash });
+            msgHash = res.messageHash || msgHash;
+            if (res.attestation && !w.attestation) {
+              w.attestation = res.attestation;
+            }
+            db.updateCrosschainWithdrawal(w.id, {
+              message_hex: msgHex,
+              message_hash: msgHash,
+              ...(w.attestation ? { attestation: w.attestation } : {})
+            });
           }
         } catch (_) {}
       }
@@ -2415,7 +2458,7 @@ async function processPendingCrosschainWithdrawals(bot = null) {
       }
 
       let attestation = w.attestation;
-      if (!attestation) {
+      if (!attestation || isZeroNonce(msgHex)) {
         try {
           const attRes = await pollCctpAttestation(msgHash, 2, 1500, {
             txHash: w.arc_tx_hash,
@@ -2423,7 +2466,18 @@ async function processPendingCrosschainWithdrawals(bot = null) {
           });
           if (attRes && attRes.attestation) {
             attestation = attRes.attestation;
-            db.updateCrosschainWithdrawal(w.id, { attestation, status: "minting" });
+            if (attRes.message && !isZeroNonce(attRes.message)) {
+              msgHex = attRes.message;
+            }
+            if (attRes.messageHash) {
+              msgHash = attRes.messageHash;
+            }
+            db.updateCrosschainWithdrawal(w.id, {
+              attestation,
+              message_hex: msgHex,
+              message_hash: msgHash,
+              status: "minting"
+            });
           }
         } catch (_) {}
       }
