@@ -15,15 +15,78 @@ const db = require("./db");
 const cctpBridge = require("./cctp_bridge");
 const nearLib = require("./near");
 const evmSweeper = require("./evm_deposit_sweeper");
+const paj = require("./paj");
+const webhookServer = require("./webhook_server");
+const walletLib = require("./wallet");
 
 const DEFAULT_TICK_MS = 5000;
 const STALE_RUN_MINUTES = 15;
 
 /**
+ * Poll pending Paj on-ramp orders from local DB and query Paj v2 status.
+ * If completed/paid, records in ledger and sends rich deposit notification.
+ */
+async function pollPendingOnrampOrders(bot) {
+  const pendingOrders = db.getPendingOnrampOrders ? db.getPendingOnrampOrders() : [];
+  if (!pendingOrders || pendingOrders.length === 0) return { polled: 0, completed: 0 };
+
+  let completedCount = 0;
+  for (const order of pendingOrders) {
+    try {
+      const liveOrder = await paj.getOnrampOrder(order.order_id);
+      if (!liveOrder) continue;
+
+      const status = String(liveOrder.status || "").toLowerCase();
+      if (status === "completed" || status === "successful" || status === "paid" || status === "settled") {
+        const txHash = liveOrder.txHash || liveOrder.signature || liveOrder.hash || `paj-settle-${order.order_id}`;
+        
+        // Mark completed in DB
+        db.completeOnrampOrder(order.order_id, txHash);
+
+        // Record in ledger
+        const amountUsdc = Number(liveOrder.amount || order.amount_usdc || 0);
+        const amountMicro = walletLib.parseToMicro(amountUsdc.toFixed(6));
+        db.recordTransaction(
+          order.telegram_id,
+          "deposit_naira",
+          amountMicro,
+          "confirmed",
+          txHash,
+          order.account_type || "personal"
+        );
+
+        // Trigger rich notification
+        if (bot) {
+          await webhookServer.sendOnrampDepositNotification({
+            bot,
+            telegramId: order.telegram_id,
+            fiatAmount: liveOrder.fiatAmount || order.fiat_amount,
+            amountUsdc: amountUsdc,
+            accountType: order.account_type || "personal",
+            txHash,
+            orderId: order.order_id,
+            rate: liveOrder.rate || order.rate,
+            network: order.settlement_rail === "arc" ? "Arc Mainnet" : "Solana Mainnet",
+          });
+        }
+        completedCount++;
+      } else if (status === "failed" || status === "cancelled" || status === "expired") {
+        db.completeOnrampOrder(order.order_id, null, status);
+      }
+    } catch (err) {
+      console.warn(`[settlement_daemon] pollPendingOnrampOrders error on ${order.order_id}:`, err.message);
+    }
+  }
+
+  return { polled: pendingOrders.length, completed: completedCount };
+}
+
+/**
  * Default task set.  intervalMs preserves the schedules the scattered workers
  * used to run at (EVM sweep 90s, inbound recovery 20s, NEAR 60s); the
  * Arc→Solana burn retry (previously admin-manual via /retry_cctp) now runs
- * automatically every 60s so stuck Move Funds complete without intervention.
+ * automatically every 60s so stuck Move Funds complete without intervention;
+ * Paj on-ramp polling runs every 15s to notify users immediately upon deposit.
  */
 function defaultTasks() {
   return [
@@ -50,6 +113,11 @@ function defaultTasks() {
         const expired = await nearLib.expireStaleNearDeposits(bot);
         return { polled, expired };
       },
+    },
+    {
+      name: "paj_onramp_poll",
+      intervalMs: 15_000,
+      run: async ({ bot }) => pollPendingOnrampOrders(bot),
     },
   ];
 }

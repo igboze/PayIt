@@ -310,32 +310,49 @@ async function searchBankAccount(query = {}) {
  */
 function verifyWebhookSignature(rawBody, headers, webhookSecret) {
   if (!webhookSecret) return false;
-  const timestamp = headers["x-paj-timestamp"] || headers["X-PAJ-Timestamp"];
-  const signatureHeader = headers["x-paj-signature"] || headers["X-PAJ-Signature"];
+  if (!headers || typeof headers !== "object") return false;
 
-  if (!timestamp || !signatureHeader) {
+  const timestamp = headers["x-paj-timestamp"] || headers["X-PAJ-Timestamp"] || headers["x-timestamp"] || headers["timestamp"];
+  const signatureHeader = headers["x-paj-signature"] || headers["X-PAJ-Signature"] || headers["x-signature"] || headers["signature"] || headers["x-paj-sign"];
+
+  if (!signatureHeader) {
     return false;
   }
 
-  // Reject replay attacks older than 5 minutes (300 seconds)
-  const nowSec = Math.floor(Date.now() / 1000);
-  if (Math.abs(nowSec - Number(timestamp)) > 300) {
-    return false;
+  // Reject replay attacks older than 5 minutes (300 seconds) if timestamp is present
+  if (timestamp) {
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (Math.abs(nowSec - Number(timestamp)) > 300) {
+      return false;
+    }
   }
 
   const received = signatureHeader.replace(/^v1=/, "").trim();
   const rawString = Buffer.isBuffer(rawBody) ? rawBody.toString("utf8") : String(rawBody);
 
-  const expected = crypto
-    .createHmac("sha256", webhookSecret)
-    .update(`${timestamp}.${rawString}`)
-    .digest("hex");
+  // 1. Check timestamped HMAC (Paj v2 default: {timestamp}.{rawBody})
+  if (timestamp) {
+    const expectedWithTime = crypto
+      .createHmac("sha256", webhookSecret)
+      .update(`${timestamp}.${rawString}`)
+      .digest("hex");
 
-  if (received.length !== expected.length) {
-    return false;
+    if (received.length === expectedWithTime.length && crypto.timingSafeEqual(Buffer.from(received, "hex"), Buffer.from(expectedWithTime, "hex"))) {
+      return true;
+    }
   }
 
-  return crypto.timingSafeEqual(Buffer.from(received, "hex"), Buffer.from(expected, "hex"));
+  // 2. Check direct rawBody HMAC fallback
+  const expectedRaw = crypto
+    .createHmac("sha256", webhookSecret)
+    .update(rawString)
+    .digest("hex");
+
+  if (received.length === expectedRaw.length && crypto.timingSafeEqual(Buffer.from(received, "hex"), Buffer.from(expectedRaw, "hex"))) {
+    return true;
+  }
+
+  return false;
 }
 
 module.exports = {

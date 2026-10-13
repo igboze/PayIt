@@ -160,6 +160,22 @@ db.exec(`
     completed_at      TEXT,
     solana_tx_sig     TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS paj_onramp_orders (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id          TEXT UNIQUE NOT NULL,
+    telegram_id       INTEGER NOT NULL,
+    account_type      TEXT NOT NULL DEFAULT 'personal',
+    fiat_amount       REAL NOT NULL,
+    amount_usdc       REAL,
+    rate              REAL,
+    recipient_address TEXT NOT NULL,
+    settlement_rail   TEXT NOT NULL DEFAULT 'arc',
+    status            TEXT NOT NULL DEFAULT 'pending',
+    tx_hash           TEXT,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at      TEXT
+  );
 `);
 
 function ensureUserSchema() {
@@ -1628,6 +1644,89 @@ function countPendingCctpBurns() {
 }
 
 /**
+ * Record a newly initiated Paj fiat onramp order.
+ */
+function recordOnrampOrder({
+  orderId,
+  telegramId,
+  accountType = "personal",
+  fiatAmount,
+  amountUsdc,
+  rate,
+  recipientAddress,
+  settlementRail = "arc",
+}) {
+  try {
+    db.prepare(`
+      INSERT OR REPLACE INTO paj_onramp_orders
+        (order_id, telegram_id, account_type, fiat_amount, amount_usdc, rate, recipient_address, settlement_rail, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+    `).run(
+      orderId,
+      telegramId,
+      accountType,
+      Number(fiatAmount),
+      amountUsdc ? Number(amountUsdc) : null,
+      rate ? Number(rate) : null,
+      recipientAddress,
+      settlementRail
+    );
+  } catch (err) {
+    console.warn("[db:onramp_order] recordOnrampOrder error:", err.message);
+  }
+}
+
+function getOnrampOrderByOrderId(orderId) {
+  if (!orderId) return null;
+  try {
+    return db.prepare("SELECT * FROM paj_onramp_orders WHERE order_id = ?").get(orderId) || null;
+  } catch (err) {
+    console.warn("[db:onramp_order] getOnrampOrderByOrderId error:", err.message);
+    return null;
+  }
+}
+
+function getPendingOnrampOrders() {
+  try {
+    return db.prepare(`
+      SELECT * FROM paj_onramp_orders
+      WHERE status = 'pending' AND created_at >= datetime('now', '-6 hours')
+      ORDER BY id DESC
+    `).all() || [];
+  } catch (err) {
+    console.warn("[db:onramp_order] getPendingOnrampOrders error:", err.message);
+    return [];
+  }
+}
+
+function completeOnrampOrder(orderId, txHashOrOpts = {}, maybeStatus = "completed") {
+  let txHash = null;
+  let amountUsdc = null;
+  let status = maybeStatus || "completed";
+
+  if (typeof txHashOrOpts === "string") {
+    txHash = txHashOrOpts;
+  } else if (txHashOrOpts && typeof txHashOrOpts === "object") {
+    txHash = txHashOrOpts.txHash || null;
+    amountUsdc = txHashOrOpts.amountUsdc || null;
+    if (txHashOrOpts.status) status = txHashOrOpts.status;
+  }
+
+  try {
+    db.prepare(`
+      UPDATE paj_onramp_orders
+      SET status = ?,
+          tx_hash = COALESCE(?, tx_hash),
+          amount_usdc = COALESCE(?, amount_usdc),
+          completed_at = datetime('now')
+      WHERE order_id = ?
+    `).run(status, txHash || null, amountUsdc ? Number(amountUsdc) : null, orderId);
+  } catch (err) {
+    console.warn("[db:onramp_order] completeOnrampOrder error:", err.message);
+  }
+}
+
+/**
  * Record an incoming Solana→Arc CCTP transfer before or immediately after burn.
  */
 function recordInboundCctpTransfer({ telegramId, solanaAddress, arcAddress, amountUsdc, solanaBurnSig, status = "initiated" }) {
@@ -2122,6 +2221,10 @@ module.exports = {
   failCctpPendingBurn,
   getPendingCctpBurns,
   countPendingCctpBurns,
+  recordOnrampOrder,
+  getOnrampOrderByOrderId,
+  getPendingOnrampOrders,
+  completeOnrampOrder,
   recordInboundCctpTransfer,
   updateInboundCctpTransfer,
   completeInboundCctpTransfer,

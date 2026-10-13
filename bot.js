@@ -2187,6 +2187,23 @@ async function executePajOnrampDeposit(ctx, userId, fiatAmount, context, rate) {
     }
     const tokenAmount = onRampRate ? (fiatAmount / onRampRate).toFixed(2) : "...";
 
+    if (order && order.id) {
+      try {
+        db.recordOnrampOrder({
+          orderId: order.id,
+          telegramId: userId,
+          accountType: context,
+          fiatAmount,
+          amountUsdc: Number(tokenAmount) || 0,
+          rate: Number(onRampRate) || null,
+          recipientAddress: settlementRail === "arc" ? arcAddr : solAddr,
+          settlementRail,
+        });
+      } catch (recErr) {
+        console.warn("[bot:executePajOnrampDeposit] Failed to track onramp order:", recErr.message);
+      }
+    }
+
     return ctx.reply(
       `🇳🇬 <b>Bank Transfer Instructions</b>\n` +
       `──────────────────────────\n` +
@@ -2878,11 +2895,15 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
     arcBal = parseFloat(walletLib.formatMicro(raw));
   } catch {}
 
+  const trackedOrder = orderId ? db.getOnrampOrderByOrderId(orderId) : null;
+  const isPajSuccess = pajOrder?.status === "completed" || pajOrder?.status === "successful" || (trackedOrder && trackedOrder.status === "completed");
+  const isDirectArc = (pajOrder && pajOrder.chain === "ARC") || (trackedOrder && trackedOrder.settlement_rail === "arc") || (pajOrder?.recipient && pajOrder.recipient.startsWith("0x"));
+
   // If SPL USDC is present on Solana or Paj reports completed, trigger CCTP auto-bridge
-  if (solBalance.uiAmount > 0 || pajOrder?.status === "completed" || pajOrder?.status === "successful") {
-    const amountToBridge = solBalance.uiAmount > 0 ? solBalance.uiAmount : (pajOrder?.amount || 0);
+  if (solBalance.uiAmount > 0 || isPajSuccess) {
+    const amountToBridge = solBalance.uiAmount > 0 ? solBalance.uiAmount : (pajOrder?.amount || trackedOrder?.amount_usdc || 0);
     let bridgeRes = null;
-    if (amountToBridge > 0 && arcAddr) {
+    if (!isDirectArc && amountToBridge > 0 && arcAddr) {
       try {
         bridgeRes = await cctpBridge.autoBridgeSolanaToArc({
           telegramId: ctx.from.id,
@@ -2910,32 +2931,29 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
       }
     }
 
-    // Refresh Arc balance
-    try {
-      const refreshed = await walletLib.getNativeBalanceMicro(arcAddr);
-      arcBal = parseFloat(walletLib.formatMicro(refreshed));
-    } catch {}
+    const isSettledOnArc = isDirectArc || (bridgeRes && bridgeRes.status === "completed" && bridgeRes.arcTxHash);
+    if (isSettledOnArc || isPajSuccess) {
+      const effectiveFiat = (pajOrder && (pajOrder.fiatAmount || pajOrder.amountFiat)) || trackedOrder?.fiat_amount || 0;
+      const effectiveUsdc = (pajOrder && (pajOrder.amount || pajOrder.amountUsdc)) || trackedOrder?.amount_usdc || amountToBridge;
+      const effectiveRate = pajOrder?.rate || trackedOrder?.rate;
+      const effectiveTx = (bridgeRes && bridgeRes.arcTxHash) || pajOrder?.txHash || trackedOrder?.tx_hash || orderId;
 
-    const isSettledOnArc = bridgeRes && bridgeRes.status === "completed" && bridgeRes.arcTxHash;
-    if (isSettledOnArc || (arcBal > 0 && bridgeRes?.status === "completed")) {
-      const explorerLink = bridgeRes?.explorerUrl
-        ? `\n🔗 <a href="${bridgeRes.explorerUrl}">View on Arcscan</a>`
-        : "";
-      return ctx.reply(
-        `🎉 <b>Deposit Settled & Confirmed!</b>\n` +
-        `──────────────────────────\n` +
-        `💼 <b>Account:</b> ${isBiz ? "Business Treasury" : "Personal Wallet"}\n` +
-        `💰 <b>Current Balance:</b> <b>$${arcBal.toFixed(2)} USDC</b>\n` +
-        `🏛 <b>Network:</b> Arc Mainnet${explorerLink}\n\n` +
-        `<i>Your dollars have been credited and are ready to spend, save, or send!</i>`,
-        {
-          parse_mode: "HTML",
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback("💰 View Balance", "action_balance")],
-            [Markup.button.callback("🏠 Main Menu",    "main_menu")],
-          ]),
-        }
-      );
+      if (orderId) {
+        db.completeOnrampOrder(orderId, effectiveTx);
+      }
+
+      await webhookServer.sendOnrampDepositNotification({
+        bot,
+        telegramId: ctx.from.id,
+        fiatAmount: effectiveFiat,
+        amountUsdc: effectiveUsdc,
+        accountType: isBiz ? "business" : "personal",
+        txHash: effectiveTx,
+        orderId,
+        rate: effectiveRate,
+        network: isDirectArc ? "Arc Mainnet" : (isSettledOnArc ? "Arc Mainnet" : "Solana Mainnet"),
+      });
+      return;
     } else if (!user.system_encrypted_key || bridgeRes?.needsPin || bridgeRes?.status === "auth_required") {
       convState.setState(user.telegram_id, "onramp_bridge_pin", {
         orderId: orderId || "",
@@ -5570,6 +5588,23 @@ bot.on("text", async (ctx) => {
           } catch (_) {}
         }
         const tokenAmount = onRampRate ? (fiatAmount / onRampRate).toFixed(2) : "...";
+
+        if (order && order.id) {
+          try {
+            db.recordOnrampOrder({
+              orderId: order.id,
+              telegramId: userId,
+              accountType: context,
+              fiatAmount,
+              amountUsdc: Number(tokenAmount) || 0,
+              rate: Number(onRampRate) || null,
+              recipientAddress: settlementRail === "arc" ? arcAddr : solAddr,
+              settlementRail,
+            });
+          } catch (recErr) {
+            console.warn("[bot:onramp_state] Failed to track onramp order:", recErr.message);
+          }
+        }
 
         return ctx.reply(
           `🇳🇬 <b>Bank Transfer Instructions</b>\n` +
