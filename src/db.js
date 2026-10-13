@@ -335,7 +335,9 @@ function ensureYieldPositionsSchema() {
   if (!cols.includes("fee_tx_hash")) db.exec("ALTER TABLE yield_positions ADD COLUMN fee_tx_hash TEXT");
   if (!cols.includes("account_type")) db.exec("ALTER TABLE yield_positions ADD COLUMN account_type TEXT DEFAULT 'personal'");
   if (!cols.includes("user_apy")) db.exec("ALTER TABLE yield_positions ADD COLUMN user_apy REAL DEFAULT 0");
+  if (!cols.includes("payit_fee_apy")) db.exec("ALTER TABLE yield_positions ADD COLUMN payit_fee_apy REAL DEFAULT 0");
   try { db.exec("UPDATE yield_positions SET status = 'active' WHERE status IS NULL"); } catch {}
+  try { db.exec("UPDATE yield_positions SET payit_fee_apy = 0 WHERE payit_fee_apy IS NULL"); } catch {}
 }
 
 function ensureInvoicesSchema() {
@@ -974,48 +976,37 @@ function openYieldPosition(telegramId, amountUsdc, pool, options = {}) {
   const isAutoEarn = options.isAutoEarn ? 1 : 0;
   const depositTxHash = options.depositTxHash || null;
   const accountType = options.accountType || "personal";
-  const apy = pool.userApy ?? pool.apy ?? 0;
+  const userApy = pool.userApy ?? pool.apy ?? 0;
+  const payitFeeApy = pool.payitApy ?? pool.payit_fee_apy ?? 0;
+  const apy = pool.rawApy ?? pool.apy ?? userApy;
   const project = pool.project || "Arc Morpho Vault";
   const symbol = pool.symbol || "USDC";
   const chain = pool.chain || "arc";
 
   const cols = db.prepare("PRAGMA table_info(yield_positions)").all().map(c => c.name);
+  const insertCols = [
+    "telegram_id", "amount_usdc", "apy", "project", "symbol", "chain",
+    "vault_address", "is_auto_earn", "deposit_tx_hash", "account_type", "status"
+  ];
+  const vals = [
+    normTgId, amountUsdc, apy, project, symbol, chain,
+    vaultAddress, isAutoEarn, depositTxHash, accountType, "active"
+  ];
+
   if (cols.includes("user_apy")) {
-    db.prepare(`
-      INSERT INTO yield_positions (
-        telegram_id, amount_usdc, apy, user_apy, project, symbol, chain, vault_address, is_auto_earn, deposit_tx_hash, account_type, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
-    `).run(
-      normTgId,
-      amountUsdc,
-      apy,
-      apy,
-      project,
-      symbol,
-      chain,
-      vaultAddress,
-      isAutoEarn,
-      depositTxHash,
-      accountType
-    );
-  } else {
-    db.prepare(`
-      INSERT INTO yield_positions (
-        telegram_id, amount_usdc, apy, project, symbol, chain, vault_address, is_auto_earn, deposit_tx_hash, account_type, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
-    `).run(
-      normTgId,
-      amountUsdc,
-      apy,
-      project,
-      symbol,
-      chain,
-      vaultAddress,
-      isAutoEarn,
-      depositTxHash,
-      accountType
-    );
+    insertCols.push("user_apy");
+    vals.push(userApy);
   }
+  if (cols.includes("payit_fee_apy")) {
+    insertCols.push("payit_fee_apy");
+    vals.push(payitFeeApy);
+  }
+
+  const placeholders = insertCols.map(() => "?").join(", ");
+  db.prepare(`
+    INSERT INTO yield_positions (${insertCols.join(", ")})
+    VALUES (${placeholders})
+  `).run(...vals);
 }
 
 function closeYieldPosition(telegramId, payout, options = {}) {
