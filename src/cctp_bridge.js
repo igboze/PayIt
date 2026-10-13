@@ -2110,18 +2110,75 @@ async function completeIntentWithdrawal({
         : "";
       await bot.telegram.sendMessage(
         telegramId,
-        `🎉 <b>Withdrawal Routing Complete!</b>\n──────────────────────────\n` +
+        `⏳ <b>Intent Dispatched to Solvers!</b>\n──────────────────────────\n` +
         `🌐 <b>Destination Chain:</b> ${chainKey.toUpperCase()}\n` +
         `💰 <b>Amount:</b> $${Number(amountUsdc).toFixed(2)} USDC${formattedExpected}\n` +
         `📍 <b>Recipient:</b> <code>${destinationAddress}</code>\n` +
         `🔗 <b>Base Swap Tx:</b> <code>${transferReceipt.hash}</code>\n\n` +
-        `<i>Solvers are delivering the funds to your destination address (typically 30–60 seconds).</i>`,
+        `<i>Solvers are delivering the funds to your destination address (typically 30–60 seconds). You will receive an arrival alert with the explorer link shortly!</i>`,
         { parse_mode: "HTML" }
       );
     } catch (notifErr) {
       console.warn("[cctp_bridge:intent_notif_note]", notifErr.message);
     }
   }
+
+  // Asynchronously monitor 1Click delivery to the destination chain and send the final arrival notification with tx link
+  (async () => {
+    try {
+      const maxChecks = 36; // 36 * 5s = 3 minutes
+      for (let i = 0; i < maxChecks; i++) {
+        await new Promise((r) => setTimeout(r, 5000));
+        let execStatus;
+        try {
+          execStatus = await nearLib.getExecutionStatus(depositAddress);
+        } catch (_) {}
+
+        if (execStatus && (execStatus.status === "SUCCESS" || execStatus.status === "COMPLETED")) {
+          const destTx = execStatus.swapDetails?.destinationChainTxHashes?.[0]?.hash || null;
+          const actualAmountOut = execStatus.swapDetails?.amountOutFormatted || quoteRes?.quote?.amountOutFormatted;
+          const chainUpper = chainKey.toUpperCase();
+
+          let explorerUrl = "";
+          if (destTx) {
+            if (chainKey === "near") explorerUrl = `https://nearblocks.io/txns/${destTx}`;
+            else if (chainKey === "bitcoin" || chainKey === "btc") explorerUrl = `https://mempool.space/tx/${destTx}`;
+            else if (chainKey === "tron") explorerUrl = `https://tronscan.org/#/transaction/${destTx}`;
+            else if (chainKey === "starknet") explorerUrl = `https://voyager.online/tx/${destTx}`;
+          }
+
+          const explorerLink = explorerUrl
+            ? `\n🔗 <b>${chainUpper} Explorer:</b> <a href="${explorerUrl}">View Transaction</a>`
+            : (destTx ? `\n🔗 <b>Tx Hash:</b> <code>${destTx}</code>` : "");
+
+          if (bot && telegramId) {
+            await bot.telegram.sendMessage(
+              telegramId,
+              `🎉 <b>Withdrawal Arrived on ${chainUpper}!</b>\n` +
+              `──────────────────────────\n` +
+              `🌐 <b>Destination:</b> ${chainUpper}\n` +
+              `📍 <b>Recipient:</b> <code>${destinationAddress}</code>\n` +
+              `🪙 <b>Amount Delivered:</b> <b>${actualAmountOut ? `${Number(actualAmountOut).toFixed(4)} ${chainUpper}` : `$${Number(amountUsdc).toFixed(2)} USDC`}</b>\n` +
+              `${explorerLink}\n\n` +
+              `<i>Your cross-chain withdrawal has successfully arrived at your destination address!</i>`,
+              {
+                parse_mode: "HTML",
+                reply_markup: {
+                  inline_keyboard: [
+                    [{ text: "💰 View Balance", callback_data: "action_balance" }],
+                    [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
+                  ],
+                },
+              }
+            );
+          }
+          break;
+        }
+      }
+    } catch (watchErr) {
+      console.warn("[cctp_bridge:watch_intent_delivery_error]", watchErr.message);
+    }
+  })();
 
   return {
     success: true,

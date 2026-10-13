@@ -1266,13 +1266,20 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
 
       if (result.success) {
         const chainInfo = state.data.chainInfo || CCW_CHAINS[state.data.destinationChain];
+        const isIntent = result.engine === "NEAR_INTENTS";
+        const chainLabel = chainInfo?.label || state.data.destinationChain;
+
+        const footerNote = isIntent
+          ? `\n<i>⚡ Cross-chain bridging & solver routing in progress.\nYour funds typically arrive in 1–2 minutes, and you will receive an arrival alert with your destination transaction link!</i>`
+          : `\n<i>Funds typically arrive on the destination chain in 1–5 minutes.</i>`;
+
         return ctx.reply(
           `✅ <b>Withdrawal Submitted!</b>\n──────────────────────────\n` +
-          `🌐 <b>Destination:</b> ${chainInfo?.label || state.data.destinationChain}\n` +
+          `🌐 <b>Destination:</b> ${chainLabel}\n` +
           `💰 <b>Amount:</b> $${Number(result.amount).toFixed(2)} USDC\n` +
           `📍 <b>Recipient:</b> <code>${state.data.destinationAddress}</code>\n` +
-          (result.txHash ? `🔗 <b>Transaction Hash:</b>\n<code>${result.txHash}</code>\n` : "") +
-          `\n<i>Funds typically arrive on the destination chain in 1–5 minutes.</i>`,
+          (result.txHash ? `🔗 <b>Arc Burn Hash:</b>\n<code>${result.txHash}</code>\n` : "") +
+          footerNote,
           {
             parse_mode: "HTML",
             ...Markup.inlineKeyboard([
