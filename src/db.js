@@ -176,6 +176,34 @@ db.exec(`
     created_at        TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at      TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS crosschain_pending_withdrawals (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id             INTEGER NOT NULL,
+    arc_tx_hash             TEXT NOT NULL UNIQUE,
+    destination_chain       TEXT NOT NULL,
+    destination_address     TEXT NOT NULL,
+    amount_usdc             REAL NOT NULL,
+    status                  TEXT NOT NULL DEFAULT 'attesting',
+    engine                  TEXT NOT NULL DEFAULT 'CCTP',
+    encrypted_private_key   TEXT,
+    account_type            TEXT NOT NULL DEFAULT 'personal',
+    message_hex             TEXT,
+    message_hash            TEXT,
+    attestation             TEXT,
+    mint_tx_hash            TEXT,
+    intent_deposit_address  TEXT,
+    intent_tx_hash          TEXT,
+    destination_tx_hash     TEXT,
+    delivered_amount        TEXT,
+    error                   TEXT,
+    retry_count             INTEGER NOT NULL DEFAULT 0,
+    created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at            TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_cc_pending_status ON crosschain_pending_withdrawals(status);
 `);
 
 function ensureUserSchema() {
@@ -1727,6 +1755,125 @@ function completeOnrampOrder(orderId, txHashOrOpts = {}, maybeStatus = "complete
 }
 
 /**
+ * Record a newly initiated cross-chain withdrawal (CCTP or Intent routing).
+ */
+function recordCrosschainWithdrawal({
+  telegramId,
+  arcTxHash,
+  destinationChain,
+  destinationAddress,
+  amountUsdc,
+  status = "attesting",
+  engine = "CCTP",
+  encryptedPrivateKey = null,
+  accountType = "personal",
+  messageHex = null,
+  messageHash = null,
+}) {
+  try {
+    db.prepare(`
+      INSERT OR REPLACE INTO crosschain_pending_withdrawals
+        (telegram_id, arc_tx_hash, destination_chain, destination_address, amount_usdc, status, engine, encrypted_private_key, account_type, message_hex, message_hash, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `).run(
+      telegramId,
+      arcTxHash,
+      destinationChain,
+      destinationAddress,
+      Number(amountUsdc),
+      status,
+      engine,
+      encryptedPrivateKey,
+      accountType,
+      messageHex,
+      messageHash
+    );
+    return db.prepare("SELECT * FROM crosschain_pending_withdrawals WHERE arc_tx_hash = ?").get(arcTxHash);
+  } catch (err) {
+    console.warn("[db:crosschain_withdrawal] recordCrosschainWithdrawal error:", err.message);
+    return null;
+  }
+}
+
+function getPendingCrosschainWithdrawals() {
+  try {
+    return db.prepare(`
+      SELECT * FROM crosschain_pending_withdrawals
+      WHERE status NOT IN ('completed', 'failed')
+        AND created_at >= datetime('now', '-24 hours')
+      ORDER BY id ASC
+    `).all() || [];
+  } catch (err) {
+    console.warn("[db:crosschain_withdrawal] getPendingCrosschainWithdrawals error:", err.message);
+    return [];
+  }
+}
+
+function getCrosschainWithdrawalByArcTx(arcTxHash) {
+  if (!arcTxHash) return null;
+  try {
+    return db.prepare("SELECT * FROM crosschain_pending_withdrawals WHERE arc_tx_hash = ?").get(arcTxHash) || null;
+  } catch (err) {
+    console.warn("[db:crosschain_withdrawal] getCrosschainWithdrawalByArcTx error:", err.message);
+    return null;
+  }
+}
+
+function updateCrosschainWithdrawal(idOrArcTx, fields = {}) {
+  try {
+    const isId = typeof idOrArcTx === "number" || /^\d+$/.test(idOrArcTx);
+    const whereCol = isId ? "id" : "arc_tx_hash";
+    const sets = ["updated_at = datetime('now')"];
+    const values = [];
+
+    for (const [key, val] of Object.entries(fields)) {
+      sets.push(`${key} = ?`);
+      values.push(val);
+    }
+    values.push(idOrArcTx);
+
+    db.prepare(`UPDATE crosschain_pending_withdrawals SET ${sets.join(", ")} WHERE ${whereCol} = ?`).run(...values);
+  } catch (err) {
+    console.warn("[db:crosschain_withdrawal] updateCrosschainWithdrawal error:", err.message);
+  }
+}
+
+function completeCrosschainWithdrawal(idOrArcTx, { destinationTxHash, deliveredAmount } = {}) {
+  try {
+    const isId = typeof idOrArcTx === "number" || /^\d+$/.test(idOrArcTx);
+    const whereCol = isId ? "id" : "arc_tx_hash";
+    db.prepare(`
+      UPDATE crosschain_pending_withdrawals
+      SET status = 'completed',
+          destination_tx_hash = COALESCE(?, destination_tx_hash),
+          delivered_amount = COALESCE(?, delivered_amount),
+          encrypted_private_key = NULL,
+          completed_at = datetime('now'),
+          updated_at = datetime('now')
+      WHERE ${whereCol} = ?
+    `).run(destinationTxHash || null, deliveredAmount || null, idOrArcTx);
+  } catch (err) {
+    console.warn("[db:crosschain_withdrawal] completeCrosschainWithdrawal error:", err.message);
+  }
+}
+
+function failCrosschainWithdrawal(idOrArcTx, error) {
+  try {
+    const isId = typeof idOrArcTx === "number" || /^\d+$/.test(idOrArcTx);
+    const whereCol = isId ? "id" : "arc_tx_hash";
+    db.prepare(`
+      UPDATE crosschain_pending_withdrawals
+      SET status = 'failed',
+          error = ?,
+          updated_at = datetime('now')
+      WHERE ${whereCol} = ?
+    `).run(String(error).slice(0, 500), idOrArcTx);
+  } catch (err) {
+    console.warn("[db:crosschain_withdrawal] failCrosschainWithdrawal error:", err.message);
+  }
+}
+
+/**
  * Record an incoming Solana→Arc CCTP transfer before or immediately after burn.
  */
 function recordInboundCctpTransfer({ telegramId, solanaAddress, arcAddress, amountUsdc, solanaBurnSig, status = "initiated" }) {
@@ -2221,6 +2368,12 @@ module.exports = {
   failCctpPendingBurn,
   getPendingCctpBurns,
   countPendingCctpBurns,
+  recordCrosschainWithdrawal,
+  getPendingCrosschainWithdrawals,
+  getCrosschainWithdrawalByArcTx,
+  updateCrosschainWithdrawal,
+  completeCrosschainWithdrawal,
+  failCrosschainWithdrawal,
   recordOnrampOrder,
   getOnrampOrderByOrderId,
   getPendingOnrampOrders,
