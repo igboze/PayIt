@@ -34,6 +34,127 @@ function verifyAlchemySignature(rawBody, headers, signingKey) {
 let _server = null;
 
 /**
+ * Send rich on-ramp deposit notification to Telegram user with optional receipt PNG.
+ */
+async function sendOnrampDepositNotification({
+  bot,
+  telegramId,
+  fiatAmount,
+  amountUsdc,
+  accountType = "personal",
+  txHash = null,
+  orderId = null,
+  rate = null,
+  network = "Arc Mainnet",
+}) {
+  if (!bot || !telegramId) return;
+
+  const isBiz = accountType === "business";
+  const accountLabel = isBiz ? "Business Treasury" : "Personal Wallet";
+  const user = db.getUser(telegramId);
+  const userAddress = isBiz
+    ? (user ? (user.business_deposit_address || user.deposit_address) : null)
+    : (user ? user.deposit_address : null);
+
+  let currentBalanceStr = "...";
+  if (userAddress) {
+    try {
+      const bal = await walletLib.getArcBalance(userAddress);
+      if (bal != null && !isNaN(bal)) {
+        currentBalanceStr = `$${Number(bal).toFixed(2)} USDC`;
+      }
+    } catch {}
+  }
+
+  const effectiveFiat = Number(fiatAmount || 0);
+  const effectiveUsdc = Number(amountUsdc || 0);
+  const formattedFiat = effectiveFiat > 0 ? `₦${effectiveFiat.toLocaleString()}` : "N/A";
+  const formattedUsdc = `${effectiveUsdc.toFixed(2)} USDC`;
+
+  const title = network.includes("Solana")
+    ? `🎉 <b>Deposit Settled on Solana!</b>`
+    : `🎉 <b>Deposit Received & Settled!</b>`;
+
+  let caption =
+    `${title}\n` +
+    `──────────────────────────\n` +
+    `💵 <b>Amount Deposited:</b> ${formattedFiat}\n` +
+    `💰 <b>Credited to Account:</b> +$${formattedUsdc}\n`;
+
+  if (rate && Number(rate) > 0) {
+    caption += `📈 <b>Exchange Rate:</b> ₦${Number(rate).toLocaleString()}/$\n`;
+  }
+
+  caption +=
+    `💼 <b>Account:</b> ${accountLabel}\n` +
+    `💳 <b>New Balance:</b> ${currentBalanceStr}\n` +
+    `🏛 <b>Network:</b> ${network}\n`;
+
+  if (txHash) {
+    caption += `🔗 <b>Transaction:</b> <code>${txHash}</code>\n`;
+  }
+  if (orderId) {
+    caption += `🔖 <b>Order Ref:</b> <code>${orderId}</code>\n`;
+  }
+
+  caption +=
+    `──────────────────────────\n` +
+    `<i>Your funds are ready to spend, transfer, or withdraw!</i>`;
+
+  const inlineKeyboard = [
+    [
+      { text: "💰 View Balance", callback_data: isBiz ? "biz_balance" : "action_balance" },
+      { text: "💸 Send / Withdraw", callback_data: isBiz ? "biz_withdraw" : "action_withdraw" },
+    ],
+    [
+      { text: "🏠 Main Menu", callback_data: isBiz ? "biz_menu" : "action_main_menu" },
+    ],
+  ];
+
+  let receiptPath = null;
+  try {
+    receiptPath = await generateReceiptPNG({
+      receiptId: `DEP-${String(orderId || txHash || Date.now()).slice(0, 10)}`,
+      senderName: "Bank Transfer (Naira On-Ramp)",
+      recipientName: user ? (isBiz ? (user.business_name || "Business Account") : (user.first_name || "Personal Account")) : "Proxim Account",
+      recipientAddress: userAddress || null,
+      amountUsdc: effectiveUsdc,
+      token: "USDC",
+      type: "Deposit",
+      timestamp: new Date().toISOString(),
+      status: "Confirmed",
+      txHash: txHash || orderId || null,
+    });
+  } catch (recErr) {
+    // Best-effort PNG generation
+  }
+
+  if (receiptPath && typeof bot.telegram.sendPhoto === "function") {
+    try {
+      await bot.telegram.sendPhoto(
+        telegramId,
+        { source: receiptPath },
+        {
+          caption,
+          parse_mode: "HTML",
+          reply_markup: { inline_keyboard: inlineKeyboard },
+        }
+      );
+      return;
+    } catch (photoErr) {
+      // Fall through to sendMessage
+    }
+  }
+
+  if (typeof bot.telegram.sendMessage === "function") {
+    await bot.telegram.sendMessage(telegramId, caption, {
+      parse_mode: "HTML",
+      reply_markup: { inline_keyboard: inlineKeyboard },
+    });
+  }
+}
+
+/**
  * Handle incoming Paj v2 webhook events.
  *
  * @param {object} payload - Parsed webhook payload
@@ -58,12 +179,17 @@ async function processPajEvent(payload, bot) {
   idempotency.markWebhookProcessed(eventId, event, data.id);
 
   // Detect onramp completion
+  const statusStr = String(data.status || "").toLowerCase();
+  const eventStr = String(event || "").toLowerCase();
   if (
-    event === "order.successful" ||
-    event === "onramp.successful" ||
-    event === "onramp.completed" ||
-    event === "payment.successful" ||
-    data.status === "COMPLETED"
+    eventStr === "order.successful" ||
+    eventStr === "onramp.successful" ||
+    eventStr === "onramp.completed" ||
+    eventStr === "payment.successful" ||
+    statusStr === "completed" ||
+    statusStr === "successful" ||
+    statusStr === "paid" ||
+    statusStr === "settled"
   ) {
     const telegramId = data.userExternalId || data.metadata?.telegramId;
     const recipient = data.recipient || data.address;
@@ -219,6 +345,12 @@ async function processPajEvent(payload, bot) {
       }
     }
 
+    // Lookup tracked onramp order in DB if present
+    const trackedOrder = fiatOrderId ? db.getOnrampOrderByOrderId(fiatOrderId) : null;
+    const effectiveFiatAmount = fiatAmount > 0 ? fiatAmount : (trackedOrder?.fiat_amount || 0);
+    const effectiveAmountUsdc = amountUsdc > 0 ? amountUsdc : (trackedOrder?.amount_usdc || 0);
+    const orderRate = data.rate || trackedOrder?.rate || (effectiveFiatAmount > 0 && effectiveAmountUsdc > 0 ? Math.round(effectiveFiatAmount / effectiveAmountUsdc) : null);
+
     const targetTelegramId = user ? user.telegram_id : telegramId;
     const recipientArcAddress = isBizAccount
       ? (user ? (user.business_deposit_address || user.deposit_address) : data.destinationArcAddress)
@@ -231,7 +363,7 @@ async function processPajEvent(payload, bot) {
         bridgeResult = await cctpBridge.autoBridgeSolanaToArc({
           telegramId: targetTelegramId,
           solanaTxSignature,
-          amountUsdc,
+          amountUsdc: effectiveAmountUsdc,
           recipientArcAddress,
           bot,
         });
@@ -242,7 +374,7 @@ async function processPajEvent(payload, bot) {
     }
 
     const isDirectlySettled = isDirectArcDeposit || (bridgeResult && bridgeResult.status === "completed" && bridgeResult.arcTxHash);
-    const amountMicro = walletLib.parseToMicro(amountUsdc.toFixed(6));
+    const amountMicro = walletLib.parseToMicro(effectiveAmountUsdc.toFixed(6));
 
     // Record onramp transaction in ledger
     const settlementTxHash = (bridgeResult && bridgeResult.arcTxHash) || solanaTxSignature || data.id;
@@ -255,77 +387,47 @@ async function processPajEvent(payload, bot) {
         settlementTxHash,
         isBizAccount ? "business" : "personal"
       );
+      if (fiatOrderId) {
+        db.completeOnrampOrder(fiatOrderId, settlementTxHash);
+      }
     } catch (recErr) {
       console.warn("[webhook_server] Record onramp tx error:", recErr.message);
     }
 
-    // Send Telegram alert with accurate status and PNG receipt when settled
+    // Send Telegram alert with accurate status, new balance, and PNG receipt when settled
     if (bot && targetTelegramId) {
       try {
         if (isDirectlySettled) {
-          const explorerUrl = bridgeResult?.explorerUrl || (settlementTxHash && settlementTxHash.startsWith("0x") ? `${process.env.ARC_EXPLORER_URL || "https://explorer.arc.io"}/tx/${settlementTxHash}` : null);
-          const explorerLink = explorerUrl
-            ? `\n🔗 <a href="${explorerUrl}">View on Arcscan</a>`
-            : "";
-          const caption =
-            `🎉 <b>Deposit Received & Credited (${accountLabel})!</b>\n` +
-            `──────────────────────────\n` +
-            `💵 <b>Amount Deposited:</b> ₦${fiatAmount ? fiatAmount.toLocaleString() : "..."}\n` +
-            `💰 <b>Dollars Credited:</b> $${amountUsdc.toFixed(2)} USDC\n` +
-            `💼 <b>Account:</b> ${accountLabel}\n` +
-            `🏛 <b>Network:</b> Arc Mainnet${explorerLink}\n\n` +
-            `<i>Your balance is updated and ready to spend, save, or send!</i>`;
-
-          let receiptPath = null;
-          try {
-            receiptPath = await generateReceiptPNG({
-              receiptId: `DEP-${(settlementTxHash || "").slice(0, 10) || Date.now()}`,
-              senderName: "Bank Transfer Deposit",
-              senderAddress: recipientArcAddress,
-              recipientName: accountLabel,
-              recipientAddress: recipientArcAddress,
-              amountUsdc: amountUsdc,
-              token: "USDC",
-              nairaEquiv: fiatAmount ? `₦${fiatAmount.toLocaleString()}` : null,
-              type: "Deposit",
-              timestamp: new Date().toISOString(),
-              status: "Confirmed",
-              txHash: settlementTxHash,
-            });
-          } catch (_) {}
-
-          if (receiptPath && typeof bot.telegram.sendPhoto === "function") {
-            await bot.telegram.sendPhoto(
-              targetTelegramId,
-              { source: receiptPath },
-              { caption, parse_mode: "HTML" }
-            ).catch(async () => {
-              await bot.telegram.sendMessage(targetTelegramId, caption, { parse_mode: "HTML" });
-            });
-          } else {
-            await bot.telegram.sendMessage(targetTelegramId, caption, { parse_mode: "HTML" });
-          }
+          await sendOnrampDepositNotification({
+            bot,
+            telegramId: targetTelegramId,
+            fiatAmount: effectiveFiatAmount,
+            amountUsdc: effectiveAmountUsdc,
+            accountType: isBizAccount ? "business" : "personal",
+            txHash: settlementTxHash,
+            orderId: fiatOrderId,
+            rate: orderRate,
+            network: "Arc Mainnet",
+          });
         } else if (process.env.AUTO_BRIDGE_SOLANA_TO_ARC !== "true") {
-          const solAddress = user ? (isBizAccount ? user.biz_solana_deposit_address : user.solana_deposit_address) : null;
-          const solAddrLine = solAddress ? `\n📍 <b>Solana Address:</b> <code>${solAddress}</code>` : "";
-          await bot.telegram.sendMessage(
-            targetTelegramId,
-            `🎉 <b>Deposit Settled on Solana (${accountLabel})!</b>\n` +
-            `──────────────────────────\n` +
-            `💵 <b>Amount Deposited:</b> ₦${fiatAmount ? fiatAmount.toLocaleString() : "..."}\n` +
-            `💰 <b>USDC Received:</b> $${amountUsdc.toFixed(2)} USDC\n` +
-            `💼 <b>Account:</b> ${accountLabel}\n` +
-            `☀️ <b>Network:</b> Solana Mainnet${solAddrLine}\n\n` +
-            `<i>Your funds are available directly in your Solana wallet!</i>`,
-            { parse_mode: "HTML" }
-          );
+          await sendOnrampDepositNotification({
+            bot,
+            telegramId: targetTelegramId,
+            fiatAmount: effectiveFiatAmount,
+            amountUsdc: effectiveAmountUsdc,
+            accountType: isBizAccount ? "business" : "personal",
+            txHash: settlementTxHash,
+            orderId: fiatOrderId,
+            rate: orderRate,
+            network: "Solana Mainnet",
+          });
         } else {
           await bot.telegram.sendMessage(
             targetTelegramId,
             `⏳ <b>Transaction in Progress (${accountLabel})</b>\n` +
             `──────────────────────────\n` +
-            `💵 <b>Amount Deposited:</b> ₦${fiatAmount ? fiatAmount.toLocaleString() : "..."}\n` +
-            `💰 <b>Incoming:</b> $${amountUsdc.toFixed(2)} USDC\n` +
+            `💵 <b>Amount Deposited:</b> ₦${effectiveFiatAmount ? effectiveFiatAmount.toLocaleString() : "..."}\n` +
+            `💰 <b>Incoming:</b> $${effectiveAmountUsdc.toFixed(2)} USDC\n` +
             `💼 <b>Account:</b> ${accountLabel}\n` +
             `🔄 <b>Status:</b> Processing deposit & transferring to your Proxim account on Arc...\n\n` +
             `<i>Your balance will automatically update once received on Arc.</i>`,
@@ -571,6 +673,7 @@ module.exports = {
   startWebhookServer,
   stopWebhookServer,
   processPajEvent,
+  sendOnrampDepositNotification,
   verifyAlchemySignature,
   evmDepositSweeper,
 };
