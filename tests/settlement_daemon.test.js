@@ -97,13 +97,13 @@ test("settlement daemon: schedule, overlap guard, ledger, failure capture", asyn
       assert.equal(daemon.isRunning(), false);
       // After stop, listTasks reports the default task set (usable pre-start).
       const tasks = daemon.listTasks();
-      assert.equal(tasks.length, 5);
+      assert.equal(tasks.length, 6);
       assert.ok(tasks.every((t) => !t.inflight));
     });
 
-    await t.test("default task set covers the five settlement responsibilities", () => {
+    await t.test("default task set covers the six settlement responsibilities", () => {
       const names = daemon.defaultTasks().map((t) => t.name).sort();
-      assert.deepEqual(names, ["cctp_burn_retry", "cctp_inbound_recovery", "evm_sweep", "near_poll", "paj_onramp_poll"]);
+      assert.deepEqual(names, ["cctp_burn_retry", "cctp_inbound_recovery", "crosschain_withdrawal_sweep", "evm_sweep", "near_poll", "paj_onramp_poll"]);
     });
 
     await t.test("stale running ledger rows are interruptible (crash recovery)", () => {

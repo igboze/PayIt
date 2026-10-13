@@ -119,6 +119,11 @@ function defaultTasks() {
       intervalMs: 15_000,
       run: async ({ bot }) => pollPendingOnrampOrders(bot),
     },
+    {
+      name: "crosschain_withdrawal_sweep",
+      intervalMs: 15_000,
+      run: async ({ bot }) => cctpBridge.processPendingCrosschainWithdrawals(bot),
+    },
   ];
 }
 

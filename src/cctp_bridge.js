@@ -1974,6 +1974,7 @@ async function completeCctpWithdrawalOnEvm({
   }
 
   try { db.completeCctpPendingBurn(arcTxHash, destTxHash); } catch {}
+  try { db.completeCrosschainWithdrawal(arcTxHash, { destinationTxHash: destTxHash, deliveredAmount: amountUsdc ? `$${Number(amountUsdc).toFixed(2)} USDC` : null }); } catch {}
 
   // Notify user via Telegram bot if bot instance and telegramId are available
   if (bot && telegramId) {
@@ -2046,10 +2047,17 @@ async function completeIntentWithdrawal({
   });
 
   if (!baseCompletion.success) {
+    try { db.failCrosschainWithdrawal(arcTxHash, `Failed to mint USDC on Base: ${baseCompletion.error}`); } catch (_) {}
     throw new Error(`Failed to mint USDC on Base for intent withdrawal: ${baseCompletion.error}`);
   }
 
   console.log(`[cctp_bridge:intent_complete] Base USDC minted ✓ tx=${baseCompletion.destinationTxHash}`);
+  try {
+    db.updateCrosschainWithdrawal(arcTxHash, {
+      mint_tx_hash: baseCompletion.destinationTxHash,
+      status: "intent_routing",
+    });
+  } catch (_) {}
 
   // Step 2: Route through NEAR Intents (1Click)
   const nearLib = require("./near");
@@ -2089,6 +2097,7 @@ async function completeIntentWithdrawal({
 
   const depositAddress = quoteRes?.quote?.depositAddress;
   if (!depositAddress) {
+    try { db.failCrosschainWithdrawal(arcTxHash, "1Click did not return a deposit address"); } catch (_) {}
     throw new Error(`1Click did not return a deposit address: ${JSON.stringify(quoteRes)}`);
   }
 
@@ -2101,6 +2110,14 @@ async function completeIntentWithdrawal({
   const transferTx = await baseUsdc.transfer(depositAddress, amountUnits);
   const transferReceipt = await transferTx.wait(1);
   console.log(`[cctp_bridge:intent_complete] Base USDC transferred to 1Click ✓ tx=${transferReceipt.hash}`);
+
+  try {
+    db.updateCrosschainWithdrawal(arcTxHash, {
+      intent_deposit_address: depositAddress,
+      intent_tx_hash: transferReceipt.hash,
+      status: "delivering",
+    });
+  } catch (_) {}
 
   // Notify user that intent has been dispatched to solvers
   if (bot && telegramId) {
@@ -2138,6 +2155,13 @@ async function completeIntentWithdrawal({
           const destTx = execStatus.swapDetails?.destinationChainTxHashes?.[0]?.hash || null;
           const actualAmountOut = execStatus.swapDetails?.amountOutFormatted || quoteRes?.quote?.amountOutFormatted;
           const chainUpper = chainKey.toUpperCase();
+
+          try {
+            db.completeCrosschainWithdrawal(arcTxHash, {
+              destinationTxHash: destTx,
+              deliveredAmount: actualAmountOut ? `${actualAmountOut} ${chainUpper}` : `${amountUsdc} USDC`,
+            });
+          } catch (_) {}
 
           let explorerUrl = "";
           if (destTx) {
@@ -2191,6 +2215,310 @@ async function completeIntentWithdrawal({
   };
 }
 
+/**
+ * Autonomous background sweep for pending cross-chain withdrawals.
+ * Ensures ALL withdrawals (CCTP and NEAR Intents) advance automatically from
+ * Arc to the destination chain without requiring any external triggers or manual scripts.
+ */
+async function processPendingCrosschainWithdrawals(bot = null) {
+  const pending = db.getPendingCrosschainWithdrawals();
+  if (!pending || !pending.length) return { processed: 0, completed: 0, inFlight: 0 };
+
+  console.log(`[cctp_bridge:cc_sweep] Checking ${pending.length} pending cross-chain withdrawals...`);
+  let completedCount = 0;
+  let inFlightCount = 0;
+
+  for (const w of pending) {
+    try {
+      const chainKey = String(w.destination_chain || "").toLowerCase();
+      const isIntent = w.engine === "NEAR_INTENTS" || ["near", "bitcoin", "btc", "tron", "starknet"].includes(chainKey);
+
+      // Resolve private key for this withdrawal
+      let userPrivateKey = null;
+      if (w.encrypted_private_key) {
+        try {
+          const walletLib = require("./wallet");
+          userPrivateKey = walletLib.decryptSensitiveValue(w.encrypted_private_key);
+        } catch (_) {}
+      }
+      if (!userPrivateKey && w.telegram_id) {
+        try {
+          const user = db.getUser(w.telegram_id);
+          if (user) userPrivateKey = db.getSystemDecryptedPrivateKey(user, w.account_type || "personal");
+        } catch (_) {}
+      }
+      if (!userPrivateKey) {
+        userPrivateKey = process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
+      }
+
+      // ── Stage 4: Delivering (for Intent withdrawals already dispatched to 1Click) ──
+      if (w.status === "delivering" && w.intent_deposit_address) {
+        const nearLib = require("./near");
+        let execStatus;
+        try {
+          execStatus = await nearLib.getExecutionStatus(w.intent_deposit_address);
+        } catch (statusErr) {
+          console.warn(`[cctp_bridge:cc_sweep] 1Click status check note for ${w.arc_tx_hash}: ${statusErr.message}`);
+        }
+
+        if (execStatus && (execStatus.status === "SUCCESS" || execStatus.status === "COMPLETED")) {
+          const destTx = execStatus.swapDetails?.destinationChainTxHashes?.[0]?.hash || null;
+          const actualAmountOut = execStatus.swapDetails?.amountOutFormatted || null;
+          const chainUpper = chainKey.toUpperCase();
+
+          db.completeCrosschainWithdrawal(w.id, {
+            destinationTxHash: destTx,
+            deliveredAmount: actualAmountOut ? `${actualAmountOut} ${chainUpper}` : `${w.amount_usdc} USDC`,
+          });
+          completedCount++;
+          console.log(`[cctp_bridge:cc_sweep] Intent withdrawal completed ✓ ${w.arc_tx_hash} -> ${destTx} on ${chainUpper}`);
+
+          if (bot && w.telegram_id) {
+            let explorerUrl = "";
+            if (destTx) {
+              if (chainKey === "near") explorerUrl = `https://nearblocks.io/txns/${destTx}`;
+              else if (chainKey === "bitcoin" || chainKey === "btc") explorerUrl = `https://mempool.space/tx/${destTx}`;
+              else if (chainKey === "tron") explorerUrl = `https://tronscan.org/#/transaction/${destTx}`;
+              else if (chainKey === "starknet") explorerUrl = `https://voyager.online/tx/${destTx}`;
+            }
+
+            const explorerLink = explorerUrl
+              ? `\n🔗 <b>${chainUpper} Explorer:</b> <a href="${explorerUrl}">View Transaction</a>`
+              : (destTx ? `\n🔗 <b>Tx Hash:</b> <code>${destTx}</code>` : "");
+
+            try {
+              await bot.telegram.sendMessage(
+                w.telegram_id,
+                `🎉 <b>Withdrawal Arrived on ${chainUpper}!</b>\n` +
+                `──────────────────────────\n` +
+                `🌐 <b>Destination:</b> ${chainUpper}\n` +
+                `📍 <b>Recipient:</b> <code>${w.destination_address}</code>\n` +
+                `🪙 <b>Amount Delivered:</b> <b>${actualAmountOut ? `${Number(actualAmountOut).toFixed(4)} ${chainUpper}` : `$${Number(w.amount_usdc).toFixed(2)} USDC`}</b>\n` +
+                `${explorerLink}\n\n` +
+                `<i>Your cross-chain withdrawal has successfully arrived at your destination address!</i>`,
+                {
+                  parse_mode: "HTML",
+                  reply_markup: {
+                    inline_keyboard: [
+                      [{ text: "💰 View Balance", callback_data: "action_balance" }],
+                      [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
+                    ],
+                  },
+                }
+              );
+            } catch (notifErr) {
+              console.warn(`[cctp_bridge:cc_sweep] Arrival notification error:`, notifErr.message);
+            }
+          }
+          continue;
+        } else if (execStatus && (execStatus.status === "FAILED" || execStatus.status === "REFUNDED")) {
+          db.failCrosschainWithdrawal(w.id, `1Click solver status: ${execStatus.status}`);
+          continue;
+        } else {
+          inFlightCount++;
+          continue;
+        }
+      }
+
+      // ── Stage 3: Intent Routing (Base CCTP USDC minted, need to dispatch 1Click swap) ──
+      if (w.status === "intent_routing" || (isIntent && w.mint_tx_hash && !w.intent_deposit_address)) {
+        if (!userPrivateKey) {
+          console.warn(`[cctp_bridge:cc_sweep] Cannot dispatch intent for ${w.arc_tx_hash}: missing user/relayer key`);
+          inFlightCount++;
+          continue;
+        }
+
+        const nearLib = require("./near");
+        let targetAsset;
+        if (chainKey === "near") targetAsset = nearLib.ASSETS.NEAR_WNEAR;
+        else if (chainKey === "bitcoin" || chainKey === "btc") targetAsset = nearLib.ASSETS.WBTC;
+        else if (chainKey === "tron") targetAsset = nearLib.ASSETS.NEAR_USDT;
+        else if (chainKey === "starknet") targetAsset = nearLib.ASSETS.STARKNET_STRK;
+        else targetAsset = nearLib.ASSETS.NEAR_WNEAR;
+
+        const baseProvider = new JsonRpcProvider(EVM_CCTP_CONTRACTS.BASE.rpcUrl);
+        const baseSigner = new Wallet(userPrivateKey, baseProvider);
+        const { parseUnits } = require("ethers");
+        const amountUnits = parseUnits(Number(w.amount_usdc).toFixed(6), 6);
+
+        console.log(`[cctp_bridge:cc_sweep] Requesting 1Click quote for ${w.arc_tx_hash}...`);
+        const quoteRes = await nearLib.getQuote({
+          originAsset: nearLib.ASSETS.BASE_USDC,
+          destinationAsset: targetAsset,
+          amount: amountUnits.toString(),
+          recipient: w.destination_address,
+          refundTo: baseSigner.address,
+          dry: false,
+        });
+
+        const depositAddress = quoteRes?.quote?.depositAddress;
+        if (!depositAddress) {
+          console.warn(`[cctp_bridge:cc_sweep] 1Click quote failed for ${w.arc_tx_hash}`);
+          inFlightCount++;
+          continue;
+        }
+
+        const ERC20_ABI = [
+          "function transfer(address to, uint256 amount) external returns (bool)",
+          "function balanceOf(address account) external view returns (uint256)",
+        ];
+        const baseUsdc = new Contract(EVM_CCTP_CONTRACTS.BASE.usdc, ERC20_ABI, baseSigner);
+        const transferTx = await baseUsdc.transfer(depositAddress, amountUnits);
+        await transferTx.wait(1);
+
+        db.updateCrosschainWithdrawal(w.id, {
+          intent_deposit_address: depositAddress,
+          intent_tx_hash: transferTx.hash,
+          status: "delivering",
+        });
+
+        if (bot && w.telegram_id) {
+          try {
+            const formattedExpected = quoteRes?.quote?.amountOutFormatted
+              ? ` (~${Number(quoteRes.quote.amountOutFormatted).toFixed(4)} ${chainKey.toUpperCase()})`
+              : "";
+            await bot.telegram.sendMessage(
+              w.telegram_id,
+              `⏳ <b>Intent Dispatched to Solvers!</b>\n──────────────────────────\n` +
+              `🌐 <b>Destination Chain:</b> ${chainKey.toUpperCase()}\n` +
+              `💰 <b>Amount:</b> $${Number(w.amount_usdc).toFixed(2)} USDC${formattedExpected}\n` +
+              `📍 <b>Recipient:</b> <code>${w.destination_address}</code>\n` +
+              `🔗 <b>Base Swap Tx:</b> <code>${transferTx.hash}</code>\n\n` +
+              `<i>Solvers are delivering the funds to your destination address (typically 30–60 seconds). You will receive an arrival alert with the explorer link shortly!</i>`,
+              { parse_mode: "HTML" }
+            );
+          } catch (_) {}
+        }
+        inFlightCount++;
+        continue;
+      }
+
+      // ── Stage 1 & 2: Attesting & Minting ──
+      let msgHex = w.message_hex;
+      let msgHash = w.message_hash;
+
+      if (!msgHex || !msgHash) {
+        try {
+          const res = await fetchCctpMessage(CCTP_DOMAINS.ARC, w.arc_tx_hash);
+          if (res && res.message && res.messageHash) {
+            msgHex = res.message;
+            msgHash = res.messageHash;
+            db.updateCrosschainWithdrawal(w.id, { message_hex: msgHex, message_hash: msgHash });
+          }
+        } catch (_) {}
+      }
+
+      if (!msgHash) {
+        db.updateCrosschainWithdrawal(w.id, { retry_count: (w.retry_count || 0) + 1 });
+        inFlightCount++;
+        continue;
+      }
+
+      let attestation = w.attestation;
+      if (!attestation) {
+        try {
+          const attRes = await pollCctpAttestation(msgHash, 2, 1500, {
+            txHash: w.arc_tx_hash,
+            sourceDomain: CCTP_DOMAINS.ARC,
+          });
+          if (attRes && attRes.attestation) {
+            attestation = attRes.attestation;
+            db.updateCrosschainWithdrawal(w.id, { attestation, status: "minting" });
+          }
+        } catch (_) {}
+      }
+
+      if (!attestation) {
+        inFlightCount++;
+        continue;
+      }
+
+      // Minting stage
+      if (isIntent) {
+        const userWallet = userPrivateKey ? new Wallet(userPrivateKey) : null;
+        const baseCompletion = await completeCctpWithdrawalOnEvm({
+          arcTxHash: w.arc_tx_hash,
+          messageHex: msgHex,
+          messageHash: msgHash,
+          destinationDomain: CCTP_DOMAINS.BASE,
+          destinationRecipientAddress: userWallet ? userWallet.address : w.destination_address,
+          userWallet,
+          userPrivateKey,
+          telegramId: null,
+          bot: null,
+          amountUsdc: w.amount_usdc,
+          chainName: "Base",
+        });
+
+        if (baseCompletion && baseCompletion.success) {
+          db.updateCrosschainWithdrawal(w.id, {
+            mint_tx_hash: baseCompletion.destinationTxHash,
+            status: "intent_routing",
+          });
+          inFlightCount++;
+        }
+      } else if (chainKey === "solana") {
+        const solResult = await completeCctpWithdrawalOnSolana({
+          arcTxHash: w.arc_tx_hash,
+          messageHex: msgHex,
+          messageHash: msgHash,
+        });
+        if (solResult && solResult.success) {
+          db.completeCrosschainWithdrawal(w.id, {
+            destinationTxHash: solResult.solanaTxSignature,
+            deliveredAmount: `${w.amount_usdc} USDC`,
+          });
+          completedCount++;
+          if (bot && w.telegram_id) {
+            try {
+              const solscanUrl = `https://solscan.io/tx/${solResult.solanaTxSignature}`;
+              await bot.telegram.sendMessage(
+                w.telegram_id,
+                `🎉 <b>Withdrawal Arrived on Solana!</b>\n` +
+                `──────────────────────────\n` +
+                `🌐 <b>Destination:</b> Solana\n` +
+                `📍 <b>Recipient:</b> <code>${w.destination_address}</code>\n` +
+                `🪙 <b>Amount Delivered:</b> $${Number(w.amount_usdc).toFixed(2)} USDC\n` +
+                `🔗 <b>Solscan:</b> <a href="${solscanUrl}">View Transaction</a>\n\n` +
+                `<i>Your USDC withdrawal has been minted on Solana!</i>`,
+                { parse_mode: "HTML" }
+              );
+            } catch (_) {}
+          }
+        }
+      } else {
+        const destDomain = CCTP_DOMAINS[chainKey.toUpperCase()];
+        const userWallet = userPrivateKey ? new Wallet(userPrivateKey) : null;
+        const evmResult = await completeCctpWithdrawalOnEvm({
+          arcTxHash: w.arc_tx_hash,
+          messageHex: msgHex,
+          messageHash: msgHash,
+          destinationDomain: destDomain,
+          destinationRecipientAddress: w.destination_address,
+          userWallet,
+          userPrivateKey,
+          telegramId: w.telegram_id,
+          bot,
+          amountUsdc: w.amount_usdc,
+          chainName: w.destination_chain,
+        });
+        if (evmResult && evmResult.success) {
+          db.completeCrosschainWithdrawal(w.id, {
+            destinationTxHash: evmResult.destinationTxHash,
+            deliveredAmount: `${w.amount_usdc} USDC`,
+          });
+          completedCount++;
+        }
+      }
+    } catch (itemErr) {
+      console.warn(`[cctp_bridge:cc_sweep] Error processing withdrawal ${w.arc_tx_hash}:`, itemErr.message);
+      inFlightCount++;
+    }
+  }
+
+  return { processed: pending.length, completed: completedCount, inFlight: inFlightCount };
+}
+
 module.exports = {
   CCTP_DOMAINS,
   ARC_CCTP_CONTRACTS,
@@ -2208,6 +2536,7 @@ module.exports = {
   completeCctpWithdrawalOnSolana,
   completeCctpWithdrawalOnEvm,
   completeIntentWithdrawal,
+  processPendingCrosschainWithdrawals,
   executeEvmCctpBurn,
   checkSolanaFeePayerBalance,
   retryPendingCctpBurns,

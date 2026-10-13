@@ -288,8 +288,87 @@ test("completeCctpWithdrawalOnEvm: polls attestation and submits receiveMessage 
     // Test with mock message and attestation
     assert.equal(typeof cctpBridge.completeCctpWithdrawalOnEvm, "function");
     assert.equal(typeof cctpBridge.completeIntentWithdrawal, "function");
+    assert.equal(typeof cctpBridge.processPendingCrosschainWithdrawals, "function");
   } finally {
     cctpBridge.pollCctpAttestation = originalPoll;
+  }
+});
+
+test("crosschain_pending_withdrawals: DB lifecycle and autonomous daemon sweep", async () => {
+  const db = require("../src/db");
+  const cctpBridge = require("../src/cctp_bridge");
+  const nearLib = require("../src/near");
+
+  const testTx = "0xtest_burn_sweep_" + Date.now();
+  const testTg = 999123;
+
+  // 1. Record withdrawal
+  const row = db.recordCrosschainWithdrawal({
+    telegramId: testTg,
+    arcTxHash: testTx,
+    destinationChain: "near",
+    destinationAddress: "nackam.near",
+    amountUsdc: 6.70,
+    status: "delivering",
+    engine: "NEAR_INTENTS",
+    accountType: "personal",
+    intentDepositAddress: "0x1click_deposit_addr_test",
+  });
+
+  assert.ok(row, "Row should be recorded");
+  assert.equal(row.arc_tx_hash, testTx);
+
+  db.updateCrosschainWithdrawal(row.id, {
+    intent_deposit_address: "0x1click_deposit_addr_test",
+  });
+
+  // Verify pending list includes it
+  const pending = db.getPendingCrosschainWithdrawals();
+  const found = pending.find((p) => p.arc_tx_hash === testTx);
+  assert.ok(found, "Pending withdrawals must include the new row");
+  assert.equal(found.status, "delivering");
+
+  // Mock nearLib.getExecutionStatus to return SUCCESS
+  const origGetStatus = nearLib.getExecutionStatus;
+  nearLib.getExecutionStatus = async (addr) => ({
+    status: "SUCCESS",
+    swapDetails: {
+      destinationChainTxHashes: [{ hash: "6YXHyqW6VFPVypeCzGLR64TzEqVxhhcGtu3J7utJokoR" }],
+      amountOutFormatted: "1.25067",
+    },
+  });
+
+  let deliveredMsg = null;
+  const mockBot = {
+    telegram: {
+      sendMessage: async (chatId, text) => {
+        deliveredMsg = { chatId, text };
+        return true;
+      },
+    },
+  };
+
+  try {
+    const sweepRes = await cctpBridge.processPendingCrosschainWithdrawals(mockBot);
+    assert.ok(sweepRes.completed >= 1, "Daemon sweep must complete the pending withdrawal");
+
+    // Check DB status is now completed
+    const updated = db.getCrosschainWithdrawalByArcTx(testTx);
+    assert.equal(updated.status, "completed");
+    assert.equal(updated.destination_tx_hash, "6YXHyqW6VFPVypeCzGLR64TzEqVxhhcGtu3J7utJokoR");
+    assert.equal(updated.encrypted_private_key, null, "Private key must be erased upon completion");
+
+    // Check Telegram notification was sent
+    assert.ok(deliveredMsg, "Telegram arrival notification must be sent");
+    assert.equal(deliveredMsg.chatId, testTg);
+    assert.match(deliveredMsg.text, /Withdrawal Arrived on NEAR/);
+    assert.match(deliveredMsg.text, /nearblocks\.io\/txns\/6YXHyqW6VFPVypeCzGLR64TzEqVxhhcGtu3J7utJokoR/);
+  } finally {
+    nearLib.getExecutionStatus = origGetStatus;
+    // Clean up
+    try {
+      db.prepare("DELETE FROM crosschain_pending_withdrawals WHERE arc_tx_hash = ?").run(testTx);
+    } catch (_) {}
   }
 });
 

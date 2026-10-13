@@ -689,6 +689,28 @@ async function executeCrossChainWithdrawal(userWallet, {
       db.updateTransactionStatus(txId, "submitted", result.txHash || null);
       await collectPlatformFee();
 
+      // Persist to crosschain_pending_withdrawals for autonomous background settlement & recovery
+      let encryptedKey = null;
+      try {
+        encryptedKey = walletLib.encryptSensitiveValue(userWallet.privateKey);
+      } catch (_) {}
+
+      if (db.recordCrosschainWithdrawal) {
+        db.recordCrosschainWithdrawal({
+          telegramId,
+          arcTxHash: result.txHash,
+          destinationChain: chainKey,
+          destinationAddress,
+          amountUsdc: netAmountUsdc,
+          status: chainKey === "solana" ? "completed" : "attesting",
+          engine: "CCTP",
+          encryptedPrivateKey: encryptedKey,
+          accountType,
+          messageHex: result.rawCctpMessage || null,
+          messageHash: result.messageHash || null,
+        });
+      }
+
       // Automatically complete on destination EVM chain if not Solana (Solana is auto-completed in executeArcToSolanaCctpBurn)
       if (chainKey !== "solana") {
         cctpBridge.completeCctpWithdrawalOnEvm({
@@ -756,6 +778,28 @@ async function executeCrossChainWithdrawal(userWallet, {
 
       db.updateTransactionStatus(txId, "submitted", baseBurn.txHash || null);
       await collectPlatformFee();
+
+      // Persist to crosschain_pending_withdrawals for autonomous background settlement & recovery
+      let encryptedIntentKey = null;
+      try {
+        encryptedIntentKey = walletLib.encryptSensitiveValue(userWallet.privateKey);
+      } catch (_) {}
+
+      if (db.recordCrosschainWithdrawal) {
+        db.recordCrosschainWithdrawal({
+          telegramId,
+          arcTxHash: baseBurn.txHash,
+          destinationChain: chainKey,
+          destinationAddress,
+          amountUsdc: netAmountUsdc,
+          status: "attesting",
+          engine: "NEAR_INTENTS",
+          encryptedPrivateKey: encryptedIntentKey,
+          accountType,
+          messageHex: baseBurn.rawCctpMessage || null,
+          messageHash: baseBurn.messageHash || null,
+        });
+      }
 
       // Automatically complete intent routing (Base CCTP mint -> 1Click Intent swap -> destination delivery)
       cctpBridge.completeIntentWithdrawal({
