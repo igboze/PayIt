@@ -372,5 +372,61 @@ test("crosschain_pending_withdrawals: DB lifecycle and autonomous daemon sweep",
   }
 });
 
+test("cctp_bridge: replaces unfinalized 0-nonce receipt message with canonical Iris message", async () => {
+  const zeroNonceMsg = "0x000000010000001a00000006" + "0".repeat(64) + "28b5a0e9c621a5badaa536219b3a228c8168cf5d00000000000000000000000028b5a0e9c621a5badaa536219b3a228c8168cf5d";
+  const canonicalNonce = "f179c5147eeeaba747fb7ec42f6b97c8465df947d9d9d7c002db3e309a351e1e";
+  const canonicalMsg = "0x000000010000001a00000006" + canonicalNonce + "28b5a0e9c621a5badaa536219b3a228c8168cf5d00000000000000000000000028b5a0e9c621a5badaa536219b3a228c8168cf5d";
+
+  const db = require("../src/db");
+  const cctpBridge = require("../src/cctp_bridge");
+
+  const testTx = "0xzero_nonce_test_" + Date.now();
+  db.recordCrosschainWithdrawal({
+    telegramId: 112233,
+    arcTxHash: testTx,
+    destinationChain: "near",
+    destinationAddress: "test.near",
+    amountUsdc: 50.0,
+    status: "attesting",
+    engine: "NEAR_INTENTS",
+    accountType: "personal",
+    messageHex: zeroNonceMsg,
+    messageHash: "0x" + "1".repeat(64),
+  });
+
+  const axios = require("axios");
+  const origAxiosGet = axios.get;
+  axios.get = async (url) => {
+    if (url.includes(testTx)) {
+      return {
+        data: {
+          messages: [
+            {
+              message: canonicalMsg,
+              messageHash: "0x" + "2".repeat(64),
+              attestation: "0x" + "a".repeat(130),
+              status: "complete",
+            },
+          ],
+        },
+      };
+    }
+    return origAxiosGet(url);
+  };
+
+  try {
+    await cctpBridge.processPendingCrosschainWithdrawals();
+
+    const row = db.getCrosschainWithdrawalByArcTx(testTx);
+    assert.ok(row, "Row must exist");
+    assert.equal(row.message_hex, canonicalMsg, "0-nonce message must be replaced with canonical Iris message");
+  } finally {
+    axios.get = origAxiosGet;
+    try {
+      db.prepare("DELETE FROM crosschain_pending_withdrawals WHERE arc_tx_hash = ?").run(testTx);
+    } catch (_) {}
+  }
+});
+
 
 
