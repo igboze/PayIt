@@ -2322,13 +2322,18 @@ function buildWithdrawAmountKeyboard() {
 }
 
 async function promptForWithdrawBank(ctx, userId, amountUsdc, rail, context) {
-  convState.setState(userId, "await_withdraw_bank", { amountUsdc, rail }, context);
+  const feeUsdc = Number((amountUsdc * 0.01).toFixed(4));
+  const netAmountUsdc = Number((amountUsdc - feeUsdc).toFixed(4));
+  convState.setState(userId, "await_withdraw_bank", { amountUsdc, feeUsdc, netAmountUsdc, rail }, context);
   let rateNote = "";
   try {
     const rate = await fx.getUsdToNgnRate();
-    const nairaEst = rate ? fx.formatNaira(amountUsdc * rate) : null;
+    const nairaEst = rate ? fx.formatNaira(netAmountUsdc * rate) : null;
     if (rate && nairaEst) {
-      rateNote = `Today's rate: ₦${Math.round(rate).toLocaleString()}/$\nYou'll receive: ~${nairaEst}\n\n`;
+      rateNote = `Today's rate: ₦${Math.round(rate).toLocaleString()}/$\n` +
+                 `• Amount: $${amountUsdc.toFixed(2)}\n` +
+                 `• Platform Fee (1%): $${feeUsdc.toFixed(2)}\n` +
+                 `• Net Payout: $${netAmountUsdc.toFixed(2)} (~${nairaEst})\n\n`;
     }
   } catch (err) {
     console.warn("[promptForWithdrawBank:fx]", err.message);
@@ -2493,6 +2498,10 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
     parsed.bankCode = parsed.bankCode || "058";
   }
 
+  const amountUsdc = state.data.amountUsdc;
+  const feeUsdc = typeof state.data.feeUsdc === "number" ? state.data.feeUsdc : Number((amountUsdc * 0.01).toFixed(4));
+  const netAmountUsdc = typeof state.data.netAmountUsdc === "number" ? state.data.netAmountUsdc : Number((amountUsdc - feeUsdc).toFixed(4));
+
   let liveAccountName = parsed.accountName || payee.account_name || payee.name;
   let orderReservation = null;
   try {
@@ -2500,7 +2509,7 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
     orderReservation = await paj.createOfframpOrder({
       accountNumber: parsed.accountNumber,
       bankCode: parsed.bankCode,
-      amount: state.data.amountUsdc,
+      amount: netAmountUsdc,
       chain: railCfg.chain,
       mint: railCfg.mint,
     });
@@ -2512,7 +2521,9 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
   }
 
   convState.setState(userId, "confirm_withdraw", {
-    amountUsdc: state.data.amountUsdc,
+    amountUsdc,
+    feeUsdc,
+    netAmountUsdc,
     rail: state.data.rail || "solana",
     bankName: parsed.bankName,
     bankCode: parsed.bankCode,
@@ -2531,7 +2542,9 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
   return ctx.reply(
     `💵 <b>Confirm Cash Out</b>\n` +
     `──────────────────────────\n` +
-    `💰 <b>Amount:</b> $${state.data.amountUsdc.toFixed(2)}${nairaEst}\n` +
+    `💰 <b>Total Amount:</b> $${amountUsdc.toFixed(2)}\n` +
+    `🏷️ <b>Platform Fee (1%):</b> $${feeUsdc.toFixed(2)}\n` +
+    `💵 <b>Net to Bank:</b> $${netAmountUsdc.toFixed(2)}${nairaEst}\n` +
     `🔀 <b>Rail:</b> ${railTag.trim()}\n` +
     `🏦 <b>Bank:</b> ${parsed.bankName}\n` +
     `🔢 <b>Account Number:</b> <code>${parsed.accountNumber}</code>\n` +
@@ -2938,6 +2951,36 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
       const effectiveRate = pajOrder?.rate || trackedOrder?.rate;
       const effectiveTx = (bridgeRes && bridgeRes.arcTxHash) || pajOrder?.txHash || trackedOrder?.tx_hash || orderId;
 
+      // 1% platform fee inside trade amount
+      const feeUsdc = Number((effectiveUsdc * 0.01).toFixed(4));
+      const netAmountUsdc = Number((effectiveUsdc - feeUsdc).toFixed(4));
+      const feeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.PAYIT_DEV_FEE_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
+      let feeTxHash = null;
+
+      if (user && feeUsdc > 0.0001 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
+        try {
+          const encryptedKey = isBiz
+            ? (user.biz_system_encrypted_key || user.system_encrypted_key)
+            : user.system_encrypted_key;
+          if (encryptedKey) {
+            const rawKey = walletLib.decryptSensitiveValue(encryptedKey);
+            if (rawKey) {
+              const userWallet = walletLib.walletFromPrivateKey(rawKey);
+              if (userWallet.address.toLowerCase() !== feeRecipient.toLowerCase()) {
+                const feeMicro = walletLib.parseToMicro(feeUsdc.toFixed(6));
+                const feeTx = await walletLib.sendSponsoredOrDirectTransaction(userWallet, feeRecipient, feeMicro);
+                feeTxHash = feeTx?.txHash || null;
+                console.log(`[bot:action_check_paj_onramp] Collected 1% fee ($${feeUsdc} USDC) -> ${feeRecipient} (tx: ${feeTxHash})`);
+              }
+            }
+          }
+        } catch (feeErr) {
+          console.warn("[bot:action_check_paj_onramp_fee_note]", feeErr.message);
+        }
+      }
+
+      const creditedAmountUsdc = feeTxHash ? netAmountUsdc : effectiveUsdc;
+
       if (orderId) {
         db.completeOnrampOrder(orderId, effectiveTx);
       }
@@ -2946,7 +2989,8 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
         bot,
         telegramId: ctx.from.id,
         fiatAmount: effectiveFiat,
-        amountUsdc: effectiveUsdc,
+        amountUsdc: creditedAmountUsdc,
+        feeUsdc: feeTxHash ? feeUsdc : 0,
         accountType: isBiz ? "business" : "personal",
         txHash: effectiveTx,
         orderId,
@@ -5729,18 +5773,7 @@ bot.on("text", async (ctx) => {
           `Use "Move Funds" to consolidate, or enter a smaller amount.`
         );
       }
-      convState.setState(userId, "await_withdraw_bank", { amountUsdc: amount, rail }, state.context);
-      const rate      = await fx.getUsdToNgnRate();
-      const nairaEst  = rate ? fx.formatNaira(amount * rate) : null;
-      const rateNote  = rate ? `Today's rate: ₦${Math.round(rate).toLocaleString()}/$\nYou'll receive: ~${nairaEst}` : "";
-
-      return ctx.reply(
-        `💵 Cash Out $${amount.toFixed(2)}${rail === "arc" ? " ⚡ via Arc" : " ☀️ via Solana"}\n──────────────────────────\n` +
-        `${rateNote}\n\n` +
-        `Which bank account should we pay the Naira into?\n` +
-        `Type it like this: Bank name · Account number · Account name\n\nFor example: GTBank · 0123456789 · Emeka Johnson`,
-        Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-      );
+      return promptForWithdrawBank(ctx, userId, amount, rail, state.context);
     }
 
     if (state.type === "await_withdraw_bank") {
@@ -5763,6 +5796,10 @@ bot.on("text", async (ctx) => {
       }
 
       // Pre-validate with Paj v2 to get live account name if possible
+      const amountUsdc = state.data.amountUsdc;
+      const feeUsdc = typeof state.data.feeUsdc === "number" ? state.data.feeUsdc : Number((amountUsdc * 0.01).toFixed(4));
+      const netAmountUsdc = typeof state.data.netAmountUsdc === "number" ? state.data.netAmountUsdc : Number((amountUsdc - feeUsdc).toFixed(4));
+
       let liveAccountName = parsed.accountName;
       let orderReservation = null;
       try {
@@ -5770,7 +5807,7 @@ bot.on("text", async (ctx) => {
         orderReservation = await paj.createOfframpOrder({
           accountNumber: parsed.accountNumber,
           bankCode: parsed.bankCode,
-          amount: state.data.amountUsdc,
+          amount: netAmountUsdc,
           chain: railCfg.chain,
           mint: railCfg.mint,
         });
@@ -5797,7 +5834,9 @@ bot.on("text", async (ctx) => {
       }
 
       convState.setState(userId, "confirm_withdraw", {
-        amountUsdc: state.data.amountUsdc,
+        amountUsdc,
+        feeUsdc,
+        netAmountUsdc,
         rail: state.data.rail || "solana",
         bankName: parsed.bankName,
         bankCode: parsed.bankCode,
@@ -5816,7 +5855,9 @@ bot.on("text", async (ctx) => {
       return ctx.reply(
         `💵 <b>Confirm Cash Out</b>\n` +
         `──────────────────────────\n` +
-        `💰 <b>Amount:</b> $${state.data.amountUsdc.toFixed(2)}${nairaEst}\n` +
+        `💰 <b>Total Amount:</b> $${amountUsdc.toFixed(2)}\n` +
+        `🏷️ <b>Platform Fee (1%):</b> $${feeUsdc.toFixed(2)}\n` +
+        `💵 <b>Net to Bank:</b> $${netAmountUsdc.toFixed(2)}${nairaEst}\n` +
         `🔀 <b>Rail:</b> ${railTag.trim()}\n` +
         `🏦 <b>Bank:</b> ${parsed.bankName}\n` +
         `🔢 <b>Account Number:</b> <code>${parsed.accountNumber}</code>\n` +
@@ -5829,6 +5870,45 @@ bot.on("text", async (ctx) => {
         }
       );
     }
+
+function formatCustomerFriendlyOfframpError(rawError) {
+  const err = String(rawError || "").toLowerCase();
+  let reason = "An unexpected issue occurred while communicating with the banking settlement network.";
+  let tip = "Please check your network connection and retry in a few moments.";
+
+  if (err.includes("not enough") || err.includes("insufficient") || err.includes("balance")) {
+    reason = "Your wallet balance is insufficient to cover this cash-out amount and network gas fees.";
+    tip = "Please check your balance or move funds between chains before trying again.";
+  } else if (err.includes("solana transfer") || err.includes("custom program error") || err.includes("simulation failed") || err.includes("0x1")) {
+    reason = "The blockchain transfer on Solana could not be executed (insufficient SOL for rent/fees or token account issue).";
+    tip = "Your funds remain untouched. Please wait 1–2 minutes and retry.";
+  } else if (err.includes("reverted") || err.includes("status: 0")) {
+    reason = "The blockchain network transaction reverted during execution.";
+    tip = "No funds moved from your wallet. Please retry your cash out.";
+  } else if (err.includes("bank") || err.includes("nibss") || err.includes("account number") || err.includes("account_number") || err.includes("createofframporder") || err.includes("400") || err.includes("404")) {
+    reason = "The destination bank account details could not be validated by the interbank switch (NIBSS).";
+    tip = "Please verify your 10-digit account number and bank selection, or try another bank account.";
+  } else if (err.includes("500") || err.includes("502") || err.includes("503") || err.includes("gateway") || err.includes("paj") || err.includes("partner")) {
+    reason = "Our settlement banking partner is temporarily undergoing maintenance or experiencing downtime.";
+    tip = "Your dollars remain completely safe in your wallet. Please retry in 5–10 minutes.";
+  } else if (err.includes("timeout") || err.includes("timed out")) {
+    reason = "The interbank transfer timed out waiting for confirmation.";
+    tip = "No money left your account. Please retry your cash out.";
+  } else if (err.includes("already processing")) {
+    reason = "A cash out with these exact details is already currently processing.";
+    tip = "Please wait a moment for the current request to finalize.";
+  } else if (rawError) {
+    reason = String(rawError).replace(/^Transfer failed:\s*/i, "").replace(/^Paj createOfframpOrder failed \(\d+\):\s*/i, "").replace(/[{"}]/g, "").slice(0, 160);
+  }
+
+  return (
+    `❌ <b>Cash Out Unsuccessful</b>\n` +
+    `──────────────────────────\n` +
+    `⚠️ <b>Reason:</b> ${reason}\n\n` +
+    `🔒 <b>Status:</b> <b>No funds were deducted.</b> Your USDC balance is safe in your wallet.\n\n` +
+    `💡 <b>Next Step:</b> ${tip}`
+  );
+}
 
     if (state.type === "confirm_withdraw") {
       await deleteSensitiveMessage(ctx);
@@ -5849,6 +5929,8 @@ bot.on("text", async (ctx) => {
       }
 
       try {
+        const feeUsdc = typeof state.data.feeUsdc === "number" ? state.data.feeUsdc : Number((state.data.amountUsdc * 0.01).toFixed(4));
+        const netAmountUsdc = typeof state.data.netAmountUsdc === "number" ? state.data.netAmountUsdc : Number((state.data.amountUsdc - feeUsdc).toFixed(4));
         const result = await executeOfframp(
           userWallet,
           state.data.amountUsdc,
@@ -5864,7 +5946,12 @@ bot.on("text", async (ctx) => {
           },
           userId,
           "Cash Out",
-          { accountType: context, rail: state.data.rail || "solana" }
+          {
+            accountType: context,
+            rail: state.data.rail || "solana",
+            feeUsdc,
+            netAmountUsdc,
+          }
         );
 
         if (result.success) {
@@ -5873,13 +5960,20 @@ bot.on("text", async (ctx) => {
           } catch (err) {
             console.error("[points_award_cashout]", err);
           }
+          const successCaption = result.warning ||
+            `✅ <b>Cash Out Submitted!</b>\n──────────────────────────\n` +
+            `• <b>Total:</b> $${state.data.amountUsdc.toFixed(2)}\n` +
+            `• <b>Platform Fee (1%):</b> $${feeUsdc.toFixed(2)}\n` +
+            `• <b>Net to Bank:</b> $${netAmountUsdc.toFixed(2)}\n` +
+            (result.fiatAmount ? `• <b>Naira Received:</b> ₦${Number(result.fiatAmount).toLocaleString()}\n` : "") +
+            `\n<i>Naira arrives in your bank account in ~1–2 minutes.</i>`;
           try {
             const receiptPath = await generateReceiptPNG({
               receiptId:        result.reference || result.txHash?.slice(0, 10) || `CO-${Date.now()}`,
               senderName:       "Proxim Wallet",
               senderAddress:    getActiveWallet(user),
               recipientName:    state.data.accountName || state.data.bankName || "Bank Account",
-              recipientAddress: state.data.accountNumber,
+              recipientAddress: String(state.data.accountNumber || "").trim(),
               amountUsdc:       state.data.amountUsdc,
               token:            "USDC",
               type:             "Cash Out",
@@ -5888,18 +5982,21 @@ bot.on("text", async (ctx) => {
               txHash:           result.txHash || null,
             });
             await ctx.replyWithPhoto({ source: receiptPath }, {
-              caption: result.warning || `✅ Cash out submitted! Naira arrives in ~1–2 minutes.`,
+              caption: successCaption,
+              parse_mode: "HTML",
               ...afterPaymentButtons,
             });
           } catch {
-            await ctx.reply(result.warning || `✅ Cash out submitted! Naira arrives in ~1–2 minutes.`, afterPaymentButtons);
+            await ctx.reply(successCaption, { parse_mode: "HTML", ...afterPaymentButtons });
           }
         } else {
-          await ctx.reply(`❌ ${result.error}`, backToMenu);
+          const friendlyMessage = formatCustomerFriendlyOfframpError(result.error);
+          await ctx.reply(friendlyMessage, { parse_mode: "HTML", ...backToMenu });
         }
       } catch (offrampErr) {
         console.error("[bot:confirm_withdraw:error]", offrampErr);
-        await ctx.reply(`❌ Cash out could not be completed: ${offrampErr.message || "An unexpected error occurred"}`, backToMenu);
+        const friendlyMessage = formatCustomerFriendlyOfframpError(offrampErr.message);
+        await ctx.reply(friendlyMessage, { parse_mode: "HTML", ...backToMenu });
       }
       return;
     }

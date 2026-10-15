@@ -149,10 +149,14 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
   const idempKey = options.idempotencyKey || `offramp:${telegramId}:${bankDetails.accountNumber}:${amountUsdc}`;
   const existing = idempotency.checkOperationIdempotency(idempKey);
   if (existing && existing.status === "completed") {
+    const feeUsdc = typeof options.feeUsdc === "number" ? options.feeUsdc : parseFloat((amountUsdc * 0.01).toFixed(4));
+    const netAmountUsdc = typeof options.netAmountUsdc === "number" ? options.netAmountUsdc : parseFloat((amountUsdc - feeUsdc).toFixed(4));
     return {
       success: true,
       txHash: existing.txHash,
       amount: amountUsdc,
+      feeUsdc: existing.responseData?.feeUsdc ?? feeUsdc,
+      netAmountUsdc: existing.responseData?.netAmountUsdc ?? netAmountUsdc,
       chain: "fiat",
       currency: "NGN",
       duplicate: true,
@@ -266,14 +270,20 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
 
   const txId = db.recordTransaction(telegramId, "offramp", amountMicro, "pending", null, options.accountType || "personal", 18, rail);
 
-  // Step 1: Create or reuse existing offramp order via Paj v2
+  // 1% platform fee inside the amount the user wants to trade (not extra)
+  const feeUsdc = typeof options.feeUsdc === "number" ? options.feeUsdc : parseFloat((amountUsdc * 0.01).toFixed(4));
+  const netAmountUsdc = typeof options.netAmountUsdc === "number" ? options.netAmountUsdc : parseFloat((amountUsdc - feeUsdc).toFixed(4));
+  const feeMicro = walletLib.parseToMicro(feeUsdc.toFixed(6));
+  const netMicro = amountMicro > feeMicro ? amountMicro - feeMicro : 0n;
+
+  // Step 1: Create or reuse existing offramp order via Paj v2 for the net amount
   let result;
   if (bankDetails && bankDetails.orderAddress && bankDetails.orderId) {
     result = {
       success: true,
       reference: bankDetails.orderId,
       address: bankDetails.orderAddress,
-      amount: amountUsdc,
+      amount: netAmountUsdc,
       fiatAmount: bankDetails.fiatAmount,
       accountName: bankDetails.accountName,
       rate: bankDetails.rate,
@@ -285,11 +295,12 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
         throw new Error("Missing bank account number or bank code for cash out payout");
       }
       const railCfg = paj.RAILS[rail] || paj.RAILS.solana;
-      result = await offramp.requestOfframp(telegramId, amountMicro, {
+      result = await offramp.requestOfframp(telegramId, netMicro, {
         accountNumber: bankDetails.accountNumber,
         bankCode:      bankDetails.bankCode,
         accountName:   bankDetails.accountName,
         fiatAmount:    bankDetails.fiatAmount,
+        businessUSDCFee: feeUsdc,
         accountType:   options.accountType       || "personal",
         chain:         railCfg.chain,
         mint:          railCfg.mint,
@@ -319,43 +330,106 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
   }
 
   let txHash;
+  let feeTxHash = null;
+  const feeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.PAYIT_DEV_FEE_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
+
   try {
     if (isTargetSolana) {
-      // Direct SPL USDC transfer from the derived keypair to Paj's order address.
+      // Direct SPL USDC transfer of netAmountUsdc to Paj's order address.
       const solData = multichain.deriveSolanaFromEvmKey(userWallet.privateKey);
       const directSolTx = await multichain.sendSolanaTransfer({
         keypair: solData.keypair,
         recipientAddress: targetAddress,
-        amount: result.amount || amountUsdc,
+        amount: result.amount || netAmountUsdc,
       });
       txHash = directSolTx?.txHash || directSolTx?.signature;
-      if (!txHash) {
+      if (!directSolTx || directSolTx.success === false || !txHash) {
         const detail = directSolTx?.error ? `: ${directSolTx.error}` : ".";
         throw new Error(`Solana transfer could not be completed${detail}`);
       }
+
+      // Route 1% fee on Solana if a Solana fee recipient is configured
+      const solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
+      if (solFeeRecipient && feeUsdc > 0 && multichain.isSolanaAddress(solFeeRecipient)) {
+        try {
+          const feeSolTx = await multichain.sendSolanaTransfer({
+            keypair: solData.keypair,
+            recipientAddress: solFeeRecipient,
+            amount: feeUsdc,
+          });
+          feeTxHash = feeSolTx?.txHash || feeSolTx?.signature || null;
+          console.log(`[executor:offramp:solana] Routed 1% fee on Solana ($${feeUsdc} USDC) -> ${solFeeRecipient}`);
+        } catch (feeErr) {
+          console.warn("[executor:offramp:solana_fee_note]", feeErr.message);
+        }
+      }
+
     } else {
-      // Arc rail: plain native-USDC transfer on Arc (~1s finality, zero bridging).
-      txHash = await walletLib.sendFromWallet(userWallet, targetAddress, amountMicro);
+      // Arc rail: plain native-USDC transfer of netMicro to Paj order address
+      txHash = await walletLib.sendFromWallet(userWallet, targetAddress, netMicro);
+
+      // Route 1% platform fee directly to APP_FEE_RECIPIENT_ADDRESS
+      if (feeMicro > 0n && feeRecipient && walletLib.isValidAddress(feeRecipient) && userWallet.address.toLowerCase() !== feeRecipient.toLowerCase()) {
+        try {
+          feeTxHash = await walletLib.sendFromWallet(userWallet, feeRecipient, feeMicro);
+          console.log(`[executor:offramp] Collected $${feeUsdc} (1% trade fee) -> ${feeRecipient} (tx: ${feeTxHash})`);
+        } catch (feeErr) {
+          console.warn("[executor:offramp_fee_note]", feeErr.message);
+        }
+      }
     }
 
-    db.updateTransactionStatus(txId, "submitted");
+    db.updateTransactionStatus(txId, "submitted", txHash);
+
+    // Track order in paj_offramp_orders table with clean 10-digit NUBAN account number
+    const offrampOrderId = result.reference || result.id || `offramp_${Date.now()}`;
+    try {
+      db.recordOfframpOrder({
+        orderId: offrampOrderId,
+        telegramId,
+        accountType: options.accountType || "personal",
+        accountNumber: bankDetails.accountNumber,
+        bankCode: bankDetails.bankCode,
+        bankName: bankDetails.bankName,
+        accountName: result.accountName || bankDetails.accountName,
+        amountUsdc,
+        feeUsdc,
+        netAmountUsdc,
+        fiatAmount: result.fiatAmount || bankDetails.fiatAmount,
+        rate: result.rate,
+        rail,
+        status: "submitted",
+        txHash,
+        feeTxHash,
+      });
+    } catch (orderRecErr) {
+      console.warn("[executor:offramp] recordOfframpOrder warning:", orderRecErr.message);
+    }
+
     const responsePayload = {
-      reference: result.reference || result.id || null,
+      reference: offrampOrderId,
       fiatAmount: result.fiatAmount || bankDetails.fiatAmount,
       rate: result.rate,
+      feeUsdc,
+      netAmountUsdc,
+      feeTxHash,
     };
     idempotency.completeOperationIdempotency(idempKey, { txHash, responseData: responsePayload });
     return {
       success: true,
       txHash,
+      feeTxHash,
       amount: amountUsdc,
+      feeUsdc,
+      netAmountUsdc,
       fiatAmount: result.fiatAmount || bankDetails.fiatAmount,
       rate: result.rate,
       to: targetAddress,
       label,
-      reference: result.reference || result.id || null,
+      reference: offrampOrderId,
       accountName: result.accountName || bankDetails.accountName,
       bankName: bankDetails.bankName,
+      accountNumber: bankDetails.accountNumber,
       bankDetails,
       accountType: options.accountType || "personal",
       rail,
@@ -981,6 +1055,8 @@ async function executePlan(plan, pin, user, context = "personal") {
       if (executionResult.success) {
         executionResult.amountNgn = fiatAmount;
         executionResult.amountUsdc = amountUsdc;
+        executionResult.recipientAddress = payment.account_number;
+        executionResult.recipientName = payment.account_name || resolved.bankName || "Bank Account";
       }
 
     } else if (isSolana) {

@@ -41,6 +41,7 @@ async function sendOnrampDepositNotification({
   telegramId,
   fiatAmount,
   amountUsdc,
+  feeUsdc = 0,
   accountType = "personal",
   txHash = null,
   orderId = null,
@@ -78,8 +79,13 @@ async function sendOnrampDepositNotification({
   let caption =
     `${title}\n` +
     `──────────────────────────\n` +
-    `💵 <b>Amount Deposited:</b> ${formattedFiat}\n` +
-    `💰 <b>Credited to Account:</b> +$${formattedUsdc}\n`;
+    `💵 <b>Amount Deposited:</b> ${formattedFiat}\n`;
+
+  if (feeUsdc && Number(feeUsdc) > 0) {
+    caption += `🏷️ <b>Platform Fee (1%):</b> $${Number(feeUsdc).toFixed(2)}\n`;
+  }
+
+  caption += `💰 <b>Credited to Account:</b> +$${formattedUsdc}\n`;
 
   if (rate && Number(rate) > 0) {
     caption += `📈 <b>Exchange Rate:</b> ₦${Number(rate).toLocaleString()}/$\n`;
@@ -199,7 +205,7 @@ async function processPajEvent(payload, bot) {
 
     // Check if this incoming payment matches a Personal or Business Invoice
     const externalId = data.userExternalId || data.metadata?.invoiceNumber;
-    const fiatOrderId = data.id;
+    const fiatOrderId = data.id || data.orderId || payload.id || payload.orderId || null;
 
     let invoice = null;
     let isBizInvoice = false;
@@ -291,11 +297,19 @@ async function processPajEvent(payload, bot) {
       return;
     }
 
+    // Lookup tracked onramp order in DB first (source of truth for order initiated in bot)
+    const trackedOrder = fiatOrderId ? db.getOnrampOrderByOrderId(fiatOrderId) : null;
+
     // Resolve user for standard onramp
     let user = null;
+    let targetTelegramId = null;
+
     if (telegramId) {
       const parsedTgId = parseInt(String(telegramId).replace(/\D/g, ""));
       if (!isNaN(parsedTgId)) user = db.getUser(parsedTgId);
+    }
+    if (!user && trackedOrder && trackedOrder.telegram_id) {
+      user = db.getUser(trackedOrder.telegram_id);
     }
     if (!user && recipient) {
       if (recipient.startsWith("0x") && db.getUserByDepositAddress) {
@@ -306,9 +320,11 @@ async function processPajEvent(payload, bot) {
       }
     }
 
+    targetTelegramId = user ? user.telegram_id : (trackedOrder?.telegram_id || (telegramId ? parseInt(String(telegramId).replace(/\D/g, "")) : null));
+
     // Determine whether this was a personal or business onramp
-    const externalIdStr = String(data.userExternalId || data.metadata?.telegramId || "");
-    const isBizAccount = data.accountType === "business" || data.metadata?.accountType === "business" || externalIdStr.endsWith("-biz");
+    const externalIdStr = String(data.userExternalId || data.metadata?.telegramId || trackedOrder?.account_type || "");
+    const isBizAccount = data.accountType === "business" || data.metadata?.accountType === "business" || externalIdStr.endsWith("-biz") || trackedOrder?.account_type === "business";
     const accountLabel = isBizAccount ? "Business Treasury" : "Personal Wallet";
 
     // Safety net: Paj reports the exact address it paid. It must be the address our key controls.
@@ -345,13 +361,10 @@ async function processPajEvent(payload, bot) {
       }
     }
 
-    // Lookup tracked onramp order in DB if present
-    const trackedOrder = fiatOrderId ? db.getOnrampOrderByOrderId(fiatOrderId) : null;
     const effectiveFiatAmount = fiatAmount > 0 ? fiatAmount : (trackedOrder?.fiat_amount || 0);
     const effectiveAmountUsdc = amountUsdc > 0 ? amountUsdc : (trackedOrder?.amount_usdc || 0);
     const orderRate = data.rate || trackedOrder?.rate || (effectiveFiatAmount > 0 && effectiveAmountUsdc > 0 ? Math.round(effectiveFiatAmount / effectiveAmountUsdc) : null);
 
-    const targetTelegramId = user ? user.telegram_id : telegramId;
     const recipientArcAddress = isBizAccount
       ? (user ? (user.business_deposit_address || user.deposit_address) : data.destinationArcAddress)
       : (user ? user.deposit_address : data.destinationArcAddress);
@@ -374,7 +387,37 @@ async function processPajEvent(payload, bot) {
     }
 
     const isDirectlySettled = isDirectArcDeposit || (bridgeResult && bridgeResult.status === "completed" && bridgeResult.arcTxHash);
-    const amountMicro = walletLib.parseToMicro(effectiveAmountUsdc.toFixed(6));
+
+    // 1% platform fee inside the trade amount
+    const feeUsdc = Number((effectiveAmountUsdc * 0.01).toFixed(4));
+    const netAmountUsdc = Number((effectiveAmountUsdc - feeUsdc).toFixed(4));
+    const feeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.PAYIT_DEV_FEE_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
+    let feeTxHash = null;
+
+    if (isDirectlySettled && user && feeUsdc > 0.0001 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
+      try {
+        const encryptedKey = isBizAccount
+          ? (user.biz_system_encrypted_key || user.system_encrypted_key)
+          : user.system_encrypted_key;
+        if (encryptedKey) {
+          const rawKey = walletLib.decryptSensitiveValue(encryptedKey);
+          if (rawKey) {
+            const userWallet = walletLib.walletFromPrivateKey(rawKey);
+            if (userWallet.address.toLowerCase() !== feeRecipient.toLowerCase()) {
+              const feeMicro = walletLib.parseToMicro(feeUsdc.toFixed(6));
+              const feeTx = await walletLib.sendSponsoredOrDirectTransaction(userWallet, feeRecipient, feeMicro);
+              feeTxHash = feeTx?.txHash || null;
+              console.log(`[webhook_server:onramp] Collected 1% trade fee ($${feeUsdc} USDC) -> ${feeRecipient} (tx: ${feeTxHash})`);
+            }
+          }
+        }
+      } catch (feeErr) {
+        console.warn("[webhook_server:onramp_fee_note]", feeErr.message);
+      }
+    }
+
+    const creditedAmountUsdc = feeTxHash ? netAmountUsdc : effectiveAmountUsdc;
+    const amountMicro = walletLib.parseToMicro(creditedAmountUsdc.toFixed(6));
 
     // Record onramp transaction in ledger
     const settlementTxHash = (bridgeResult && bridgeResult.arcTxHash) || solanaTxSignature || data.id;
@@ -402,7 +445,8 @@ async function processPajEvent(payload, bot) {
             bot,
             telegramId: targetTelegramId,
             fiatAmount: effectiveFiatAmount,
-            amountUsdc: effectiveAmountUsdc,
+            amountUsdc: creditedAmountUsdc,
+            feeUsdc: feeTxHash ? feeUsdc : 0,
             accountType: isBizAccount ? "business" : "personal",
             txHash: settlementTxHash,
             orderId: fiatOrderId,
@@ -414,7 +458,8 @@ async function processPajEvent(payload, bot) {
             bot,
             telegramId: targetTelegramId,
             fiatAmount: effectiveFiatAmount,
-            amountUsdc: effectiveAmountUsdc,
+            amountUsdc: creditedAmountUsdc,
+            feeUsdc: feeTxHash ? feeUsdc : 0,
             accountType: isBizAccount ? "business" : "personal",
             txHash: settlementTxHash,
             orderId: fiatOrderId,

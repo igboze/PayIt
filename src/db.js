@@ -177,6 +177,31 @@ db.exec(`
     completed_at      TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS paj_offramp_orders (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id          TEXT UNIQUE NOT NULL,
+    telegram_id       INTEGER NOT NULL,
+    account_type      TEXT NOT NULL DEFAULT 'personal',
+    account_number    TEXT NOT NULL,
+    bank_code         TEXT,
+    bank_name         TEXT,
+    account_name      TEXT,
+    amount_usdc       REAL NOT NULL,
+    fee_usdc          REAL NOT NULL DEFAULT 0,
+    net_amount_usdc   REAL NOT NULL,
+    fiat_amount       REAL,
+    rate              REAL,
+    rail              TEXT NOT NULL DEFAULT 'solana',
+    status            TEXT NOT NULL DEFAULT 'pending',
+    tx_hash           TEXT,
+    fee_tx_hash       TEXT,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at      TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_paj_offramp_status ON paj_offramp_orders(status);
+
   CREATE TABLE IF NOT EXISTS crosschain_pending_withdrawals (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     telegram_id             INTEGER NOT NULL,
@@ -1746,6 +1771,106 @@ function completeOnrampOrder(orderId, txHashOrOpts = {}, maybeStatus = "complete
 }
 
 /**
+ * Record a newly initiated Paj fiat offramp order with clean NUBAN bank details.
+ */
+function recordOfframpOrder({
+  orderId,
+  telegramId,
+  accountType = "personal",
+  accountNumber,
+  bankCode = null,
+  bankName = null,
+  accountName = null,
+  amountUsdc,
+  feeUsdc = 0,
+  netAmountUsdc = null,
+  fiatAmount = null,
+  rate = null,
+  rail = "solana",
+  txHash = null,
+  feeTxHash = null,
+  status = "pending",
+}) {
+  try {
+    const cleanAccountNum = String(accountNumber || "").trim();
+    const effectiveNet = netAmountUsdc != null ? Number(netAmountUsdc) : Number((amountUsdc - feeUsdc).toFixed(4));
+    db.prepare(`
+      INSERT OR REPLACE INTO paj_offramp_orders
+        (order_id, telegram_id, account_type, account_number, bank_code, bank_name, account_name,
+         amount_usdc, fee_usdc, net_amount_usdc, fiat_amount, rate, rail, status, tx_hash, fee_tx_hash, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `).run(
+      orderId,
+      telegramId,
+      accountType,
+      cleanAccountNum,
+      bankCode,
+      bankName,
+      accountName,
+      Number(amountUsdc),
+      Number(feeUsdc || 0),
+      effectiveNet,
+      fiatAmount ? Number(fiatAmount) : null,
+      rate ? Number(rate) : null,
+      rail,
+      status,
+      txHash,
+      feeTxHash
+    );
+  } catch (err) {
+    console.warn("[db:offramp_order] recordOfframpOrder error:", err.message);
+  }
+}
+
+function getOfframpOrderByOrderId(orderId) {
+  if (!orderId) return null;
+  try {
+    return db.prepare("SELECT * FROM paj_offramp_orders WHERE order_id = ?").get(orderId) || null;
+  } catch (err) {
+    console.warn("[db:offramp_order] getOfframpOrderByOrderId error:", err.message);
+    return null;
+  }
+}
+
+function getPendingOfframpOrders() {
+  try {
+    return db.prepare(`
+      SELECT * FROM paj_offramp_orders
+      WHERE status = 'pending' AND created_at >= datetime('now', '-6 hours')
+      ORDER BY id DESC
+    `).all() || [];
+  } catch (err) {
+    console.warn("[db:offramp_order] getPendingOfframpOrders error:", err.message);
+    return [];
+  }
+}
+
+function completeOfframpOrder(orderId, txHashOrOpts = {}, maybeStatus = "completed") {
+  let txHash = null;
+  let status = maybeStatus || "completed";
+
+  if (typeof txHashOrOpts === "string") {
+    txHash = txHashOrOpts;
+  } else if (txHashOrOpts && typeof txHashOrOpts === "object") {
+    txHash = txHashOrOpts.txHash || null;
+    if (txHashOrOpts.status) status = txHashOrOpts.status;
+  }
+
+  try {
+    db.prepare(`
+      UPDATE paj_offramp_orders
+      SET status = ?,
+          tx_hash = COALESCE(?, tx_hash),
+          completed_at = datetime('now'),
+          updated_at = datetime('now')
+      WHERE order_id = ?
+    `).run(status, txHash || null, orderId);
+  } catch (err) {
+    console.warn("[db:offramp_order] completeOfframpOrder error:", err.message);
+  }
+}
+
+/**
  * Record a newly initiated cross-chain withdrawal (CCTP or Intent routing).
  */
 function recordCrosschainWithdrawal({
@@ -2369,6 +2494,10 @@ module.exports = {
   getOnrampOrderByOrderId,
   getPendingOnrampOrders,
   completeOnrampOrder,
+  recordOfframpOrder,
+  getOfframpOrderByOrderId,
+  getPendingOfframpOrders,
+  completeOfframpOrder,
   recordInboundCctpTransfer,
   updateInboundCctpTransfer,
   completeInboundCctpTransfer,
