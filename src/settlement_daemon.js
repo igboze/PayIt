@@ -36,16 +36,49 @@ async function pollPendingOnrampOrders(bot) {
       const liveOrder = await paj.getOnrampOrder(order.order_id);
       if (!liveOrder) continue;
 
-      const status = String(liveOrder.status || "").toLowerCase();
+      const orderData = liveOrder.data || liveOrder;
+      const status = String(orderData.status || "").toLowerCase();
       if (status === "completed" || status === "successful" || status === "paid" || status === "settled") {
-        const txHash = liveOrder.txHash || liveOrder.signature || liveOrder.hash || `paj-settle-${order.order_id}`;
+        const txHash = orderData.txHash || orderData.signature || orderData.hash || `paj-settle-${order.order_id}`;
         
+        // 1% platform fee inside trade amount
+        const amountUsdc = Number(orderData.amount || order.amount_usdc || 0);
+        const feeUsdc = Number((amountUsdc * 0.01).toFixed(4));
+        const netAmountUsdc = Number((amountUsdc - feeUsdc).toFixed(4));
+        const feeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.PAYIT_DEV_FEE_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
+        let feeTxHash = null;
+
+        const user = db.getUser(order.telegram_id);
+        const isBiz = order.account_type === "business";
+        if (user && feeUsdc > 0.0001 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
+          try {
+            const encryptedKey = isBiz
+              ? (user.biz_system_encrypted_key || user.system_encrypted_key)
+              : user.system_encrypted_key;
+            if (encryptedKey) {
+              const rawKey = walletLib.decryptSensitiveValue(encryptedKey);
+              if (rawKey) {
+                const userWallet = walletLib.walletFromPrivateKey(rawKey);
+                if (userWallet.address.toLowerCase() !== feeRecipient.toLowerCase()) {
+                  const feeMicro = walletLib.parseToMicro(feeUsdc.toFixed(6));
+                  const feeTx = await walletLib.sendSponsoredOrDirectTransaction(userWallet, feeRecipient, feeMicro);
+                  feeTxHash = feeTx?.txHash || null;
+                  console.log(`[settlement_daemon:onramp] Collected 1% fee ($${feeUsdc} USDC) -> ${feeRecipient} (tx: ${feeTxHash})`);
+                }
+              }
+            }
+          } catch (feeErr) {
+            console.warn("[settlement_daemon:onramp_fee_note]", feeErr.message);
+          }
+        }
+
+        const creditedAmountUsdc = feeTxHash ? netAmountUsdc : amountUsdc;
+        const amountMicro = walletLib.parseToMicro(creditedAmountUsdc.toFixed(6));
+
         // Mark completed in DB
         db.completeOnrampOrder(order.order_id, txHash);
 
         // Record in ledger
-        const amountUsdc = Number(liveOrder.amount || order.amount_usdc || 0);
-        const amountMicro = walletLib.parseToMicro(amountUsdc.toFixed(6));
         db.recordTransaction(
           order.telegram_id,
           "deposit_naira",
@@ -55,17 +88,18 @@ async function pollPendingOnrampOrders(bot) {
           order.account_type || "personal"
         );
 
-        // Trigger rich notification
+        // Trigger rich notification with receipt PNG
         if (bot) {
           await webhookServer.sendOnrampDepositNotification({
             bot,
             telegramId: order.telegram_id,
-            fiatAmount: liveOrder.fiatAmount || order.fiat_amount,
-            amountUsdc: amountUsdc,
+            fiatAmount: orderData.fiatAmount || order.fiat_amount,
+            amountUsdc: creditedAmountUsdc,
+            feeUsdc: feeTxHash ? feeUsdc : 0,
             accountType: order.account_type || "personal",
             txHash,
             orderId: order.order_id,
-            rate: liveOrder.rate || order.rate,
+            rate: orderData.rate || order.rate,
             network: order.settlement_rail === "arc" ? "Arc Mainnet" : "Solana Mainnet",
           });
         }

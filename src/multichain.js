@@ -200,6 +200,22 @@ async function sendSolanaTransfer({ keypair, recipientAddress, amount, currency 
       const sourceAta = getAssociatedTokenAddress(keypair.publicKey, mint);
       const destAta = getAssociatedTokenAddress(recipientPubKey, mint);
 
+      // Check available SPL USDC balance
+      try {
+        const balObj = await getSplTokenBalance(keypair.publicKey.toBase58());
+        if (!balObj || Number(balObj.uiAmount || 0) < Number(amount)) {
+          return {
+            success: false,
+            error: `Insufficient USDC on Solana. You have $${Number(balObj?.uiAmount || 0).toFixed(2)}, but this transfer requires $${Number(amount).toFixed(2)}.`,
+            amount,
+            to: recipientAddress,
+            currency,
+          };
+        }
+      } catch (balErr) {
+        console.warn("[multichain:spl_balance_check_warning]", balErr.message);
+      }
+
       // Check if recipient ATA exists, create if missing (effectiveFeePayer pays ATA rent if needed)
       const destAccountInfo = await connection.getAccountInfo(destAta);
       if (!destAccountInfo) {
@@ -238,17 +254,38 @@ async function sendSolanaTransfer({ keypair, recipientAddress, amount, currency 
     transaction.sign(...uniqueSigners);
 
     const signature = await connection.sendRawTransaction(transaction.serialize());
+    let confResult = null;
     try {
-      await Promise.race([
+      confResult = await Promise.race([
         connection.confirmTransaction({
           signature,
           blockhash: latestBlockhash.blockhash,
           lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
         }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Solana confirmation timeout")), 12000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Solana confirmation timeout")), 15000))
       ]);
     } catch (confErr) {
       console.warn("[multichain:solana_confirm_note]", confErr.message);
+      return {
+        success: false,
+        error: `Solana transfer could not be confirmed: ${confErr.message}`,
+        txHash: signature,
+        amount,
+        to: recipientAddress,
+        currency,
+      };
+    }
+
+    if (confResult?.value?.err) {
+      console.error("[multichain:solana_tx_err]", confResult.value.err);
+      return {
+        success: false,
+        error: `Solana transfer reverted on-chain (${JSON.stringify(confResult.value.err)})`,
+        txHash: signature,
+        amount,
+        to: recipientAddress,
+        currency,
+      };
     }
 
     return {

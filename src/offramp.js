@@ -35,6 +35,10 @@ async function requestOfframp(telegramId, amountMicro, bankDetails) {
       ...(bankDetails.mint ? { mint: bankDetails.mint } : {}),
     };
 
+    if (bankDetails && typeof bankDetails.businessUSDCFee === "number") {
+      payload.businessUSDCFee = bankDetails.businessUSDCFee;
+    }
+
     if (bankDetails && bankDetails.fiatAmount) {
       payload.fiatAmount = Number(bankDetails.fiatAmount);
     } else {

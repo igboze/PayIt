@@ -71,4 +71,58 @@ test("On-Ramp Notification & Order Tracking Suite", async (t) => {
     assert.ok(msg.includes("0xArcTxHashComplete"), "Must include tx hash");
     assert.ok(sent[0].extra?.reply_markup?.inline_keyboard?.length >= 2, "Must include action buttons");
   });
+
+  await t.test("3. recordOfframpOrder records clean 10-digit account number and completes it", async () => {
+    const offrampOrderId = `test_offramp_${Date.now()}`;
+    db.recordOfframpOrder({
+      orderId: offrampOrderId,
+      telegramId: testTgId,
+      accountType: "personal",
+      accountNumber: "0123456789",
+      bankCode: "058",
+      bankName: "GTBank",
+      accountName: "John Doe",
+      amountUsdc: 100,
+      feeUsdc: 1.0,
+      netAmountUsdc: 99.0,
+      fiatAmount: 148500,
+      rate: 1500,
+      rail: "solana",
+      status: "pending",
+    });
+
+    const order = db.getOfframpOrderByOrderId(offrampOrderId);
+    assert.ok(order, "Offramp order should be found");
+    assert.equal(order.order_id, offrampOrderId);
+    assert.equal(order.account_number, "0123456789", "Bank account must be preserved exactly without 64-digit mangling");
+    assert.equal(order.bank_name, "GTBank");
+    assert.equal(order.amount_usdc, 100);
+    assert.equal(order.fee_usdc, 1.0);
+    assert.equal(order.net_amount_usdc, 99.0);
+
+    db.completeOfframpOrder(offrampOrderId, "0xSolanaTxSignature123");
+    const completed = db.getOfframpOrderByOrderId(offrampOrderId);
+    assert.equal(completed.status, "completed");
+    assert.equal(completed.tx_hash, "0xSolanaTxSignature123");
+  });
+
+  await t.test("4. generateReceiptPNG preserves 10-digit bank account without 64-char address truncation", async () => {
+    const { generateReceiptPNG } = require("../src/receipt_generator");
+    const receiptPath = await generateReceiptPNG({
+      receiptId: "CO-123456",
+      senderName: "Proxim Wallet",
+      recipientName: "John Doe (GTBank)",
+      recipientAddress: "0123456789",
+      amountUsdc: 50,
+      token: "USDC",
+      type: "Cash Out",
+      timestamp: new Date().toISOString(),
+      status: "Confirmed",
+      txHash: "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+    });
+
+    const fs = require("fs");
+    assert.ok(fs.existsSync(receiptPath), "Receipt PNG must be generated");
+    assert.ok(fs.statSync(receiptPath).size > 1000, "Receipt PNG must have valid size");
+  });
 });

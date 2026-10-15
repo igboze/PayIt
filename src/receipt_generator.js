@@ -62,11 +62,22 @@ function buildReceiptSvg(opts) {
   });
   const shortHash    = txHash ? `${txHash.slice(0, 10)}...${txHash.slice(-8)}` : null;
   const shortSender  = senderAddress
-    ? `${senderAddress.slice(0, 8)}...${senderAddress.slice(-6)}`
+    ? (senderAddress.length > 20 ? `${senderAddress.slice(0, 8)}...${senderAddress.slice(-6)}` : senderAddress)
     : "";
-  const shortRecip   = recipientAddress
-    ? `${recipientAddress.slice(0, 8)}...${recipientAddress.slice(-6)}`
-    : "";
+
+  const isBankPayout = type.toLowerCase().includes("cash out") || type.toLowerCase().includes("offramp") || /^\d{7,12}$/.test(String(recipientAddress || "").trim());
+  let shortRecip = "";
+  if (recipientAddress) {
+    const rawRecip = String(recipientAddress).trim();
+    if (isBankPayout || /^\d{7,12}$/.test(rawRecip)) {
+      // Standard 10-digit NUBAN bank account number — keep clean & full without mutilating as 64-digit hash
+      shortRecip = `Acct: ${rawRecip}`;
+    } else if (rawRecip.length > 20) {
+      shortRecip = `${rawRecip.slice(0, 8)}...${rawRecip.slice(-6)}`;
+    } else {
+      shortRecip = rawRecip;
+    }
+  }
 
   const nairaLine = nairaEquiv
     ? `<text x="340" y="258" font-size="13" fill="#64748b" text-anchor="middle">≈ ${escape(nairaEquiv)} at today's rate</text>`

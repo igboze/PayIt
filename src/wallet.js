@@ -291,12 +291,24 @@ async function sendDirectFromWallet(signer, toAddress, amountMicro, options = {}
     value: amountMicro,
   });
 
+  if (options.waitForConfirmation && typeof tx.wait === "function") {
+    const receipt = await tx.wait(1);
+    if (receipt && receipt.status === 0) {
+      throw new Error(`Transaction reverted on-chain (hash: ${tx.hash})`);
+    }
+    return tx.hash;
+  }
+
   const provider = signer.provider || getProvider();
   if (provider && typeof provider.waitForTransaction === "function" && !options.skipWait && process.env.NODE_ENV !== "test") {
     provider.waitForTransaction(tx.hash, 1, 120000)
       .then((receipt) => {
         if (!receipt) {
           console.warn(`[wallet] No receipt returned for ${tx.hash}`);
+          return;
+        }
+        if (receipt.status === 0) {
+          console.error(`[wallet] On-chain transaction reverted for ${tx.hash}`);
           return;
         }
         console.log(`[wallet] Transaction confirmed: ${tx.hash}`);
