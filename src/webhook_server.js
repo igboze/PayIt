@@ -13,8 +13,10 @@ const bizDb = require("./biz_db");
 const evmDepositSweeper = require("./evm_deposit_sweeper");
 const walletLib = require("./wallet");
 const solAddrLib = require("./solana_address");
+const multichain = require("./multichain");
 const { generateReceiptPNG } = require("./receipt_generator");
 const apiRoutes = require("./api_routes");
+const fx = require("./fx");
 
 function verifyAlchemySignature(rawBody, headers, signingKey) {
   if (!signingKey) return true;
@@ -169,11 +171,12 @@ async function sendOnrampDepositNotification({
 async function processPajEvent(payload, bot) {
   const event = payload.event || payload.type;
   const data = payload.data || payload;
+  const botInstance = (bot && bot.telegram) ? bot : (bot && bot.bot && bot.bot.telegram ? bot.bot : bot);
 
   console.log(`[webhook_server] Received Paj v2 event: "${event}"`);
 
   // 0. Strict Webhook Idempotency: Prevent replay attacks or duplicate processing
-  const eventId = data.id || payload.id || data.reference || data.txHash;
+  const eventId = data.id || payload.id || data.reference || payload.reference || data.txHash;
   if (!eventId) {
     console.error("[webhook_server] Cannot process event: no stable identifier present", payload);
     return { success: false, error: "missing stable event id" };
@@ -184,9 +187,159 @@ async function processPajEvent(payload, bot) {
   }
   idempotency.markWebhookProcessed(eventId, event, data.id);
 
-  // Detect onramp completion
   const statusStr = String(data.status || "").toLowerCase();
   const eventStr = String(event || "").toLowerCase();
+  const fiatOrderId = data.reference || data.id || data.orderId || data.order_id || payload.reference || payload.id || payload.orderId || payload.order_id || null;
+
+  // ── 1. Check if this is an Offramp (Cash Out) order ──
+  const trackedOfframp = fiatOrderId ? db.getOfframpOrderByOrderId(fiatOrderId) : (data.txHash ? db.getOfframpOrderByOrderId(data.txHash) : null);
+  const effectiveOrderId = trackedOfframp?.order_id || fiatOrderId;
+  const isOfframp = Boolean(trackedOfframp) ||
+    data.transactionType === "OFF_RAMP" ||
+    data.type === "offramp" ||
+    eventStr.startsWith("offramp") ||
+    eventStr.startsWith("payout") ||
+    (typeof data.description === "string" && data.description.toLowerCase().includes("cash out"));
+
+  if (isOfframp) {
+    const telegramId = data.userExternalId || data.metadata?.telegramId || trackedOfframp?.telegram_id;
+    const fiatAmount = Number(data.fiatAmount || data.amountFiat || trackedOfframp?.fiat_amount || 0);
+    const bankName = data.bankName || data.bank?.name || trackedOfframp?.bank_name || "Bank";
+    const accountNumber = String(data.accountNumber || trackedOfframp?.account_number || "");
+    const accountType = data.metadata?.accountType || trackedOfframp?.account_type || "personal";
+    const accountLabel = accountType === "business" ? "Business Account" : "Personal Wallet";
+    const amountUsdc = Number(data.amount || data.amountUsdc || trackedOfframp?.amount_usdc || 0);
+
+    // 1A. Offramp FAILURE: Payout could not be settled
+    const isFailed =
+      statusStr === "failed" ||
+      statusStr === "reversed" ||
+      statusStr === "cancelled" ||
+      statusStr === "rejected" ||
+      eventStr.includes("failed") ||
+      eventStr.includes("reversed") ||
+      eventStr.includes("cancelled") ||
+      eventStr.includes("rejected");
+
+    if (isFailed) {
+      const reasonNote = data.failureReason || data.reason || data.message || "Interbank transfer could not be settled by destination bank.";
+      console.warn(`[webhook_server:offramp_failed] Offramp order ${effectiveOrderId} failed:`, reasonNote);
+      if (effectiveOrderId) {
+        db.completeOfframpOrder(effectiveOrderId, { status: "failed" });
+      }
+      if (telegramId) {
+        const parsedTgId = parseInt(String(telegramId).replace(/\D/g, ""));
+        try {
+          db.prepare("UPDATE transactions SET status = 'failed' WHERE telegram_id = ? AND type = 'offramp' AND status IN ('pending', 'submitted') ORDER BY id DESC LIMIT 1").run(parsedTgId);
+        } catch (_) {}
+
+        if (botInstance?.telegram && !isNaN(parsedTgId)) {
+          try {
+            await botInstance.telegram.sendMessage(
+              parsedTgId,
+              `❌ <b>Cash Out Failed (${accountLabel})</b>\n` +
+              `──────────────────────────\n` +
+              `The bank transfer to <b>${bankName}</b> (<code>${accountNumber}</code>) could not be completed.\n\n` +
+              `⚠️ <b>Reason:</b> ${reasonNote}\n` +
+              `🔒 <b>Status:</b> <b>No payment receipt generated.</b> Your funds are safe.\n\n` +
+              `<i>If your USDC was deducted, our automated reconciliation will return it to your wallet, or contact support with Ref: <code>${effectiveOrderId || "N/A"}</code>.</i>`,
+              { parse_mode: "HTML" }
+            );
+          } catch (err) {
+            console.warn(`[webhook_server] Failed to notify TG user ${parsedTgId} of offramp failure:`, err.message);
+          }
+        }
+      }
+      return { success: true, status: "failed" };
+    }
+
+    // 1B. Offramp SUCCESS: Payout delivered to user's bank
+    const isSuccessful =
+      eventStr === "offramp.successful" ||
+      eventStr === "offramp.completed" ||
+      eventStr === "payout.successful" ||
+      statusStr === "completed" ||
+      statusStr === "successful" ||
+      statusStr === "settled" ||
+      statusStr === "paid";
+
+    if (isSuccessful) {
+      if (effectiveOrderId) {
+        db.completeOfframpOrder(effectiveOrderId, { txHash: data.txHash || data.hash || null, status: "completed" });
+      }
+
+      if (telegramId) {
+        const parsedTgId = parseInt(String(telegramId).replace(/\D/g, ""));
+        try {
+          let liveRate = data.rate || trackedOfframp?.rate;
+          if (!liveRate && fiatAmount > 0 && amountUsdc > 0) {
+            liveRate = Math.round(fiatAmount / amountUsdc);
+          }
+          if (amountUsdc > 0) {
+            const amountMicro = walletLib.parseToMicro(amountUsdc.toFixed(6));
+            db.recordTransaction(
+              parsedTgId,
+              "offramp",
+              amountMicro,
+              "confirmed",
+              data.id || effectiveOrderId,
+              accountType
+            );
+          }
+        } catch (recErr) {
+          console.warn("[webhook_server] Record offramp tx error:", recErr.message);
+        }
+
+        if (botInstance?.telegram && !isNaN(parsedTgId)) {
+          try {
+            const user = db.getUser(parsedTgId);
+            const userAddress = user ? (accountType === "business" ? (user.business_deposit_address || user.deposit_address) : user.deposit_address) : null;
+            const caption =
+              `✅ <b>Cash Out Delivered (${accountLabel})!</b>\n` +
+              `──────────────────────────\n` +
+              `💵 <b>Delivered:</b> ₦${Number(fiatAmount).toLocaleString()}\n` +
+              `🏦 <b>Destination:</b> ${bankName} <code>${accountNumber}</code>\n` +
+              `💰 <b>Amount:</b> $${amountUsdc.toFixed(2)} USDC\n` +
+              `💼 <b>Source:</b> ${accountLabel}\n` +
+              `🔖 <b>Ref:</b> <code>${effectiveOrderId || "N/A"}</code>\n\n` +
+              `<i>Funds have been delivered directly to your bank account.</i>`;
+
+            let receiptPath = null;
+            try {
+              receiptPath = await generateReceiptPNG({
+                receiptId: effectiveOrderId ? `CO-${String(effectiveOrderId).slice(0, 10)}` : `CO-${Date.now()}`,
+                senderName: "Proxim Wallet",
+                senderAddress: userAddress || "Proxim Wallet",
+                recipientName: trackedOfframp?.account_name || bankName,
+                recipientAddress: accountNumber,
+                amountUsdc: amountUsdc,
+                token: "USDC",
+                type: "Cash Out",
+                timestamp: new Date().toISOString(),
+                status: "Confirmed",
+                txHash: data.txHash || trackedOfframp?.tx_hash || null,
+              });
+            } catch (_) {}
+
+            if (receiptPath && typeof botInstance.telegram.sendPhoto === "function") {
+              await botInstance.telegram.sendPhoto(parsedTgId, { source: receiptPath }, { caption, parse_mode: "HTML" });
+            } else if (typeof botInstance.telegram.sendMessage === "function") {
+              await botInstance.telegram.sendMessage(parsedTgId, caption, { parse_mode: "HTML" });
+            }
+          } catch (err) {
+            console.warn(`[webhook_server] Failed to notify TG user ${parsedTgId}:`, err.message);
+          }
+        }
+      }
+      return { success: true, status: "completed" };
+    }
+
+    // 1C. Offramp in-flight status (e.g. INIT, PENDING, PROCESSING)
+    console.log(`[webhook_server:offramp_progress] Offramp order ${effectiveOrderId} status: ${statusStr || eventStr}. Awaiting bank settlement.`);
+    return { success: true, status: statusStr || "pending" };
+  }
+
+  // ── 2. Detect onramp completion ──
   if (
     eventStr === "order.successful" ||
     eventStr === "onramp.successful" ||
@@ -205,7 +358,6 @@ async function processPajEvent(payload, bot) {
 
     // Check if this incoming payment matches a Personal or Business Invoice
     const externalId = data.userExternalId || data.metadata?.invoiceNumber;
-    const fiatOrderId = data.id || data.orderId || payload.id || payload.orderId || null;
 
     let invoice = null;
     let isBizInvoice = false;
@@ -414,6 +566,37 @@ async function processPajEvent(payload, bot) {
       } catch (feeErr) {
         console.warn("[webhook_server:onramp_fee_note]", feeErr.message);
       }
+    } else if (!isDirectlySettled && user && feeUsdc > 0.0001) {
+      let solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
+      if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
+        try {
+          solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress;
+        } catch {}
+      }
+      if (solFeeRecipient && multichain.isSolanaAddress(solFeeRecipient)) {
+        try {
+          const encryptedKey = isBizAccount
+            ? (user.biz_system_encrypted_key || user.system_encrypted_key)
+            : user.system_encrypted_key;
+          if (encryptedKey) {
+            const rawKey = walletLib.decryptSensitiveValue(encryptedKey);
+            if (rawKey) {
+              const solData = multichain.deriveSolanaFromEvmKey(rawKey);
+              if (solData.solanaAddress !== solFeeRecipient) {
+                const feeSolTx = await multichain.sendSolanaTransfer({
+                  keypair: solData.keypair,
+                  recipientAddress: solFeeRecipient,
+                  amount: feeUsdc,
+                });
+                feeTxHash = feeSolTx?.txHash || feeSolTx?.signature || null;
+                console.log(`[webhook_server:onramp:solana] Collected 1% trade fee ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
+              }
+            }
+          }
+        } catch (feeErr) {
+          console.warn("[webhook_server:onramp:solana_fee_note]", feeErr.message);
+        }
+      }
     }
 
     const creditedAmountUsdc = feeTxHash ? netAmountUsdc : effectiveAmountUsdc;
@@ -486,57 +669,6 @@ async function processPajEvent(payload, bot) {
 
     idempotency.markWebhookProcessed(eventId, event, data.id);
     return;
-  }
-
-  // Detect offramp payout completion
-  if (event === "offramp.successful" || event === "offramp.completed" || event === "payout.successful") {
-    const telegramId = data.userExternalId || data.metadata?.telegramId;
-    const fiatAmount = Number(data.fiatAmount || data.amountFiat || 0);
-    const bankName = data.bankName || data.bank?.name || "bank";
-    const accountNumber = data.accountNumber ? `...${String(data.accountNumber).slice(-4)}` : "";
-    const accountType = data.metadata?.accountType || "Personal";
-    const accountLabel = accountType === "business" ? "Business Account" : "Personal Wallet";
-
-    // Record confirmed offramp transaction in ledger
-    try {
-      let liveRate = data.rate;
-      if (!liveRate && fiatAmount > 0 && !data.amount && !data.amountUsdc) {
-        liveRate = await fx.getUsdToNgnRate().catch(() => null);
-      }
-      const usdcAmount = Number(data.amount || data.amountUsdc || (fiatAmount > 0 && liveRate > 0 ? (fiatAmount / liveRate) : 0));
-      if (usdcAmount > 0) {
-        const amountMicro = walletLib.parseToMicro(usdcAmount.toFixed(6));
-        db.recordTransaction(
-          telegramId,
-          "offramp",
-          amountMicro,
-          "confirmed",
-          data.id,
-          accountType
-        );
-      }
-    } catch (recErr) {
-      console.warn("[webhook_server] Record offramp tx error:", recErr.message);
-    }
-
-    if (bot && telegramId) {
-      try {
-        await bot.telegram.sendMessage(
-          telegramId,
-          `✅ <b>Cash Out Complete (${accountLabel})!</b>\n` +
-          `──────────────────────────\n` +
-          `💵 <b>Delivered:</b> ₦${fiatAmount.toLocaleString()}\n` +
-          `🏦 <b>Destination:</b> ${bankName} ${accountNumber}\n` +
-          `💼 <b>Source:</b> ${accountLabel}\n` +
-          `🔖 <b>Ref:</b> <code>${data.id || "N/A"}</code>\n\n` +
-          `<i>Funds are now available in your local bank account.</i>`,
-          { parse_mode: "HTML" }
-        );
-      } catch (err) {
-        console.warn(`[webhook_server] Failed to notify TG user ${telegramId}:`, err.message);
-      }
-    }
-    idempotency.markWebhookProcessed(eventId, event, data.id);
   }
 }
 

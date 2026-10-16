@@ -232,9 +232,34 @@ async function triggerOnrampSweep(orderIdOrAddress, recipient) {
  */
 async function createOfframpOrder(params) {
   const client = getClient();
+  let cleanBankCode = String(params.bankCode || "").trim();
+  const cbnMap = {
+    "058": "000013", // GTBank
+    "044": "000014", // Access Bank
+    "057": "000015", // Zenith Bank
+    "011": "000016", // First Bank
+    "033": "000004", // UBA
+    "035": "000017", // Wema Bank
+    "070": "000007", // Fidelity Bank
+    "214": "000003", // FCMB
+    "221": "000001", // Stanbic IBTC
+    "232": "000002", // Sterling Bank
+    "076": "000008", // Polaris Bank
+    "082": "000002", // Keystone Bank
+    "050": "000010", // Ecobank
+    "032": "000018", // Union Bank
+    "215": "000011", // Unity Bank
+    "101": "000023", // Providus Bank
+  };
+  if (cbnMap[cleanBankCode]) {
+    cleanBankCode = cbnMap[cleanBankCode];
+  } else if (/^\d{1,5}$/.test(cleanBankCode)) {
+    cleanBankCode = cleanBankCode.padStart(6, "0");
+  }
+
   const payload = {
     accountNumber: String(params.accountNumber).trim(),
-    bankCode: String(params.bankCode).trim(),
+    bankCode: cleanBankCode,
     currency: params.currency || "NGN",
     mint: params.mint || RAILS.solana.mint,
     chain: params.chain || RAILS.solana.chain,

@@ -186,7 +186,11 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
   // source of truth for the rail (reservations are created per-chain).
   let rail = options.rail || "auto";
   if (bankDetails && bankDetails.orderAddress) {
-    rail = multichain.isSolanaAddress(bankDetails.orderAddress) ? "solana" : "arc";
+    if (multichain.isSolanaAddress(bankDetails.orderAddress)) {
+      rail = "solana";
+    } else if (walletLib.isValidAddress(bankDetails.orderAddress)) {
+      rail = "arc";
+    }
   }
 
   const arcRailEnabled = paj.isArcRailEnabled();
@@ -198,11 +202,28 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
     arcBalanceMicro = await walletLib.getNativeBalanceMicro(userWallet.address);
     const user = db.getUser(telegramId);
     if (user) {
-      const solAddress = multichain.getOrDeriveSolanaAddress ? multichain.getOrDeriveSolanaAddress(user) : null;
       const solAddrsToCheck = [];
-      if (solAddress) solAddrsToCheck.push(solAddress);
+      if (userWallet?.privateKey) {
+        try {
+          const derived = multichain.deriveSolanaFromEvmKey(userWallet.privateKey);
+          if (derived?.solanaAddress && !solAddrsToCheck.includes(derived.solanaAddress)) {
+            solAddrsToCheck.push(derived.solanaAddress);
+          }
+        } catch (_) {}
+      }
+      const solAddress = multichain.getOrDeriveSolanaAddress ? multichain.getOrDeriveSolanaAddress(user) : null;
+      if (solAddress && !solAddrsToCheck.includes(solAddress)) solAddrsToCheck.push(solAddress);
       if (user.solana_deposit_address && !solAddrsToCheck.includes(user.solana_deposit_address)) {
         solAddrsToCheck.push(user.solana_deposit_address);
+      }
+      if (user.biz_solana_deposit_address && !solAddrsToCheck.includes(user.biz_solana_deposit_address)) {
+        solAddrsToCheck.push(user.biz_solana_deposit_address);
+      }
+      if (user.business_solana_deposit_address && !solAddrsToCheck.includes(user.business_solana_deposit_address)) {
+        solAddrsToCheck.push(user.business_solana_deposit_address);
+      }
+      if (user.paj_permanent_offramp_address && !solAddrsToCheck.includes(user.paj_permanent_offramp_address)) {
+        solAddrsToCheck.push(user.paj_permanent_offramp_address);
       }
       let solUsdc = 0;
       for (const a of solAddrsToCheck) {
@@ -323,7 +344,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
   const isTargetSolana = rail === "solana";
   const targetAddress = result.address || null;
 
-  if (!targetAddress || (!isTargetSolana && !walletLib.isValidAddress(targetAddress))) {
+  if (!targetAddress || (isTargetSolana ? !multichain.isSolanaAddress(targetAddress) : !walletLib.isValidAddress(targetAddress))) {
     db.updateTransactionStatus(txId, "failed");
     idempotency.failOperationIdempotency(idempKey, "No valid settlement deposit address");
     return { success: false, error: "Paj did not return a valid settlement address for this cash out", label, amount: amountUsdc, chain: "fiat" };
@@ -348,8 +369,13 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
         throw new Error(`Solana transfer could not be completed${detail}`);
       }
 
-      // Route 1% fee on Solana if a Solana fee recipient is configured
-      const solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
+      // Route 1% fee on Solana if a Solana fee recipient is configured or derive from deployer key
+      let solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
+      if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
+        try {
+          solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress;
+        } catch {}
+      }
       if (solFeeRecipient && feeUsdc > 0 && multichain.isSolanaAddress(solFeeRecipient)) {
         try {
           const feeSolTx = await multichain.sendSolanaTransfer({
@@ -358,7 +384,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
             amount: feeUsdc,
           });
           feeTxHash = feeSolTx?.txHash || feeSolTx?.signature || null;
-          console.log(`[executor:offramp:solana] Routed 1% fee on Solana ($${feeUsdc} USDC) -> ${solFeeRecipient}`);
+          console.log(`[executor:offramp:solana] Routed 1% fee on Solana ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
         } catch (feeErr) {
           console.warn("[executor:offramp:solana_fee_note]", feeErr.message);
         }
@@ -371,8 +397,21 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
       // Route 1% platform fee directly to APP_FEE_RECIPIENT_ADDRESS
       if (feeMicro > 0n && feeRecipient && walletLib.isValidAddress(feeRecipient) && userWallet.address.toLowerCase() !== feeRecipient.toLowerCase()) {
         try {
-          feeTxHash = await walletLib.sendFromWallet(userWallet, feeRecipient, feeMicro);
-          console.log(`[executor:offramp] Collected $${feeUsdc} (1% trade fee) -> ${feeRecipient} (tx: ${feeTxHash})`);
+          let actualFeeMicro = feeMicro;
+          try {
+            const currentBalMicro = await walletLib.getNativeBalanceMicro(userWallet.address);
+            if (currentBalMicro < actualFeeMicro) {
+              const gasBufferMicro = 100n; // 0.0001 USDC
+              actualFeeMicro = currentBalMicro > gasBufferMicro ? currentBalMicro - gasBufferMicro : 0n;
+            } else if (currentBalMicro < actualFeeMicro + 100n && currentBalMicro > 100n) {
+              actualFeeMicro = currentBalMicro - 100n;
+            }
+          } catch {}
+
+          if (actualFeeMicro > 0n) {
+            feeTxHash = await walletLib.sendFromWallet(userWallet, feeRecipient, actualFeeMicro);
+            console.log(`[executor:offramp] Collected $${walletLib.formatMicro(actualFeeMicro)} (1% trade fee) -> ${feeRecipient} (tx: ${feeTxHash})`);
+          }
         } catch (feeErr) {
           console.warn("[executor:offramp_fee_note]", feeErr.message);
         }

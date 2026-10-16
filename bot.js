@@ -1039,6 +1039,7 @@ async function showSettings(ctx) {
       [Markup.button.callback("🔑 Save Personal Security Phrase", "export_personal")],
       [Markup.button.callback("🔑 Save Business Security Phrase", "export_business")],
       [Markup.button.callback("🔒 Change PIN",                  "changepin")],
+      [Markup.button.callback("🔄 Forgot / Reset PIN",          "resetpin_start")],
       [Markup.button.callback("🛡️ Lock Account",                "lock_account")],
       [Markup.button.callback("👛 Link External Wallet",        "setwallet_prompt")],
       [Markup.button.callback("📱 Verify Phone",                "verifyphone_prompt")],
@@ -2495,7 +2496,10 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
     parsed.accountNumber = payee.account_number;
     parsed.bankName = payee.bank_name || "Bank";
     parsed.accountName = payee.account_name || payee.name;
-    parsed.bankCode = parsed.bankCode || "058";
+    parsed.bankCode = parsed.bankCode || "000013";
+  }
+  if (parsed.bankCode === "058") {
+    parsed.bankCode = "000013";
   }
 
   const amountUsdc = state.data.amountUsdc;
@@ -2839,9 +2843,87 @@ bot.action("changepin", (ctx) => {
     `🔒 Change PIN\n──────────────────────────\n💬 <i>Send your CURRENT 4-digit PIN into the chat (e.g. 1234):</i>`,
     {
       parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("🔄 Forgot PIN?", "resetpin_start")],
+        [Markup.button.callback("❌ Cancel", "action_settings")],
+      ])
+    }
+  );
+});
+
+async function handleResetPinStart(ctx) {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  const user = db.getUser(userId);
+  if (!user) {
+    return ctx.reply("Account not found. Send /start to set up your wallet.");
+  }
+
+  let personalPk = null;
+  let bizPk = null;
+
+  if (user.system_encrypted_key) {
+    try {
+      personalPk = db.getSystemDecryptedPrivateKey(user, "personal");
+      if (user.biz_encrypted_key && user.biz_system_encrypted_key) {
+        bizPk = db.getSystemDecryptedPrivateKey(user, "business");
+      }
+    } catch (err) {
+      console.warn("[resetpin] system decrypt error:", err.message);
+    }
+  }
+
+  if (!personalPk) {
+    try {
+      for (let i = 0; i <= 9999; i++) {
+        const candidatePin = i.toString().padStart(4, "0");
+        try {
+          personalPk = walletLib.decryptPrivateKey(candidatePin, {
+            encryptedKey: user.encrypted_key,
+            salt: user.key_salt,
+            iv: user.key_iv,
+            tag: user.key_tag,
+          });
+          if (user.biz_encrypted_key) {
+            bizPk = walletLib.decryptPrivateKey(candidatePin, {
+              encryptedKey: user.biz_encrypted_key,
+              salt: user.biz_key_salt,
+              iv: user.biz_key_iv,
+              tag: user.biz_key_tag,
+            });
+          }
+          break;
+        } catch {}
+      }
+    } catch (sweepErr) {
+      console.warn("[resetpin] sweep error:", sweepErr.message);
+    }
+  }
+
+  if (!personalPk) {
+    return ctx.reply(
+      "❌ Unable to reset PIN automatically. Please contact support.",
+      Markup.inlineKeyboard([[Markup.button.callback("« Back to Settings", "action_settings")]])
+    );
+  }
+
+  convState.setState(userId, "resetpin_new", { personalPk, bizPk }, getContext(userId));
+  return ctx.reply(
+    `🔄 <b>Reset Security PIN</b>\n──────────────────────────\n` +
+    `No old PIN required.\n\n` +
+    `👉 <b>Send your NEW 4-digit PIN into the chat:</b>\n` +
+    `💬 <i>Example: <b>1234</b></i>`,
+    {
+      parse_mode: "HTML",
       ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_settings")]])
     }
   );
+}
+
+bot.command(["resetpin", "forgotpin"], async (ctx) => handleResetPinStart(ctx));
+bot.action("resetpin_start", async (ctx) => {
+  ctx.answerCbQuery();
+  return handleResetPinStart(ctx);
 });
 
 bot.action("setwallet_prompt", (ctx) => {
@@ -2957,7 +3039,7 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
       const feeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.PAYIT_DEV_FEE_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
       let feeTxHash = null;
 
-      if (user && feeUsdc > 0.0001 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
+      if (isSettledOnArc && user && feeUsdc > 0.0001 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
         try {
           const encryptedKey = isBiz
             ? (user.biz_system_encrypted_key || user.system_encrypted_key)
@@ -2976,6 +3058,37 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
           }
         } catch (feeErr) {
           console.warn("[bot:action_check_paj_onramp_fee_note]", feeErr.message);
+        }
+      } else if (!isSettledOnArc && user && feeUsdc > 0.0001) {
+        let solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
+        if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
+          try {
+            solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress;
+          } catch {}
+        }
+        if (solFeeRecipient && multichain.isSolanaAddress(solFeeRecipient)) {
+          try {
+            const encryptedKey = isBiz
+              ? (user.biz_system_encrypted_key || user.system_encrypted_key)
+              : user.system_encrypted_key;
+            if (encryptedKey) {
+              const rawKey = walletLib.decryptSensitiveValue(encryptedKey);
+              if (rawKey) {
+                const solData = multichain.deriveSolanaFromEvmKey(rawKey);
+                if (solData.solanaAddress !== solFeeRecipient) {
+                  const feeSolTx = await multichain.sendSolanaTransfer({
+                    keypair: solData.keypair,
+                    recipientAddress: solFeeRecipient,
+                    amount: feeUsdc,
+                  });
+                  feeTxHash = feeSolTx?.txHash || feeSolTx?.signature || null;
+                  console.log(`[bot:action_check_paj_onramp:solana] Collected 1% fee on Solana ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
+                }
+              }
+            }
+          } catch (feeErr) {
+            console.warn("[bot:action_check_paj_onramp:solana_fee_note]", feeErr.message);
+          }
         }
       }
 
@@ -5337,7 +5450,13 @@ bot.on("text", async (ctx) => {
       if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your current 4-digit PIN.");
       if (!db.verifyPin(userId, text)) {
         convState.clearState(userId);
-        return ctx.reply("Incorrect PIN.", Markup.inlineKeyboard([[Markup.button.callback("Try Again", "changepin")]]));
+        return ctx.reply(
+          "Incorrect PIN.",
+          Markup.inlineKeyboard([
+            [Markup.button.callback("Try Again", "changepin")],
+            [Markup.button.callback("🔄 Forgot PIN? Reset without old PIN", "resetpin_start")],
+          ])
+        );
       }
       const user = db.getUser(userId);
       let pk, bizPk;
@@ -5361,6 +5480,40 @@ bot.on("text", async (ctx) => {
         "✅ PIN changed successfully.",
         Markup.inlineKeyboard([[Markup.button.callback("« Back to Settings", "action_settings")]])
       );
+    }
+
+    // ── Reset PIN (No old PIN required) ──────────────────────────────────────
+
+    if (state.type === "resetpin_new") {
+      await deleteSensitiveMessage(ctx);
+      if (!/^\d{4}$/.test(text)) {
+        return ctx.reply("PIN must be exactly 4 digits. Please send a 4-digit PIN (e.g. 1234):");
+      }
+      try {
+        db.updatePin(userId, text, state.data.personalPk, state.data.bizPk);
+        db.resetPinLockout(userId);
+        db.unblockUser(userId);
+        convState.clearState(userId);
+        return ctx.reply(
+          "✅ <b>PIN Reset Successfully!</b>\n──────────────────────────\n" +
+          "Your new 4-digit security PIN is now active.\n\n" +
+          "You can now use this PIN for all transfers, withdrawals, and transactions.",
+          {
+            parse_mode: "HTML",
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback("💰 View Balance", "action_balance")],
+              [Markup.button.callback("🏠 Main Menu", "main_menu")],
+            ])
+          }
+        );
+      } catch (err) {
+        console.error("[resetpin_new]", err);
+        convState.clearState(userId);
+        return ctx.reply(
+          "Couldn't update your PIN. Please try again.",
+          Markup.inlineKeyboard([[Markup.button.callback("🔄 Try Again", "resetpin_start")]])
+        );
+      }
     }
 
     // ── Link external wallet ─────────────────────────────────────────────────
@@ -5965,30 +6118,12 @@ function formatCustomerFriendlyOfframpError(rawError) {
             `• <b>Total:</b> $${state.data.amountUsdc.toFixed(2)}\n` +
             `• <b>Platform Fee (1%):</b> $${feeUsdc.toFixed(2)}\n` +
             `• <b>Net to Bank:</b> $${netAmountUsdc.toFixed(2)}\n` +
-            (result.fiatAmount ? `• <b>Naira Received:</b> ₦${Number(result.fiatAmount).toLocaleString()}\n` : "") +
-            `\n<i>Naira arrives in your bank account in ~1–2 minutes.</i>`;
-          try {
-            const receiptPath = await generateReceiptPNG({
-              receiptId:        result.reference || result.txHash?.slice(0, 10) || `CO-${Date.now()}`,
-              senderName:       "Proxim Wallet",
-              senderAddress:    getActiveWallet(user),
-              recipientName:    state.data.accountName || state.data.bankName || "Bank Account",
-              recipientAddress: String(state.data.accountNumber || "").trim(),
-              amountUsdc:       state.data.amountUsdc,
-              token:            "USDC",
-              type:             "Cash Out",
-              timestamp:        new Date().toISOString(),
-              status:           "Confirmed",
-              txHash:           result.txHash || null,
-            });
-            await ctx.replyWithPhoto({ source: receiptPath }, {
-              caption: successCaption,
-              parse_mode: "HTML",
-              ...afterPaymentButtons,
-            });
-          } catch {
-            await ctx.reply(successCaption, { parse_mode: "HTML", ...afterPaymentButtons });
-          }
+            (result.fiatAmount ? `• <b>Naira Payout:</b> ₦${Number(result.fiatAmount).toLocaleString()}\n` : "") +
+            `• <b>Destination Bank:</b> ${state.data.accountName || state.data.bankName || "Bank Account"} (<code>${state.data.accountNumber}</code>)\n` +
+            `• <b>Status:</b> ⏳ <i>Processing interbank transfer...</i>\n\n` +
+            `<i>Naira arrives in your bank account in ~1–2 minutes. Your official receipt will be sent automatically once settled.</i>`;
+
+          await ctx.reply(successCaption, { parse_mode: "HTML", ...afterPaymentButtons });
         } else {
           const friendlyMessage = formatCustomerFriendlyOfframpError(result.error);
           await ctx.reply(friendlyMessage, { parse_mode: "HTML", ...backToMenu });
