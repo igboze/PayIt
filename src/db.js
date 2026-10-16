@@ -1825,7 +1825,7 @@ function recordOfframpOrder({
 function getOfframpOrderByOrderId(orderId) {
   if (!orderId) return null;
   try {
-    return db.prepare("SELECT * FROM paj_offramp_orders WHERE order_id = ?").get(orderId) || null;
+    return db.prepare("SELECT * FROM paj_offramp_orders WHERE order_id = ? OR tx_hash = ?").get(orderId, orderId) || null;
   } catch (err) {
     console.warn("[db:offramp_order] getOfframpOrderByOrderId error:", err.message);
     return null;
@@ -1836,7 +1836,7 @@ function getPendingOfframpOrders() {
   try {
     return db.prepare(`
       SELECT * FROM paj_offramp_orders
-      WHERE status = 'pending' AND created_at >= datetime('now', '-6 hours')
+      WHERE status IN ('pending', 'submitted') AND created_at >= datetime('now', '-6 hours')
       ORDER BY id DESC
     `).all() || [];
   } catch (err) {

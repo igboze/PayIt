@@ -111,3 +111,76 @@ test("Offramp: executeOfframp routes 1% fee on Arc to 0x0AC27C77C56f5176c37aE23B
     require("../src/offramp").requestOfframp = origRequestOfframp;
   }
 });
+
+test("Offramp: executeOfframp routes 1% fee on Solana to SOLANA_FEE_RECIPIENT", async () => {
+  const multichain = require("../src/multichain");
+  const testUserId = 999111333;
+  const userWallet = {
+    address: "0x3333333333333333333333333333333333333333",
+    privateKey: "0x0123456789012345678901234567890123456789012345678901234567890123",
+  };
+
+  const origGetSpl = multichain.getSplTokenBalance;
+  const origSendSol = multichain.sendSolanaTransfer;
+  const origRequestOfframp = require("../src/offramp").requestOfframp;
+  const origGetUser = db.getUser;
+
+  db.getUser = (id) => ({
+    telegram_id: id,
+    solana_deposit_address: null,
+  });
+
+  const idemKey = `offramp:${testUserId}:0123456789:100`;
+  db.db.prepare("DELETE FROM universal_idempotency WHERE key = ?").run(idemKey);
+
+  const solTransfers = [];
+  multichain.getSplTokenBalance = async () => ({ uiAmount: 100 });
+  multichain.sendSolanaTransfer = async ({ recipientAddress, amount }) => {
+    solTransfers.push({ recipientAddress, amount });
+    return { txHash: `0xsol_tx_${amount}`, success: true };
+  };
+
+  require("../src/offramp").requestOfframp = async (tgId, amountMicroArg, details) => {
+    return {
+      success: true,
+      reference: "ord_sol_fee_test",
+      address: "PajSolanaOrderAddr1111111111111111111111",
+      amount: Number(walletLib.formatMicro(amountMicroArg)),
+      fiatAmount: 148500,
+      accountName: "Test Solana Account",
+      rate: 1500,
+      status: "pending",
+    };
+  };
+
+  try {
+    const res = await executeOfframp(
+      userWallet,
+      100, // $100 trade amount
+      {
+        accountNumber: "0123456789",
+        bankCode: "058",
+        bankName: "GTBank",
+      },
+      testUserId,
+      "Cash Out",
+      { rail: "solana" }
+    );
+
+    assert.equal(res.success, true);
+    assert.equal(res.rail, "solana");
+    assert.equal(res.amount, 100);
+    assert.equal(res.feeUsdc, 1.0);
+    assert.equal(res.netAmountUsdc, 99.0);
+    assert.equal(solTransfers.length, 2, "Must execute both net transfer and fee transfer on Solana");
+    assert.equal(solTransfers[0].amount, 99.0, "Net sent to Paj must be $99.00");
+    assert.equal(solTransfers[1].amount, 1.0, "Fee sent to recipient must be $1.00");
+    assert.equal(solTransfers[1].recipientAddress, "DW3erQUA4Yfxk63YxiLanAYp4ByKKMgYSxgjbPHSJhCK");
+  } finally {
+    multichain.getSplTokenBalance = origGetSpl;
+    multichain.sendSolanaTransfer = origSendSol;
+    require("../src/offramp").requestOfframp = origRequestOfframp;
+    db.getUser = origGetUser;
+  }
+});
+

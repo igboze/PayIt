@@ -14,6 +14,7 @@ const {
   Transaction,
   TransactionInstruction,
   SystemProgram,
+  ComputeBudgetProgram,
   SYSVAR_RENT_PUBKEY,
 } = require("@solana/web3.js");
 const {
@@ -76,7 +77,8 @@ function isSolanaAddress(address) {
   if (!address) return false;
   if (typeof address === "object" && typeof address.toBuffer === "function") {
     try {
-      return PublicKey.isOnCurve(address.toBuffer());
+      const buf = address.toBuffer();
+      return Boolean(buf && buf.length === 32);
     } catch {
       return false;
     }
@@ -87,18 +89,25 @@ function isSolanaAddress(address) {
   if (trimmed.length < 32 || trimmed.length > 44) return false;
   try {
     const pk = new PublicKey(trimmed);
-    return PublicKey.isOnCurve(pk.toBuffer());
+    return pk.toBuffer().length === 32;
   } catch {
-    return false;
+    return /^[A-Za-z0-9]{32,44}$/.test(trimmed);
   }
 }
 
 /**
  * Get a Solana web3 Connection instance.
+ * Prioritizes dedicated RPC endpoints (e.g. Alchemy) over rate-limited public nodes.
  *
  * @returns {Connection}
  */
 function getSolanaConnection() {
+  if (process.env.SOLANA_RPC_URL && !process.env.SOLANA_RPC_URL.includes("api.mainnet-beta.solana.com")) {
+    return new Connection(process.env.SOLANA_RPC_URL, "confirmed");
+  }
+  if (process.env.ALCHEMY_API_KEY) {
+    return new Connection(`https://solana-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}`, "confirmed");
+  }
   const rpcUrl = process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
   return new Connection(rpcUrl, "confirmed");
 }
@@ -194,11 +203,18 @@ async function sendSolanaTransfer({ keypair, recipientAddress, amount, currency 
       recentBlockhash: latestBlockhash.blockhash,
     });
 
+    // Add compute budget instructions for network priority
+    if (typeof ComputeBudgetProgram !== "undefined") {
+      transaction.add(
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 100_000 }),
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 })
+      );
+    }
+
     if (isSplUsdc) {
       // ── SPL USDC Transfer ──
       const mint = SOLANA_USDC_MINT;
       const sourceAta = getAssociatedTokenAddress(keypair.publicKey, mint);
-      const destAta = getAssociatedTokenAddress(recipientPubKey, mint);
 
       // Check available SPL USDC balance
       try {
@@ -216,12 +232,25 @@ async function sendSolanaTransfer({ keypair, recipientAddress, amount, currency 
         console.warn("[multichain:spl_balance_check_warning]", balErr.message);
       }
 
-      // Check if recipient ATA exists, create if missing (effectiveFeePayer pays ATA rent if needed)
-      const destAccountInfo = await connection.getAccountInfo(destAta);
-      if (!destAccountInfo) {
-        transaction.add(
-          createAssociatedTokenAccountInstruction(effectiveFeePayer.publicKey, destAta, recipientPubKey, mint)
-        );
+      // Detect if recipientAddress is ALREADY a token account or a wallet/system account
+      let destAta;
+      const recipientAccountInfo = await connection.getAccountInfo(recipientPubKey);
+      const isRecipientTokenAccount = recipientAccountInfo && (
+        recipientAccountInfo.owner.equals(TOKEN_PROGRAM_ID) ||
+        recipientAccountInfo.owner.toBase58() === "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+      );
+
+      if (isRecipientTokenAccount) {
+        destAta = recipientPubKey;
+      } else {
+        destAta = getAssociatedTokenAddress(recipientPubKey, mint);
+        // Check if recipient ATA exists, create if missing (effectiveFeePayer pays ATA rent if needed)
+        const destAccountInfo = await connection.getAccountInfo(destAta);
+        if (!destAccountInfo) {
+          transaction.add(
+            createAssociatedTokenAccountInstruction(effectiveFeePayer.publicKey, destAta, recipientPubKey, mint)
+          );
+        }
       }
 
       // USDC has 6 decimals on Solana
@@ -262,18 +291,35 @@ async function sendSolanaTransfer({ keypair, recipientAddress, amount, currency 
           blockhash: latestBlockhash.blockhash,
           lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
         }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Solana confirmation timeout")), 15000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Solana confirmation timeout")), 45000))
       ]);
     } catch (confErr) {
       console.warn("[multichain:solana_confirm_note]", confErr.message);
-      return {
-        success: false,
-        error: `Solana transfer could not be confirmed: ${confErr.message}`,
-        txHash: signature,
-        amount,
-        to: recipientAddress,
-        currency,
-      };
+      // Fallback: poll signature status directly before giving up
+      try {
+        const sigStatus = await connection.getSignatureStatus(signature, { searchTransactionHistory: true });
+        const confStatus = sigStatus?.value?.confirmationStatus;
+        if (confStatus === "processed" || confStatus === "confirmed" || confStatus === "finalized") {
+          if (!sigStatus.value.err) {
+            confResult = { value: { err: null } };
+          } else {
+            confResult = { value: { err: sigStatus.value.err } };
+          }
+        }
+      } catch (pollErr) {
+        console.warn("[multichain:signature_poll_note]", pollErr.message);
+      }
+
+      if (!confResult) {
+        return {
+          success: false,
+          error: `Solana transfer could not be confirmed: ${confErr.message}`,
+          txHash: signature,
+          amount,
+          to: recipientAddress,
+          currency,
+        };
+      }
     }
 
     if (confResult?.value?.err) {
@@ -296,9 +342,14 @@ async function sendSolanaTransfer({ keypair, recipientAddress, amount, currency 
       currency,
     };
   } catch (err) {
+    let detail = err.message;
+    if (err.logs && Array.isArray(err.logs)) {
+      detail += ` | Logs: ${err.logs.slice(-3).join(" ; ")}`;
+    }
+    console.warn("[multichain:sendSolanaTransfer:catch]", detail);
     return {
       success: false,
-      error: `Solana transfer failed: ${err.message}`,
+      error: `Solana transfer failed: ${detail}`,
       amount,
       to: recipientAddress,
       currency,

@@ -41,6 +41,28 @@ const KNOWN_BANKS = {
   "000020": ["heritage", "heritage bank"],
 };
 
+// Mapping from standard 3-digit CBN bank codes to 6-digit NIBSS codes
+const CBN_TO_NIBSS = {
+  "058": "000013", // GTBank
+  "044": "000014", // Access Bank
+  "057": "000015", // Zenith Bank
+  "011": "000016", // First Bank
+  "033": "000004", // UBA
+  "035": "000017", // Wema Bank
+  "070": "000007", // Fidelity Bank
+  "214": "000003", // FCMB
+  "221": "000001", // Stanbic IBTC
+  "232": "000002", // Sterling Bank
+  "076": "000008", // Polaris Bank
+  "082": "000002", // Keystone Bank
+  "050": "000010", // Ecobank
+  "032": "000018", // Union Bank
+  "215": "000011", // Unity Bank
+  "101": "000023", // Providus Bank
+  "301": "000006", // Jaiz Bank
+  "302": "000026", // Taj Bank
+};
+
 const STOP_WORDS = new Set(["bank", "mfb", "microfinance", "plc", "ltd", "limited", "nigeria", "the", "for", "and"]);
 
 // In-memory cache for live Paj bank directory
@@ -75,8 +97,18 @@ async function resolveBankCode(input) {
     return null;
   }
 
-  // 1. If already numeric
+  // 1. If already numeric (could be 3-digit CBN code or 6-digit NIBSS code)
   if (/^\d+$/.test(raw)) {
+    const raw3 = raw.padStart(3, "0");
+    if (CBN_TO_NIBSS[raw3]) {
+      const nibssCode = CBN_TO_NIBSS[raw3];
+      const aliases = KNOWN_BANKS[nibssCode];
+      return {
+        bankCode: nibssCode,
+        bankName: aliases ? aliases[0].toUpperCase() : `Bank (${nibssCode})`,
+      };
+    }
+
     const padded = raw.padStart(6, "0");
     for (const [code, aliases] of Object.entries(KNOWN_BANKS)) {
       if (code === padded || code.endsWith(raw)) {

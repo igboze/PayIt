@@ -18,6 +18,7 @@ const evmSweeper = require("./evm_deposit_sweeper");
 const paj = require("./paj");
 const webhookServer = require("./webhook_server");
 const walletLib = require("./wallet");
+const multichain = require("./multichain");
 
 const DEFAULT_TICK_MS = 5000;
 const STALE_RUN_MINUTES = 15;
@@ -50,7 +51,8 @@ async function pollPendingOnrampOrders(bot) {
 
         const user = db.getUser(order.telegram_id);
         const isBiz = order.account_type === "business";
-        if (user && feeUsdc > 0.0001 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
+        const isArcOrder = (order.settlement_rail === "arc") || (order.recipient_address && order.recipient_address.startsWith("0x"));
+        if (isArcOrder && user && feeUsdc > 0.0001 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
           try {
             const encryptedKey = isBiz
               ? (user.biz_system_encrypted_key || user.system_encrypted_key)
@@ -69,6 +71,37 @@ async function pollPendingOnrampOrders(bot) {
             }
           } catch (feeErr) {
             console.warn("[settlement_daemon:onramp_fee_note]", feeErr.message);
+          }
+        } else if (!isArcOrder && user && feeUsdc > 0.0001) {
+          let solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
+          if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
+            try {
+              solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress;
+            } catch {}
+          }
+          if (solFeeRecipient && multichain.isSolanaAddress(solFeeRecipient)) {
+            try {
+              const encryptedKey = isBiz
+                ? (user.biz_system_encrypted_key || user.system_encrypted_key)
+                : user.system_encrypted_key;
+              if (encryptedKey) {
+                const rawKey = walletLib.decryptSensitiveValue(encryptedKey);
+                if (rawKey) {
+                  const solData = multichain.deriveSolanaFromEvmKey(rawKey);
+                  if (solData.solanaAddress !== solFeeRecipient) {
+                    const feeSolTx = await multichain.sendSolanaTransfer({
+                      keypair: solData.keypair,
+                      recipientAddress: solFeeRecipient,
+                      amount: feeUsdc,
+                    });
+                    feeTxHash = feeSolTx?.txHash || feeSolTx?.signature || null;
+                    console.log(`[settlement_daemon:onramp:solana] Collected 1% fee on Solana ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
+                  }
+                }
+              }
+            } catch (feeErr) {
+              console.warn("[settlement_daemon:onramp:solana_fee_note]", feeErr.message);
+            }
           }
         }
 
