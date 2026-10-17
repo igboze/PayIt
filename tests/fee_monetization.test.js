@@ -91,4 +91,19 @@ test("Offramp: 1% fee is inside trade amount and routed to APP_FEE_RECIPIENT_ADD
   assert.equal(netAmountUsdc, 99.0);
   assert.equal(feeUsdc + netAmountUsdc, amountUsdc, "1% fee must be inside the trade amount");
 });
+test("Fee Routing: Default fee recipient is on Arc, Solana fee recipient only for native Solana transactions", () => {
+  const arcFeeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
+  const solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || "DW3erQUA4Yfxk63YxiLanAYp4ByKKMgYSxgjbPHSJhCK";
+  const walletLib = require("../src/wallet");
+  const multichain = require("../src/multichain");
 
+  // Arc fee recipient must be valid EVM address
+  assert.ok(walletLib.isValidAddress(arcFeeRecipient), "Arc fee recipient must be a valid EVM address");
+
+  // Solana fee recipient must be valid Solana address
+  assert.ok(multichain.isSolanaAddress(solFeeRecipient), "Solana fee recipient must be a valid Solana address");
+
+  // NEAR Intent fee recipient defaults to Arc/EVM address
+  const nearFeeRecipient = near.getNearFeeRecipient();
+  assert.equal(nearFeeRecipient.toLowerCase(), arcFeeRecipient.toLowerCase(), "NEAR Intent fees must default to Arc/EVM fee recipient");
+});
