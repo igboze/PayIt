@@ -2124,7 +2124,14 @@ async function handleSweepDeposits(ctx) {
       console.warn("[sweep:cctp_retry_error]", cctpErr.message);
     }
 
-    // 3. Multi-chain EVM deposit sweep
+    // 3. Poll any pending 1Click / NEAR Intents deposits (NEAR, Solana, Starknet, Robinhood)
+    try {
+      await nearLib.pollPendingNearDeposits(bot);
+    } catch (nearErr) {
+      console.warn("[sweep:near_poll_error]", nearErr.message);
+    }
+
+    // 4. Multi-chain EVM deposit sweep
     const results = await evmDepositSweeper.sweepUserDeposits(ctx.from.id, bot, { force: true });
     const successful = (results || []).filter(r => r.success);
     const failed = (results || []).filter(r => !r.success && !r.duplicate);

@@ -68,6 +68,7 @@ const DEX_ROUTER_CONFIGS = {
   POLYGON: {
     name: "Polygon",
     chainId: 137,
+    rpcUrl: process.env.POLYGON_RPC_URL || "https://polygon-rpc.com",
     routerAddress: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
     fallbackRouter: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
     wethAddress: "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270", // WMATIC / WPOL
@@ -79,6 +80,7 @@ const DEX_ROUTER_CONFIGS = {
   AVALANCHE: {
     name: "Avalanche",
     chainId: 43114,
+    rpcUrl: process.env.AVALANCHE_RPC_URL || "https://api.avax.network/ext/bc/C/rpc",
     routerAddress: "0x60aE616a2155Ee3d9A68541Ba4544862310933d4", // Trader Joe
     fallbackRouter: "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506",
     wethAddress: "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7", // WAVAX
