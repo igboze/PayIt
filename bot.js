@@ -2931,7 +2931,7 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
   let orderReservation = null;
   const preferredRail = state.data.rail && state.data.rail !== "auto" ? state.data.rail : (paj.isArcRailEnabled() ? "arc" : "solana");
   try {
-    const railCfg = paj.RAILS[preferredRail] || paj.RAILS.solana;
+    const railCfg = paj.RAILS[preferredRail] || (paj.isArcRailEnabled() ? paj.RAILS.arc : paj.RAILS.solana);
     orderReservation = await paj.createOfframpOrder({
       accountNumber: parsed.accountNumber,
       bankCode: parsed.bankCode,
@@ -2950,7 +2950,7 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
     amountUsdc,
     feeUsdc,
     netAmountUsdc,
-    rail: state.data.rail || preferredRail || "auto",
+    rail: state.data.rail || preferredRail || "arc",
     bankName: parsed.bankName,
     bankCode: parsed.bankCode,
     accountNumber: parsed.accountNumber,
@@ -2963,7 +2963,8 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
 
   const acctNameLine = liveAccountName ? `👤 <b>Account Name:</b> ${liveAccountName}\n` : "";
   const nairaEst = orderReservation?.fiatAmount ? ` (approx. ₦${Number(orderReservation.fiatAmount).toLocaleString()})` : "";
-  const railTag = (state.data.rail || "solana") === "arc" ? " ⚡ via Arc" : " ☀️ via Solana";
+  const activeRail = (state.data.rail && state.data.rail !== "auto") ? state.data.rail : preferredRail;
+  const railTag = activeRail === "solana" ? " ☀️ via Solana" : " ⚡ via Arc";
 
   return ctx.reply(
     `💵 <b>Confirm Cash Out</b>\n` +
@@ -6379,7 +6380,7 @@ bot.on("text", async (ctx) => {
       let orderReservation = null;
       const preferredRail = state.data.rail && state.data.rail !== "auto" ? state.data.rail : (paj.isArcRailEnabled() ? "arc" : "solana");
       try {
-        const railCfg = paj.RAILS[preferredRail] || paj.RAILS.solana;
+        const railCfg = paj.RAILS[preferredRail] || (paj.isArcRailEnabled() ? paj.RAILS.arc : paj.RAILS.solana);
         orderReservation = await paj.createOfframpOrder({
           accountNumber: parsed.accountNumber,
           bankCode: parsed.bankCode,
@@ -6413,7 +6414,7 @@ bot.on("text", async (ctx) => {
         amountUsdc,
         feeUsdc,
         netAmountUsdc,
-        rail: state.data.rail || preferredRail || "auto",
+        rail: state.data.rail || preferredRail || "arc",
         bankName: parsed.bankName,
         bankCode: parsed.bankCode,
         accountNumber: parsed.accountNumber,
@@ -6426,7 +6427,8 @@ bot.on("text", async (ctx) => {
 
       const acctNameLine = liveAccountName ? `👤 <b>Account Name:</b> ${liveAccountName}\n` : "";
       const nairaEst = orderReservation?.fiatAmount ? ` (approx. ₦${Number(orderReservation.fiatAmount).toLocaleString()})` : "";
-      const railTag = (state.data.rail || "solana") === "arc" ? " ⚡ via Arc" : " ☀️ via Solana";
+      const activeRail = (state.data.rail && state.data.rail !== "auto") ? state.data.rail : preferredRail;
+      const railTag = activeRail === "solana" ? " ☀️ via Solana" : " ⚡ via Arc";
 
       return ctx.reply(
         `💵 <b>Confirm Cash Out</b>\n` +

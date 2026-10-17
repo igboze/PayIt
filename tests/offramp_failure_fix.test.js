@@ -90,4 +90,37 @@ test("Offramp failure fixes test suite", async (t) => {
     }
   });
 
+  await t.test("4. Arc is the default rail for onramp and offramp orders when Arc is enabled", async () => {
+    // Save original client
+    const origClient = paj._getClient;
+    let capturedPayload = null;
+    paj._getClient = () => ({
+      post: async (endpoint, payload) => {
+        capturedPayload = payload;
+        return { data: { id: "test_order", address: "0xTestOrderAddr", status: "pending" } };
+      },
+    });
+
+    try {
+      // 1. Offramp without specifying chain or mint -> should default to Arc
+      await paj.createOfframpOrder({
+        accountNumber: "0123456789",
+        bankCode: "000013",
+        amount: 10,
+      });
+      assert.equal(capturedPayload.chain, paj.RAILS.arc.chain, "Offramp order must default to Arc chain");
+      assert.equal(capturedPayload.mint, paj.RAILS.arc.mint, "Offramp order must default to Arc mint");
+
+      // 2. Onramp without specifying chain or mint -> should default to Arc
+      await paj.createOnrampOrder({
+        recipient: "0x1111111111111111111111111111111111111111",
+        fiatAmount: 15000,
+      });
+      assert.equal(capturedPayload.chain, paj.RAILS.arc.chain, "Onramp order must default to Arc chain");
+      assert.equal(capturedPayload.mint, paj.RAILS.arc.mint, "Onramp order must default to Arc mint");
+    } finally {
+      paj._getClient = origClient;
+    }
+  });
+
 });

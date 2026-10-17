@@ -24,6 +24,9 @@ function getApiBaseUrl() {
 }
 
 function getClient() {
+  if (typeof module.exports._getClient === "function") {
+    return module.exports._getClient();
+  }
   const apiKey = getApiKey();
   const baseURL = getApiBaseUrl();
   return axios.create({
@@ -134,8 +137,8 @@ async function createOnrampOrder(params) {
   const payload = {
     currency: params.currency || "NGN",
     recipient: params.recipient,
-    mint: params.mint || RAILS.solana.mint,
-    chain: params.chain || RAILS.solana.chain,
+    mint: params.mint || (isArcOnrampEnabled() ? RAILS.arc.mint : RAILS.solana.mint),
+    chain: params.chain || (isArcOnrampEnabled() ? RAILS.arc.chain : RAILS.solana.chain),
     webhookURL: params.webhookURL || process.env.PAJ_WEBHOOK_URL || undefined,
     userExternalId: params.userExternalId ? String(params.userExternalId) : undefined,
     businessUSDCFee: typeof params.businessUSDCFee === "number" ? params.businessUSDCFee : 0,
@@ -284,8 +287,8 @@ async function createOfframpOrder(params) {
     accountNumber: String(params.accountNumber).trim(),
     bankCode: cleanBankCode,
     currency: params.currency || "NGN",
-    mint: params.mint || RAILS.solana.mint,
-    chain: params.chain || RAILS.solana.chain,
+    mint: params.mint || (isArcRailEnabled() ? RAILS.arc.mint : RAILS.solana.mint),
+    chain: params.chain || (isArcRailEnabled() ? RAILS.arc.chain : RAILS.solana.chain),
     webhookURL: params.webhookURL || process.env.PAJ_WEBHOOK_URL || undefined,
     businessUSDCFee: typeof params.businessUSDCFee === "number" ? params.businessUSDCFee : 0,
     description: params.description || "Proxim Cashout",
@@ -434,4 +437,5 @@ module.exports = {
   verifyWebhookSignature,
   getApiKey,
   getApiBaseUrl,
+  _getClient: null,
 };
