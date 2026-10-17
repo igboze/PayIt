@@ -306,11 +306,11 @@ function getNearFeeRecipient() {
 
 /**
  * Platform fee in basis points (BPS) collected on 1Click solver deposits.
- * Default 50 bps (0.50%), configurable via NEAR_INTENT_FEE_BPS.
+ * Default 100 bps (1.00%), configurable via NEAR_INTENT_FEE_BPS.
  */
 function getNearFeeBps() {
-  const bps = Number(process.env.NEAR_INTENT_FEE_BPS ?? 50);
-  return isNaN(bps) || bps < 0 ? 50 : Math.min(bps, 500);
+  const bps = Number(process.env.NEAR_INTENT_FEE_BPS ?? 100);
+  return isNaN(bps) || bps < 0 ? 100 : Math.min(bps, 500);
 }
 
 /**
