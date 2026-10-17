@@ -137,20 +137,30 @@ function openYieldPosition(telegramId, amountUsdc, pool, options = {}) {
  * Calculate accrued yield for a user position.
  */
 function calcAccruedYield(position) {
-  const openedAt = new Date(position.opened_at).getTime();
-  const elapsedMs = (Date.now() - openedAt) * DEMO_SPEED;
+  if (!position) return 0;
+  const rawDate = position.opened_at || position.created_at || position.createdAt;
+  const openedAt = rawDate ? new Date(rawDate).getTime() : Date.now();
+  const safeOpenedAt = Number.isFinite(openedAt) ? openedAt : Date.now();
+  const elapsedMs = Math.max(0, (Date.now() - safeOpenedAt) * DEMO_SPEED);
   const elapsedYears = elapsedMs / (1000 * 60 * 60 * 24 * 365);
-  return position.amount_usdc * (position.apy / 100) * elapsedYears;
+  const amount = Number(position.amount_usdc) || 0;
+  const apy = Number(position.apy) || 0;
+  const accrued = amount * (apy / 100) * elapsedYears;
+  return Number.isFinite(accrued) ? Math.max(0, accrued) : 0;
 }
 
 /**
  * Format position details for display in Telegram.
  */
 function formatPosition(position) {
+  if (!position) return "No active savings position found.";
+  const principal = Number(position.amount_usdc) || 0;
+  const apy = Number(position.apy) || 0;
   const accrued = calcAccruedYield(position);
-  const grossYield = position.apy > 0 ? (accrued / (1 - PAYIT_FEE_FRACTION)) : accrued;
+  const grossYield = apy > 0 ? (accrued / (1 - PAYIT_FEE_FRACTION)) : accrued;
   const estDevFee = grossYield * PAYIT_FEE_FRACTION;
   const netAccrued = grossYield - estDevFee;
+  const total = principal + netAccrued;
   const vaultAddr = position.vault_address || position.vaultAddress || "—";
   const shortVault = vaultAddr.length > 12 ? `${vaultAddr.slice(0, 6)}...${vaultAddr.slice(-4)}` : vaultAddr;
 
@@ -158,13 +168,13 @@ function formatPosition(position) {
 
   return (
     `📊 <b>Your Active Savings Position</b>${autoBadge}\n──────────────────────────\n` +
-    `• <b>Principal Saved:</b> $${position.amount_usdc.toFixed(2)} USDC\n` +
+    `• <b>Principal Saved:</b> $${principal.toFixed(2)} USDC\n` +
     `• <b>Vault:</b> ${position.project || "Arc Morpho Vault"} (<code>${shortVault}</code>)\n` +
     `• <b>Network:</b> ${position.chain || "Arc"}\n` +
-    `• <b>APY:</b> ${position.apy}% per year\n` +
-    `• <b>Started:</b> ${position.opened_at}\n` +
+    `• <b>APY:</b> ${apy}% per year\n` +
+    `• <b>Started:</b> ${position.opened_at || "Recently"}\n` +
     `• <b>Profit Earned (Interest):</b> +$${netAccrued.toFixed(4)} USDC\n` +
-    `• <b>Current Vault Total:</b> $${(position.amount_usdc + netAccrued).toFixed(4)} USDC\n\n` +
+    `• <b>Current Vault Total:</b> $${total.toFixed(4)} USDC\n\n` +
     `<i>Withdraw anytime immediately to return your principal and profit. 10% performance fee applies only to accrued profits upon withdrawal.</i>`
   );
 }
@@ -369,15 +379,16 @@ async function withdrawFromVaultWithFee({ userWallet, position, feeRecipientAddr
     "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
 
   // Calculate yield and fee breakdown
+  const principal = Number(position.amount_usdc) || 0;
   const grossYield = calcAccruedYield(position);
   const devFee = parseFloat((grossYield * PAYIT_FEE_FRACTION).toFixed(6));
   const netYield = parseFloat((grossYield - devFee).toFixed(6));
-  const totalUserPayout = parseFloat((position.amount_usdc + netYield).toFixed(6));
+  const totalUserPayout = parseFloat((principal + netYield).toFixed(6));
 
   // 1. Withdraw principal + gross yield from vault back to user's wallet
   let withdrawRes = null;
   try {
-    withdrawRes = await withdrawFromVault(userWallet.privateKey, vaultAddress, position.amount_usdc);
+    withdrawRes = await withdrawFromVault(userWallet.privateKey, vaultAddress, principal);
   } catch (err) {
     throw new Error(`Vault withdrawal failed: ${err.message}`);
   }

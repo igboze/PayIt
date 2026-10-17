@@ -1400,23 +1400,35 @@ async function showYields(ctx) {
     const context = getContext(ctx.from.id);
     const autoEarnEnabled = user ? Boolean(user.auto_earn_enabled !== 0) : true;
     const pools = await savings.getYieldPools();
-    const openPos = user ? db.getOpenYieldPosition(ctx.from.id, context) : null;
+    let openPos = user ? db.getOpenYieldPosition(ctx.from.id, context) : null;
+    let activeContext = context;
+    if (!openPos && user) {
+      const otherContext = context === "business" ? "personal" : "business";
+      openPos = db.getOpenYieldPosition(ctx.from.id, otherContext);
+      if (openPos) activeContext = otherContext;
+    }
+    if (!openPos && user) {
+      openPos = db.getOpenYieldPosition(ctx.from.id);
+      if (openPos && openPos.account_type) activeContext = openPos.account_type.toLowerCase();
+    }
     const statusText = autoEarnEnabled
       ? `🟢 <b>Auto-Earn:</b> Active (funds idle ≥ 2 hrs automatically earn yield)`
       : `⚪ <b>Auto-Earn:</b> Disabled (funds remain liquid)`;
 
     let activeBanner = "";
     if (openPos) {
+      const principal = Number(openPos.amount_usdc) || 0;
+      const apy = Number(openPos.apy) || 0;
       const grossYield = savings.calcAccruedYield(openPos);
       const devFee = grossYield * savings.PAYIT_FEE_FRACTION;
       const netProfit = grossYield - devFee;
-      const vaultTotal = openPos.amount_usdc + netProfit;
+      const vaultTotal = principal + netProfit;
       const autoTag = openPos.is_auto_earn ? " <i>(🤖 Auto-Earn)</i>" : "";
 
       activeBanner =
-        `📊 <b>Your Active ${context === "business" ? "Business" : "Personal"} Savings${autoTag}:</b>\n` +
-        `• <b>Principal Saved:</b> $${openPos.amount_usdc.toFixed(2)} USDC\n` +
-        `• <b>Profit Earned:</b> +$${netProfit.toFixed(4)} USDC (<b>${openPos.apy}% APY</b>)\n` +
+        `📊 <b>Your Active ${activeContext === "business" ? "Business" : "Personal"} Savings${autoTag}:</b>\n` +
+        `• <b>Principal Saved:</b> $${principal.toFixed(2)} USDC\n` +
+        `• <b>Profit Earned:</b> +$${netProfit.toFixed(4)} USDC (<b>${apy}% APY</b>)\n` +
         `• <b>Current Vault Total:</b> $${vaultTotal.toFixed(4)} USDC\n` +
         `• <b>Vault Provider:</b> ${openPos.project || "Arc Morpho Vault"}\n` +
         `<i>Tap "Withdraw Savings" below to return your funds immediately.</i>\n\n`;
@@ -1482,18 +1494,38 @@ async function showMyYield(ctx) {
   let position = db.getOpenYieldPosition(ctx.from.id, context);
   let effectiveContext = context;
   if (!position) {
-    try { position = await savings.syncOnChainVaultPositions(user, context); } catch {}
-  }
-  if (!position) {
     const otherContext = context === "business" ? "personal" : "business";
-    let otherPos = db.getOpenYieldPosition(ctx.from.id, otherContext);
-    if (!otherPos) {
-      try { otherPos = await savings.syncOnChainVaultPositions(user, otherContext); } catch {}
-    }
+    const otherPos = db.getOpenYieldPosition(ctx.from.id, otherContext);
     if (otherPos) {
       position = otherPos;
       effectiveContext = otherContext;
     }
+  }
+  if (!position) {
+    const anyPos = db.getOpenYieldPosition(ctx.from.id);
+    if (anyPos) {
+      position = anyPos;
+      if (anyPos.account_type) effectiveContext = anyPos.account_type.toLowerCase();
+    }
+  }
+  if (!position) {
+    try {
+      const syncPromise = savings.syncOnChainVaultPositions(user, context);
+      const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(null), 2500));
+      position = await Promise.race([syncPromise, timeoutPromise]);
+    } catch {}
+  }
+  if (!position) {
+    const otherContext = context === "business" ? "personal" : "business";
+    try {
+      const syncPromise = savings.syncOnChainVaultPositions(user, otherContext);
+      const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(null), 2500));
+      const otherPos = await Promise.race([syncPromise, timeoutPromise]);
+      if (otherPos) {
+        position = otherPos;
+        effectiveContext = otherContext;
+      }
+    } catch {}
   }
   if (!position) {
     return ctx.reply(
@@ -3113,40 +3145,76 @@ bot.action(/^yield_amt_(\d+(?:\.\d+)?|max)$/, async (ctx) => {
 });
 
 bot.action("yield_withdraw_start", async (ctx) => {
-  ctx.answerCbQuery();
+  await ctx.answerCbQuery().catch(() => {});
   const user     = requireUser(ctx);
   if (!user) return;
   const context  = getContext(ctx.from.id);
+
+  // 1. Instant SQLite lookups (0ms)
   let position = db.getOpenYieldPosition(ctx.from.id, context);
   let effectiveContext = context;
   if (!position) {
-    try { position = await savings.syncOnChainVaultPositions(user, context); } catch {}
-  }
-  if (!position) {
     const otherContext = context === "business" ? "personal" : "business";
-    let otherPos = db.getOpenYieldPosition(ctx.from.id, otherContext);
-    if (!otherPos) {
-      try { otherPos = await savings.syncOnChainVaultPositions(user, otherContext); } catch {}
-    }
+    const otherPos = db.getOpenYieldPosition(ctx.from.id, otherContext);
     if (otherPos) {
       position = otherPos;
       effectiveContext = otherContext;
     }
   }
   if (!position) {
+    const anyPos = db.getOpenYieldPosition(ctx.from.id);
+    if (anyPos) {
+      position = anyPos;
+      if (anyPos.account_type) effectiveContext = anyPos.account_type.toLowerCase();
+    }
+  }
+
+  // 2. On-chain sync fallback with 2.5s timeout (never freeze Telegram client)
+  if (!position) {
+    try {
+      const syncPromise = savings.syncOnChainVaultPositions(user, context);
+      const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(null), 2500));
+      position = await Promise.race([syncPromise, timeoutPromise]);
+    } catch {}
+  }
+  if (!position) {
+    const otherContext = context === "business" ? "personal" : "business";
+    try {
+      const syncPromise = savings.syncOnChainVaultPositions(user, otherContext);
+      const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(null), 2500));
+      const otherPos = await Promise.race([syncPromise, timeoutPromise]);
+      if (otherPos) {
+        position = otherPos;
+        effectiveContext = otherContext;
+      }
+    } catch {}
+  }
+
+  if (!position) {
+    const latestClosed = db.getLatestYieldPosition ? db.getLatestYieldPosition(ctx.from.id) : null;
+    let extraMsg = "";
+    if (latestClosed && latestClosed.status === "closed") {
+      const closedAt = latestClosed.closed_at ? ` on ${latestClosed.closed_at}` : "";
+      extraMsg = `\n\nℹ️ <i>Your previous savings position of $${Number(latestClosed.amount_usdc || 0).toFixed(2)} USDC was already withdrawn${closedAt}. Your active savings balance is currently $0.00 USDC.</i>`;
+    }
     return ctx.reply(
-      `No active savings to withdraw.`,
-      Markup.inlineKeyboard([[Markup.button.callback("➕ Start Saving", "yield_deposit_start")]])
+      `No active savings to withdraw.${extraMsg}`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([[Markup.button.callback("➕ Start Saving", "yield_deposit_start")]])
+      }
     );
   }
+
+  const principal = Number(position.amount_usdc) || 0;
   const grossYield = savings.calcAccruedYield(position);
   const devFee  = parseFloat((grossYield * savings.PAYIT_FEE_FRACTION).toFixed(4));
   const netYield = parseFloat((grossYield - devFee).toFixed(4));
-  const total   = parseFloat((position.amount_usdc + netYield).toFixed(4));
+  const total   = parseFloat((principal + netYield).toFixed(4));
   convState.setState(ctx.from.id, "confirm_yield_withdraw", { position, accrued: grossYield, devFee, netYield, total }, effectiveContext);
   return ctx.reply(
     `💵 <b>Withdraw ${effectiveContext === "business" ? "Business" : "Personal"} Savings</b>\n──────────────────────────\n` +
-    `• <b>Principal:</b> $${position.amount_usdc.toFixed(2)} USDC\n` +
+    `• <b>Principal:</b> $${principal.toFixed(2)} USDC\n` +
     `• <b>Profit Earned (Interest):</b> +$${grossYield.toFixed(4)} USDC\n` +
     `• <b>Performance Fee (10% on profit only):</b> -$${devFee.toFixed(4)} USDC\n` +
     `• <b>Net Payout to You:</b> $${total.toFixed(4)} USDC\n\n` +
@@ -7033,6 +7101,21 @@ function formatCustomerFriendlyOfframpError(rawError) {
         }
       }
 
+      const isLiveTx = Boolean(withdrawTx && withdrawTx !== "0xsimulated_withdraw_tx_hash");
+      const isTestMode = process.env.NODE_ENV === "test" || process.env.MOCK_SAVINGS === "true" || process.env.PAYIT_TEST_MODE === "true";
+
+      if (!isLiveTx && !isTestMode) {
+        idempotency.failOperationIdempotency(idemKey, "Withdrawal transaction failed on Arc");
+        const principalStr = (Number(state.data.position?.amount_usdc) || 0).toFixed(2);
+        return ctx.reply(
+          `⚠️ <b>Withdrawal Could Not Be Completed</b>\n──────────────────────────\n` +
+          `We were unable to process the withdrawal on Arc at this moment.\n` +
+          `Your savings position of <b>$${principalStr} USDC</b> remains <b>active and safe</b>.\n\n` +
+          `Please ensure your wallet has gas or try again shortly.`,
+          { parse_mode: "HTML" }
+        );
+      }
+
       if (!withdrawResult) {
         db.closeYieldPosition(userId, netPaid, {
           devFee: devFeeAmount,
@@ -7051,20 +7134,25 @@ function formatCustomerFriendlyOfframpError(rawError) {
       }
 
       let txLinks = "";
-      if (withdrawTx) {
+      if (withdrawTx && withdrawTx !== "0xsimulated_withdraw_tx_hash") {
         txLinks += `\n\n🔗 <a href="${netConfig.explorerUrl}/tx/${withdrawTx}">View Withdrawal on Arc Explorer</a>`;
       }
       if (feeTx) {
         txLinks += `\n🔗 <a href="${netConfig.explorerUrl}/tx/${feeTx}">View Proxim Service Fee on Arc Explorer</a>`;
       }
 
+      const principalReturned = Number(state.data.position?.amount_usdc) || 0;
+      const accruedEarned = Number(state.data.accrued) || 0;
+      const safeDevFee = Number(devFeeAmount) || 0;
+      const safeNetPaid = Number(netPaid) || 0;
+
       return ctx.reply(
         `✅ <b>${context === "business" ? "Business" : "Personal"} Savings Withdrawn!</b>\n──────────────────────────\n` +
         `• <b>Account:</b> ${context === "business" ? "Business Treasury" : "Personal Wallet"}\n` +
-        `• <b>Principal Returned:</b> $${state.data.position.amount_usdc.toFixed(2)}\n` +
-        `• <b>Interest Earned:</b> +$${state.data.accrued.toFixed(4)}\n` +
-        `• <b>Service Fee (10% on profit):</b> -$${devFeeAmount.toFixed(4)}\n` +
-        `• <b>Net Credited to Account:</b> $${netPaid.toFixed(4)}` +
+        `• <b>Principal Returned:</b> $${principalReturned.toFixed(2)}\n` +
+        `• <b>Interest Earned:</b> +$${accruedEarned.toFixed(4)}\n` +
+        `• <b>Service Fee (10% on profit):</b> -$${safeDevFee.toFixed(4)}\n` +
+        `• <b>Net Credited to Account:</b> $${safeNetPaid.toFixed(4)}` +
         txLinks,
         {
           parse_mode: "HTML",

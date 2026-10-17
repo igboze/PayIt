@@ -986,14 +986,33 @@ function getOpenYieldPosition(telegramId, accountType = null) {
   const strId = String(numId || telegramId);
   const floatStrId = `${numId}.0`;
   if (accountType) {
+    const isPersonal = String(accountType).toLowerCase() === "personal";
     return db.prepare(
-      "SELECT * FROM yield_positions WHERE (telegram_id = ? OR telegram_id = ? OR telegram_id = ? OR telegram_id = ?) AND account_type = ? AND (status = 'active' OR status IS NULL) ORDER BY id DESC LIMIT 1"
+      `SELECT * FROM yield_positions
+       WHERE (telegram_id = ? OR telegram_id = ? OR telegram_id = ? OR telegram_id = ?)
+         AND (LOWER(account_type) = LOWER(?) ${isPersonal ? "OR account_type IS NULL" : ""})
+         AND (status = 'active' OR status IS NULL)
+       ORDER BY id DESC LIMIT 1`
     ).get(numId, rawId, strId, floatStrId, accountType) || null;
   }
   return db.prepare(
     "SELECT * FROM yield_positions WHERE (telegram_id = ? OR telegram_id = ? OR telegram_id = ? OR telegram_id = ?) AND (status = 'active' OR status IS NULL) ORDER BY id DESC LIMIT 1"
   ).get(numId, rawId, strId, floatStrId) || null;
 }
+
+function getLatestYieldPosition(telegramId) {
+  if (!telegramId || telegramId === "undefined" || telegramId === "null" || Number.isNaN(Number(telegramId))) {
+    return null;
+  }
+  const numId = Math.round(Number(telegramId));
+  const rawId = telegramId;
+  const strId = String(numId || telegramId);
+  const floatStrId = `${numId}.0`;
+  return db.prepare(
+    "SELECT * FROM yield_positions WHERE (telegram_id = ? OR telegram_id = ? OR telegram_id = ? OR telegram_id = ?) ORDER BY id DESC LIMIT 1"
+  ).get(numId, rawId, strId, floatStrId) || null;
+}
+
 
 function openYieldPosition(telegramId, amountUsdc, pool, options = {}) {
   const normTgId = Math.round(Number(telegramId));
@@ -2458,6 +2477,7 @@ module.exports = {
   updateTransactionByTxHash,
   getTransactions,
   getOpenYieldPosition,
+  getLatestYieldPosition,
   openYieldPosition,
   closeYieldPosition,
   createInvoice,
