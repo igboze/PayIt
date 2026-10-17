@@ -40,3 +40,55 @@ test("Savings: calcAccruedYield and formatPosition calculate interest", () => {
   assert.ok(formatted.includes("Principal"));
   assert.ok(formatted.includes("Steakhouse Prime USDC"));
 });
+
+test("Savings: calcAccruedYield and formatPosition handle string amount and missing opened_at safely", () => {
+  const edgePosition = {
+    amount_usdc: "50",
+    apy: 5,
+    opened_at: null,
+    project: "Arc Morpho Vault",
+  };
+
+  const accrued = savings.calcAccruedYield(edgePosition);
+  assert.equal(typeof accrued, "number");
+  assert.ok(!Number.isNaN(accrued));
+  assert.ok(accrued >= 0);
+
+  const formatted = savings.formatPosition(edgePosition);
+  assert.ok(formatted.includes("$50.00"));
+  assert.ok(!formatted.includes("NaN"));
+});
+
+test("Savings: db getOpenYieldPosition handles case-insensitive and legacy null account_type", () => {
+  const db = require("../src/db");
+  const testTgId = 888777666;
+  
+  db.openYieldPosition(testTgId, 25, {
+    userApy: 4.5,
+    project: "Test Vault",
+    vaultAddress: "0x1234567890123456789012345678901234567890",
+  }, {
+    accountType: "Personal",
+  });
+
+  // Query with lowercase 'personal'
+  const posLower = db.getOpenYieldPosition(testTgId, "personal");
+  assert.ok(posLower, "Should match 'personal' query when stored as 'Personal'");
+  assert.equal(Number(posLower.amount_usdc), 25);
+
+  // Query without accountType
+  const posAny = db.getOpenYieldPosition(testTgId);
+  assert.ok(posAny, "Should match when no accountType passed");
+
+  // Query latest position
+  const latest = db.getLatestYieldPosition(testTgId);
+  assert.ok(latest, "getLatestYieldPosition should return record");
+
+  // Clean up
+  db.closeYieldPosition(testTgId, 25, {
+    positionId: posLower.id,
+    accountType: "personal",
+    withdrawTxHash: "0xtest_hash",
+  });
+});
+
