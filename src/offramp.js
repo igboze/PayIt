@@ -45,18 +45,23 @@ async function requestOfframp(telegramId, amountMicro, bankDetails) {
       payload.amount = amountUsdc;
     }
 
+    if (telegramId) {
+      payload.userExternalId = String(telegramId);
+    }
+
     const order = await paj.createOfframpOrder(payload);
+    const orderData = order?.data || order;
 
     return {
       success: true,
-      reference: order.id,
-      address: order.address,
-      amount: order.amount,
-      fiatAmount: order.fiatAmount,
-      accountName: order.accountName,
-      rate: order.rate,
-      status: order.status,
-      data: order,
+      reference: orderData?.id || orderData?.orderId || orderData?.reference || order?.id || order?.reference,
+      address: orderData?.address || order?.address,
+      amount: orderData?.amount || order?.amount,
+      fiatAmount: orderData?.fiatAmount || order?.fiatAmount,
+      accountName: orderData?.accountName || order?.accountName,
+      rate: orderData?.rate || order?.rate,
+      status: orderData?.status || order?.status,
+      data: orderData,
     };
   } catch (err) {
     console.error(`[offramp] Paj v2 Offramp creation failed:`, err.message);

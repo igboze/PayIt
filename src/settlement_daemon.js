@@ -222,6 +222,7 @@ async function pollPendingOfframpOrders(bot) {
                 recipientAddress: accountNumber,
                 amountUsdc: amountUsdc,
                 token: "USDC",
+                nairaEquiv: fiatAmount > 0 ? `₦${Number(fiatAmount).toLocaleString()}` : null,
                 type: "Cash Out",
                 timestamp: new Date().toISOString(),
                 status: "Confirmed",

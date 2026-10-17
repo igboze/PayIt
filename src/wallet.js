@@ -356,7 +356,7 @@ async function sendSponsoredOrDirectTransaction(signer, toAddress, amountMicro, 
   }
 
   // Direct EOA fallback
-  const txHash = await sendDirectFromWallet(signer, toAddress, amountMicro);
+  const txHash = await sendDirectFromWallet(signer, toAddress, amountMicro, options);
   return {
     txHash,
     sponsored: false,

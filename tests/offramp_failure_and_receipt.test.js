@@ -177,4 +177,144 @@ test("Offramp Failure & Receipt Isolation Suite", async (t) => {
     assert.equal(sentPhotos.length, 1, "Must generate exactly 1 receipt photo upon confirmed bank payout");
     assert.ok(sentPhotos[0].extra?.caption?.includes("Cash Out Delivered"), "Receipt caption must confirm delivery");
   });
+
+  await t.test("4. Multi-stage webhook lifecycle for same order does not block final settlement receipt", async () => {
+    const multiStageOrderId = `offramp_multistage_${Date.now()}`;
+    db.recordOfframpOrder({
+      orderId: multiStageOrderId,
+      telegramId: testTgId,
+      accountType: "personal",
+      accountNumber: "9135937824",
+      bankCode: "000013",
+      bankName: "GTBank",
+      accountName: "EMILY ELIZABETH OMAJARI",
+      amountUsdc: 7,
+      feeUsdc: 0.07,
+      netAmountUsdc: 6.93,
+      fiatAmount: 9350.09,
+      rate: 1349.22,
+      rail: "arc",
+      status: "submitted",
+      txHash: "0xarc_funding_tx",
+    });
+
+    const sentPhotos = [];
+    const mockBot = {
+      telegram: {
+        sendMessage: async () => ({ message_id: 501 }),
+        sendPhoto: async (id, photo, extra) => {
+          sentPhotos.push({ id, photo, extra });
+          return { message_id: 502 };
+        },
+      },
+    };
+
+    // Stage 1: Initial crypto received webhook (order.successful / processing)
+    const stage1Payload = {
+      event: "order.successful",
+      data: {
+        reference: multiStageOrderId,
+        status: "processing",
+        amount: 6.93,
+      },
+    };
+    await webhookServer.processPajEvent(stage1Payload, { bot: mockBot });
+    assert.equal(sentPhotos.length, 0, "Stage 1 must not prematurely send delivery receipt");
+
+    // Stage 2: Final fiat payout webhook (offramp.successful / completed)
+    const stage2Payload = {
+      event: "offramp.successful",
+      data: {
+        reference: multiStageOrderId,
+        status: "completed",
+        fiatAmount: 9350.09,
+        amount: 6.93,
+      },
+    };
+    await webhookServer.processPajEvent(stage2Payload, { bot: mockBot });
+
+    assert.equal(sentPhotos.length, 1, "Stage 2 must not be dropped as duplicate and must generate receipt!");
+    assert.ok(sentPhotos[0].extra?.caption?.includes("9,350.09") || sentPhotos[0].extra?.caption?.includes("Cash Out Delivered"), "Receipt caption must confirm delivery");
+
+    // Stage 3: Real duplicate of stage 2 must be ignored
+    await webhookServer.processPajEvent(stage2Payload, { bot: mockBot });
+    assert.equal(sentPhotos.length, 1, "Exact duplicate of Stage 2 should be dropped by idempotency");
+  });
+
+  await t.test("5. Webhook matches pending offramp by account number if order ID was unmapped", async () => {
+    const unmappedOrderId = `offramp_unmapped_${Date.now()}`;
+    const testAccountNum = "9988776655";
+    db.recordOfframpOrder({
+      orderId: unmappedOrderId,
+      telegramId: testTgId,
+      accountType: "personal",
+      accountNumber: testAccountNum,
+      bankCode: "000013",
+      bankName: "Access Bank",
+      accountName: "Test Account",
+      amountUsdc: 15,
+      feeUsdc: 0.15,
+      netAmountUsdc: 14.85,
+      fiatAmount: 20000,
+      rate: 1346,
+      rail: "arc",
+      status: "submitted",
+    });
+
+    const sentPhotos = [];
+    const mockBot = {
+      telegram: {
+        sendMessage: async () => ({ message_id: 601 }),
+        sendPhoto: async (id, photo, extra) => {
+          sentPhotos.push({ id, photo, extra });
+          return { message_id: 602 };
+        },
+      },
+    };
+
+    // Webhook arrives with provider's internal ID instead of unmappedOrderId, but has matching account number
+    const providerPayload = {
+      event: "payout.successful",
+      data: {
+        id: `paj_live_${Date.now()}`,
+        status: "paid",
+        accountNumber: testAccountNum,
+        fiatAmount: 20000,
+        amount: 14.85,
+      },
+    };
+
+    await webhookServer.processPajEvent(providerPayload, { bot: mockBot });
+
+    const order = db.getOfframpOrderByOrderId(unmappedOrderId);
+    assert.equal(order.status, "completed", "Order matched by account number must be marked completed");
+    assert.equal(sentPhotos.length, 1, "Receipt must be delivered to matched user");
+  });
+
+  await t.test("6. sendSponsoredOrDirectTransaction passes options.nonce to sendDirectFromWallet", async () => {
+    const walletLib = require("../src/wallet");
+    let passedOptions = null;
+    const origSendDirect = walletLib.sendDirectFromWallet;
+
+    // Verify options.nonce makes it through
+    const dummySigner = {
+      address: "0x1111111111111111111111111111111111111111",
+      sendTransaction: async (txReq) => {
+        passedOptions = txReq;
+        return { hash: "0xtest_tx_hash", wait: async () => ({ status: 1 }) };
+      },
+    };
+
+    const res = await walletLib.sendSponsoredOrDirectTransaction(
+      dummySigner,
+      "0x2222222222222222222222222222222222222222",
+      1000n,
+      "0x",
+      { nonce: 42, skipWait: true }
+    );
+
+    assert.equal(res.txHash, "0xtest_tx_hash");
+    assert.equal(passedOptions.nonce, 42, "options.nonce must be forwarded to signer transaction request");
+  });
 });
+
