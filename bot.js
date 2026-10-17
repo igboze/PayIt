@@ -375,8 +375,24 @@ function accountToggle(context) {
   return Markup.inlineKeyboard([[personal, business]]);
 }
 
+// ─── Native Telegram Bot API Colorized Button Helpers ─────────────────────────
+// Telegram supports semantic button styling:
+// - "success": Green background (e.g. Deposit, Earn, Confirmations)
+// - "primary": Vibrant Blue background (e.g. Wallet, Send, Main Actions)
+// - "danger":  Red background (e.g. Cancel, Delete, Warning)
+// - default:   Neutral dark background
+const btnSuccess = (text, data) => ({ text, callback_data: data, style: "success" });
+const btnPrimary = (text, data) => ({ text, callback_data: data, style: "primary" });
+const btnDanger  = (text, data) => ({ text, callback_data: data, style: "danger" });
+const btnDefault = (text, data) => ({ text, callback_data: data });
+const btnUrl     = (text, url, style = null) => {
+  const b = { text, url };
+  if (style) b.style = style;
+  return b;
+};
+
 const backToMenu = Markup.inlineKeyboard([
-  [Markup.button.callback("🏠 Main Menu", "main_menu")],
+  [btnPrimary("🏠 Main Menu", "main_menu")],
 ]);
 
 const POINTS = {
@@ -425,9 +441,9 @@ db.awardPoints = function (telegramId, points, action, details = null, options =
 };
 
 const afterPaymentButtons = Markup.inlineKeyboard([
-  [Markup.button.callback("💰 Check Balance", "action_balance"),
-   Markup.button.callback("📋 History",       "action_history")],
-  [Markup.button.callback("🏠 Main Menu", "main_menu")],
+  [btnPrimary("💰 Check Balance", "action_balance"),
+   btnDefault("📋 History",       "action_history")],
+  [btnPrimary("🏠 Main Menu",    "main_menu")],
 ]);
 
 // ─── /start — onboarding ──────────────────────────────────────────────────────
@@ -805,21 +821,21 @@ async function showBalance(ctx) {
     const buttonRows = [];
     if (hasSavings) {
       buttonRows.push([
-        Markup.button.callback("💵 Withdraw Savings", "yield_withdraw_start"),
-        Markup.button.callback("📊 Savings Details",  "action_my_yield"),
+        btnPrimary("💵 Withdraw Savings", "yield_withdraw_start"),
+        btnDefault("📊 Savings Details",  "action_my_yield"),
       ]);
     }
     buttonRows.push(
-      [Markup.button.callback("🟢 Add Money",         "action_receive"),
-       Markup.button.callback("🔵 Send Money",        "action_send_menu")],
-      [Markup.button.callback("🏦 Cash Out to Naira", "action_withdraw_menu"),
-       Markup.button.callback("🟣 Save & Earn",       "action_yields")],
-      [Markup.button.callback("🌐 Multi-Chain Hub",   "action_gateway"),
-       Markup.button.callback("🔀 Move Funds",        "action_move_funds")],
-      [Markup.button.callback("⚡ Scan & Sweep",      "action_sweep_deposits"),
-       Markup.button.callback("📜 Activity History",  "action_history")],
-      [Markup.button.callback("🔐 Export Keys",       "action_export_keys"),
-       Markup.button.callback("🛠️ Developer API",     "action_developer_menu")]
+      [btnSuccess("📥 Deposit (37 Chains)", "action_receive"),
+       btnPrimary("💳 Wallet / Send",        "action_send_menu")],
+      [btnPrimary("🏦 Cash Out to Naira",     "action_withdraw_menu"),
+       btnSuccess("📈 Earn 15% Interest",    "action_yields")],
+      [btnPrimary("🌐 Multi-Chain Hub",       "action_gateway"),
+       btnPrimary("🔀 Move Funds",            "action_move_funds")],
+      [btnPrimary("⚡ Scan & Sweep",          "action_sweep_deposits"),
+       btnDefault("📜 Activity History",      "action_history")],
+      [btnPrimary("🔐 Export Key",            "action_export_keys"),
+       btnDefault("🛠️ Developer API",         "action_developer_menu")]
     );
 
     await ctx.reply(
@@ -898,18 +914,18 @@ async function showBizBalance(ctx) {
     const buttonRows = [];
     if (hasSavings) {
       buttonRows.push([
-        Markup.button.callback("💵 Withdraw Savings", "yield_withdraw_start"),
-        Markup.button.callback("📊 Savings Details",  "action_my_yield"),
+        btnPrimary("💵 Withdraw Savings", "yield_withdraw_start"),
+        btnDefault("📊 Savings Details",  "action_my_yield"),
       ]);
     }
     buttonRows.push(
-      [Markup.button.callback("🧾 New Invoice",     "action_new_biz_invoice"),
-       Markup.button.callback("💸 Log Expense",     "action_log_expense")],
-      [Markup.button.callback("📋 Invoices",        "action_list_biz_invoices"),
-       Markup.button.callback("📊 Cash Flow",       "action_cash_flow")],
-      [Markup.button.callback("🌐 Multi-Chain Hub", "action_gateway"),
-       Markup.button.callback("⚡ Scan & Sweep",    "action_sweep_deposits")],
-      [Markup.button.callback("🔐 Export Keys",     "action_export_keys")],
+      [btnSuccess("🧾 New Invoice", "action_new_biz_invoice"),
+       btnPrimary("💸 Log Expense", "action_log_expense")],
+      [btnPrimary("📋 Invoices",    "action_list_biz_invoices"),
+       btnPrimary("📊 Cash Flow",   "action_cash_flow")],
+      [btnSuccess("🌐 Multi-Chain Hub", "action_gateway"),
+       btnPrimary("⚡ Scan & Sweep",    "action_sweep_deposits")],
+      [btnPrimary("🔐 Export Keys", "action_export_keys")],
       ...accountToggle("business")
     );
 
@@ -949,15 +965,15 @@ async function showReceive(ctx) {
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
-        [Markup.button.callback("🇳🇬 Bank Transfer (Naira)", "action_paj_onramp")],
-        [Markup.button.callback("🌐 Multi-Chain Crypto Hub", "action_gateway")],
+        [btnSuccess("🇳🇬 Bank Transfer (Naira)", "action_paj_onramp")],
+        [btnSuccess("🌐 Multi-Chain Crypto Hub (37 Chains)", "action_gateway")],
         [
-          Markup.button.callback("💳 Card / Apple Pay", "gateway_onramp"),
-          Markup.button.callback("⚡ Scan & Sweep",     "action_sweep_deposits"),
+          btnPrimary("💳 Card / Apple Pay", "gateway_onramp"),
+          btnPrimary("⚡ Scan & Sweep",     "action_sweep_deposits"),
         ],
         [
-          Markup.button.callback("💰 View Balance", "action_balance"),
-          Markup.button.callback("🏠 Main Menu",    "main_menu"),
+          btnPrimary("💰 View Balance", "action_balance"),
+          btnDefault("🏠 Main Menu",    "main_menu"),
         ],
       ]),
     }
@@ -1032,18 +1048,18 @@ async function showSettings(ctx) {
     `Proxim never holds your money. Your PIN is the only key to your funds.`,
 
     Markup.inlineKeyboard([
-      [Markup.button.callback("🔁 Switch Account",              "action_switch_account")],
-      [Markup.button.callback("🔑 Save Personal Security Phrase", "export_personal")],
-      [Markup.button.callback("🔑 Save Business Security Phrase", "export_business")],
-      [Markup.button.callback("🔒 Change PIN",                  "changepin")],
-      [Markup.button.callback("🔄 Forgot / Reset PIN",          "resetpin_start")],
-      [Markup.button.callback("🛡️ Lock Account",                "lock_account")],
-      [Markup.button.callback("👛 Link External Wallet",        "setwallet_prompt")],
-      [Markup.button.callback("📱 Verify Phone",                "verifyphone_prompt")],
-      [Markup.button.callback("🏅 Rewards",                     "action_rewards")],
-      [Markup.button.callback("👥 Invite Friends",               "action_referral")],
-      [Markup.button.callback("💼 Business Profile",            "biz_profile_menu")],
-      [Markup.button.callback("🏠 Main Menu",                   "main_menu")],
+      [btnPrimary("🔁 Switch Account",                "action_switch_account"),
+       btnSuccess("🏅 Rewards",                       "action_rewards")],
+      [btnPrimary("🔑 Save Personal Security Phrase", "export_personal")],
+      [btnPrimary("🔑 Save Business Security Phrase", "export_business")],
+      [btnPrimary("🔒 Change PIN",                    "changepin"),
+       btnDanger("🔄 Forgot / Reset PIN",             "resetpin_start")],
+      [btnDanger("🛡️ Lock Account",                  "lock_account")],
+      [btnPrimary("👛 Link External Wallet",          "setwallet_prompt"),
+       btnPrimary("📱 Verify Phone",                  "verifyphone_prompt")],
+      [btnSuccess("👥 Invite Friends",                 "action_referral"),
+       btnPrimary("💼 Business Profile",              "biz_profile_menu")],
+      [btnDefault("🏠 Main Menu",                     "main_menu")],
     ])
   );
 }
@@ -1120,11 +1136,11 @@ async function showRewardsMenu(ctx) {
     `Redeem points for airtime, bill credits, and cashback bonuses.
 `,
     Markup.inlineKeyboard([
-      [Markup.button.callback("📲 Redeem Airtime", "action_redeem_airtime")],
-      [Markup.button.callback("🏦 Pay Bills",       "action_redeem_bills")],
-      [Markup.button.callback("👥 Invite Friends",  "action_referral")],
-      [Markup.button.callback("📜 Points History",  "action_rewards_history")],
-      [Markup.button.callback("🏠 Main Menu",       "main_menu")],
+      [btnSuccess("📲 Redeem Airtime", "action_redeem_airtime"),
+       btnSuccess("🏦 Pay Bills",       "action_redeem_bills")],
+      [btnSuccess("👥 Invite Friends",  "action_referral"),
+       btnDefault("📜 Points History",  "action_rewards_history")],
+      [btnDefault("🏠 Main Menu",       "main_menu")],
     ])
   );
 }
@@ -1413,24 +1429,24 @@ async function showYields(ctx) {
     const actionButtons = [];
     if (openPos) {
       actionButtons.push([
-        Markup.button.callback("💵 Withdraw Savings", "yield_withdraw_start"),
-        Markup.button.callback("📊 Savings Details", "action_my_yield"),
+        btnPrimary("💵 Withdraw Savings", "yield_withdraw_start"),
+        btnDefault("📊 Savings Details",  "action_my_yield"),
       ]);
       actionButtons.push([
-        Markup.button.callback("➕ Add More Funds",   "yield_deposit_start"),
-        Markup.button.callback(autoEarnEnabled ? "⏸️ Turn Off Auto-Earn" : "▶️ Turn On Auto-Earn", "toggle_auto_earn"),
+        btnSuccess("➕ Add More Funds",   "yield_deposit_start"),
+        btnPrimary(autoEarnEnabled ? "⏸️ Turn Off Auto-Earn" : "▶️ Turn On Auto-Earn", "toggle_auto_earn"),
       ]);
     } else {
       actionButtons.push([
-        Markup.button.callback("➕ Start Saving",     "yield_deposit_start"),
-        Markup.button.callback("📊 My Savings",       "action_my_yield"),
+        btnSuccess("➕ Start Saving",     "yield_deposit_start"),
+        btnDefault("📊 My Savings",       "action_my_yield"),
       ]);
       actionButtons.push([
-        Markup.button.callback("💵 Withdraw Savings", "yield_withdraw_start"),
-        Markup.button.callback(autoEarnEnabled ? "⏸️ Turn Off Auto-Earn" : "▶️ Turn On Auto-Earn", "toggle_auto_earn"),
+        btnPrimary("💵 Withdraw Savings", "yield_withdraw_start"),
+        btnPrimary(autoEarnEnabled ? "⏸️ Turn Off Auto-Earn" : "▶️ Turn On Auto-Earn", "toggle_auto_earn"),
       ]);
     }
-    actionButtons.push([Markup.button.callback("🏠 Main Menu", "main_menu")]);
+    actionButtons.push([btnDefault("🏠 Main Menu", "main_menu")]);
 
     await ctx.reply(
       activeBanner +
@@ -1487,17 +1503,17 @@ async function showMyYield(ctx) {
     return ctx.reply(
       `📊 No active ${context === "business" ? "Business" : "Personal"} savings yet.\n\nStart earning interest on your dollars.`,
       Markup.inlineKeyboard([
-        [Markup.button.callback("➕ Start Saving", "yield_deposit_start")],
-        [Markup.button.callback("🏠 Main Menu",    "main_menu")],
+        [btnSuccess("➕ Start Saving", "yield_deposit_start")],
+        [btnDefault("🏠 Main Menu",    "main_menu")],
       ])
     );
   }
   await ctx.reply(
     savings.formatPosition(position),
     Markup.inlineKeyboard([
-      [Markup.button.callback("💵 Withdraw Savings Immediately", "yield_withdraw_start")],
-      [Markup.button.callback("📈 View Rates",       "action_yields")],
-      [Markup.button.callback("🏠 Main Menu",        "main_menu")],
+      [btnPrimary("💵 Withdraw Savings Immediately", "yield_withdraw_start")],
+      [btnSuccess("📈 View Rates",                   "action_yields")],
+      [btnDefault("🏠 Main Menu",                    "main_menu")],
     ])
   );
 }
@@ -1528,20 +1544,20 @@ bot.action("action_gateway", async (ctx) => {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
         [
-          Markup.button.callback("☀️ Solana (SOL / USDC)", "action_solana_deposit"),
-          Markup.button.callback("Ⓝ NEAR (NEAR / USDC)", "action_near_deposit"),
+          btnPrimary("☀️ Solana (SOL / USDC)", "action_solana_deposit"),
+          btnSuccess("Ⓝ NEAR (NEAR / USDC)",   "action_near_deposit"),
         ],
         [
-          Markup.button.callback("⚡ Starknet (STRK / ETH)", "action_starknet_deposit"),
-          Markup.button.callback("🏹 Robinhood (USDG / ETH)", "action_robinhood_deposit"),
+          btnPrimary("⚡ Starknet (STRK / ETH)",  "action_starknet_deposit"),
+          btnSuccess("🏹 Robinhood (USDG / ETH)", "action_robinhood_deposit"),
         ],
         [
-          Markup.button.callback("⚡ Scan & Sweep", "action_sweep_deposits"),
-          Markup.button.callback("💳 Buy with Card", "gateway_onramp"),
+          btnPrimary("⚡ Scan & Sweep", "action_sweep_deposits"),
+          btnPrimary("💳 Buy with Card", "gateway_onramp"),
         ],
         [
-          Markup.button.callback("« Back to Add Money", "action_receive"),
-          Markup.button.callback("🏠 Main Menu", "main_menu"),
+          btnDefault("« Back to Add Money", "action_receive"),
+          btnDefault("🏠 Main Menu",        "main_menu"),
         ],
       ]),
     }
@@ -2355,11 +2371,11 @@ bot.action("action_send_menu", (ctx) => {
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
-        [Markup.button.callback("💵 Cash Out to Naira (Bank)", "action_withdraw_menu")],
-        [Markup.button.callback("🌐 Withdraw to External Chain (Solana, Base, BTC…)", "action_crosschain_withdraw")],
-        [Markup.button.callback("👛 Send on Arc (0x Address)", "action_sendout_menu")],
-        [Markup.button.callback("👥 Send to a Saved Contact", "action_send_contact")],
-        [Markup.button.callback("🏠 Main Menu", "main_menu")],
+        [btnPrimary("💵 Cash Out to Naira (Bank)", "action_withdraw_menu")],
+        [btnPrimary("🌐 Withdraw to External Chain (Solana, Base, BTC…)", "action_crosschain_withdraw")],
+        [btnPrimary("👛 Send on Arc (0x Address)", "action_sendout_menu")],
+        [btnPrimary("👥 Send to a Saved Contact", "action_send_contact")],
+        [btnDefault("🏠 Main Menu", "main_menu")],
       ]),
     }
   );
@@ -2388,16 +2404,16 @@ bot.action("action_send_contact", async (ctx) => {
 function buildSendAmountKeyboard() {
   return Markup.inlineKeyboard([
     [
-      Markup.button.callback("$5", "sendout_amt_5"),
-      Markup.button.callback("$10", "sendout_amt_10"),
-      Markup.button.callback("$25", "sendout_amt_25"),
+      btnPrimary("$5", "sendout_amt_5"),
+      btnPrimary("$10", "sendout_amt_10"),
+      btnPrimary("$25", "sendout_amt_25"),
     ],
     [
-      Markup.button.callback("$50", "sendout_amt_50"),
-      Markup.button.callback("$100", "sendout_amt_100"),
-      Markup.button.callback("💰 Max", "sendout_amt_max"),
+      btnPrimary("$50", "sendout_amt_50"),
+      btnPrimary("$100", "sendout_amt_100"),
+      btnSuccess("💰 Max", "sendout_amt_max"),
     ],
-    [Markup.button.callback("❌ Cancel", "main_menu")],
+    [btnDanger("❌ Cancel", "main_menu")],
   ]);
 }
 
@@ -2630,16 +2646,16 @@ flowsDeveloper.registerDeveloperFlows(bot, {
 function buildWithdrawAmountKeyboard() {
   return Markup.inlineKeyboard([
     [
-      Markup.button.callback("$10", "cashout_amt_10"),
-      Markup.button.callback("$25", "cashout_amt_25"),
-      Markup.button.callback("$50", "cashout_amt_50"),
+      btnPrimary("$10", "cashout_amt_10"),
+      btnPrimary("$25", "cashout_amt_25"),
+      btnPrimary("$50", "cashout_amt_50"),
     ],
     [
-      Markup.button.callback("$100", "cashout_amt_100"),
-      Markup.button.callback("$250", "cashout_amt_250"),
-      Markup.button.callback("💰 All / Max", "cashout_amt_max"),
+      btnPrimary("$100", "cashout_amt_100"),
+      btnPrimary("$250", "cashout_amt_250"),
+      btnSuccess("💰 All / Max", "cashout_amt_max"),
     ],
-    [Markup.button.callback("❌ Cancel", "main_menu")],
+    [btnDanger("❌ Cancel", "main_menu")],
   ]);
 }
 
