@@ -985,6 +985,7 @@ function getOpenYieldPosition(telegramId, accountType = null) {
   const rawId = telegramId;
   const strId = String(numId || telegramId);
   const floatStrId = `${numId}.0`;
+  let activePos = null;
   if (accountType) {
     const isPersonal = String(accountType).toLowerCase() === "personal";
     return db.prepare(
@@ -998,6 +999,57 @@ function getOpenYieldPosition(telegramId, accountType = null) {
   return db.prepare(
     "SELECT * FROM yield_positions WHERE (telegram_id = ? OR telegram_id = ? OR telegram_id = ? OR telegram_id = ?) AND (status = 'active' OR status IS NULL) ORDER BY id DESC LIMIT 1"
   ).get(numId, rawId, strId, floatStrId) || null;
+}
+
+function recoverUncreditedYieldPosition(telegramId, accountType = null) {
+  if (!telegramId || telegramId === "undefined" || telegramId === "null" || Number.isNaN(Number(telegramId))) {
+    return null;
+  }
+  const numId = Math.round(Number(telegramId));
+  const rawId = telegramId;
+  const strId = String(numId || telegramId);
+  const floatStrId = `${numId}.0`;
+
+  try {
+    const isPersonal = !accountType || String(accountType).toLowerCase() === "personal";
+    const latestClosed = accountType
+      ? db.prepare(
+          `SELECT * FROM yield_positions
+           WHERE (telegram_id = ? OR telegram_id = ? OR telegram_id = ? OR telegram_id = ?)
+             AND (LOWER(account_type) = LOWER(?) ${isPersonal ? "OR account_type IS NULL" : ""})
+             AND status = 'closed'
+           ORDER BY id DESC LIMIT 1`
+        ).get(numId, rawId, strId, floatStrId, accountType)
+      : db.prepare(
+          `SELECT * FROM yield_positions
+           WHERE (telegram_id = ? OR telegram_id = ? OR telegram_id = ? OR telegram_id = ?)
+             AND status = 'closed'
+           ORDER BY id DESC LIMIT 1`
+        ).get(numId, rawId, strId, floatStrId);
+
+    if (latestClosed && (latestClosed.withdraw_tx_hash === "0xsimulated_withdraw_tx_hash" || !latestClosed.withdraw_tx_hash)) {
+      const hasTx = db.prepare(
+        `SELECT id FROM transactions
+         WHERE (telegram_id = ? OR telegram_id = ? OR telegram_id = ?)
+           AND type = 'yield_withdraw'
+           AND (created_at >= ? OR id >= ?)
+         LIMIT 1`
+      ).get(numId, rawId, strId, latestClosed.opened_at || "1970-01-01", latestClosed.id);
+
+      if (!hasTx) {
+        db.prepare(
+          "UPDATE yield_positions SET status = 'active', closed_at = NULL, payout = NULL, withdraw_tx_hash = NULL WHERE id = ?"
+        ).run(latestClosed.id);
+        latestClosed.status = "active";
+        latestClosed.closed_at = null;
+        latestClosed.payout = null;
+        latestClosed.withdraw_tx_hash = null;
+        return latestClosed;
+      }
+    }
+  } catch (_) {}
+
+  return null;
 }
 
 function getLatestYieldPosition(telegramId) {
@@ -2478,6 +2530,7 @@ module.exports = {
   getTransactions,
   getOpenYieldPosition,
   getLatestYieldPosition,
+  recoverUncreditedYieldPosition,
   openYieldPosition,
   closeYieldPosition,
   createInvoice,

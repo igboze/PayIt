@@ -765,11 +765,17 @@ async function showBalance(ctx) {
 
     // Vault savings and accrued yield
     let position = db.getOpenYieldPosition(user.telegram_id, context);
+    if (!position && db.recoverUncreditedYieldPosition) {
+      position = db.recoverUncreditedYieldPosition(user.telegram_id, context);
+    }
     if (!position) {
       try { position = await savings.syncOnChainVaultPositions(user, context); } catch {}
     }
     const otherContext = context === "business" ? "personal" : "business";
     let otherPosition = !position ? db.getOpenYieldPosition(user.telegram_id, otherContext) : null;
+    if (!position && !otherPosition && db.recoverUncreditedYieldPosition) {
+      otherPosition = db.recoverUncreditedYieldPosition(user.telegram_id, otherContext);
+    }
     if (!position && !otherPosition) {
       try { otherPosition = await savings.syncOnChainVaultPositions(user, otherContext); } catch {}
     }
@@ -3166,6 +3172,14 @@ bot.action("yield_withdraw_start", async (ctx) => {
     if (anyPos) {
       position = anyPos;
       if (anyPos.account_type) effectiveContext = anyPos.account_type.toLowerCase();
+    }
+  }
+  if (!position && db.recoverUncreditedYieldPosition) {
+    const recovered = db.recoverUncreditedYieldPosition(ctx.from.id, context) ||
+      db.recoverUncreditedYieldPosition(ctx.from.id);
+    if (recovered) {
+      position = recovered;
+      if (recovered.account_type) effectiveContext = recovered.account_type.toLowerCase();
     }
   }
 
@@ -7101,17 +7115,14 @@ function formatCustomerFriendlyOfframpError(rawError) {
         }
       }
 
-      const isLiveTx = Boolean(withdrawTx && withdrawTx !== "0xsimulated_withdraw_tx_hash");
-      const isTestMode = process.env.NODE_ENV === "test" || process.env.MOCK_SAVINGS === "true" || process.env.PAYIT_TEST_MODE === "true";
-
-      if (!isLiveTx && !isTestMode) {
+      if (!withdrawResult && !withdrawTx) {
         idempotency.failOperationIdempotency(idemKey, "Withdrawal transaction failed on Arc");
         const principalStr = (Number(state.data.position?.amount_usdc) || 0).toFixed(2);
         return ctx.reply(
           `⚠️ <b>Withdrawal Could Not Be Completed</b>\n──────────────────────────\n` +
           `We were unable to process the withdrawal on Arc at this moment.\n` +
           `Your savings position of <b>$${principalStr} USDC</b> remains <b>active and safe</b>.\n\n` +
-          `Please ensure your wallet has gas or try again shortly.`,
+          `Please try again shortly.`,
           { parse_mode: "HTML" }
         );
       }
