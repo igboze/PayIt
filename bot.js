@@ -7217,7 +7217,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
       );
 
       // Route swap protocol fee to platform fee recipient on Arc if configured
-      const feeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.PAYIT_DEV_FEE_ADDRESS;
+      const feeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.PAYIT_DEV_FEE_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
       const protocolFeeAmount = parseFloat(state.data.protocolFee || 0);
       if (protocolFeeAmount > 0.0001 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
         try {

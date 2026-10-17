@@ -207,7 +207,7 @@ async function ensureLiquidBalance({ userWallet, telegramId, requiredAmountMicro
 
 // Background scheduler interval (runs every 15 minutes by default)
 let _intervalHandle = null;
-let _defaultFeeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || null;
+let _defaultFeeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.PAYIT_DEV_FEE_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
 
 function startAutoEarnWorker(optionsOrInterval = 15 * 60 * 1000) {
   let intervalMs = 15 * 60 * 1000;

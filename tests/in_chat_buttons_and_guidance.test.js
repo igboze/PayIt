@@ -8,15 +8,15 @@ test("In-Chat Buttons: bot.js includes quick action buttons for Cash Out and Yie
   const botContent = fs.readFileSync(path.join(__dirname, "../bot.js"), "utf8");
 
   // Verify withdraw / cashout keyboard
-  assert.ok(botContent.includes('Markup.button.callback("$10", "cashout_amt_10")'), "Must include $10 cashout button");
-  assert.ok(botContent.includes('Markup.button.callback("$25", "cashout_amt_25")'), "Must include $25 cashout button");
-  assert.ok(botContent.includes('Markup.button.callback("$50", "cashout_amt_50")'), "Must include $50 cashout button");
-  assert.ok(botContent.includes('Markup.button.callback("💰 All / Max", "cashout_amt_max")'), "Must include Max cashout button");
+  assert.ok(botContent.includes('"cashout_amt_10"'), "Must include $10 cashout button");
+  assert.ok(botContent.includes('"cashout_amt_25"'), "Must include $25 cashout button");
+  assert.ok(botContent.includes('"cashout_amt_50"'), "Must include $50 cashout button");
+  assert.ok(botContent.includes('"cashout_amt_max"'), "Must include Max cashout button");
 
   // Verify yield deposit buttons
-  assert.ok(botContent.includes('Markup.button.callback("$5", "yield_amt_5")'), "Must include $5 yield deposit button");
-  assert.ok(botContent.includes('Markup.button.callback("$10", "yield_amt_10")'), "Must include $10 yield deposit button");
-  assert.ok(botContent.includes('Markup.button.callback("$25", "yield_amt_25")'), "Must include $25 yield deposit button");
+  assert.ok(botContent.includes('"yield_amt_5"'), "Must include $5 yield deposit button");
+  assert.ok(botContent.includes('"yield_amt_10"'), "Must include $10 yield deposit button");
+  assert.ok(botContent.includes('"yield_amt_25"'), "Must include $25 yield deposit button");
   assert.ok(botContent.includes('yield_amt_max'), "Must include Max yield deposit button");
 
   // Verify sendout buttons

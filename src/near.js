@@ -810,7 +810,12 @@ async function getQuote({ originAsset, destinationAsset, amount, recipient, refu
     const feeRecipient = getNearFeeRecipient();
     const feeBps = getNearFeeBps();
     if (feeRecipient && feeBps > 0) {
-      resolvedAppFees = [{ recipient: feeRecipient, fee: feeBps }];
+      // Defuse 1Click API splits the requested appFee 50/50 between the integration partner
+      // and the Defuse solver protocol (5880ad...). To ensure our feeRecipient receives the
+      // full target net fee (e.g. 100 bps = 1.00%), we request gross fee = feeBps * 2 so Defuse's
+      // 50/50 revenue split delivers the exact 1.00% net fee to our fee recipient.
+      const grossFee = Math.min(feeBps * 2, 1000);
+      resolvedAppFees = [{ recipient: feeRecipient, fee: grossFee }];
     }
   }
 
@@ -833,7 +838,8 @@ async function getQuote({ originAsset, destinationAsset, amount, recipient, refu
     payload.appFees = resolvedAppFees;
   }
 
-  return apiRequest("POST", "/v0/quote", payload);
+  const caller = module.exports.apiRequest || apiRequest;
+  return caller("POST", "/v0/quote", payload);
 }
 
 /**
@@ -843,7 +849,8 @@ async function getQuote({ originAsset, destinationAsset, amount, recipient, refu
 async function getExecutionStatus(depositAddress, depositMemo) {
   const qs = new URLSearchParams({ depositAddress });
   if (depositMemo) qs.set("depositMemo", depositMemo);
-  return apiRequest("GET", `/v0/status?${qs.toString()}`);
+  const caller = module.exports.apiRequest || apiRequest;
+  return caller("GET", `/v0/status?${qs.toString()}`);
 }
 
 /**
@@ -1298,5 +1305,7 @@ module.exports = {
   createStarknetDeposit,
   pollPendingNearDeposits,
   expireStaleNearDeposits,
+  apiRequest,
+  __test_apiRequest: apiRequest,
 };
 

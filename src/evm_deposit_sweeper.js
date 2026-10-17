@@ -68,7 +68,7 @@ const DEX_ROUTER_CONFIGS = {
   POLYGON: {
     name: "Polygon",
     chainId: 137,
-    rpcUrl: process.env.POLYGON_RPC_URL || "https://polygon-rpc.com",
+    rpcUrl: process.env.POLYGON_RPC_URL || "https://polygon-bor-rpc.publicnode.com",
     routerAddress: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
     fallbackRouter: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
     wethAddress: "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270", // WMATIC / WPOL
@@ -647,7 +647,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     if (!isNative) {
       networkFee = CCTP_BRIDGE_FEES_USDC[Number(effectiveChainId)] ?? 0.05;
     }
-    const depositFeeBps = Number(process.env.DEPOSIT_PROTOCOL_FEE_BPS ?? 25); // 0.25% deposit protocol fee
+    const depositFeeBps = Number(process.env.DEPOSIT_PROTOCOL_FEE_BPS ?? 0);
     const protocolDepositFee = parseFloat(((grossAmount * depositFeeBps) / 10000).toFixed(4));
     const totalDeductedFee = parseFloat((networkFee + protocolDepositFee).toFixed(4));
     effectiveAmountUsdc = parseFloat(Math.max(0, effectiveAmountUsdc - totalDeductedFee).toFixed(6));
@@ -751,6 +751,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
   // Standard CCTP Chains
   const isNative = isNativeToken(token, dexConfig);
   let networkFee = 0;
+  let protocolDepositFee = 0;
 
   // 4. Handle Native Token (Swap to USDC) or direct USDC
   if (isNative) {
@@ -796,8 +797,8 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
 
     // Deduct flat network fee to self-fund relayer gas advance and platform deposit fee
     networkFee = CCTP_BRIDGE_FEES_USDC[Number(effectiveChainId)] ?? 0.05;
-    const depositFeeBps = Number(process.env.DEPOSIT_PROTOCOL_FEE_BPS ?? 25);
-    const protocolDepositFee = parseFloat(((grossAmountUsdc * depositFeeBps) / 10000).toFixed(4));
+    const depositFeeBps = Number(process.env.DEPOSIT_PROTOCOL_FEE_BPS ?? 0);
+    protocolDepositFee = parseFloat(((grossAmountUsdc * depositFeeBps) / 10000).toFixed(4));
     effectiveAmountUsdc = parseFloat(Math.max(0, grossAmountUsdc - networkFee - protocolDepositFee).toFixed(6));
   }
 
@@ -808,17 +809,18 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
 
   console.log(`[evm_sweeper] Ready to bridge USDC from ${cctpConfig.name} to Arc for user ${user.telegram_id}... (Net credit: $${effectiveAmountUsdc})`);
 
-  // Reimburse relayer gas fee from deposit address if direct token deposit
-  if (networkFee > 0 && signer) {
+  // Reimburse relayer gas fee + protocol deposit fee from deposit address if direct token deposit
+  const totalDeductedFee = parseFloat((networkFee + (protocolDepositFee || 0)).toFixed(6));
+  if (totalDeductedFee > 0 && signer) {
     const relayerKey = options?.overridePrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
     const feeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.PAYIT_DEV_FEE_ADDRESS || process.env.FEE_RECIPIENT_ADDRESS || (relayerKey ? new Wallet(relayerKey).address : null);
     if (feeRecipient && feeRecipient.toLowerCase() !== signer.address.toLowerCase()) {
       try {
         const usdcContract = new Contract(cctpConfig.usdc, ERC20_ABI, signer);
-        const feeWei = parseUnits(networkFee.toFixed(6), 6);
+        const feeWei = parseUnits(totalDeductedFee.toFixed(6), 6);
         const feeTx = await usdcContract.transfer(feeRecipient, feeWei);
         await feeTx.wait(1);
-        console.log(`[evm_sweeper] Reimbursed relayer network fee $${networkFee} USDC to ${feeRecipient} on ${cctpConfig.name} ✓ tx=${feeTx.hash}`);
+        console.log(`[evm_sweeper] Collected fee $${totalDeductedFee} USDC ($${networkFee} relayer + $${protocolDepositFee} protocol) -> ${feeRecipient} on ${cctpConfig.name} ✓ tx=${feeTx.hash}`);
       } catch (feeErr) {
         console.warn(`[evm_sweeper] Relayer fee reimbursement note:`, feeErr.message);
       }
