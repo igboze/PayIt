@@ -95,7 +95,7 @@ process.on("unhandledRejection", (reason) => {
   console.error("[process:unhandledRejection]", reason?.message || reason);
 });
 
-// Wrap Telegraf callback query responses so stale or invalid callback IDs do not crash the bot.
+// Wrap Telegraf callback query responses so stale, invalid or network-failed callback IDs do not crash the bot.
 bot.use(async (ctx, next) => {
   if (ctx.from?.id) {
     db.updateUserLastActivity(ctx.from.id);
@@ -106,12 +106,8 @@ bot.use(async (ctx, next) => {
       try {
         return await originalAnswer(text, showAlert);
       } catch (err) {
-        const message = err?.message || "";
-        const code = err?.code || err?.response?.error_code;
-        if (code === 400 || /query is too old|timeout expired|invalid/i.test(message)) {
-          return null;
-        }
-        throw err;
+        // Silently swallow callback query failures (stale query, timeout expired, invalid ID, network delay)
+        return null;
       }
     };
   }
@@ -1577,7 +1573,12 @@ bot.action("action_gateway", async (ctx) => {
   const context = user.active_context || "personal";
   const arcAddress = getActiveWallet(user);
   const solAddress = getOrDeriveSolanaAddress(user);
-  const nearAddress = chains.getDepositAddress(user, "near", { isBiz: context === "business" });
+  let nearAddress = null;
+  try {
+    nearAddress = chains.getDepositAddress(user, "near", { isBiz: context === "business" });
+  } catch (err) {
+    console.warn("[action_gateway] Failed to resolve NEAR address:", err.message);
+  }
 
   await ctx.reply(
     `🌐 <b>Deposit Crypto</b>\n──────────────────────────\n` +

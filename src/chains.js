@@ -220,11 +220,18 @@ async function getUnifiedBalance(user, accountType = "personal") {
   return result;
 }
 
+function getDepositAddress(user, chainKey, options = {}) {
+  const accountType = options.isBiz ? "business" : (options.accountType || user?.active_context || "personal");
+  return deriveAddress(user, accountType, chainKey);
+}
+
 module.exports = {
   getChains,
   listChains,
   getChain,
   getPajRailChains,
   deriveAddress,
+  getDepositAddress,
   getUnifiedBalance,
 };
+
