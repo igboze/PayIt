@@ -383,8 +383,12 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
             recipientAddress: solFeeRecipient,
             amount: feeUsdc,
           });
-          feeTxHash = feeSolTx?.txHash || feeSolTx?.signature || null;
-          console.log(`[executor:offramp:solana] Routed 1% fee on Solana ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
+          if (feeSolTx && feeSolTx.success !== false && (feeSolTx.txHash || feeSolTx.signature)) {
+            feeTxHash = feeSolTx.txHash || feeSolTx.signature;
+            console.log(`[executor:offramp:solana] Routed 1% fee on Solana ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
+          } else {
+            console.warn("[executor:offramp:solana_fee_error]", feeSolTx?.error || "Transfer failed");
+          }
         } catch (feeErr) {
           console.warn("[executor:offramp:solana_fee_note]", feeErr.message);
         }
@@ -392,7 +396,16 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
 
     } else {
       // Arc rail: plain native-USDC transfer of netMicro to Paj order address
-      txHash = await walletLib.sendFromWallet(userWallet, targetAddress, netMicro);
+      let baseNonce = null;
+      try {
+        if (typeof userWallet.getNonce === "function") {
+          baseNonce = await userWallet.getNonce("latest");
+        }
+      } catch {}
+
+      txHash = await walletLib.sendFromWallet(userWallet, targetAddress, netMicro, {
+        nonce: baseNonce != null ? baseNonce : undefined,
+      });
 
       // Route 1% platform fee directly to APP_FEE_RECIPIENT_ADDRESS
       if (feeMicro > 0n && feeRecipient && walletLib.isValidAddress(feeRecipient) && userWallet.address.toLowerCase() !== feeRecipient.toLowerCase()) {
@@ -400,21 +413,15 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
           let actualFeeMicro = feeMicro;
           try {
             const currentBalMicro = await walletLib.getNativeBalanceMicro(userWallet.address);
-            if (currentBalMicro < actualFeeMicro) {
-              const gasBufferMicro = 100n; // 0.0001 USDC
-              actualFeeMicro = currentBalMicro > gasBufferMicro ? currentBalMicro - gasBufferMicro : 0n;
-            } else if (currentBalMicro < actualFeeMicro + 100n && currentBalMicro > 100n) {
-              actualFeeMicro = currentBalMicro - 100n;
+            // Real Arc gas buffer: 0.002 USDC (2e15 wei in 18 decimals) to ensure intrinsic gas fee can be paid
+            const minGasBufferMicro = walletLib.parseToMicro("0.002");
+            if (currentBalMicro < actualFeeMicro + minGasBufferMicro) {
+              actualFeeMicro = currentBalMicro > minGasBufferMicro ? currentBalMicro - minGasBufferMicro : 0n;
             }
           } catch {}
 
           if (actualFeeMicro > 0n) {
-            let nextNonce = null;
-            try {
-              if (typeof userWallet.getNonce === "function") {
-                nextNonce = await userWallet.getNonce("pending");
-              }
-            } catch {}
+            const nextNonce = baseNonce != null ? baseNonce + 1 : undefined;
             feeTxHash = await walletLib.sendFromWallet(userWallet, feeRecipient, actualFeeMicro, {
               nonce: nextNonce,
             });
@@ -429,7 +436,8 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
     db.updateTransactionStatus(txId, "submitted", txHash);
 
     // Track order in paj_offramp_orders table with clean 10-digit NUBAN account number
-    const offrampOrderId = result.reference || result.id || `offramp_${Date.now()}`;
+    const orderObj = result?.data || result;
+    const offrampOrderId = orderObj?.id || orderObj?.orderId || orderObj?.reference || result?.reference || result?.id || `offramp_${Date.now()}`;
     try {
       db.recordOfframpOrder({
         orderId: offrampOrderId,

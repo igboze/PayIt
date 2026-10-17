@@ -2908,14 +2908,18 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
       amount: netAmountUsdc,
       chain: railCfg.chain,
       mint: railCfg.mint,
+      userExternalId: String(userId),
+      description: `Proxim Cashout - TG:${userId}`,
     });
-    if (orderReservation && orderReservation.accountName) {
-      liveAccountName = orderReservation.accountName;
+    const orderData = orderReservation?.data || orderReservation;
+    if (orderData && orderData.accountName) {
+      liveAccountName = orderData.accountName;
     }
   } catch (valErr) {
     console.warn("[bot:use_saved_bank:prevalidation_note]", valErr.message);
   }
 
+  const resOrderData = orderReservation?.data || orderReservation;
   convState.setState(userId, "confirm_withdraw", {
     amountUsdc,
     feeUsdc,
@@ -2925,14 +2929,14 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
     bankCode: parsed.bankCode,
     accountNumber: parsed.accountNumber,
     accountName: liveAccountName,
-    orderId: orderReservation?.id || null,
-    orderAddress: orderReservation?.address || null,
-    fiatAmount: orderReservation?.fiatAmount || null,
-    rate: orderReservation?.rate || null,
+    orderId: resOrderData?.id || resOrderData?.orderId || resOrderData?.reference || orderReservation?.id || null,
+    orderAddress: resOrderData?.address || orderReservation?.address || null,
+    fiatAmount: resOrderData?.fiatAmount || orderReservation?.fiatAmount || null,
+    rate: resOrderData?.rate || orderReservation?.rate || null,
   }, state.context);
 
   const acctNameLine = liveAccountName ? `👤 <b>Account Name:</b> ${liveAccountName}\n` : "";
-  const nairaEst = orderReservation?.fiatAmount ? ` (approx. ₦${Number(orderReservation.fiatAmount).toLocaleString()})` : "";
+  const nairaEst = (resOrderData?.fiatAmount || orderReservation?.fiatAmount) ? ` (approx. ₦${Number(resOrderData?.fiatAmount || orderReservation?.fiatAmount).toLocaleString()})` : "";
   const activeRail = (state.data.rail && state.data.rail !== "auto") ? state.data.rail : preferredRail;
   const railTag = activeRail === "solana" ? " ☀️ via Solana" : " ⚡ via Arc";
 
@@ -6419,9 +6423,12 @@ bot.on("text", async (ctx) => {
           amount: netAmountUsdc,
           chain: railCfg.chain,
           mint: railCfg.mint,
+          userExternalId: String(userId),
+          description: `Proxim Cashout - TG:${userId}`,
         });
-        if (orderReservation && orderReservation.accountName) {
-          liveAccountName = orderReservation.accountName;
+        const orderData = orderReservation?.data || orderReservation;
+        if (orderData && orderData.accountName) {
+          liveAccountName = orderData.accountName;
         }
       } catch (valErr) {
         const msg = String(valErr.message || "");
@@ -6442,6 +6449,7 @@ bot.on("text", async (ctx) => {
         console.warn("[bot:await_withdraw_bank:prevalidation_note]", valErr.message);
       }
 
+      const resOrderData = orderReservation?.data || orderReservation;
       convState.setState(userId, "confirm_withdraw", {
         amountUsdc,
         feeUsdc,
@@ -6451,14 +6459,14 @@ bot.on("text", async (ctx) => {
         bankCode: parsed.bankCode,
         accountNumber: parsed.accountNumber,
         accountName: liveAccountName,
-        orderId: orderReservation?.id || null,
-        orderAddress: orderReservation?.address || null,
-        fiatAmount: orderReservation?.fiatAmount || null,
-        rate: orderReservation?.rate || null,
+        orderId: resOrderData?.id || resOrderData?.orderId || resOrderData?.reference || orderReservation?.id || null,
+        orderAddress: resOrderData?.address || orderReservation?.address || null,
+        fiatAmount: resOrderData?.fiatAmount || orderReservation?.fiatAmount || null,
+        rate: resOrderData?.rate || orderReservation?.rate || null,
       }, state.context);
 
       const acctNameLine = liveAccountName ? `👤 <b>Account Name:</b> ${liveAccountName}\n` : "";
-      const nairaEst = orderReservation?.fiatAmount ? ` (approx. ₦${Number(orderReservation.fiatAmount).toLocaleString()})` : "";
+      const nairaEst = (resOrderData?.fiatAmount || orderReservation?.fiatAmount) ? ` (approx. ₦${Number(resOrderData?.fiatAmount || orderReservation?.fiatAmount).toLocaleString()})` : "";
       const activeRail = (state.data.rail && state.data.rail !== "auto") ? state.data.rail : preferredRail;
       const railTag = activeRail === "solana" ? " ☀️ via Solana" : " ⚡ via Arc";
 

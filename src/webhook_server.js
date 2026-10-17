@@ -177,8 +177,14 @@ async function processPajEvent(payload, bot) {
 
   console.log(`[webhook_server] Received Paj v2 event: "${event}"`);
 
+  const statusStr = String(data.status || payload.status || "").toLowerCase();
+  const eventStr = String(event || "").toLowerCase();
+  const fiatOrderId = data.reference || data.id || data.orderId || data.order_id || payload.reference || payload.id || payload.orderId || payload.order_id || null;
+
   // 0. Strict Webhook Idempotency: Prevent replay attacks or duplicate processing
-  const eventId = data.id || payload.id || data.reference || payload.reference || data.txHash;
+  // Compose event+status+resource so distinct order status updates (e.g. processing -> completed) are not dropped
+  const rawDeliveryId = payload.eventId || payload.webhookId || data.eventId;
+  const eventId = rawDeliveryId || `${eventStr}:${statusStr}:${fiatOrderId || data.txHash || data.hash || data.id || "evt"}`;
   if (!eventId) {
     console.error("[webhook_server] Cannot process event: no stable identifier present", payload);
     return { success: false, error: "missing stable event id" };
@@ -187,14 +193,23 @@ async function processPajEvent(payload, bot) {
     console.log(`[webhook_server] Webhook event ${eventId} already processed, ignoring duplicate.`);
     return { success: true, duplicate: true };
   }
-  idempotency.markWebhookProcessed(eventId, event, data.id);
-
-  const statusStr = String(data.status || "").toLowerCase();
-  const eventStr = String(event || "").toLowerCase();
-  const fiatOrderId = data.reference || data.id || data.orderId || data.order_id || payload.reference || payload.id || payload.orderId || payload.order_id || null;
+  idempotency.markWebhookProcessed(eventId, event, data.id || fiatOrderId);
 
   // ── 1. Check if this is an Offramp (Cash Out) order ──
-  const trackedOfframp = fiatOrderId ? db.getOfframpOrderByOrderId(fiatOrderId) : (data.txHash ? db.getOfframpOrderByOrderId(data.txHash) : null);
+  let trackedOfframp = fiatOrderId ? db.getOfframpOrderByOrderId(fiatOrderId) : null;
+  if (!trackedOfframp && (data.txHash || data.hash)) {
+    trackedOfframp = db.getOfframpOrderByOrderId(data.txHash || data.hash);
+  }
+  if (!trackedOfframp && (data.accountNumber || data.account_number)) {
+    const acct = String(data.accountNumber || data.account_number).trim();
+    try {
+      trackedOfframp = db.db.prepare(`
+        SELECT * FROM paj_offramp_orders
+        WHERE account_number = ? AND status IN ('pending', 'submitted')
+        ORDER BY id DESC LIMIT 1
+      `).get(acct) || null;
+    } catch {}
+  }
   const effectiveOrderId = trackedOfframp?.order_id || fiatOrderId;
   const isOfframp = Boolean(trackedOfframp) ||
     data.transactionType === "OFF_RAMP" ||
@@ -204,7 +219,13 @@ async function processPajEvent(payload, bot) {
     (typeof data.description === "string" && data.description.toLowerCase().includes("cash out"));
 
   if (isOfframp) {
-    const telegramId = data.userExternalId || data.metadata?.telegramId || trackedOfframp?.telegram_id;
+    const telegramId = data.userExternalId ||
+      payload.userExternalId ||
+      data.metadata?.telegramId ||
+      payload.metadata?.telegramId ||
+      trackedOfframp?.telegram_id ||
+      (typeof data.description === "string" && (data.description.match(/TG:(\d+)/) || [])[1]) ||
+      null;
     const fiatAmount = Number(data.fiatAmount || data.amountFiat || trackedOfframp?.fiat_amount || 0);
     const bankName = data.bankName || data.bank?.name || trackedOfframp?.bank_name || "Bank";
     const accountNumber = String(data.accountNumber || trackedOfframp?.account_number || "");
@@ -316,6 +337,7 @@ async function processPajEvent(payload, bot) {
                 recipientAddress: accountNumber,
                 amountUsdc: amountUsdc,
                 token: "USDC",
+                nairaEquiv: fiatAmount > 0 ? `₦${Number(fiatAmount).toLocaleString()}` : null,
                 type: "Cash Out",
                 timestamp: new Date().toISOString(),
                 status: "Confirmed",
