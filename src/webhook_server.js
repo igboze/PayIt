@@ -137,19 +137,21 @@ async function sendOnrampDepositNotification({
     // Best-effort PNG generation
   }
 
+  const photoCaption = caption.length > 950 ? caption.slice(0, 940) + "..." : caption;
   if (receiptPath && typeof bot.telegram.sendPhoto === "function") {
     try {
       await bot.telegram.sendPhoto(
         telegramId,
         { source: receiptPath },
         {
-          caption,
+          caption: photoCaption,
           parse_mode: "HTML",
           reply_markup: { inline_keyboard: inlineKeyboard },
         }
       );
       return;
     } catch (photoErr) {
+      console.warn("[webhook_server:sendPhoto_err]", photoErr.message);
       // Fall through to sendMessage
     }
   }
@@ -321,8 +323,16 @@ async function processPajEvent(payload, bot) {
               });
             } catch (_) {}
 
+            const photoCaption = caption.length > 950 ? caption.slice(0, 940) + "..." : caption;
             if (receiptPath && typeof botInstance.telegram.sendPhoto === "function") {
-              await botInstance.telegram.sendPhoto(parsedTgId, { source: receiptPath }, { caption, parse_mode: "HTML" });
+              try {
+                await botInstance.telegram.sendPhoto(parsedTgId, { source: receiptPath }, { caption: photoCaption, parse_mode: "HTML" });
+              } catch (photoErr) {
+                console.warn("[webhook_server:offramp_sendPhoto_err]", photoErr.message);
+                if (typeof botInstance.telegram.sendMessage === "function") {
+                  await botInstance.telegram.sendMessage(parsedTgId, caption, { parse_mode: "HTML" });
+                }
+              }
             } else if (typeof botInstance.telegram.sendMessage === "function") {
               await botInstance.telegram.sendMessage(parsedTgId, caption, { parse_mode: "HTML" });
             }
