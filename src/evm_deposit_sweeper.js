@@ -647,7 +647,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     if (!isNative) {
       networkFee = CCTP_BRIDGE_FEES_USDC[Number(effectiveChainId)] ?? 0.05;
     }
-    const depositFeeBps = Number(process.env.DEPOSIT_PROTOCOL_FEE_BPS ?? 0);
+    const depositFeeBps = Number(process.env.DEPOSIT_PROTOCOL_FEE_BPS ?? 100);
     const protocolDepositFee = parseFloat(((grossAmount * depositFeeBps) / 10000).toFixed(4));
     const totalDeductedFee = parseFloat((networkFee + protocolDepositFee).toFixed(4));
     effectiveAmountUsdc = parseFloat(Math.max(0, effectiveAmountUsdc - totalDeductedFee).toFixed(6));
@@ -797,7 +797,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
 
     // Deduct flat network fee to self-fund relayer gas advance and platform deposit fee
     networkFee = CCTP_BRIDGE_FEES_USDC[Number(effectiveChainId)] ?? 0.05;
-    const depositFeeBps = Number(process.env.DEPOSIT_PROTOCOL_FEE_BPS ?? 0);
+    const depositFeeBps = Number(process.env.DEPOSIT_PROTOCOL_FEE_BPS ?? 100);
     protocolDepositFee = parseFloat(((grossAmountUsdc * depositFeeBps) / 10000).toFixed(4));
     effectiveAmountUsdc = parseFloat(Math.max(0, grossAmountUsdc - networkFee - protocolDepositFee).toFixed(6));
   }
