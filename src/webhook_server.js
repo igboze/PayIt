@@ -232,7 +232,7 @@ async function processPajEvent(payload, bot) {
       if (telegramId) {
         const parsedTgId = parseInt(String(telegramId).replace(/\D/g, ""));
         try {
-          db.prepare("UPDATE transactions SET status = 'failed' WHERE telegram_id = ? AND type = 'offramp' AND status IN ('pending', 'submitted') ORDER BY id DESC LIMIT 1").run(parsedTgId);
+          db.prepare("UPDATE transactions SET status = 'failed' WHERE id = (SELECT id FROM transactions WHERE telegram_id = ? AND type = 'offramp' AND status IN ('pending', 'submitted') ORDER BY id DESC LIMIT 1)").run(parsedTgId);
         } catch (_) {}
 
         if (botInstance?.telegram && !isNaN(parsedTgId)) {

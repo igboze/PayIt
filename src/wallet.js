@@ -286,10 +286,14 @@ async function validateInvoicePayment(invoiceId, expectedAmountMicro, txHash, pa
 }
 
 async function sendDirectFromWallet(signer, toAddress, amountMicro, options = {}) {
-  const tx = await signer.sendTransaction({
+  const txReq = {
     to: toAddress,
     value: amountMicro,
-  });
+  };
+  if (options.nonce !== undefined && options.nonce !== null) {
+    txReq.nonce = options.nonce;
+  }
+  const tx = await signer.sendTransaction(txReq);
 
   if (options.waitForConfirmation && typeof tx.wait === "function") {
     const receipt = await tx.wait(1);
@@ -361,8 +365,8 @@ async function sendSponsoredOrDirectTransaction(signer, toAddress, amountMicro, 
   };
 }
 
-async function sendFromWallet(signer, toAddress, amountMicro) {
-  const result = await sendSponsoredOrDirectTransaction(signer, toAddress, amountMicro);
+async function sendFromWallet(signer, toAddress, amountMicro, options = {}) {
+  const result = await sendSponsoredOrDirectTransaction(signer, toAddress, amountMicro, "0x", options);
   return result.txHash;
 }
 

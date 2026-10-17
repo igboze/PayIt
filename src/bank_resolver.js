@@ -51,8 +51,8 @@ const CBN_TO_NIBSS = {
   "035": "000017", // Wema Bank
   "070": "000007", // Fidelity Bank
   "214": "000003", // FCMB
-  "221": "000001", // Stanbic IBTC
-  "232": "000002", // Sterling Bank
+  "221": "000012", // Stanbic IBTC
+  "232": "000001", // Sterling Bank
   "076": "000008", // Polaris Bank
   "082": "000002", // Keystone Bank
   "050": "000010", // Ecobank

@@ -2929,8 +2929,9 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
 
   let liveAccountName = parsed.accountName || payee.account_name || payee.name;
   let orderReservation = null;
+  const preferredRail = state.data.rail && state.data.rail !== "auto" ? state.data.rail : (paj.isArcRailEnabled() ? "arc" : "solana");
   try {
-    const railCfg = paj.RAILS[state.data.rail || "solana"] || paj.RAILS.solana;
+    const railCfg = paj.RAILS[preferredRail] || paj.RAILS.solana;
     orderReservation = await paj.createOfframpOrder({
       accountNumber: parsed.accountNumber,
       bankCode: parsed.bankCode,
@@ -2949,7 +2950,7 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
     amountUsdc,
     feeUsdc,
     netAmountUsdc,
-    rail: state.data.rail || "solana",
+    rail: state.data.rail || preferredRail || "auto",
     bankName: parsed.bankName,
     bankCode: parsed.bankCode,
     accountNumber: parsed.accountNumber,
@@ -6376,8 +6377,9 @@ bot.on("text", async (ctx) => {
 
       let liveAccountName = parsed.accountName;
       let orderReservation = null;
+      const preferredRail = state.data.rail && state.data.rail !== "auto" ? state.data.rail : (paj.isArcRailEnabled() ? "arc" : "solana");
       try {
-        const railCfg = paj.RAILS[state.data.rail || "solana"] || paj.RAILS.solana;
+        const railCfg = paj.RAILS[preferredRail] || paj.RAILS.solana;
         orderReservation = await paj.createOfframpOrder({
           accountNumber: parsed.accountNumber,
           bankCode: parsed.bankCode,
@@ -6411,7 +6413,7 @@ bot.on("text", async (ctx) => {
         amountUsdc,
         feeUsdc,
         netAmountUsdc,
-        rail: state.data.rail || "solana",
+        rail: state.data.rail || preferredRail || "auto",
         bankName: parsed.bankName,
         bankCode: parsed.bankCode,
         accountNumber: parsed.accountNumber,
@@ -6522,7 +6524,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
           "Cash Out",
           {
             accountType: context,
-            rail: state.data.rail || "solana",
+            rail: state.data.rail || "auto",
             feeUsdc,
             netAmountUsdc,
           }
