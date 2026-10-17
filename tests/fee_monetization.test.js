@@ -8,7 +8,7 @@ const near = require("../src/near");
 const swap = require("../src/swap");
 
 test("NEAR Intents: 1Click quote automatically includes platform appFees", async () => {
-  const originalApiRequest = near.__test_apiRequest;
+  const originalApiRequest = near.apiRequest;
 
   // Verify helper functions
   const feeRecipient = near.getNearFeeRecipient();
@@ -16,20 +16,21 @@ test("NEAR Intents: 1Click quote automatically includes platform appFees", async
 
   assert.ok(feeRecipient, "Fee recipient must be configured");
   assert.equal(typeof feeRecipient, "string");
-  assert.ok(feeBps >= 20, "Platform fee BPS must be at least 20");
+  assert.equal(feeBps, 100, "Platform fee BPS should be 100 (1.00%)");
 
-  // Verify getQuote builds appFees payload
   let capturedBody = null;
-  const originalGetQuote = near.getQuote;
-
-  near.getQuote = async (params) => {
-    // Call the underlying logic or verify parameters
-    assert.ok(params.originAsset, "originAsset required");
-    assert.ok(params.destinationAsset, "destinationAsset required");
+  near.apiRequest = async (method, path, body) => {
+    capturedBody = body;
+    // Simulate Defuse 1Click API splitting gross fee 50/50 with partner
+    const netFees = (body.appFees || []).map((af) => ({
+      recipient: af.recipient,
+      fee: Math.floor(af.fee / 2),
+    }));
     return {
       quote: { amountOut: "10000000" },
       quoteRequest: {
-        appFees: [{ recipient: feeRecipient, fee: feeBps }],
+        ...body,
+        appFees: netFees,
       },
     };
   };
@@ -43,11 +44,16 @@ test("NEAR Intents: 1Click quote automatically includes platform appFees", async
       refundTo: "0x0000000000000000000000000000000000000000000000000000000000000001",
     });
 
+    assert.ok(capturedBody?.appFees, "Quote request payload must include appFees");
+    assert.equal(capturedBody.appFees[0].recipient, feeRecipient);
+    // Request gross fee must be feeBps * 2 (200 bps) to deliver 100 bps net
+    assert.equal(capturedBody.appFees[0].fee, feeBps * 2);
+
     assert.ok(res.quoteRequest?.appFees, "Quote response must reflect appFees");
     assert.equal(res.quoteRequest.appFees[0].recipient, feeRecipient);
-    assert.equal(res.quoteRequest.appFees[0].fee, feeBps);
+    assert.equal(res.quoteRequest.appFees[0].fee, 100, "Net fee delivered to platform must be 100 bps (1.00%)");
   } finally {
-    near.getQuote = originalGetQuote;
+    near.apiRequest = originalApiRequest;
   }
 });
 

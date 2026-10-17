@@ -143,7 +143,7 @@ const EVM_CCTP_CONTRACTS = {
     name: "Polygon",
     domain: 7,
     chainId: 137,
-    rpcUrl: process.env.POLYGON_RPC_URL || getAlchemyRpcUrl("polygon", "https://polygon-rpc.com"),
+    rpcUrl: process.env.POLYGON_RPC_URL || getAlchemyRpcUrl("polygon", "https://polygon-bor-rpc.publicnode.com"),
     tokenMessenger: "0x9daF8257e601854c302288a7B6d8C110d7E91108",
     messageTransmitter: "0xF3be9355363857F3e001be68856A2f96b4C39Ba9",
     usdc: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
