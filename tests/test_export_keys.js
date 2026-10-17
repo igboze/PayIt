@@ -55,4 +55,11 @@ test("Export Keys & Solana Address Derivation Suite", async (t) => {
   assert.strictEqual(decryptedBizKey, bizW.privateKey, "Business EVM private key decrypted with PIN");
   const bizSolDerived = multichain.deriveSolanaFromEvmKey(bizW.privateKey);
   assert.strictEqual(updatedUser.biz_solana_deposit_address, bizSolDerived.solanaAddress, "Business Solana address matches derived address");
+
+  // 6. Test NEAR address & base58 private key derivation
+  const nearLib = require("../src/near");
+  const nearDerived = nearLib.deriveNearAddress(w.privateKey);
+  assert.ok(nearDerived.nearAddress, "NEAR implicit account derived");
+  assert.ok(nearDerived.secretKeyBase58.startsWith("ed25519:"), "NEAR base58 secret key has ed25519: prefix");
+  assert.strictEqual(nearDerived.nearAddress.length, 64, "NEAR implicit account is 64 hex characters");
 });
