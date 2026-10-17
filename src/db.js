@@ -2525,6 +2525,7 @@ module.exports = {
   revokeApiKey,
   recordApiKeyUsage,
   _db: db,
+  db: db,
   prepare: (...args) => db.prepare(...args),
   exec: (...args) => db.exec(...args),
 };

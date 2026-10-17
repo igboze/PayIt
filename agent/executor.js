@@ -409,7 +409,15 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
           } catch {}
 
           if (actualFeeMicro > 0n) {
-            feeTxHash = await walletLib.sendFromWallet(userWallet, feeRecipient, actualFeeMicro);
+            let nextNonce = null;
+            try {
+              if (typeof userWallet.getNonce === "function") {
+                nextNonce = await userWallet.getNonce("pending");
+              }
+            } catch {}
+            feeTxHash = await walletLib.sendFromWallet(userWallet, feeRecipient, actualFeeMicro, {
+              nonce: nextNonce,
+            });
             console.log(`[executor:offramp] Collected $${walletLib.formatMicro(actualFeeMicro)} (1% trade fee) -> ${feeRecipient} (tx: ${feeTxHash})`);
           }
         } catch (feeErr) {
@@ -1073,6 +1081,18 @@ async function executePlan(plan, pin, user, context = "personal") {
         }
       }
 
+      if (!resolved || !resolved.bankCode) {
+        idempotency.failIdempotency(idempKey, "Invalid bank details");
+        results.push({
+          success: false,
+          error: `Could not identify bank "${payment.bank_code || payment.bank_name || 'unknown'}". Please specify a valid Nigerian bank name or code.`,
+          label: payment.label || "Cash Out",
+          amount: amountUsdc,
+          chain: "fiat",
+        });
+        continue;
+      }
+
       executionResult = await executeOfframp(
         userWallet,
         amountUsdc,
@@ -1088,6 +1108,7 @@ async function executePlan(plan, pin, user, context = "personal") {
         {
           accountType: context,
           idempotencyKey: idempKey,
+          rail: payment.chain || payment.rail || "auto",
         }
       );
 

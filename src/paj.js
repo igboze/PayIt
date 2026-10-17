@@ -263,14 +263,16 @@ async function createOfframpOrder(params) {
     "035": "000017", // Wema Bank
     "070": "000007", // Fidelity Bank
     "214": "000003", // FCMB
-    "221": "000001", // Stanbic IBTC
-    "232": "000002", // Sterling Bank
+    "221": "000012", // Stanbic IBTC
+    "232": "000001", // Sterling Bank
     "076": "000008", // Polaris Bank
     "082": "000002", // Keystone Bank
     "050": "000010", // Ecobank
     "032": "000018", // Union Bank
     "215": "000011", // Unity Bank
     "101": "000023", // Providus Bank
+    "301": "000006", // Jaiz Bank
+    "302": "000026", // Taj Bank
   };
   if (cbnMap[cleanBankCode]) {
     cleanBankCode = cbnMap[cleanBankCode];
@@ -308,6 +310,19 @@ async function createOfframpOrder(params) {
     const msg = err.response?.data?.message || err.response?.data?.error || err.message;
     throw new Error(`Paj createOfframpOrder failed (${err.response?.status || "network"}): ${JSON.stringify(msg)}`);
   }
+}
+
+/**
+ * Payout helper for builder API / offramp endpoints.
+ */
+async function createOfframpPayout(params) {
+  return createOfframpOrder({
+    accountNumber: params.accountNumber,
+    bankCode: params.bankCode,
+    amount: params.amountUsdc || params.amount,
+    currency: params.currency || "NGN",
+    description: params.description || `Proxim Builder API Payout to ${params.accountName || params.accountNumber}`,
+  });
 }
 
 /**
@@ -413,6 +428,7 @@ module.exports = {
   getOfframpOrder,
   triggerOnrampSweep,
   createOfframpOrder,
+  createOfframpPayout,
   registerPermanentBankAccount,
   searchBankAccount,
   verifyWebhookSignature,

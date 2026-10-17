@@ -256,6 +256,13 @@ async function pollPendingOfframpOrders(bot) {
         completedCount++;
       } else if (status === "failed" || status === "cancelled" || status === "rejected") {
         db.completeOfframpOrder(order.order_id, { status: "failed" });
+        if (order.telegram_id) {
+          try {
+            db.prepare("UPDATE transactions SET status = 'failed' WHERE id = (SELECT id FROM transactions WHERE telegram_id = ? AND type = 'offramp' AND status IN ('pending', 'submitted') ORDER BY id DESC LIMIT 1)").run(order.telegram_id);
+          } catch (txErr) {
+            console.warn("[settlement_daemon:offramp_fail_tx_err]", txErr.message);
+          }
+        }
         if (bot && order.telegram_id) {
           try {
             await bot.telegram.sendMessage(
