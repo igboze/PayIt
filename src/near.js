@@ -15,6 +15,7 @@
 
 const crypto = require("crypto");
 const tweetnacl = require("tweetnacl");
+const bs58 = require("bs58");
 const db = require("./db");
 
 const DEFAULT_API_URL = "https://1click.chaindefuser.com";
@@ -756,10 +757,13 @@ function deriveNearAddress(evmPrivateKey) {
 
   const naclKeypair = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(seed32));
   const publicKeyHex = Buffer.from(naclKeypair.publicKey).toString("hex");
+  const encodeBs58 = bs58.default ? bs58.default.encode : bs58.encode;
+  const secretKeyBase58 = "ed25519:" + encodeBs58(naclKeypair.secretKey);
   return {
     nearAddress: publicKeyHex.toLowerCase(),
     publicKeyHex: publicKeyHex.toLowerCase(),
     secretKeyHex: Buffer.from(naclKeypair.secretKey).toString("hex"),
+    secretKeyBase58,
   };
 }
 

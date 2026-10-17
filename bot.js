@@ -1574,8 +1574,10 @@ bot.action("action_gateway", async (ctx) => {
   ctx.answerCbQuery().catch(() => {});
   const user    = requireUser(ctx);
   if (!user) return;
+  const context = user.active_context || "personal";
   const arcAddress = getActiveWallet(user);
   const solAddress = getOrDeriveSolanaAddress(user);
+  const nearAddress = chains.getDepositAddress(user, "near", { isBiz: context === "business" });
 
   await ctx.reply(
     `🌐 <b>Deposit Crypto</b>\n──────────────────────────\n` +
@@ -1583,6 +1585,7 @@ bot.action("action_gateway", async (ctx) => {
     `<b>Your Deposit Addresses (tap to copy):</b>\n` +
     `• <b>EVM Address</b> (Base, Ethereum, Polygon, Arbitrum, Optimism):\n<code>${arcAddress}</code>\n` +
     (solAddress ? `• <b>Solana Address</b> (SOL, USDC):\n<code>${solAddress}</code>\n` : "") +
+    (nearAddress ? `• <b>NEAR Protocol Address</b> (NEAR, wNEAR):\n<code>${nearAddress}</code>\n` : "") +
     `\n<b>Choose your network:</b>`,
     {
       parse_mode: "HTML",
@@ -1681,53 +1684,33 @@ bot.action(/^near_dep_token_(.+)$/, async (ctx) => {
   const user = requireUser(ctx);
   if (!user) return;
   const context = user.active_context || "personal";
-  const userAddress = getActiveWallet(user);
 
-  await ctx.reply(`⏳ Generating secure 1Click deposit address for ${tokenSym}...`);
+  const tokenInfo = await nearLib.resolveNearToken(tokenSym);
+  const minDeposit = tokenInfo?.minDeposit || (tokenSym === "NEAR" ? 0.5 : 1);
 
-  try {
-    const sysKey = db.getSystemDecryptedPrivateKey(user, context);
-    const refundAddress = sysKey ? nearLib.deriveNearAddress(sysKey).nearAddress : "nackam.near";
-    const tokenInfo = await nearLib.resolveNearToken(tokenSym);
-    const defaultAmount = tokenSym === "NEAR" ? 1 : tokenSym === "WBTC" ? 0.001 : 10;
-
-    const deposit = await nearLib.createNearDeposit({
-      telegramId: ctx.from.id,
-      accountType: context,
-      originAsset: tokenInfo?.assetId || nearLib.ASSETS.NEAR_USDC,
+  convState.setState(
+    ctx.from.id,
+    "await_near_amount",
+    {
+      originAsset: tokenInfo?.assetId || nearLib.ASSETS.NEAR_WNEAR,
       originSymbol: tokenSym,
       originDecimals: tokenInfo?.decimals || (tokenSym === "NEAR" ? 24 : 6),
-      amount: defaultAmount,
-      recipientAddress: userAddress,
-      refundTo: refundAddress,
-    });
+      minDeposit,
+    },
+    context
+  );
 
-    const depositAddr = deposit.deposit_address || "Address pending";
-    const memoLine = deposit.deposit_memo ? `\n📝 <b>Memo:</b> <code>${deposit.deposit_memo}</code>\n` : "";
-
-    await ctx.reply(
-      `Ⓝ <b>Deposit ${tokenSym} (NEAR Protocol)</b>\n` +
-      `──────────────────────────\n` +
-      `Send ${tokenSym} to the one-time 1Click solver address below:\n\n` +
-      `📍 <b>Deposit Address (tap to copy):</b>\n<code>${depositAddr}</code>\n` +
-      memoLine +
-      `\n⏱️ <b>Active for:</b> ~15 minutes\n` +
-      `🛡️ <b>Refund Target:</b> <code>${refundAddress.slice(0, 8)}...${refundAddress.slice(-6)}</code>\n\n` +
-      `<i>Once sent on NEAR, your deposit is automatically converted to USDC and credited to your Proxim account with an official PNG receipt.</i>`,
-      {
-        parse_mode: "HTML",
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback("🔄 Refresh / Scan", "action_sweep_deposits")],
-          [Markup.button.callback("« Back to NEAR", "action_near_deposit"), Markup.button.callback("🏠 Main Menu", "main_menu")],
-        ]),
-      }
-    );
-  } catch (err) {
-    console.error("[bot:near_deposit]", err);
-    await ctx.reply(`Could not create deposit address for ${tokenSym}: ${err.message}`, {
-      ...Markup.inlineKeyboard([[Markup.button.callback("« Back to NEAR", "action_near_deposit")]]),
-    });
-  }
+  await ctx.reply(
+    `Ⓝ <b>Deposit ${tokenInfo?.name || tokenSym} (NEAR Protocol)</b>\n──────────────────────────\n` +
+    `How much <b>${tokenSym}</b> would you like to deposit? (min ${minDeposit} ${tokenSym})\n\n` +
+    `<i>NEAR Intents will auto-convert your ${tokenSym} into Dollars ($) and sweep it to your account balance.</i>`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [btnDefault("« Back to NEAR", "action_near_deposit"), btnDefault("🏠 Main Menu", "main_menu")],
+      ]),
+    }
+  );
 });
 
 bot.action("action_starknet_deposit", async (ctx) => {
@@ -1766,53 +1749,33 @@ bot.action(/^starknet_dep_token_(.+)$/, async (ctx) => {
   const user = requireUser(ctx);
   if (!user) return;
   const context = user.active_context || "personal";
-  const userAddress = getActiveWallet(user);
 
-  await ctx.reply(`⏳ Generating secure 1Click deposit address on Starknet for ${tokenSym}...`);
+  const tokenInfo = await nearLib.resolveStarknetToken(tokenSym);
+  const minDeposit = tokenInfo?.minDeposit || (tokenSym === "STRK" ? 1 : 0.001);
 
-  try {
-    const sysKey = db.getSystemDecryptedPrivateKey(user, context);
-    const refundAddress = sysKey
-      ? nearLib.deriveStarknetAddress(sysKey).starknetAddress
-      : "0x0000000000000000000000000000000000000000000000000000000000000001";
-    const tokenInfo = await nearLib.resolveStarknetToken(tokenSym);
-    const defaultAmount = tokenSym === "STRK" ? 10 : tokenSym === "ETH" ? 0.01 : 10;
-
-    const deposit = await nearLib.createStarknetDeposit({
-      telegramId: ctx.from.id,
-      accountType: context,
+  convState.setState(
+    ctx.from.id,
+    "await_starknet_amount",
+    {
       originAsset: tokenInfo?.assetId || nearLib.ASSETS.STARKNET_STRK,
       originSymbol: tokenSym,
       originDecimals: tokenInfo?.decimals || 18,
-      amount: defaultAmount,
-      recipientAddress: userAddress,
-      refundTo: refundAddress,
-    });
+      minDeposit,
+    },
+    context
+  );
 
-    const depositAddr = deposit.deposit_address || "Address pending";
-
-    await ctx.reply(
-      `⚡ <b>Deposit ${tokenSym} (Starknet)</b>\n` +
-      `──────────────────────────\n` +
-      `Send ${tokenSym} from any Starknet wallet to the deposit address below:\n\n` +
-      `📍 <b>Starknet Deposit Address (tap to copy):</b>\n<code>${depositAddr}</code>\n\n` +
-      `⏱️ <b>Active for:</b> ~15 minutes\n` +
-      `🛡️ <b>Refund Target:</b> <code>${refundAddress.slice(0, 8)}...${refundAddress.slice(-6)}</code>\n\n` +
-      `<i>Once confirmed on Starknet, your funds are automatically swapped to USDC and credited to your Proxim account with an official PNG receipt.</i>`,
-      {
-        parse_mode: "HTML",
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback("🔄 Refresh / Scan", "action_sweep_deposits")],
-          [Markup.button.callback("« Back to Starknet", "action_starknet_deposit"), Markup.button.callback("🏠 Main Menu", "main_menu")],
-        ]),
-      }
-    );
-  } catch (err) {
-    console.error("[bot:starknet_deposit]", err);
-    await ctx.reply(`Could not create deposit address for ${tokenSym}: ${err.message}`, {
-      ...Markup.inlineKeyboard([[Markup.button.callback("« Back to Starknet", "action_starknet_deposit")]]),
-    });
-  }
+  await ctx.reply(
+    `⚡ <b>Deposit ${tokenInfo?.name || tokenSym} (Starknet)</b>\n──────────────────────────\n` +
+    `How much <b>${tokenSym}</b> would you like to deposit? (min ${minDeposit} ${tokenSym})\n\n` +
+    `<i>NEAR Intents will auto-convert your ${tokenSym} into Dollars ($) and sweep it to your account balance.</i>`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [btnDefault("« Back to Starknet", "action_starknet_deposit"), btnDefault("🏠 Main Menu", "main_menu")],
+      ]),
+    }
+  );
 });
 
 bot.action("action_solana_deposit", async (ctx) => {
@@ -1851,50 +1814,33 @@ bot.action(/^solana_dep_token_(.+)$/, async (ctx) => {
   const user = requireUser(ctx);
   if (!user) return;
   const context = user.active_context || "personal";
-  const userAddress = getActiveWallet(user);
-  const solAddress = getOrDeriveSolanaAddress(user);
 
-  await ctx.reply(`⏳ Generating secure 1Click deposit address on Solana for ${tokenSym}...`);
+  const tokenInfo = await nearLib.resolveSolanaToken(tokenSym);
+  const minDeposit = tokenInfo?.minDeposit || (tokenSym === "SOL" ? 0.02 : 1);
 
-  try {
-    const tokenInfo = await nearLib.resolveSolanaToken(tokenSym);
-    const defaultAmount = tokenSym === "SOL" ? 0.2 : 10;
-
-    const deposit = await nearLib.createSolanaDeposit({
-      telegramId: ctx.from.id,
-      accountType: context,
+  convState.setState(
+    ctx.from.id,
+    "await_solana_amount",
+    {
       originAsset: tokenInfo?.assetId || nearLib.ASSETS.SOL_NATIVE,
       originSymbol: tokenSym,
       originDecimals: tokenInfo?.decimals || (tokenSym === "SOL" ? 9 : 6),
-      amount: defaultAmount,
-      recipientAddress: userAddress,
-      refundTo: solAddress,
-    });
+      minDeposit,
+    },
+    context
+  );
 
-    const depositAddr = deposit.deposit_address || "Address pending";
-
-    await ctx.reply(
-      `☀️ <b>Deposit ${tokenSym} (Solana)</b>\n` +
-      `──────────────────────────\n` +
-      `Send ${tokenSym} from any Solana wallet to the deposit address below:\n\n` +
-      `📍 <b>Solana Deposit Address (tap to copy):</b>\n<code>${depositAddr}</code>\n\n` +
-      `⏱️ <b>Active for:</b> ~15 minutes\n` +
-      `🛡️ <b>Refund Target:</b> <code>${solAddress.slice(0, 6)}...${solAddress.slice(-6)}</code>\n\n` +
-      `<i>Once confirmed on Solana, funds are automatically converted to USDC on Arc with an official PNG receipt.</i>`,
-      {
-        parse_mode: "HTML",
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback("🔄 Refresh / Scan", "action_sweep_deposits")],
-          [Markup.button.callback("« Back to Solana", "action_solana_deposit"), Markup.button.callback("🏠 Main Menu", "main_menu")],
-        ]),
-      }
-    );
-  } catch (err) {
-    console.error("[bot:solana_deposit]", err);
-    await ctx.reply(`Could not create deposit address for ${tokenSym}: ${err.message}`, {
-      ...Markup.inlineKeyboard([[Markup.button.callback("« Back to Solana", "action_solana_deposit")]]),
-    });
-  }
+  await ctx.reply(
+    `☀️ <b>Deposit ${tokenInfo?.name || tokenSym} (Solana)</b>\n──────────────────────────\n` +
+    `How much <b>${tokenSym}</b> would you like to deposit? (min ${minDeposit} ${tokenSym})\n\n` +
+    `<i>NEAR Intents will auto-convert your ${tokenSym} into Dollars ($) and sweep it to your account balance.</i>`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [btnDefault("« Back to Solana", "action_solana_deposit"), btnDefault("🏠 Main Menu", "main_menu")],
+      ]),
+    }
+  );
 });
 
 bot.action("action_robinhood_deposit", async (ctx) => {
@@ -1933,48 +1879,33 @@ bot.action(/^hood_dep_token_(.+)$/, async (ctx) => {
   const user = requireUser(ctx);
   if (!user) return;
   const context = user.active_context || "personal";
-  const userAddress = getActiveWallet(user);
 
-  await ctx.reply(`⏳ Generating secure 1Click deposit address on Robinhood Chain for ${tokenSym}...`);
+  const tokenInfo = await nearLib.resolveRobinhoodToken(tokenSym);
+  const minDeposit = tokenInfo?.minDeposit || (tokenSym === "USDG" ? 1 : 0.001);
 
-  try {
-    const tokenInfo = await nearLib.resolveRobinhoodToken(tokenSym);
-    const defaultAmount = tokenSym === "USDG" ? 10 : tokenSym === "ETH" ? 0.01 : 10;
-
-    const deposit = await nearLib.createRobinhoodDeposit({
-      telegramId: ctx.from.id,
-      accountType: context,
+  convState.setState(
+    ctx.from.id,
+    "await_robinhood_amount",
+    {
       originAsset: tokenInfo?.assetId || nearLib.ASSETS.HOOD_USDG,
       originSymbol: tokenSym,
-      originDecimals: tokenInfo?.decimals || 6,
-      amount: defaultAmount,
-      recipientAddress: userAddress,
-      refundTo: userAddress,
-    });
+      originDecimals: tokenInfo?.decimals || (tokenSym === "USDG" ? 6 : 18),
+      minDeposit,
+    },
+    context
+  );
 
-    const depositAddr = deposit.deposit_address || "Address pending";
-
-    await ctx.reply(
-      `🏹 <b>Deposit ${tokenSym} (Robinhood Chain)</b>\n` +
-      `──────────────────────────\n` +
-      `Send ${tokenSym} from Robinhood to the EVM deposit address below:\n\n` +
-      `📍 <b>Robinhood Chain Deposit Address (tap to copy):</b>\n<code>${depositAddr}</code>\n\n` +
-      `⏱️ <b>Active for:</b> ~15 minutes\n\n` +
-      `<i>Once confirmed on Robinhood Chain, funds are automatically converted to USDC and credited to your Proxim account with an official PNG receipt.</i>`,
-      {
-        parse_mode: "HTML",
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback("🔄 Refresh / Scan", "action_sweep_deposits")],
-          [Markup.button.callback("« Back to Robinhood", "action_robinhood_deposit"), Markup.button.callback("🏠 Main Menu", "main_menu")],
-        ]),
-      }
-    );
-  } catch (err) {
-    console.error("[bot:robinhood_deposit]", err);
-    await ctx.reply(`Could not create deposit address for ${tokenSym}: ${err.message}`, {
-      ...Markup.inlineKeyboard([[Markup.button.callback("« Back to Robinhood", "action_robinhood_deposit")]]),
-    });
-  }
+  await ctx.reply(
+    `🏹 <b>Deposit ${tokenInfo?.name || tokenSym} (Robinhood)</b>\n──────────────────────────\n` +
+    `How much <b>${tokenSym}</b> would you like to deposit? (min ${minDeposit} ${tokenSym})\n\n` +
+    `<i>NEAR Intents will auto-convert your ${tokenSym} into Dollars ($) and sweep it to your account balance.</i>`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [btnDefault("« Back to Robinhood", "action_robinhood_deposit"), btnDefault("🏠 Main Menu", "main_menu")],
+      ]),
+    }
+  );
 });
 
 async function handleSweepDeposits(ctx) {
@@ -5756,9 +5687,12 @@ bot.on("text", async (ctx) => {
       }
 
       const personalSol = multichain.deriveSolanaFromEvmKey(evmPk);
+      const personalNear = nearLib.deriveNearAddress(evmPk);
       let bizSol = null;
+      let bizNear = null;
       if (bizEvmPk) {
         bizSol = multichain.deriveSolanaFromEvmKey(bizEvmPk);
+        bizNear = nearLib.deriveNearAddress(bizEvmPk);
       }
 
       let keyMsg = `🔑 <b>Your Exported Proxim Wallet Keys</b>\n`;
@@ -5769,14 +5703,18 @@ bot.on("text", async (ctx) => {
       keyMsg += `• <b>EVM Address (Arc/ETH/Base):</b>\n<code>${user.deposit_address || user.address}</code>\n`;
       keyMsg += `• <b>EVM Private Key (MetaMask format):</b>\n<code>${evmPk}</code>\n\n`;
       keyMsg += `• <b>Solana Deposit Address:</b>\n<code>${personalSol.solanaAddress}</code>\n`;
-      keyMsg += `• <b>Solana Secret Key (Phantom/Solflare format):</b>\n<code>${personalSol.secretKeyBase58}</code>\n`;
+      keyMsg += `• <b>Solana Secret Key (Phantom/Solflare format):</b>\n<code>${personalSol.secretKeyBase58}</code>\n\n`;
+      keyMsg += `• <b>NEAR Protocol Address:</b>\n<code>${personalNear.nearAddress}</code>\n`;
+      keyMsg += `• <b>NEAR Private Key (Meteor/MyNearWallet format):</b>\n<code>${personalNear.secretKeyBase58}</code>\n`;
 
-      if (user.business_deposit_address && bizEvmPk && bizSol) {
+      if (user.business_deposit_address && bizEvmPk && bizSol && bizNear) {
         keyMsg += `\n\n💼 <b>Business Wallet:</b>\n`;
         keyMsg += `• <b>EVM Address (Arc/ETH/Base):</b>\n<code>${user.business_deposit_address}</code>\n`;
         keyMsg += `• <b>EVM Private Key (MetaMask format):</b>\n<code>${bizEvmPk}</code>\n\n`;
         keyMsg += `• <b>Solana Deposit Address:</b>\n<code>${bizSol.solanaAddress}</code>\n`;
-        keyMsg += `• <b>Solana Secret Key (Phantom/Solflare format):</b>\n<code>${bizSol.secretKeyBase58}</code>\n`;
+        keyMsg += `• <b>Solana Secret Key (Phantom/Solflare format):</b>\n<code>${bizSol.secretKeyBase58}</code>\n\n`;
+        keyMsg += `• <b>NEAR Protocol Address:</b>\n<code>${bizNear.nearAddress}</code>\n`;
+        keyMsg += `• <b>NEAR Private Key (Meteor/MyNearWallet format):</b>\n<code>${bizNear.secretKeyBase58}</code>\n`;
       }
 
       keyMsg += `\n\n<i>This sensitive key export message will self-destruct in 90 seconds.</i>`;
@@ -5836,12 +5774,23 @@ bot.on("text", async (ctx) => {
           ? db.decryptBusinessPrivateKey(text, user)
           : db.decryptPrivateKey(text, user);
         const label = state.data.walletType === "business" ? "Business" : "Personal";
+        const solDerived = multichain.deriveSolanaFromEvmKey(pk);
+        const nearDerived = nearLib.deriveNearAddress(pk);
         convState.clearState(userId);
+        const addr = state.data.walletType === "business" ? (user.business_deposit_address || user.address) : (user.deposit_address || user.address);
         const msg = await ctx.reply(
-          `🔑 Your ${label} Security Phrase\n──────────────────────────\n${pk}\n\n` +
-          `Save this now — it deletes in 60 seconds.`
+          `🔑 <b>Your ${label} Wallet Keys</b>\n──────────────────────────\n` +
+          `⚠️ <b>DO NOT SHARE!</b> Anyone with these keys can access your funds.\n\n` +
+          `• <b>EVM Address (Arc/ETH/Base):</b>\n<code>${addr}</code>\n` +
+          `• <b>EVM Private Key (MetaMask format):</b>\n<code>${pk}</code>\n\n` +
+          `• <b>Solana Address:</b>\n<code>${solDerived.solanaAddress}</code>\n` +
+          `• <b>Solana Secret Key (Phantom/Solflare format):</b>\n<code>${solDerived.secretKeyBase58}</code>\n\n` +
+          `• <b>NEAR Protocol Address:</b>\n<code>${nearDerived.nearAddress}</code>\n` +
+          `• <b>NEAR Private Key (Meteor/MyNearWallet format):</b>\n<code>${nearDerived.secretKeyBase58}</code>\n\n` +
+          `<i>Save this now — it deletes in 90 seconds.</i>`,
+          { parse_mode: "HTML" }
         );
-        scheduleDelete(ctx, msg.message_id, 60000);
+        scheduleDelete(ctx, msg.message_id, 90000);
       } catch {
         await ctx.reply("Couldn't verify your PIN. Please try again.");
       }
