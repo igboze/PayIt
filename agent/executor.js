@@ -315,7 +315,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
       if (!bankDetails?.accountNumber || !bankDetails?.bankCode) {
         throw new Error("Missing bank account number or bank code for cash out payout");
       }
-      const railCfg = paj.RAILS[rail] || paj.RAILS.solana;
+      const railCfg = paj.RAILS[rail] || (paj.isArcRailEnabled() ? paj.RAILS.arc : paj.RAILS.solana);
       result = await offramp.requestOfframp(telegramId, netMicro, {
         accountNumber: bankDetails.accountNumber,
         bankCode:      bankDetails.bankCode,
