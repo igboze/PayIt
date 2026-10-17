@@ -810,16 +810,16 @@ async function showBalance(ctx) {
       ]);
     }
     buttonRows.push(
-      [Markup.button.callback("📥 Add Money",       "action_receive"),
-       Markup.button.callback("📤 Send Money",      "action_send_menu")],
-      [Markup.button.callback("💵 Cash Out to Naira", "action_withdraw_menu"),
-       Markup.button.callback("📈 Earn Interest",   "action_yields")],
-      [Markup.button.callback("🔀 Move Funds",      "action_move_funds"),
-       Markup.button.callback("🌐 Crypto Deposit",  "action_gateway")],
-      [Markup.button.callback("🔑 Export Keys",     "action_export_keys"),
-       Markup.button.callback("🔄 Scan & Sweep",    "action_sweep_deposits")],
-      [Markup.button.callback("📋 History",         "action_history"),
-       Markup.button.callback("🛠️ Developer API",   "action_developer_menu")]
+      [Markup.button.callback("🟢 Add Money",         "action_receive"),
+       Markup.button.callback("🔵 Send Money",        "action_send_menu")],
+      [Markup.button.callback("🏦 Cash Out to Naira", "action_withdraw_menu"),
+       Markup.button.callback("🟣 Save & Earn",       "action_yields")],
+      [Markup.button.callback("🌐 Multi-Chain Hub",   "action_gateway"),
+       Markup.button.callback("🔀 Move Funds",        "action_move_funds")],
+      [Markup.button.callback("⚡ Scan & Sweep",      "action_sweep_deposits"),
+       Markup.button.callback("📜 Activity History",  "action_history")],
+      [Markup.button.callback("🔐 Export Keys",       "action_export_keys"),
+       Markup.button.callback("🛠️ Developer API",     "action_developer_menu")]
     );
 
     await ctx.reply(
@@ -903,13 +903,13 @@ async function showBizBalance(ctx) {
       ]);
     }
     buttonRows.push(
-      [Markup.button.callback("🧾 New Invoice",   "action_new_biz_invoice"),
-       Markup.button.callback("💸 Log Expense",   "action_log_expense")],
-      [Markup.button.callback("📋 Invoices",      "action_list_biz_invoices"),
-       Markup.button.callback("📊 This Month",    "action_cash_flow")],
-      [Markup.button.callback("🌐 Crypto Deposit", "action_gateway"),
-       Markup.button.callback("🔑 Export Keys",    "action_export_keys")],
-      [Markup.button.callback("🔄 Scan & Sweep",  "action_sweep_deposits")],
+      [Markup.button.callback("🧾 New Invoice",     "action_new_biz_invoice"),
+       Markup.button.callback("💸 Log Expense",     "action_log_expense")],
+      [Markup.button.callback("📋 Invoices",        "action_list_biz_invoices"),
+       Markup.button.callback("📊 Cash Flow",       "action_cash_flow")],
+      [Markup.button.callback("🌐 Multi-Chain Hub", "action_gateway"),
+       Markup.button.callback("⚡ Scan & Sweep",    "action_sweep_deposits")],
+      [Markup.button.callback("🔐 Export Keys",     "action_export_keys")],
       ...accountToggle("business")
     );
 
@@ -942,26 +942,23 @@ async function showReceive(ctx) {
   await ctx.reply(
     `📥 <b>Add Money — ${label}</b>\n──────────────────────────\n` +
     `Choose your preferred deposit method:\n\n` +
-    `• 🇳🇬 <b>Bank Transfer (Naira)</b>: Pay from your Nigerian bank app (Kuda, GTBank, Opay, PalmPay) to get Dollars.\n` +
-    `• 💳 <b>Card or Apple Pay</b>: Direct purchase with Visa, Mastercard, or Apple Pay.\n` +
-    `• 🌐 <b>Crypto & Web3 Deposit</b>: Send crypto directly from Binance, Coinbase, or any Web3 wallet.\n` +
-    `• Ⓝ <b>Deposit from NEAR</b>: Send USDC from any NEAR wallet — it auto-bridges to your Arc balance.\n` +
-    `• 🏹 <b>Deposit from Robinhood Chain</b>: Send USDG, ETH, USDe from Robinhood Chain — auto-bridges to Arc.\n` +
-    `• 🐺 <b>Deposit from Starknet</b>: Send STRK, direct ETH, ZEC, XRP from Starknet — auto-bridges to Arc.\n\n` +
-    `Your Proxim Account Number (tap to copy):\n<code>${address}</code>`,
+    `🇳🇬 <b>Bank Transfer (Naira)</b>\nPay in Naira from your bank (GTBank, Kuda, Opay, PalmPay) for instant Dollars.\n\n` +
+    `🌐 <b>Multi-Chain Crypto Hub</b>\nDeposit from 20+ chains (Solana, NEAR, Starknet, Robinhood, etc.) — auto-swapped to USD with zero bridging hassle.\n\n` +
+    `💳 <b>Card or Apple Pay</b>\nDirect purchase with Visa or Mastercard.\n\n` +
+    `🏛 <b>Your Account Number (EVM - tap to copy):</b>\n<code>${address}</code>`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
-        [Markup.button.callback("🇳🇬 Deposit Naira (Bank Transfer)", "action_paj_onramp")],
-        [Markup.button.callback("💳 Pay with Card / Apple Pay",     "gateway_onramp")],
-        [Markup.button.callback("🌐 Crypto & Web3 Deposit",        "action_gateway")],
-        [Markup.button.callback("Ⓝ Deposit from NEAR",             "action_near_deposit")],
-        [Markup.button.callback("☀️ Deposit from Solana",          "action_solana_deposit")],
-        [Markup.button.callback("🏹 Deposit from Robinhood Chain", "action_robinhood_deposit")],
-        [Markup.button.callback("🐺 Deposit from Starknet",        "action_starknet_deposit")],
-        [Markup.button.callback("🔄 Scan & Sweep Deposits",        "action_sweep_deposits")],
-        [Markup.button.callback("💰 Check Balance",                 "action_balance")],
-        [Markup.button.callback("🏠 Main Menu",                     "main_menu")],
+        [Markup.button.callback("🇳🇬 Bank Transfer (Naira)", "action_paj_onramp")],
+        [Markup.button.callback("🌐 Multi-Chain Crypto Hub", "action_gateway")],
+        [
+          Markup.button.callback("💳 Card / Apple Pay", "gateway_onramp"),
+          Markup.button.callback("⚡ Scan & Sweep",     "action_sweep_deposits"),
+        ],
+        [
+          Markup.button.callback("💰 View Balance", "action_balance"),
+          Markup.button.callback("🏠 Main Menu",    "main_menu"),
+        ],
       ]),
     }
   );
@@ -1513,54 +1510,378 @@ bot.action("action_my_yield", (ctx) => {
 // ─── Gateway / Add from Abroad ────────────────────────────────────────────────
 
 bot.action("action_gateway", async (ctx) => {
-  ctx.answerCbQuery();
+  ctx.answerCbQuery().catch(() => {});
   const user    = requireUser(ctx);
   if (!user) return;
   const arcAddress = getActiveWallet(user);
   const solAddress = getOrDeriveSolanaAddress(user);
 
   await ctx.reply(
-    `🌐 <b>Crypto & Web3 Deposit (Multi-Chain)</b>\n` +
+    `🌐 <b>Multi-Chain Crypto Hub (Powered by NEAR Intents)</b>\n` +
     `──────────────────────────\n` +
-    `Deposit crypto from Robinhood, Binance, Coinbase, Bybit, OKX, or any Web3 wallet directly into your Proxim balance.\n\n` +
-    `<b>Your Unified EVM Deposit Address (tap to copy):</b>\n` +
-    `<code>${arcAddress}</code>\n` +
-    (solAddress ? `\n<b>Your Solana Deposit Address (tap to copy):</b>\n<code>${solAddress}</code>\n` : "") +
-    `\n⚡ <b>Automated Instant Conversion to Arc USDC:</b>\n` +
-    `• <b>Supported Networks:</b>\n` +
-    `  ▫️ <b>Arc Mainnet</b> (Native — Direct USDC & EURC)\n` +
-    `  ▫️ <b>Robinhood Chain</b> (Native ETH & USDG)\n` +
-    `  ▫️ <b>Base</b> (Native ETH & USDC)\n` +
-    `  ▫️ <b>Arbitrum One</b> (Native ETH & USDC)\n` +
-    `  ▫️ <b>Ethereum Mainnet</b> (Native ETH & USDC)\n` +
-    `  ▫️ <b>Optimism</b> (Native ETH & USDC)\n` +
-    `  ▫️ <b>Polygon PoS</b> (Native POL/MATIC & USDC)\n` +
-    `  ▫️ <b>Avalanche C-Chain</b> (Native AVAX & USDC)\n` +
-    (solAddress ? `  ▫️ <b>Solana</b> (SPL USDC & SOL)\n` : "") +
-    `• <b>Accepted Assets:</b> Native tokens (ETH, AVAX, POL/MATIC${solAddress ? ", SOL" : ""}), USDG, and USDC/EURC\n` +
-    `• <b>NEAR:</b> Tap "Ⓝ Deposit from NEAR" below for a one-time address — USDC/USDT auto-bridges to your Arc balance (~2–5 min).\n` +
-    `• <b>Solana:</b> Tap "☀️ Deposit from Solana" to deposit SOL, USDC, USDT, BONK, WIF, JUP, and more — auto-swapped to USDC and swept to Arc via NEAR Intents.\n` +
-    `• <b>Robinhood Chain:</b> Tap "🏹 Deposit from Robinhood Chain" to deposit USDG, ETH, WETH, USDe, PONS, or CASHCAT — auto-swapped to USDC and swept to Arc via NEAR Intents.\n` +
-    `• <b>Starknet:</b> Tap "🐺 Deposit from Starknet" to deposit STRK, direct ETH, ZEC, or XRP — auto-swapped to USDC and swept to Arc via NEAR Intents.\n` +
-    `• <b>Zero Bridge Hassle:</b> Native tokens and cross-chain assets are automatically swapped to USDC and bridged to Arc Mainnet with <b>zero user gas or signing required</b>!\n` +
-    `• <b>Instant Settlement:</b> Native USDC is credited to your Proxim balance automatically (no manual sweep needed — "Scan & Sweep" is just an optional accelerator).\n\n` +
-    `<i>Send any amount to your address above, or tap below to scan for recent transfers.</i>`,
+    `Deposit crypto from <b>20+ chains and 100+ assets</b> directly into your Proxim balance.\n\n` +
+    `Incoming cross-chain tokens are automatically converted into USDC and credited to your account with <b>zero bridging hassle and zero gas required</b>!\n\n` +
+    `<b>Select a network below to generate a deposit address:</b>\n\n` +
+    `🏛 <b>Unified EVM Address (EVM chains):</b>\n<code>${arcAddress}</code>\n` +
+    (solAddress ? `\n☀️ <b>Solana Direct Address:</b>\n<code>${solAddress}</code>\n` : ""),
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
-        [Markup.button.callback("Ⓝ Deposit from NEAR",             "action_near_deposit")],
-        [Markup.button.callback("☀️ Deposit from Solana",          "action_solana_deposit")],
-        [Markup.button.callback("🏹 Deposit from Robinhood Chain", "action_robinhood_deposit")],
-        [Markup.button.callback("🐺 Deposit from Starknet",        "action_starknet_deposit")],
-        [Markup.button.callback("🔄 Scan & Sweep Deposits",        "action_sweep_deposits")],
-        [Markup.button.callback("🔑 Export Wallet Keys", "action_export_keys")],
-        [Markup.button.callback("💳 Buy USDC with Card (Onramp)", "gateway_onramp")],
-        [Markup.button.url("🔎 View on Explorer", getExplorerUrl(arcAddress))],
-        [Markup.button.callback("💰 Check Balance", "action_balance")],
-        [Markup.button.callback("🏠 Main Menu", "main_menu")],
+        [
+          Markup.button.callback("☀️ Solana (SOL / USDC)", "action_solana_deposit"),
+          Markup.button.callback("Ⓝ NEAR (NEAR / USDC)", "action_near_deposit"),
+        ],
+        [
+          Markup.button.callback("⚡ Starknet (STRK / ETH)", "action_starknet_deposit"),
+          Markup.button.callback("🏹 Robinhood (USDG / ETH)", "action_robinhood_deposit"),
+        ],
+        [
+          Markup.button.callback("⚡ Scan & Sweep", "action_sweep_deposits"),
+          Markup.button.callback("💳 Buy with Card", "gateway_onramp"),
+        ],
+        [
+          Markup.button.callback("« Back to Add Money", "action_receive"),
+          Markup.button.callback("🏠 Main Menu", "main_menu"),
+        ],
       ]),
     }
   );
+});
+
+// ─── Multi-Chain Deposit Flows (NEAR Intents) ──────────────────────────────────
+
+bot.action("action_near_deposit", async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const user = requireUser(ctx);
+  if (!user) return;
+
+  await ctx.reply(
+    `Ⓝ <b>Deposit from NEAR Protocol</b>\n──────────────────────────\n` +
+    `Deposit tokens from Meteor, Sender, Here Wallet, or any NEAR exchange.\n` +
+    `Tokens are automatically swapped to USDC and credited to your Proxim account!\n\n` +
+    `<b>Select token to deposit:</b>`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback("Ⓝ Native NEAR", "near_dep_token_NEAR"),
+          Markup.button.callback("💵 Native USDC", "near_dep_token_USDC"),
+        ],
+        [
+          Markup.button.callback("🟢 Tether (USDT)", "near_dep_token_USDT"),
+          Markup.button.callback("🪙 Wrapped Bitcoin (WBTC)", "near_dep_token_WBTC"),
+        ],
+        [
+          Markup.button.callback("« Back to Multi-Chain", "action_gateway"),
+          Markup.button.callback("🏠 Main Menu", "main_menu"),
+        ],
+      ]),
+    }
+  );
+});
+
+bot.action(/^near_dep_token_(.+)$/, async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const tokenSym = ctx.match[1];
+  const user = requireUser(ctx);
+  if (!user) return;
+  const context = user.active_context || "personal";
+  const userAddress = getActiveWallet(user);
+
+  await ctx.reply(`⏳ Generating secure 1Click deposit address for ${tokenSym}...`);
+
+  try {
+    const sysKey = db.getSystemDecryptedPrivateKey(user, context);
+    const refundAddress = sysKey ? nearLib.deriveNearAddress(sysKey).nearAddress : "nackam.near";
+    const tokenInfo = await nearLib.resolveNearToken(tokenSym);
+    const defaultAmount = tokenSym === "NEAR" ? 1 : tokenSym === "WBTC" ? 0.001 : 10;
+
+    const deposit = await nearLib.createNearDeposit({
+      telegramId: ctx.from.id,
+      accountType: context,
+      originAsset: tokenInfo?.assetId || nearLib.ASSETS.NEAR_USDC,
+      originSymbol: tokenSym,
+      originDecimals: tokenInfo?.decimals || (tokenSym === "NEAR" ? 24 : 6),
+      amount: defaultAmount,
+      recipientAddress: userAddress,
+      refundTo: refundAddress,
+    });
+
+    const depositAddr = deposit.deposit_address || "Address pending";
+    const memoLine = deposit.deposit_memo ? `\n📝 <b>Memo:</b> <code>${deposit.deposit_memo}</code>\n` : "";
+
+    await ctx.reply(
+      `Ⓝ <b>Deposit ${tokenSym} (NEAR Protocol)</b>\n` +
+      `──────────────────────────\n` +
+      `Send ${tokenSym} to the one-time 1Click solver address below:\n\n` +
+      `📍 <b>Deposit Address (tap to copy):</b>\n<code>${depositAddr}</code>\n` +
+      memoLine +
+      `\n⏱️ <b>Active for:</b> ~15 minutes\n` +
+      `🛡️ <b>Refund Target:</b> <code>${refundAddress.slice(0, 8)}...${refundAddress.slice(-6)}</code>\n\n` +
+      `<i>Once sent on NEAR, your deposit is automatically converted to USDC and credited to your Proxim account with an official PNG receipt.</i>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("🔄 Refresh / Scan", "action_sweep_deposits")],
+          [Markup.button.callback("« Back to NEAR", "action_near_deposit"), Markup.button.callback("🏠 Main Menu", "main_menu")],
+        ]),
+      }
+    );
+  } catch (err) {
+    console.error("[bot:near_deposit]", err);
+    await ctx.reply(`Could not create deposit address for ${tokenSym}: ${err.message}`, {
+      ...Markup.inlineKeyboard([[Markup.button.callback("« Back to NEAR", "action_near_deposit")]]),
+    });
+  }
+});
+
+bot.action("action_starknet_deposit", async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const user = requireUser(ctx);
+  if (!user) return;
+
+  await ctx.reply(
+    `⚡ <b>Deposit from Starknet</b>\n──────────────────────────\n` +
+    `Deposit STRK, ETH, ZEC, or XRP from Argent, Braavos, or any Starknet wallet.\n` +
+    `Solvers automatically convert tokens to USDC and credit your Proxim balance!\n\n` +
+    `<b>Select token to deposit:</b>`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback("🐺 Starknet (STRK)", "starknet_dep_token_STRK"),
+          Markup.button.callback("🔷 Ethereum (ETH)", "starknet_dep_token_ETH"),
+        ],
+        [
+          Markup.button.callback("🟡 Zcash (ZEC)", "starknet_dep_token_ZEC"),
+          Markup.button.callback("🪙 Ripple (XRP)", "starknet_dep_token_XRP"),
+        ],
+        [
+          Markup.button.callback("« Back to Multi-Chain", "action_gateway"),
+          Markup.button.callback("🏠 Main Menu", "main_menu"),
+        ],
+      ]),
+    }
+  );
+});
+
+bot.action(/^starknet_dep_token_(.+)$/, async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const tokenSym = ctx.match[1];
+  const user = requireUser(ctx);
+  if (!user) return;
+  const context = user.active_context || "personal";
+  const userAddress = getActiveWallet(user);
+
+  await ctx.reply(`⏳ Generating secure 1Click deposit address on Starknet for ${tokenSym}...`);
+
+  try {
+    const sysKey = db.getSystemDecryptedPrivateKey(user, context);
+    const refundAddress = sysKey
+      ? nearLib.deriveStarknetAddress(sysKey).starknetAddress
+      : "0x0000000000000000000000000000000000000000000000000000000000000001";
+    const tokenInfo = await nearLib.resolveStarknetToken(tokenSym);
+    const defaultAmount = tokenSym === "STRK" ? 10 : tokenSym === "ETH" ? 0.01 : 10;
+
+    const deposit = await nearLib.createStarknetDeposit({
+      telegramId: ctx.from.id,
+      accountType: context,
+      originAsset: tokenInfo?.assetId || nearLib.ASSETS.STARKNET_STRK,
+      originSymbol: tokenSym,
+      originDecimals: tokenInfo?.decimals || 18,
+      amount: defaultAmount,
+      recipientAddress: userAddress,
+      refundTo: refundAddress,
+    });
+
+    const depositAddr = deposit.deposit_address || "Address pending";
+
+    await ctx.reply(
+      `⚡ <b>Deposit ${tokenSym} (Starknet)</b>\n` +
+      `──────────────────────────\n` +
+      `Send ${tokenSym} from any Starknet wallet to the deposit address below:\n\n` +
+      `📍 <b>Starknet Deposit Address (tap to copy):</b>\n<code>${depositAddr}</code>\n\n` +
+      `⏱️ <b>Active for:</b> ~15 minutes\n` +
+      `🛡️ <b>Refund Target:</b> <code>${refundAddress.slice(0, 8)}...${refundAddress.slice(-6)}</code>\n\n` +
+      `<i>Once confirmed on Starknet, your funds are automatically swapped to USDC and credited to your Proxim account with an official PNG receipt.</i>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("🔄 Refresh / Scan", "action_sweep_deposits")],
+          [Markup.button.callback("« Back to Starknet", "action_starknet_deposit"), Markup.button.callback("🏠 Main Menu", "main_menu")],
+        ]),
+      }
+    );
+  } catch (err) {
+    console.error("[bot:starknet_deposit]", err);
+    await ctx.reply(`Could not create deposit address for ${tokenSym}: ${err.message}`, {
+      ...Markup.inlineKeyboard([[Markup.button.callback("« Back to Starknet", "action_starknet_deposit")]]),
+    });
+  }
+});
+
+bot.action("action_solana_deposit", async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const user = requireUser(ctx);
+  if (!user) return;
+  const solAddress = getOrDeriveSolanaAddress(user);
+
+  await ctx.reply(
+    `☀️ <b>Deposit from Solana</b>\n──────────────────────────\n` +
+    `Deposit SOL or SPL tokens from Phantom, Solflare, Backpack, or any exchange.\n\n` +
+    `<b>Your Permanent Solana Deposit Address:</b>\n<code>${solAddress}</code>\n\n` +
+    `• <b>Direct Deposits:</b> Send SOL or SPL USDC directly to your address above.\n` +
+    `• <b>1Click Intent Swap:</b> Auto-swap SOL or USDT directly into Arc USDC.\n\n` +
+    `<b>Select deposit mode:</b>`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback("☀️ Deposit SOL (1Click)", "solana_dep_token_SOL"),
+          Markup.button.callback("🟢 Deposit USDT (1Click)", "solana_dep_token_USDT"),
+        ],
+        [
+          Markup.button.callback("⚡ Scan Direct Solana Address", "action_sweep_deposits"),
+        ],
+        [
+          Markup.button.callback("« Back to Multi-Chain", "action_gateway"),
+          Markup.button.callback("🏠 Main Menu", "main_menu"),
+        ],
+      ]),
+    }
+  );
+});
+
+bot.action(/^solana_dep_token_(.+)$/, async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const tokenSym = ctx.match[1];
+  const user = requireUser(ctx);
+  if (!user) return;
+  const context = user.active_context || "personal";
+  const userAddress = getActiveWallet(user);
+  const solAddress = getOrDeriveSolanaAddress(user);
+
+  await ctx.reply(`⏳ Generating secure 1Click deposit address on Solana for ${tokenSym}...`);
+
+  try {
+    const tokenInfo = await nearLib.resolveSolanaToken(tokenSym);
+    const defaultAmount = tokenSym === "SOL" ? 0.2 : 10;
+
+    const deposit = await nearLib.createSolanaDeposit({
+      telegramId: ctx.from.id,
+      accountType: context,
+      originAsset: tokenInfo?.assetId || nearLib.ASSETS.SOL_NATIVE,
+      originSymbol: tokenSym,
+      originDecimals: tokenInfo?.decimals || (tokenSym === "SOL" ? 9 : 6),
+      amount: defaultAmount,
+      recipientAddress: userAddress,
+      refundTo: solAddress,
+    });
+
+    const depositAddr = deposit.deposit_address || "Address pending";
+
+    await ctx.reply(
+      `☀️ <b>Deposit ${tokenSym} (Solana)</b>\n` +
+      `──────────────────────────\n` +
+      `Send ${tokenSym} from any Solana wallet to the deposit address below:\n\n` +
+      `📍 <b>Solana Deposit Address (tap to copy):</b>\n<code>${depositAddr}</code>\n\n` +
+      `⏱️ <b>Active for:</b> ~15 minutes\n` +
+      `🛡️ <b>Refund Target:</b> <code>${solAddress.slice(0, 6)}...${solAddress.slice(-6)}</code>\n\n` +
+      `<i>Once confirmed on Solana, funds are automatically converted to USDC on Arc with an official PNG receipt.</i>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("🔄 Refresh / Scan", "action_sweep_deposits")],
+          [Markup.button.callback("« Back to Solana", "action_solana_deposit"), Markup.button.callback("🏠 Main Menu", "main_menu")],
+        ]),
+      }
+    );
+  } catch (err) {
+    console.error("[bot:solana_deposit]", err);
+    await ctx.reply(`Could not create deposit address for ${tokenSym}: ${err.message}`, {
+      ...Markup.inlineKeyboard([[Markup.button.callback("« Back to Solana", "action_solana_deposit")]]),
+    });
+  }
+});
+
+bot.action("action_robinhood_deposit", async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const user = requireUser(ctx);
+  if (!user) return;
+
+  await ctx.reply(
+    `🏹 <b>Deposit from Robinhood Chain</b>\n──────────────────────────\n` +
+    `Deposit USDG, ETH, USDe, or ecosystem tokens from Robinhood.\n` +
+    `Solvers automatically convert to USDC and credit your Proxim balance!\n\n` +
+    `<b>Select token to deposit:</b>`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback("💵 Robinhood USDG", "hood_dep_token_USDG"),
+          Markup.button.callback("🔷 Robinhood ETH", "hood_dep_token_ETH"),
+        ],
+        [
+          Markup.button.callback("🟢 Ethena USDe", "hood_dep_token_USDE"),
+          Markup.button.callback("🪙 Ecosystem PONS", "hood_dep_token_PONS"),
+        ],
+        [
+          Markup.button.callback("« Back to Multi-Chain", "action_gateway"),
+          Markup.button.callback("🏠 Main Menu", "main_menu"),
+        ],
+      ]),
+    }
+  );
+});
+
+bot.action(/^hood_dep_token_(.+)$/, async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const tokenSym = ctx.match[1];
+  const user = requireUser(ctx);
+  if (!user) return;
+  const context = user.active_context || "personal";
+  const userAddress = getActiveWallet(user);
+
+  await ctx.reply(`⏳ Generating secure 1Click deposit address on Robinhood Chain for ${tokenSym}...`);
+
+  try {
+    const tokenInfo = await nearLib.resolveRobinhoodToken(tokenSym);
+    const defaultAmount = tokenSym === "USDG" ? 10 : tokenSym === "ETH" ? 0.01 : 10;
+
+    const deposit = await nearLib.createRobinhoodDeposit({
+      telegramId: ctx.from.id,
+      accountType: context,
+      originAsset: tokenInfo?.assetId || nearLib.ASSETS.HOOD_USDG,
+      originSymbol: tokenSym,
+      originDecimals: tokenInfo?.decimals || 6,
+      amount: defaultAmount,
+      recipientAddress: userAddress,
+      refundTo: userAddress,
+    });
+
+    const depositAddr = deposit.deposit_address || "Address pending";
+
+    await ctx.reply(
+      `🏹 <b>Deposit ${tokenSym} (Robinhood Chain)</b>\n` +
+      `──────────────────────────\n` +
+      `Send ${tokenSym} from Robinhood to the EVM deposit address below:\n\n` +
+      `📍 <b>Robinhood Chain Deposit Address (tap to copy):</b>\n<code>${depositAddr}</code>\n\n` +
+      `⏱️ <b>Active for:</b> ~15 minutes\n\n` +
+      `<i>Once confirmed on Robinhood Chain, funds are automatically converted to USDC and credited to your Proxim account with an official PNG receipt.</i>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("🔄 Refresh / Scan", "action_sweep_deposits")],
+          [Markup.button.callback("« Back to Robinhood", "action_robinhood_deposit"), Markup.button.callback("🏠 Main Menu", "main_menu")],
+        ]),
+      }
+    );
+  } catch (err) {
+    console.error("[bot:robinhood_deposit]", err);
+    await ctx.reply(`Could not create deposit address for ${tokenSym}: ${err.message}`, {
+      ...Markup.inlineKeyboard([[Markup.button.callback("« Back to Robinhood", "action_robinhood_deposit")]]),
+    });
+  }
 });
 
 async function handleSweepDeposits(ctx) {

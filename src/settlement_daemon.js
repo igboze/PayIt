@@ -149,11 +149,140 @@ async function pollPendingOnrampOrders(bot) {
 }
 
 /**
+ * Poll pending Paj off-ramp orders from local DB and query Paj v2 status.
+ * If completed/paid, records in ledger and sends rich cash-out receipt.
+ */
+async function pollPendingOfframpOrders(bot) {
+  const pendingOrders = db.getPendingOfframpOrders ? db.getPendingOfframpOrders() : [];
+  if (!pendingOrders || pendingOrders.length === 0) return { polled: 0, completed: 0 };
+
+  let completedCount = 0;
+  for (const order of pendingOrders) {
+    try {
+      const liveOrder = await paj.getOfframpOrder(order.order_id);
+      if (!liveOrder) continue;
+
+      const orderData = liveOrder.data || liveOrder;
+      const status = String(orderData.status || "").toLowerCase();
+      if (status === "completed" || status === "successful" || status === "paid" || status === "settled") {
+        const txHash = orderData.txHash || orderData.hash || order.tx_hash || `paj-offramp-${order.order_id}`;
+
+        // 1. Mark completed in DB
+        db.completeOfframpOrder(order.order_id, { txHash, status: "completed" });
+
+        // 2. Record transaction in ledger if not already recorded
+        const amountUsdc = Number(orderData.amount || order.amount_usdc || 0);
+        if (amountUsdc > 0 && order.telegram_id) {
+          try {
+            const amountMicro = walletLib.parseToMicro(amountUsdc.toFixed(6));
+            db.recordTransaction(
+              order.telegram_id,
+              "offramp",
+              amountMicro,
+              "confirmed",
+              txHash,
+              order.account_type || "personal"
+            );
+          } catch (recErr) {
+            console.warn("[settlement_daemon:offramp] Record tx error:", recErr.message);
+          }
+        }
+
+        // 3. Send rich receipt notification to user
+        if (bot && order.telegram_id) {
+          try {
+            const user = db.getUser(order.telegram_id);
+            const isBiz = order.account_type === "business";
+            const accountLabel = isBiz ? "Business Treasury" : "Personal Wallet";
+            const userAddress = user
+              ? (isBiz ? (user.business_deposit_address || user.deposit_address) : user.deposit_address)
+              : null;
+            const fiatAmount = Number(orderData.fiatAmount || order.fiat_amount || 0);
+            const bankName = order.bank_name || orderData.bankName || "Bank";
+            const accountNumber = String(order.account_number || orderData.accountNumber || "");
+
+            const caption =
+              `✅ <b>Cash Out Delivered (${accountLabel})!</b>\n` +
+              `──────────────────────────\n` +
+              `💵 <b>Delivered:</b> ₦${fiatAmount > 0 ? Number(fiatAmount).toLocaleString() : "..."}\n` +
+              `🏦 <b>Destination:</b> ${bankName} <code>${accountNumber}</code>\n` +
+              `💰 <b>Amount:</b> $${amountUsdc.toFixed(2)} USDC\n` +
+              `💼 <b>Source:</b> ${accountLabel}\n` +
+              `🔖 <b>Ref:</b> <code>${order.order_id}</code>\n\n` +
+              `<i>Funds have been delivered directly to your bank account.</i>`;
+
+            const { generateReceiptPNG } = require("./receipt_generator");
+            let receiptPath = null;
+            try {
+              receiptPath = await generateReceiptPNG({
+                receiptId: `CO-${String(order.order_id).slice(0, 10)}`,
+                senderName: "Proxim Wallet",
+                senderAddress: userAddress || "Proxim Wallet",
+                recipientName: order.account_name || bankName,
+                recipientAddress: accountNumber,
+                amountUsdc: amountUsdc,
+                token: "USDC",
+                type: "Cash Out",
+                timestamp: new Date().toISOString(),
+                status: "Confirmed",
+                txHash: txHash,
+              });
+            } catch (recErr) {
+              console.warn("[settlement_daemon:offramp_receipt_err]", recErr.message);
+            }
+
+            const cleanCaption = caption.length > 950 ? caption.slice(0, 940) + "..." : caption;
+
+            if (receiptPath && typeof bot.telegram?.sendPhoto === "function") {
+              try {
+                await bot.telegram.sendPhoto(
+                  order.telegram_id,
+                  { source: receiptPath },
+                  { caption: cleanCaption, parse_mode: "HTML" }
+                );
+              } catch (photoErr) {
+                console.warn("[settlement_daemon:sendPhoto_fallback]", photoErr.message);
+                if (typeof bot.telegram?.sendMessage === "function") {
+                  await bot.telegram.sendMessage(order.telegram_id, caption, { parse_mode: "HTML" });
+                }
+              }
+            } else if (typeof bot.telegram?.sendMessage === "function") {
+              await bot.telegram.sendMessage(order.telegram_id, caption, { parse_mode: "HTML" });
+            }
+          } catch (notifErr) {
+            console.warn(`[settlement_daemon] Failed to notify user ${order.telegram_id}:`, notifErr.message);
+          }
+        }
+        completedCount++;
+      } else if (status === "failed" || status === "cancelled" || status === "rejected") {
+        db.completeOfframpOrder(order.order_id, { status: "failed" });
+        if (bot && order.telegram_id) {
+          try {
+            await bot.telegram.sendMessage(
+              order.telegram_id,
+              `⚠️ <b>Cash Out Failed</b>\n──────────────────────────\n` +
+              `Your cash out request (<code>${order.order_id}</code>) could not be settled by the bank.\n` +
+              `Reason: ${orderData.reason || "Bank payout rejected"}.\n\n` +
+              `<i>Your funds remain safe in your wallet balance.</i>`,
+              { parse_mode: "HTML" }
+            );
+          } catch (_) {}
+        }
+      }
+    } catch (err) {
+      console.warn(`[settlement_daemon] pollPendingOfframpOrders error on ${order.order_id}:`, err.message);
+    }
+  }
+
+  return { polled: pendingOrders.length, completed: completedCount };
+}
+
+/**
  * Default task set.  intervalMs preserves the schedules the scattered workers
  * used to run at (EVM sweep 90s, inbound recovery 20s, NEAR 60s); the
  * Arc→Solana burn retry (previously admin-manual via /retry_cctp) now runs
  * automatically every 60s so stuck Move Funds complete without intervention;
- * Paj on-ramp polling runs every 15s to notify users immediately upon deposit.
+ * Paj on-ramp and off-ramp polling runs every 15s to notify users immediately upon deposit or bank settlement.
  */
 function defaultTasks() {
   return [
@@ -184,7 +313,11 @@ function defaultTasks() {
     {
       name: "paj_onramp_poll",
       intervalMs: 15_000,
-      run: async ({ bot }) => pollPendingOnrampOrders(bot),
+      run: async ({ bot }) => {
+        const onramp = await pollPendingOnrampOrders(bot);
+        const offramp = await pollPendingOfframpOrders(bot);
+        return { onramp, offramp };
+      },
     },
     {
       name: "crosschain_withdrawal_sweep",
