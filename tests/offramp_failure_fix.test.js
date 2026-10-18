@@ -123,4 +123,27 @@ test("Offramp failure fixes test suite", async (t) => {
     }
   });
 
+  await t.test("5. paj.createOfframpOrder does not send userExternalId in payload to prevent HTTP 400 schema rejection", async () => {
+    const origClient = paj._getClient;
+    let capturedPayload = null;
+    paj._getClient = () => ({
+      post: async (endpoint, payload) => {
+        capturedPayload = payload;
+        return { data: { id: "test_order", address: "0xTestOrderAddr", status: "pending" } };
+      },
+    });
+
+    try {
+      await paj.createOfframpOrder({
+        accountNumber: "5699518754",
+        bankCode: "090405",
+        amount: 10,
+        userExternalId: "12345678",
+      });
+      assert.equal(capturedPayload.userExternalId, undefined, "userExternalId must NOT be present in offramp payload");
+    } finally {
+      paj._getClient = origClient;
+    }
+  });
+
 });

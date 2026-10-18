@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>RaceAlpha — Confidential Copy-Trading Terminal | RacerBot on NEAR Intents</title>
+  <meta name="description" content="All-in-one confidential copy-trading workspace powered by NEAR Intents and encrypted viewing keys. Trade privately without revealing alpha.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Orbitron:wght@500;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <!-- Telegram WebApp SDK Script -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <!-- NEAR API JS Library for on-chain wallet and contract verification -->
+  <script src="https://cdn.jsdelivr.net/npm/near-api-js@2.1.4/dist/near-api-js.min.js"></script>
+</head>
+<body class="racer-notion-theme">
+  <!-- Promo Announcement Banner (Top Strip) -->
+  <div class="promo-banner">
+    <div class="container promo-inner">
+      <span>🏎️ <strong>RacerBot Ecosystem Update:</strong> NEAR Intent confidential viewing key exchange protocol is now live on Mainnet.</span>
+      <a href="#traders-section" class="promo-link">Explore Master Traders →</a>
+    </div>
+  </div>
+
+  <!-- Navigation Header -->
+  <header class="app-header">
+    <div class="container header-inner">
+      <div class="brand-group">
+        <a href="/" class="brand-logo">
+          <span class="racer-badge-pill">RACERBOT</span>
+          <div class="logo-text">
+            <h1 class="brand-title">Race<span class="text-cyan">Alpha</span></h1>
+            <span class="brand-tagline">NEAR Intents · Confidential Trading</span>
+          </div>
+        </a>
+      </div>
+
+      <!-- Live Telemetry Tickers -->
+      <div class="header-tickers">
+        <div class="ticker-chip">
+          <span class="status-dot"></span>
+          <span class="ticker-label">NEAR / USD</span>
+          <span class="ticker-val" id="near-price-val">$4.82</span>
+          <span class="ticker-change positive">+5.4%</span>
+        </div>
+        <div class="ticker-chip hide-mobile">
+          <span class="ticker-label">INTENT SOLVERS</span>
+          <span class="ticker-val text-cyan">14 Active Relays</span>
+        </div>
+      </div>
+
+      <!-- Account & Wallet Actions -->
+      <div class="header-actions">
+        <button class="btn btn-primary btn-wallet-connect" id="btn-connect-wallet" onclick="openWalletModal()">
+          <span class="wallet-icon">Ⓝ</span>
+          <span id="wallet-btn-label">Connect NEAR Wallet</span>
+        </button>
+        <div class="tg-sync-badge" id="tg-sync-status">
+          <span class="tg-dot"></span>
+          <span id="tg-user-label">Syncing Telegram...</span>
+        </div>
+        <button class="btn btn-secondary-on-dark hide-mobile" id="btn-verify-gate">
+          🛡️ $10k Gate
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Deep Navy Hero Band (Notion Hero Band Pattern + RacerBot Atmosphere) -->
+  <section class="hero-band-dark">
+    <!-- Atmospheric Starfield & Sticky-Note Dot Illustrations -->
+    <div class="racer-starfield"></div>
+    <div class="hero-deco-dot dot-1"></div>
+    <div class="hero-deco-dot dot-2"></div>
+    <div class="hero-deco-dot dot-3"></div>
+
+    <div class="container hero-content-centered">
+      <div class="badge-tag-cyan">🏎️ RACERBOT ALPHA SUITE · POWERED BY NEAR INTENTS</div>
+      <h1 class="hero-display">Meet the night shift.</h1>
+      <p class="hero-subtitle">
+        Execute confidential copy-trading at institutional velocity. Top traders sell encrypted viewing keys to followers without ever revealing wallet addresses or front-running alpha.
+      </p>
+
+      <div class="hero-cta-group">
+        <a href="#traders-section" class="btn btn-primary btn-hero">
+          Get Alpha Pass Free
+        </a>
+        <button class="btn btn-secondary-on-dark btn-hero" onclick="openModal('gate-modal')">
+          Audit Master Status ($10k+)
+        </button>
+      </div>
+
+      <!-- Live Workspace UI Mockup Card (Breaks out of hero band with Level 3 diffuse shadow) -->
+      <div class="workspace-mockup-card">
+        <div class="mockup-header">
+          <div class="mockup-window-controls">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
+          </div>
+          <div class="mockup-search-pill">
+            <span class="search-icon">🔍</span>
+            <span class="search-text">Search verified intents, master traders, and viewing keys...</span>
+          </div>
+          <div class="mockup-actions">
+            <span class="badge-pill-cyan">Live Mainnet Ⓝ</span>
+          </div>
+        </div>
+
+        <div class="mockup-body">
+          <div class="mockup-stats-strip">
+            <div class="mock-stat">
+              <span class="label">TOTAL VALUE PROTECTED (TVP)</span>
+              <span class="val text-white" id="stat-tvp">$1,482,500</span>
+              <span class="sub text-green">+18.4% this month</span>
+            </div>
+            <div class="mock-stat">
+              <span class="label">CONFIDENTIAL INTENTS SOLVED</span>
+              <span class="val text-white" id="stat-intents">14,290</span>
+              <span class="sub">Zero front-running / MEV</span>
+            </div>
+            <div class="mock-stat">
+              <span class="label">VERIFIED MASTER TRADERS</span>
+              <span class="val text-white" id="stat-masters">3 Active</span>
+              <span class="sub text-cyan">> $10k 30d volume gated</span>
+            </div>
+            <div class="mock-stat">
+              <span class="label">SETTLEMENT DENOMINATION</span>
+              <span class="val text-white">Native NEAR (Ⓝ)</span>
+              <span class="sub">Decentralized solver network</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Main Content Layout -->
+  <main class="container main-content" id="traders-section">
+    <!-- Master Trader Registry & Dual PnL Switcher -->
+    <section class="card-feature pnl-section">
+      <div class="pnl-header">
+        <div class="pnl-heading-group">
+          <div class="badge-tag-green">🛡️ ON-CHAIN VOLUME AUDITED</div>
+          <h2 class="section-title">Master Trader Registry & Dual PnL Engine</h2>
+          <p class="section-desc">Follow verified traders using encrypted viewing keys. Switch telemetry between macro portfolio net equity trajectories and tactical trade-by-trade metrics.</p>
+        </div>
+
+        <!-- Notion Pill-Tab Switcher -->
+        <div class="telemetry-switch-group">
+          <span class="switch-label">TELEMETRY VIEW:</span>
+          <div class="pill-tab-container">
+            <button class="pill-tab active" id="btn-toggle-macro" onclick="switchPnlMode('macro')">
+              Macro Net Equity
+            </button>
+            <button class="pill-tab" id="btn-toggle-tactical" onclick="switchPnlMode('tactical')">
+              Tactical Trades
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Traders Grid -->
+      <div class="traders-grid" id="traders-container">
+        <!-- Rendered dynamically by app.js -->
+        <div class="loading-state">
+          <div class="spinner"></div>
+          <p>Auditing NEAR On-Chain Volume & Solved Intent Proofs...</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4-Tier Pricing & Subscription Comparison (from Notion Design System) -->
+    <section class="card-feature pricing-section">
+      <div class="pricing-header-centered">
+        <div class="badge-tag-purple">FLEXIBLE PARTICIPATION</div>
+        <h2 class="heading-2">Tiered Access to Confidential Alpha</h2>
+        <p class="subtitle">Choose between view-only decrypted signals or fully autonomous solver-intent execution.</p>
+      </div>
+
+      <div class="pricing-grid-4">
+        <!-- Free Tier -->
+        <div class="pricing-card">
+          <div class="pricing-card-header">
+            <h3 class="tier-name">Free Scout</h3>
+            <p class="tier-desc">Public telemetry and simulated blind intent stream.</p>
+            <div class="tier-price-row">
+              <span class="price-val">0 Ⓝ</span>
+              <span class="price-period">/ forever</span>
+            </div>
+          </div>
+          <ul class="tier-features-list">
+            <li>✓ Public PnL telemetry view</li>
+            <li>✓ 30-day Volume Gate audit tool</li>
+            <li>✓ Live blinded intent ticker</li>
+            <li class="muted-feature">✕ Decrypted trade entries</li>
+            <li class="muted-feature">✕ Autonomous solver relay</li>
+          </ul>
+          <button class="btn btn-secondary btn-block" onclick="showToast('Free Scout active by default')">
+            Current Tier
+          </button>
+        </div>
+
+        <!-- Alpha Pass (View-Only) -->
+        <div class="pricing-card">
+          <div class="pricing-card-header">
+            <h3 class="tier-name">Alpha Pass</h3>
+            <p class="tier-desc">Decrypts private trade alerts and entry targets in real-time.</p>
+            <div class="tier-price-row">
+              <span class="price-val">8 Ⓝ</span>
+              <span class="price-period">/ month</span>
+            </div>
+          </div>
+          <ul class="tier-features-list">
+            <li>✓ Real-time signal decryption</li>
+            <li>✓ Token pair & entry price targets</li>
+            <li>✓ Telegram bot instant push alerts</li>
+            <li>✓ Guaranteed zero front-running</li>
+            <li class="muted-feature">✕ Autonomous execution</li>
+          </ul>
+          <button class="btn btn-secondary btn-block" onclick="openKeyModal('trader_01', 'view_only')">
+            Get Alpha Pass
+          </button>
+        </div>
+
+        <!-- Auto-Copy Pass (Featured Tier with border) -->
+        <div class="pricing-card pricing-card-featured">
+          <div class="featured-badge-top">
+            <span class="badge-popular">MOST POPULAR ⚡</span>
+          </div>
+          <div class="pricing-card-header">
+            <h3 class="tier-name">Auto-Copy Pass</h3>
+            <p class="tier-desc">Direct execution through NEAR Intents solvers with custom caps.</p>
+            <div class="tier-price-row">
+              <span class="price-val">25 Ⓝ</span>
+              <span class="price-period">/ month</span>
+            </div>
+          </div>
+          <ul class="tier-features-list">
+            <li>✓ <strong>All Alpha Pass features</strong></li>
+            <li>✓ <strong>Autonomous NEAR Intent execution</strong></li>
+            <li>✓ Custom trade allocation budget slider</li>
+            <li>✓ Sub-0.5% max slippage protection</li>
+            <li>✓ Gasless solver relay settlement</li>
+          </ul>
+          <button class="btn btn-primary btn-block" onclick="openKeyModal('trader_01', 'auto_copy')">
+            Start Auto-Copying
+          </button>
+        </div>
+
+        <!-- Enterprise / Master Trader -->
+        <div class="pricing-card">
+          <div class="pricing-card-header">
+            <h3 class="tier-name">Master Vault</h3>
+            <p class="tier-desc">For institutional traders with >$10k 30d volume to monetize alpha.</p>
+            <div class="tier-price-row">
+              <span class="price-val">100 Ⓝ</span>
+              <span class="price-period">staked bond</span>
+            </div>
+          </div>
+          <ul class="tier-features-list">
+            <li>✓ Issue viewing keys to followers</li>
+            <li>✓ Earn 80% subscription fees in NEAR</li>
+            <li>✓ Cryptographic execution proofs</li>
+            <li>✓ Verified Master Trader badge</li>
+            <li>✓ Dedicated solver priority lanes</li>
+          </ul>
+          <button class="btn btn-secondary btn-block" onclick="openModal('gate-modal')">
+            Apply as Master
+          </button>
+        </div>
+      </div>
+
+      <!-- Feature Comparison Table (from Notion Design System comparison-table) -->
+      <div class="comparison-table-wrapper">
+        <h3 class="heading-4 table-title">Detailed Feature Matrix</h3>
+        <table class="comparison-table">
+          <thead>
+            <tr>
+              <th>CAPABILITY</th>
+              <th>FREE SCOUT</th>
+              <th>ALPHA PASS</th>
+              <th>AUTO-COPY PASS</th>
+              <th>MASTER VAULT</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="comparison-row">
+              <td>Telemetry Access</td>
+              <td>Public Only</td>
+              <td>Full Macro & Tactical</td>
+              <td>Full Macro & Tactical</td>
+              <td>Dedicated Analytics</td>
+            </tr>
+            <tr class="comparison-row">
+              <td>Private Signal Decryption</td>
+              <td>—</td>
+              <td>Instant (Telegram + Web)</td>
+              <td>Instant (Telegram + Web)</td>
+              <td>Author / Publisher</td>
+            </tr>
+            <tr class="comparison-row">
+              <td>NEAR Intent Solver Relay</td>
+              <td>—</td>
+              <td>—</td>
+              <td>1Click & Defuse Solvers</td>
+              <td>Custom Solver API</td>
+            </tr>
+            <tr class="comparison-row">
+              <td>Front-Running & MEV Shield</td>
+              <td>Standard</td>
+              <td>Shielded</td>
+              <td>Institutional Shielded</td>
+              <td>Zero-Knowledge Blinded</td>
+            </tr>
+            <tr class="comparison-row">
+              <td>Viewing Key Monetization</td>
+              <td>—</td>
+              <td>—</td>
+              <td>—</td>
+              <td>Earn Ⓝ Subscriptions</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Live Confidential Intent Stream Feed -->
+    <section class="card-feature stream-section">
+      <div class="stream-header">
+        <div class="stream-title-group">
+          <span class="status-dot-cyan"></span>
+          <div>
+            <h3 class="heading-4">Live Confidential Intent Stream</h3>
+            <p class="caption">Zero-knowledge solver relays resolving orders without public mempool leaks.</p>
+          </div>
+        </div>
+        <span class="badge-tag-purple">Blinded Solver Relays</span>
+      </div>
+
+      <div class="table-wrapper">
+        <table class="intent-table">
+          <thead>
+            <tr>
+              <th>INTENT ID</th>
+              <th>MASTER TRADER</th>
+              <th>ACTION</th>
+              <th>SETTLED (Ⓝ)</th>
+              <th>SOLVER</th>
+              <th>MASKED HASH</th>
+              <th>TIME</th>
+            </tr>
+          </thead>
+          <tbody id="intent-feed-rows">
+            <!-- Populated dynamically by app.js -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal: Viewing Key & Auto-Copy Purchase -->
+  <div class="modal-backdrop" id="key-modal" style="display: none;">
+    <div class="modal-card">
+      <button class="modal-close-btn" onclick="closeModal('key-modal')">×</button>
+      
+      <div class="badge-tag-purple">ENCRYPTED ACCESS PASS</div>
+      <h3 class="modal-title" id="modal-trader-title">Subscribe to Trader Viewing Key</h3>
+      <p class="modal-subtitle">Pay securely in NEAR. Decrypt private trade entries or enable autonomous solver routing.</p>
+
+      <div class="tier-selector">
+        <div class="tier-card active" id="tier-card-1" onclick="selectTier('view_only')">
+          <input type="radio" name="sub_tier" value="view_only" checked style="display: none;">
+          <div class="tier-info">
+            <div class="tier-name">Alpha Pass (View-Only)</div>
+            <div class="tier-desc">Decrypts private trade alerts, pair entries, and targets in real time.</div>
+          </div>
+          <div class="tier-price" id="tier-1-price">8 Ⓝ / mo</div>
+        </div>
+
+        <div class="tier-card" id="tier-card-2" onclick="selectTier('auto_copy')">
+          <input type="radio" name="sub_tier" value="auto_copy" style="display: none;">
+          <div class="tier-info">
+            <div class="tier-name">Auto-Copy Pass (Intent Solver Relay) ⚡</div>
+            <div class="tier-desc">Autonomous solver execution with custom budget cap and slippage protection.</div>
+          </div>
+          <div class="tier-price" id="tier-2-price">25 Ⓝ / mo</div>
+        </div>
+      </div>
+
+      <!-- Advanced Solver Intent Config -->
+      <div class="auto-copy-config" id="auto-copy-settings" style="display: none;">
+        <div class="form-group">
+          <div class="slider-header">
+            <span>Max Trade Allocation Budget</span>
+            <span class="slider-val text-cyan" id="val-budget">25 NEAR</span>
+          </div>
+          <input type="range" min="5" max="250" step="5" value="25" id="input-budget" oninput="updateBudgetSlider(this.value)">
+        </div>
+
+        <div class="form-group">
+          <div class="slider-header">
+            <span>Max Slippage Protection</span>
+            <span class="slider-val text-cyan" id="val-slippage">0.5%</span>
+          </div>
+          <input type="range" min="0.1" max="2.0" step="0.1" value="0.5" id="input-slippage" oninput="updateSlippageSlider(this.value)">
+        </div>
+      </div>
+
+      <!-- Price Breakdown -->
+      <div class="price-breakdown">
+        <div class="breakdown-row">
+          <span>Subscription Duration:</span>
+          <span>30 Days</span>
+        </div>
+        <div class="breakdown-row">
+          <span>Total Cost:</span>
+          <span class="total-near-amount" id="modal-total-near">8 NEAR ($38.56 USD)</span>
+        </div>
+      </div>
+
+      <button class="btn btn-primary btn-block" id="btn-confirm-purchase" onclick="submitKeyPurchase()">
+        Mint & Activate Viewing Key
+      </button>
+
+      <!-- Key Issued Confirmation Panel -->
+      <div class="key-success-box" id="key-success-box" style="display: none;">
+        <div class="success-header">
+          <span class="text-green font-bold">✓ VIEWING KEY ACTIVATED</span>
+        </div>
+        <p class="success-desc">Encrypted key bound to your account. Decrypting solver intents...</p>
+        <div class="key-display-chip">
+          <code id="issued-key-text">race_vk_...</code>
+          <button class="btn btn-secondary btn-xs" onclick="copyKeyText()">Copy</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Volume Gatekeeper Verification Tool -->
+  <div class="modal-backdrop" id="gate-modal" style="display: none;">
+    <div class="modal-card">
+      <button class="modal-close-btn" onclick="closeModal('gate-modal')">×</button>
+      
+      <div class="badge-tag-cyan">VOLUME GATEKEEPER ($10K+)</div>
+      <h3 class="modal-title">Verify Master Trader Status</h3>
+      <p class="modal-subtitle">To protect followers, Master Traders must prove at least <strong>$10,000 USD</strong> in cumulative 30-day on-chain trading volume.</p>
+
+      <div class="form-group">
+        <label for="input-near-account" class="input-label">NEAR Account ID</label>
+        <input type="text" id="input-near-account" class="text-input" placeholder="e.g. your-wallet.near">
+      </div>
+
+      <button class="btn btn-primary btn-block" id="btn-submit-verification" onclick="submitVolumeCheck()">
+        Audit 30-Day Volume On-Chain
+      </button>
+
+      <div class="verification-result-box" id="gate-result-box" style="display: none;"></div>
+    </div>
+  </div>
+
+  <!-- Modal: NEAR Wallet Connector Service -->
+  <div class="modal-backdrop" id="wallet-modal" style="display: none;">
+    <div class="modal-card">
+      <button class="modal-close-btn" onclick="closeModal('wallet-modal')">×</button>
+      
+      <!-- Unconnected State View -->
+      <div id="wallet-unconnected-view">
+        <div class="badge-tag-cyan">NEAR PROTOCOL · WALLET SELECTOR</div>
+        <h3 class="modal-title">Connect NEAR Wallet</h3>
+        <p class="modal-subtitle">Connect your non-custodial NEAR account to purchase viewing keys and route confidential intents.</p>
+
+        <div class="wallet-providers-list">
+          <!-- Meteor Wallet -->
+          <div class="wallet-provider-card" id="card-provider-meteor" onclick="connectWalletProvider('Meteor Wallet')">
+            <div class="provider-info">
+              <span class="provider-icon">☄️</span>
+              <div>
+                <div class="provider-name">Meteor Wallet</div>
+                <div class="provider-desc" id="meteor-status-desc">Browser Extension or Web App</div>
+              </div>
+            </div>
+            <span class="provider-tag popular" id="meteor-status-tag">Connect</span>
+          </div>
+
+          <!-- HERE Wallet -->
+          <div class="wallet-provider-card" id="card-provider-here" onclick="connectWalletProvider('HERE Wallet')">
+            <div class="provider-info">
+              <span class="provider-icon">📲</span>
+              <div>
+                <div class="provider-name">HERE Wallet</div>
+                <div class="provider-desc">Telegram WebApp & Mobile Signer</div>
+              </div>
+            </div>
+            <span class="provider-tag">Mobile / Web</span>
+          </div>
+
+          <!-- MyNearWallet -->
+          <div class="wallet-provider-card" id="card-provider-mynear" onclick="connectWalletProvider('MyNearWallet')">
+            <div class="provider-info">
+              <span class="provider-icon">🌐</span>
+              <div>
+                <div class="provider-name">MyNearWallet</div>
+                <div class="provider-desc">Official NEAR Web Gateway</div>
+              </div>
+            </div>
+            <span class="provider-tag">Web Auth</span>
+          </div>
+
+          <!-- NEAR Mobile -->
+          <div class="wallet-provider-card" id="card-provider-nearmobile" onclick="connectWalletProvider('NEAR Mobile')">
+            <div class="provider-info">
+              <span class="provider-icon">📱</span>
+              <div>
+                <div class="provider-name">NEAR Mobile</div>
+                <div class="provider-desc">iOS & Android Biometric KeyStore</div>
+              </div>
+            </div>
+            <span class="provider-tag">Mobile</span>
+          </div>
+        </div>
+
+        <div class="direct-login-divider">
+          <span>OR VERIFY ON-CHAIN NEAR ACCOUNT</span>
+        </div>
+
+        <div class="form-group">
+          <label for="input-direct-near" class="input-label">Enter Named Account or Implicit Address (.near / .tg / 64-hex)</label>
+          <div class="input-with-button">
+            <input type="text" id="input-direct-near" class="text-input" placeholder="e.g. root.near, trader.tg">
+            <button class="btn btn-primary" id="btn-submit-direct" onclick="submitDirectNearLogin()">Connect Live</button>
+          </div>
+          <span class="input-hint" style="font-size: 11px; color: var(--ink-dim); margin-top: 4px;">
+            Queries NEAR Mainnet RPC node (<code>rpc.mainnet.near.org</code>) to verify ledger existence and fetch real balances.
+          </span>
+        </div>
+      </div>
+
+      <!-- Connected State View -->
+      <div id="wallet-connected-view" style="display: none;">
+        <div class="badge-tag-green">CONNECTED ON MAINNET</div>
+        <h3 class="modal-title">Wallet Connected</h3>
+        <p class="modal-subtitle">Your NEAR account is active and synced with RaceAlpha.</p>
+
+        <div class="wallet-account-card">
+          <div class="account-header">
+            <div class="account-identicon">Ⓝ</div>
+            <div>
+              <div class="account-id" id="connected-account-label">user.near</div>
+              <div class="account-provider" id="connected-provider-label">Connected via Meteor Wallet</div>
+            </div>
+          </div>
+
+          <div class="account-balances-row">
+            <div class="bal-col">
+              <span class="bal-label">NEAR BALANCE</span>
+              <span class="bal-val" id="connected-near-bal">45.80 Ⓝ</span>
+              <span class="bal-sub" id="connected-usd-bal">≈ $220.75 USD</span>
+            </div>
+            <div class="bal-col">
+              <span class="bal-label">VIEWING KEYS</span>
+              <span class="bal-val text-cyan" id="connected-keys-count">1 Active</span>
+              <span class="bal-sub">Auto-Copy Enabled</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="wallet-actions-row">
+          <button class="btn btn-secondary" onclick="copyConnectedAccount()">Copy Account ID</button>
+          <button class="btn btn-secondary-danger" onclick="disconnectWallet()">Disconnect</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- Footer Region (Notion 6-column editorial footer) -->
+  <footer class="app-footer">
+    <div class="container footer-inner">
+      <div class="footer-col brand-col">
+        <div class="brand-logo">
+          <span class="racer-badge-pill">RACERBOT</span>
+          <span class="brand-title-sm">RaceAlpha</span>
+        </div>
+        <p class="footer-tagline">Institutional confidential copy-trading on NEAR Intents.</p>
+        <span class="copyright">© 2026 RacerBot Ecosystem · NEAR Protocol</span>
+      </div>
+
+      <div class="footer-col">
+        <h4 class="footer-heading">Product</h4>
+        <a href="#traders-section" class="footer-link">Master Registry</a>
+        <a href="#traders-section" class="footer-link">Dual PnL Engine</a>
+        <a href="#traders-section" class="footer-link">Intent Stream</a>
+        <a href="#" class="footer-link" onclick="openKeyModal('trader_01', 'auto_copy')">Auto-Copy Relay</a>
+      </div>
+
+      <div class="footer-col">
+        <h4 class="footer-heading">Infrastructure</h4>
+        <a href="https://near.org" target="_blank" rel="noopener" class="footer-link">NEAR Protocol</a>
+        <a href="https://defuse.org" target="_blank" rel="noopener" class="footer-link">NEAR Intents</a>
+        <a href="/health" target="_blank" class="footer-link">API Health</a>
+        <a href="/api/v1/race/traders" target="_blank" class="footer-link">Traders API</a>
+      </div>
+
+      <div class="footer-col">
+        <h4 class="footer-heading">Security</h4>
+        <a href="#" class="footer-link" onclick="openModal('gate-modal')">Volume Gate ($10k+)</a>
+        <a href="#" class="footer-link">Zero-Knowledge Viewing Keys</a>
+        <a href="#" class="footer-link">MEV Shield</a>
+        <a href="#" class="footer-link">Audited Contracts</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
