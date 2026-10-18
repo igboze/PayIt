@@ -989,6 +989,12 @@ async function showHistory(ctx) {
   const user = requireUser(ctx);
   if (!user) return;
   const address = getActiveWallet(user);
+
+  try {
+    await settlementDaemon.pollPendingOfframpOrders(bot);
+    await settlementDaemon.pollPendingOnrampOrders(bot);
+  } catch (_) {}
+
   const txs     = db.getTransactions(ctx.from.id, 10);
 
   if (!txs.length) {
@@ -6660,6 +6666,12 @@ function formatCustomerFriendlyOfframpError(rawError) {
             `<i>Naira arrives in your bank account in ~1–2 minutes. Your official receipt will be sent automatically once settled.</i>`;
 
           await ctx.reply(successCaption, { parse_mode: "HTML", ...afterPaymentButtons });
+
+          // Proactively watch order status with fast live polling so the user receives their confirmed receipt immediately
+          const orderRef = result.reference || state.data.orderId;
+          if (orderRef) {
+            settlementDaemon.watchOfframpOrder(orderRef, bot);
+          }
         } else {
           const friendlyMessage = formatCustomerFriendlyOfframpError(result.error);
           await ctx.reply(friendlyMessage, { parse_mode: "HTML", ...backToMenu });

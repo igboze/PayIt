@@ -177,6 +177,7 @@ async function createOnrampOrder(params) {
 
 /**
  * Fetch status of an onramp order by ID.
+ * Queries Paj v2 /transaction/:id endpoint with fallback to /onramp/:id.
  * @param {string} orderId
  * @returns {Promise<object|null>}
  */
@@ -184,10 +185,15 @@ async function getOnrampOrder(orderId) {
   if (!orderId) return null;
   const client = getClient();
   try {
-    const response = await client.get(`/onramp/${orderId}`);
+    const response = await client.get(`/transaction/${orderId}`);
     return response.data;
   } catch (err) {
-    return null;
+    try {
+      const r2 = await client.get(`/onramp/${orderId}`);
+      return r2.data;
+    } catch (_) {
+      return null;
+    }
   }
 }
 
@@ -219,6 +225,7 @@ async function triggerOnrampSweep(orderIdOrAddress, recipient) {
 
 /**
  * Fetch status of an offramp order by ID or address.
+ * Queries Paj v2 /transaction/:id endpoint with fallbacks to /offramp/:id and /payout/:id.
  * @param {string} orderId
  * @returns {Promise<object|null>}
  */
@@ -226,15 +233,36 @@ async function getOfframpOrder(orderId) {
   if (!orderId) return null;
   const client = getClient();
   try {
-    const response = await client.get(`/offramp/${orderId}`);
+    const response = await client.get(`/transaction/${orderId}`);
     return response.data;
   } catch (err) {
     try {
-      const r2 = await client.get(`/payout/${orderId}`);
+      const r2 = await client.get(`/offramp/${orderId}`);
       return r2.data;
     } catch (_) {
-      return null;
+      try {
+        const r3 = await client.get(`/payout/${orderId}`);
+        return r3.data;
+      } catch (_) {
+        return null;
+      }
     }
+  }
+}
+
+/**
+ * Fetch status of any Paj transaction (onramp or offramp) by transaction ID.
+ * @param {string} transactionId
+ * @returns {Promise<object|null>}
+ */
+async function getTransaction(transactionId) {
+  if (!transactionId) return null;
+  const client = getClient();
+  try {
+    const response = await client.get(`/transaction/${transactionId}`);
+    return response.data;
+  } catch (err) {
+    return null;
   }
 }
 
@@ -429,6 +457,7 @@ module.exports = {
   createOnrampOrder,
   getOnrampOrder,
   getOfframpOrder,
+  getTransaction,
   triggerOnrampSweep,
   createOfframpOrder,
   createOfframpPayout,
