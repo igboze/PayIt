@@ -290,7 +290,6 @@ async function createOfframpOrder(params) {
     mint: params.mint || (isArcRailEnabled() ? RAILS.arc.mint : RAILS.solana.mint),
     chain: params.chain || (isArcRailEnabled() ? RAILS.arc.chain : RAILS.solana.chain),
     webhookURL: params.webhookURL || process.env.PAJ_WEBHOOK_URL || undefined,
-    userExternalId: params.userExternalId ? String(params.userExternalId) : undefined,
     businessUSDCFee: typeof params.businessUSDCFee === "number" ? params.businessUSDCFee : 0,
     description: params.description || "Proxim Cashout",
   };

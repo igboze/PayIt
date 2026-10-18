@@ -46,7 +46,7 @@ async function requestOfframp(telegramId, amountMicro, bankDetails) {
     }
 
     if (telegramId) {
-      payload.userExternalId = String(telegramId);
+      payload.description = `Proxim Cash Out - TG:${telegramId}`;
     }
 
     const order = await paj.createOfframpOrder(payload);
