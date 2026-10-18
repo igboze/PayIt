@@ -156,6 +156,7 @@ async function pollPendingOfframpOrders(bot) {
   const pendingOrders = db.getPendingOfframpOrders ? db.getPendingOfframpOrders() : [];
   if (!pendingOrders || pendingOrders.length === 0) return { polled: 0, completed: 0 };
 
+  const botInstance = (bot && bot.telegram) ? bot : (bot && bot.bot && bot.bot.telegram ? bot.bot : bot);
   let completedCount = 0;
   for (const order of pendingOrders) {
     try {
@@ -163,8 +164,14 @@ async function pollPendingOfframpOrders(bot) {
       if (!liveOrder) continue;
 
       const orderData = liveOrder.data || liveOrder;
-      const status = String(orderData.status || "").toLowerCase();
-      if (status === "completed" || status === "successful" || status === "paid" || status === "settled") {
+      const status = String(orderData.status || orderData.transactionStatus || orderData.state || "").toLowerCase();
+      if (
+        status === "completed" ||
+        status === "successful" ||
+        status === "paid" ||
+        status === "settled" ||
+        status === "success"
+      ) {
         const txHash = orderData.txHash || orderData.hash || order.tx_hash || `paj-offramp-${order.order_id}`;
 
         // 1. Mark completed in DB
@@ -189,7 +196,7 @@ async function pollPendingOfframpOrders(bot) {
         }
 
         // 3. Send rich receipt notification to user
-        if (bot && order.telegram_id) {
+        if (botInstance?.telegram && order.telegram_id) {
           try {
             const user = db.getUser(order.telegram_id);
             const isBiz = order.account_type === "business";
@@ -234,28 +241,28 @@ async function pollPendingOfframpOrders(bot) {
 
             const cleanCaption = caption.length > 950 ? caption.slice(0, 940) + "..." : caption;
 
-            if (receiptPath && typeof bot.telegram?.sendPhoto === "function") {
+            if (receiptPath && typeof botInstance.telegram.sendPhoto === "function") {
               try {
-                await bot.telegram.sendPhoto(
+                await botInstance.telegram.sendPhoto(
                   order.telegram_id,
                   { source: receiptPath },
                   { caption: cleanCaption, parse_mode: "HTML" }
                 );
               } catch (photoErr) {
                 console.warn("[settlement_daemon:sendPhoto_fallback]", photoErr.message);
-                if (typeof bot.telegram?.sendMessage === "function") {
-                  await bot.telegram.sendMessage(order.telegram_id, caption, { parse_mode: "HTML" });
+                if (typeof botInstance.telegram.sendMessage === "function") {
+                  await botInstance.telegram.sendMessage(order.telegram_id, caption, { parse_mode: "HTML" });
                 }
               }
-            } else if (typeof bot.telegram?.sendMessage === "function") {
-              await bot.telegram.sendMessage(order.telegram_id, caption, { parse_mode: "HTML" });
+            } else if (typeof botInstance.telegram.sendMessage === "function") {
+              await botInstance.telegram.sendMessage(order.telegram_id, caption, { parse_mode: "HTML" });
             }
           } catch (notifErr) {
             console.warn(`[settlement_daemon] Failed to notify user ${order.telegram_id}:`, notifErr.message);
           }
         }
         completedCount++;
-      } else if (status === "failed" || status === "cancelled" || status === "rejected") {
+      } else if (status === "failed" || status === "cancelled" || status === "rejected" || status === "reversed" || status === "declined") {
         db.completeOfframpOrder(order.order_id, { status: "failed" });
         if (order.telegram_id) {
           try {
@@ -264,9 +271,9 @@ async function pollPendingOfframpOrders(bot) {
             console.warn("[settlement_daemon:offramp_fail_tx_err]", txErr.message);
           }
         }
-        if (bot && order.telegram_id) {
+        if (botInstance?.telegram && order.telegram_id) {
           try {
-            await bot.telegram.sendMessage(
+            await botInstance.telegram.sendMessage(
               order.telegram_id,
               `⚠️ <b>Cash Out Failed</b>\n──────────────────────────\n` +
               `Your cash out request (<code>${order.order_id}</code>) could not be settled by the bank.\n` +
@@ -283,6 +290,34 @@ async function pollPendingOfframpOrders(bot) {
   }
 
   return { polled: pendingOrders.length, completed: completedCount };
+}
+
+/**
+ * Fast proactive watcher for an off-ramp order right after user submission.
+ * Proactively polls Paj v2 every few seconds so that user gets their
+ * confirmed delivery receipt within seconds of settlement.
+ */
+function watchOfframpOrder(orderId, bot) {
+  if (!orderId) return;
+  const delays = [3000, 6000, 10000, 15000, 25000, 40000, 60000, 90000, 120000];
+  let idx = 0;
+  function scheduleNext() {
+    if (idx >= delays.length) return;
+    const delay = delays[idx++];
+    setTimeout(async () => {
+      try {
+        const order = db.getOfframpOrderByOrderId ? db.getOfframpOrderByOrderId(orderId) : null;
+        if (order && (order.status === "completed" || order.status === "failed")) return;
+        await pollPendingOfframpOrders(bot);
+        const updated = db.getOfframpOrderByOrderId ? db.getOfframpOrderByOrderId(orderId) : null;
+        if (updated && (updated.status === "completed" || updated.status === "failed")) return;
+        scheduleNext();
+      } catch (err) {
+        console.warn("[settlement_daemon:watchOfframpOrder]", err.message);
+      }
+    }, delay);
+  }
+  scheduleNext();
 }
 
 /**
@@ -447,6 +482,9 @@ module.exports = {
   startSettlementDaemon,
   stopSettlementDaemon,
   runTaskNow,
+  watchOfframpOrder,
+  pollPendingOfframpOrders,
+  pollPendingOnrampOrders,
   listTasks,
   isRunning,
   defaultTasks,
