@@ -8,9 +8,21 @@
 // - High-performance SVG -> PNG rendering via resvg-js and DejaVu fonts
 
 const path = require("path");
+const fs = require("fs");
 const os = require("os");
 const { getFontCss } = require("./svg_fonts");
 const { renderSvgToPngFile } = require("./svg_render");
+
+// Load the real Proxim logo once at module boot and embed as a base64 data URI.
+// Falls back gracefully if the asset file is missing (e.g. in tests).
+let PROXIM_LOGO_DATA_URI = "";
+try {
+  const logoPath = path.join(__dirname, "assets", "proxim_logo.png");
+  const logoBytes = fs.readFileSync(logoPath);
+  PROXIM_LOGO_DATA_URI = `data:image/png;base64,${logoBytes.toString("base64")}`;
+} catch (_) {
+  // Asset not found — header will show no logo rather than crashing
+}
 
 function escape(str) {
   if (!str) return "";
@@ -332,11 +344,11 @@ function buildReceiptSvg(opts = {}) {
 
   <!-- ==================== HEADER (.top) ==================== -->
   <g transform="translate(${slipX + 22}, ${slipY + 16})">
-    <!-- Proxim Emblem Logo (40x40 rounded badge) -->
-    <rect width="40" height="40" rx="12" fill="url(#forestGrad)"/>
-    <!-- Stylized Proxim Diamond / P Monogram -->
-    <path d="M 14 27 L 14 13 L 23 13 C 25.5 13 27 14.5 27 17 C 27 19.5 25.5 21 23 21 L 18 21 L 18 27 Z" fill="#ffffff"/>
-    <circle cx="21" cy="17" r="2" fill="#08B766"/>
+    <!-- Proxim Logo (40x40) -->
+    ${PROXIM_LOGO_DATA_URI
+      ? `<image href="${PROXIM_LOGO_DATA_URI}" x="0" y="0" width="40" height="40"/>`
+      : `<rect width="40" height="40" rx="12" fill="#0A3E30"/>`
+    }
 
     <!-- Brand Name -->
     <text x="50" y="26" font-size="18" font-weight="800" fill="#0B2A22" letter-spacing="-0.3">Proxim</text>
