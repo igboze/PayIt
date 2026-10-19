@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proxim receipt · CO-6ad618ad9d</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --forest:#0F5540;
+  --forest-mid:#0A3E30;
+  --forest-deep:#05231E;
+  --signal:#08B766;
+  --ink:#0B2A22;
+  --muted:#5F766E;
+  --line:#E4EBE7;
+  --tint:#F2F6F4;
+  --soft:#A9C9BC;
+  --stage:#E7EEEA;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--stage);min-height:100vh}
+body{
+  font-family:'Manrope',system-ui,sans-serif;
+  color:var(--ink);
+  display:flex;
+  justify-content:center;
+  align-items:flex-start;
+  padding:32px 14px;
+  -webkit-font-smoothing:antialiased;
+}
+.slip{
+  width:400px;
+  max-width:100%;
+  background:#fff;
+  border-radius:20px 20px 0 0;
+  padding-bottom:12px;
+  box-shadow:0 1px 2px rgba(5,35,30,.10), 0 16px 34px -16px rgba(5,35,30,.35);
+  -webkit-mask:conic-gradient(from -45deg at bottom,#0000,#000 1deg 89deg,#0000 90deg) bottom/14px 100%;
+          mask:conic-gradient(from -45deg at bottom,#0000,#000 1deg 89deg,#0000 90deg) bottom/14px 100%;
+}
+.top{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  padding:22px 22px 18px;
+}
+.logo-badge{
+  width:40px;
+  height:40px;
+  border-radius:12px;
+  background:linear-gradient(180deg, var(--forest) 0%, var(--forest-mid) 100%);
+  display:grid;
+  place-items:center;
+  flex:none;
+}
+.logo-badge svg{width:22px;height:22px}
+.top b{flex:1;font-size:18px;font-weight:800;letter-spacing:-.015em}
+.top span{font-size:12px;font-weight:600;color:var(--muted)}
+
+.hero{
+  margin:0 14px;
+  background:var(--forest-mid);
+  border-radius:14px;
+  padding:26px 20px 24px;
+  text-align:center;
+  color:#fff;
+}
+.tick{
+  width:48px;
+  height:48px;
+  border-radius:50%;
+  background:var(--signal);
+  display:grid;
+  place-items:center;
+  margin:0 auto 14px;
+}
+.tick svg{width:22px;height:22px;color:var(--forest-deep)}
+.hero .lab{font-size:13.5px;font-weight:600;color:var(--soft)}
+.fig{
+  display:flex;
+  justify-content:center;
+  align-items:baseline;
+  gap:8px;
+  margin-top:8px;
+  font-variant-numeric:tabular-nums;
+}
+.fig strong{font-size:44px;font-weight:800;letter-spacing:-.04em;line-height:1}
+.fig em{font-style:normal;font-size:17px;font-weight:700;color:var(--soft)}
+.ngn{margin-top:10px;font-size:14.5px;font-weight:700;font-variant-numeric:tabular-nums}
+.ngn span{font-weight:500;color:var(--soft)}
+
+.to{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  margin:12px 14px 0;
+  background:var(--tint);
+  border-radius:14px;
+  padding:14px 16px;
+}
+.av{
+  width:40px;
+  height:40px;
+  border-radius:50%;
+  background:var(--forest);
+  color:#fff;
+  display:grid;
+  place-items:center;
+  font-size:13px;
+  font-weight:800;
+  flex:none;
+}
+.to small{display:block;font-size:11.5px;font-weight:500;color:var(--muted)}
+.to b{display:block;font-size:14.5px;font-weight:800;margin-top:2px;line-height:1.25}
+.to i{display:block;font-style:normal;font-size:12.5px;font-weight:600;color:var(--muted);margin-top:1px;font-variant-numeric:tabular-nums}
+
+dl{padding:8px 22px 0;margin-top:8px}
+.row{
+  display:flex;
+  justify-content:space-between;
+  align-items:baseline;
+  gap:16px;
+  padding:13px 0;
+  border-bottom:1px solid var(--line);
+}
+.row:last-child{border-bottom:0}
+dt{font-size:13px;font-weight:500;color:var(--muted);flex:none}
+dd{text-align:right;font-size:13.5px;font-weight:700;line-height:1.35;font-variant-numeric:tabular-nums}
+dd small{font-size:10.5px;font-weight:500;color:var(--muted);font-family:'JetBrains Mono',monospace}
+.mono{font-family:'JetBrains Mono',ui-monospace,monospace;font-weight:500;font-size:12.5px;letter-spacing:-.02em;color:var(--forest)}
+.status-confirmed{color:var(--signal);font-weight:800}
+
+.foot{
+  margin:4px 22px 0;
+  border-top:2px dashed #CBD8D2;
+  padding:18px 0 20px;
+  text-align:center;
+}
+.foot p{font-size:13.5px;font-weight:800;color:var(--forest)}
+.foot span{display:block;margin-top:3px;font-size:11.5px;font-weight:500;color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+<article class="slip" id="slip" aria-label="Proxim cash out receipt">
+  <header class="top">
+    <div class="logo-badge">
+      <svg viewBox="0 0 24 24" fill="none">
+        <path d="M 6 18 L 6 4 L 14 4 C 16.5 4 18 5.5 18 8 C 18 10.5 16.5 12 14 12 L 10 12 L 10 18 Z" fill="#ffffff"/>
+        <circle cx="13" cy="8" r="2" fill="#08B766"/>
+      </svg>
+    </div>
+    <b>Proxim</b>
+    <span>CO-6ad618ad9d</span>
+  </header>
+
+  <div class="hero">
+    <div class="tick">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="20 6 9 17 4 12"></polyline>
+      </svg>
+    </div>
+    <div class="lab">Cash Out Delivered</div>
+    <div class="fig">
+      <strong>225.00</strong>
+      <em>USDC</em>
+    </div>
+    <div class="ngn">₦337,500.00 <span>NGN</span></div>
+  </div>
+
+  <div class="to">
+    <div class="av">II</div>
+    <div>
+      <small>Destination Account</small>
+      <b>IBOH IGBOZE IGBOZE</b>
+      <i>GTBank · 5699518754</i>
+    </div>
+  </div>
+
+  <dl>
+    <div class="row">
+      <dt>Payment type</dt>
+      <dd>Cash Out</dd>
+    </div>
+    <div class="row">
+      <dt>From</dt>
+      <dd>Proxim Wallet <small>(0x39a1...9a0f)</small></dd>
+    </div>
+    <div class="row">
+      <dt>Date &amp; time</dt>
+      <dd>18 Oct 2026, 18:02</dd>
+    </div>
+    <div class="row">
+      <dt>Reference</dt>
+      <dd class="mono">CO-6ad618ad9d</dd>
+    </div>
+    <div class="row">
+      <dt>Transaction ID</dt>
+      <dd class="mono">0x6ad5051b...00f89e21</dd>
+    </div>
+    <div class="row">
+      <dt>Status</dt>
+      <dd class="status-confirmed">✓ Completed</dd>
+    </div>
+  </dl>
+
+  <footer class="foot">
+    <p>Proxim</p>
+    <span>Save in dollars. Spend in Naira.</span>
+  </footer>
+</article>
+</main>
+</body>
+</html>

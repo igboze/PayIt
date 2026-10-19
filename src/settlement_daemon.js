@@ -227,6 +227,7 @@ async function pollPendingOfframpOrders(bot) {
                 senderAddress: userAddress || "Proxim Wallet",
                 recipientName: order.account_name || bankName,
                 recipientAddress: accountNumber,
+                bankName: bankName,
                 amountUsdc: amountUsdc,
                 token: "USDC",
                 nairaEquiv: fiatAmount > 0 ? `₦${Number(fiatAmount).toLocaleString()}` : null,
