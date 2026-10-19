@@ -20,6 +20,37 @@ const webhookServer = require("./webhook_server");
 const walletLib = require("./wallet");
 const multichain = require("./multichain");
 
+/**
+ * Extract a clean, customer-friendly failure reason from a PAJ order object.
+ * PAJ may return the reason in several fields depending on the endpoint and failure type.
+ * @param {object} orderData - Raw PAJ order data (already unwrapped from .data)
+ * @returns {string}
+ */
+function extractPajFailureReason(orderData) {
+  const raw =
+    orderData?.failureReason ||
+    orderData?.failure_reason ||
+    orderData?.reason ||
+    orderData?.message ||
+    orderData?.error ||
+    orderData?.description ||
+    "";
+  const cleaned = String(raw).trim();
+  if (!cleaned || cleaned.toLowerCase() === "null" || cleaned.toLowerCase() === "undefined") {
+    return "The banking network could not complete the transfer. Please retry or contact support.";
+  }
+  // Humanise common PAJ error strings
+  if (/invalid.*(account|number)/i.test(cleaned)) return "The destination bank account number is invalid. Please verify the account and try again.";
+  if (/could not find account/i.test(cleaned)) return "NIBSS could not find the destination account. Please check the account number and bank.";
+  if (/insufficient.*(fund|balance)/i.test(cleaned)) return "Insufficient funds in your wallet to complete the transfer.";
+  if (/bank.*not.*found|invalid.*bank/i.test(cleaned)) return "The selected bank was not found on the interbank network. Please check the bank and retry.";
+  if (/duplicate|already.*process/i.test(cleaned)) return "A duplicate transfer was detected. Please wait for the original to settle.";
+  if (/timeout|timed.out/i.test(cleaned)) return "The interbank network timed out. No funds moved. Please retry.";
+  if (/limit|exceed/i.test(cleaned)) return "The transfer exceeds the daily or per-transaction limit for this account.";
+  // Fall through — return the raw reason, capped to 200 chars
+  return cleaned.slice(0, 200);
+}
+
 const DEFAULT_TICK_MS = 5000;
 const STALE_RUN_MINUTES = 15;
 
@@ -31,6 +62,7 @@ async function pollPendingOnrampOrders(bot) {
   const pendingOrders = db.getPendingOnrampOrders ? db.getPendingOnrampOrders() : [];
   if (!pendingOrders || pendingOrders.length === 0) return { polled: 0, completed: 0 };
 
+  const botInstance = (bot && bot.telegram) ? bot : (bot && bot.bot && bot.bot.telegram ? bot.bot : bot);
   let completedCount = 0;
   for (const order of pendingOrders) {
     try {
@@ -139,6 +171,23 @@ async function pollPendingOnrampOrders(bot) {
         completedCount++;
       } else if (status === "failed" || status === "cancelled" || status === "expired") {
         db.completeOnrampOrder(order.order_id, null, status);
+        // Notify user of the deposit failure with the actual PAJ reason
+        if (botInstance?.telegram && order.telegram_id) {
+          try {
+            const failReason = extractPajFailureReason(orderData);
+            const fiatAmt = order.fiat_amount ? `₦${Number(order.fiat_amount).toLocaleString()}` : "your deposit";
+            await botInstance.telegram.sendMessage(
+              order.telegram_id,
+              `❌ <b>Deposit Could Not Be Processed</b>\n──────────────────────────\n` +
+              `Your deposit of ${fiatAmt} (Ref: <code>${order.order_id}</code>) could not be settled.\n\n` +
+              `<b>Reason:</b> ${failReason}\n\n` +
+              `<i>No funds were deducted from your bank account. If money was debited, please contact support with the reference above.</i>`,
+              { parse_mode: "HTML" }
+            );
+          } catch (notifErr) {
+            console.warn(`[settlement_daemon] onramp fail notify error for ${order.telegram_id}:`, notifErr.message);
+          }
+        }
       }
     } catch (err) {
       console.warn(`[settlement_daemon] pollPendingOnrampOrders error on ${order.order_id}:`, err.message);
@@ -157,6 +206,8 @@ async function pollPendingOfframpOrders(bot) {
   if (!pendingOrders || pendingOrders.length === 0) return { polled: 0, completed: 0 };
 
   const botInstance = (bot && bot.telegram) ? bot : (bot && bot.bot && bot.bot.telegram ? bot.bot : bot);
+  // Also wire botInstance into onramp poller scope for failure notifications
+  pollPendingOfframpOrders._botInstance = botInstance;
   let completedCount = 0;
   for (const order of pendingOrders) {
     try {
@@ -274,15 +325,23 @@ async function pollPendingOfframpOrders(bot) {
         }
         if (botInstance?.telegram && order.telegram_id) {
           try {
+            const failReason = extractPajFailureReason(orderData);
+            const amountUsdc = Number(order.amount_usdc || 0);
+            const bankDisplay = order.bank_name
+              ? `${order.bank_name} <code>${order.account_number || ""}</code>`
+              : `<code>${order.account_number || ""}</code>`;
             await botInstance.telegram.sendMessage(
               order.telegram_id,
-              `⚠️ <b>Cash Out Failed</b>\n──────────────────────────\n` +
-              `Your cash out request (<code>${order.order_id}</code>) could not be settled by the bank.\n` +
-              `Reason: ${orderData.reason || "Bank payout rejected"}.\n\n` +
-              `<i>Your funds remain safe in your wallet balance.</i>`,
+              `❌ <b>Cash Out Failed</b>\n──────────────────────────\n` +
+              `Your cash out${amountUsdc > 0 ? ` of <b>$${amountUsdc.toFixed(2)}</b>` : ""} to ${bankDisplay} could not be settled.\n\n` +
+              `<b>Reason:</b> ${failReason}\n\n` +
+              `<b>Ref:</b> <code>${order.order_id}</code>\n\n` +
+              `<i>🔒 Your USDC balance is safe in your wallet. Tap the button below to try again.</i>`,
               { parse_mode: "HTML" }
             );
-          } catch (_) {}
+          } catch (notifErr) {
+            console.warn(`[settlement_daemon] offramp fail notify error for ${order.telegram_id}:`, notifErr.message);
+          }
         }
       }
     } catch (err) {
@@ -298,12 +357,29 @@ async function pollPendingOfframpOrders(bot) {
  * Proactively polls Paj v2 every few seconds so that user gets their
  * confirmed delivery receipt within seconds of settlement.
  */
-function watchOfframpOrder(orderId, bot) {
+function watchOfframpOrder(orderId, bot, telegramId) {
   if (!orderId) return;
-  const delays = [3000, 6000, 10000, 15000, 25000, 40000, 60000, 90000, 120000];
+  // Escalating delays: fast at first (3s, 6s, 10s…), then every 2 min for up to ~10 min total
+  const delays = [3000, 6000, 10000, 15000, 25000, 40000, 60000, 90000, 120000, 120000, 120000];
   let idx = 0;
+  const botInstance = (bot && bot.telegram) ? bot : (bot && bot.bot && bot.bot.telegram ? bot.bot : bot);
+
   function scheduleNext() {
-    if (idx >= delays.length) return;
+    if (idx >= delays.length) {
+      // All poll attempts exhausted without a terminal status — send a soft fallback
+      if (botInstance?.telegram && telegramId) {
+        botInstance.telegram.sendMessage(
+          telegramId,
+          `⏳ <b>Cash Out Still Processing</b>\n──────────────────────────\n` +
+          `Your cash out (Ref: <code>${orderId}</code>) is taking longer than expected.\n\n` +
+          `The bank transfer is still being processed by the interbank network. ` +
+          `You will receive a confirmation or failure notice automatically once it settles.\n\n` +
+          `<i>If you do not hear back within 15 minutes, please contact support with the reference above.</i>`,
+          { parse_mode: "HTML" }
+        ).catch((e) => console.warn("[settlement_daemon:watchOfframpOrder] fallback notify error:", e.message));
+      }
+      return;
+    }
     const delay = delays[idx++];
     setTimeout(async () => {
       try {
@@ -315,6 +391,7 @@ function watchOfframpOrder(orderId, bot) {
         scheduleNext();
       } catch (err) {
         console.warn("[settlement_daemon:watchOfframpOrder]", err.message);
+        scheduleNext();
       }
     }, delay);
   }

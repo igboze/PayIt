@@ -6670,7 +6670,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
           // Proactively watch order status with fast live polling so the user receives their confirmed receipt immediately
           const orderRef = result.reference || state.data.orderId;
           if (orderRef) {
-            settlementDaemon.watchOfframpOrder(orderRef, bot);
+            settlementDaemon.watchOfframpOrder(orderRef, bot, userId);
           }
         } else {
           const friendlyMessage = formatCustomerFriendlyOfframpError(result.error);
