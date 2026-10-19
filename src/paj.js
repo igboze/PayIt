@@ -134,11 +134,18 @@ async function getBanks(filter = {}) {
  */
 async function createOnrampOrder(params) {
   const client = getClient();
+  const selectedChain = params.chain
+    ? String(params.chain).toUpperCase()
+    : (isArcOnrampEnabled() ? String(RAILS.arc.chain).toUpperCase() : String(RAILS.solana.chain).toUpperCase());
+  const defaultMint = (selectedChain === "SOLANA")
+    ? RAILS.solana.mint
+    : (selectedChain === "ARC" ? RAILS.arc.mint : (isArcOnrampEnabled() ? RAILS.arc.mint : RAILS.solana.mint));
+
   const payload = {
     currency: params.currency || "NGN",
     recipient: params.recipient,
-    mint: params.mint || (isArcOnrampEnabled() ? RAILS.arc.mint : RAILS.solana.mint),
-    chain: params.chain || (isArcOnrampEnabled() ? RAILS.arc.chain : RAILS.solana.chain),
+    mint: params.mint || defaultMint,
+    chain: params.chain || (selectedChain === "SOLANA" ? RAILS.solana.chain : (isArcOnrampEnabled() ? RAILS.arc.chain : RAILS.solana.chain)),
     webhookURL: params.webhookURL || process.env.PAJ_WEBHOOK_URL || undefined,
     userExternalId: params.userExternalId ? String(params.userExternalId) : undefined,
     businessUSDCFee: typeof params.businessUSDCFee === "number" ? params.businessUSDCFee : 0,
@@ -311,12 +318,19 @@ async function createOfframpOrder(params) {
     cleanBankCode = cleanBankCode.padStart(6, "0");
   }
 
+  const selectedChain = params.chain
+    ? String(params.chain).toUpperCase()
+    : (isArcRailEnabled() ? String(RAILS.arc.chain).toUpperCase() : String(RAILS.solana.chain).toUpperCase());
+  const defaultMint = (selectedChain === "SOLANA")
+    ? RAILS.solana.mint
+    : (selectedChain === "ARC" ? RAILS.arc.mint : (isArcRailEnabled() ? RAILS.arc.mint : RAILS.solana.mint));
+
   const payload = {
     accountNumber: String(params.accountNumber).trim(),
     bankCode: cleanBankCode,
     currency: params.currency || "NGN",
-    mint: params.mint || (isArcRailEnabled() ? RAILS.arc.mint : RAILS.solana.mint),
-    chain: params.chain || (isArcRailEnabled() ? RAILS.arc.chain : RAILS.solana.chain),
+    mint: params.mint || defaultMint,
+    chain: params.chain || (selectedChain === "SOLANA" ? RAILS.solana.chain : (isArcRailEnabled() ? RAILS.arc.chain : RAILS.solana.chain)),
     webhookURL: params.webhookURL || process.env.PAJ_WEBHOOK_URL || undefined,
     businessUSDCFee: typeof params.businessUSDCFee === "number" ? params.businessUSDCFee : 0,
     description: params.description || "Proxim Cashout",
