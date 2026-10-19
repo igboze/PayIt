@@ -1273,21 +1273,59 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
           ? `\n<i>⚡ Cross-chain bridging & solver routing in progress.\nYour funds typically arrive in 1–2 minutes, and you will receive an arrival alert with your destination transaction link!</i>`
           : `\n<i>Funds typically arrive on the destination chain in 1–5 minutes.</i>`;
 
-        return ctx.reply(
+        const caption =
           `✅ <b>Withdrawal Submitted!</b>\n──────────────────────────\n` +
           `🌐 <b>Destination:</b> ${chainLabel}\n` +
           `💰 <b>Amount:</b> $${Number(result.amount).toFixed(2)} USDC\n` +
           `📍 <b>Recipient:</b> <code>${state.data.destinationAddress}</code>\n` +
           (result.txHash ? `🔗 <b>Arc Burn Hash:</b>\n<code>${result.txHash}</code>\n` : "") +
-          footerNote,
-          {
-            parse_mode: "HTML",
-            ...Markup.inlineKeyboard([
-              [Markup.button.callback("💰 Check Balance", "action_balance")],
-              [Markup.button.callback("🏠 Main Menu", "main_menu")],
-            ]),
+          footerNote;
+
+        const { getActiveWallet } = deps;
+        let receiptPath = null;
+        try {
+          const { generateReceiptPNG } = require("./receipt_generator");
+          receiptPath = await generateReceiptPNG({
+            receiptId: `WD-${(result.txHash || "").slice(0, 10) || Date.now()}`,
+            senderName: user ? (user.business_name || user.first_name || "Proxim Wallet") : "Proxim Wallet",
+            senderAddress: typeof getActiveWallet === "function" ? getActiveWallet(user) : null,
+            recipientName: chainLabel,
+            recipientAddress: state.data.destinationAddress,
+            amountUsdc: Number(result.amount),
+            token: "USDC",
+            type: "Withdrawal",
+            timestamp: new Date().toISOString(),
+            status: "Confirmed",
+            txHash: result.txHash,
+          });
+        } catch (recErr) {
+          console.warn("[flows_multichain:receipt_err]", recErr.message);
+        }
+
+        const keyboard = Markup.inlineKeyboard([
+          [Markup.button.callback("💰 Check Balance", "action_balance")],
+          [Markup.button.callback("🏠 Main Menu", "main_menu")],
+        ]);
+
+        if (receiptPath && typeof ctx.replyWithPhoto === "function") {
+          try {
+            return await ctx.replyWithPhoto(
+              { source: receiptPath },
+              {
+                caption,
+                parse_mode: "HTML",
+                ...keyboard,
+              }
+            );
+          } catch (photoErr) {
+            console.warn("[flows_multichain:photo_fallback]", photoErr.message);
           }
-        );
+        }
+
+        return ctx.reply(caption, {
+          parse_mode: "HTML",
+          ...keyboard,
+        });
       }
       return ctx.reply(`❌ ${result.error}`, deps.backToMenu);
     } catch (err) {

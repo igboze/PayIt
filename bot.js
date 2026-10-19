@@ -7248,19 +7248,47 @@ function formatCustomerFriendlyOfframpError(rawError) {
       const safeDevFee = Number(devFeeAmount) || 0;
       const safeNetPaid = Number(netPaid) || 0;
 
-      return ctx.reply(
+      let receiptPath = null;
+      try {
+        receiptPath = await generateReceiptPNG({
+          receiptId: `SAV-${(withdrawTx || "").slice(0, 10) || Date.now()}`,
+          senderName: "Proxim Savings Vault",
+          recipientName: user ? (context === "business" ? (user.business_name || "Business Treasury") : (user.first_name || "Personal Wallet")) : "Proxim Account",
+          recipientAddress: userWallet.address,
+          amountUsdc: safeNetPaid,
+          token: "USDC",
+          type: "Savings Withdrawal",
+          timestamp: new Date().toISOString(),
+          status: "Confirmed",
+          txHash: withdrawTx,
+        });
+      } catch (recErr) {
+        console.warn("[bot:earn_withdraw:receipt_err]", recErr.message);
+      }
+
+      const caption =
         `✅ <b>${context === "business" ? "Business" : "Personal"} Savings Withdrawn!</b>\n──────────────────────────\n` +
         `• <b>Account:</b> ${context === "business" ? "Business Treasury" : "Personal Wallet"}\n` +
         `• <b>Principal Returned:</b> $${principalReturned.toFixed(2)}\n` +
         `• <b>Interest Earned:</b> +$${accruedEarned.toFixed(4)}\n` +
         `• <b>Service Fee (10% on profit):</b> -$${safeDevFee.toFixed(4)}\n` +
         `• <b>Net Credited to Account:</b> $${safeNetPaid.toFixed(4)}` +
-        txLinks,
-        {
-          parse_mode: "HTML",
-          ...afterPaymentButtons,
-        }
-      );
+        txLinks;
+
+      if (receiptPath && typeof ctx.replyWithPhoto === "function") {
+        try {
+          return await ctx.replyWithPhoto({ source: receiptPath }, {
+            caption,
+            parse_mode: "HTML",
+            ...afterPaymentButtons,
+          });
+        } catch (_) {}
+      }
+
+      return ctx.reply(caption, {
+        parse_mode: "HTML",
+        ...afterPaymentButtons,
+      });
     }
 
     // ── Arc Stablecoin Swap (FX) ──────────────────────────────────────────────
