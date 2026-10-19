@@ -2010,16 +2010,37 @@ async function completeCctpWithdrawalOnEvm({
   if (bot && telegramId) {
     try {
       const displayAmount = amountUsdc != null ? `$${Number(amountUsdc).toFixed(2)} USDC` : "USDC";
-      await bot.telegram.sendMessage(
-        telegramId,
+      const caption =
         `✅ <b>Withdrawal Completed!</b>\n──────────────────────────\n` +
         `🌐 <b>Network:</b> ${targetConfig.name}\n` +
         `💰 <b>Amount:</b> ${displayAmount}\n` +
         `📍 <b>Delivered to:</b> <code>${destinationRecipientAddress}</code>\n` +
         (destTxHash && destTxHash !== "already_minted" ? `🔗 <b>Transaction:</b> <code>${destTxHash}</code>\n\n` : "\n") +
-        `<i>Your funds have successfully arrived!</i>`,
-        { parse_mode: "HTML" }
-      );
+        `<i>Your funds have successfully arrived!</i>`;
+
+      let receiptPath = null;
+      try {
+        receiptPath = await generateReceiptPNG({
+          receiptId: `WD-${(destTxHash && destTxHash !== "already_minted" ? destTxHash : arcTxHash || "").slice(0, 10) || Date.now()}`,
+          senderName: "Proxim Wallet",
+          recipientName: targetConfig.name,
+          recipientAddress: destinationRecipientAddress,
+          amountUsdc: Number(amountUsdc) || 0,
+          token: "USDC",
+          type: "Withdrawal",
+          timestamp: new Date().toISOString(),
+          status: "Confirmed",
+          txHash: destTxHash && destTxHash !== "already_minted" ? destTxHash : arcTxHash,
+        });
+      } catch (_) {}
+
+      if (receiptPath && typeof bot.telegram.sendPhoto === "function") {
+        await bot.telegram.sendPhoto(telegramId, { source: receiptPath }, { caption, parse_mode: "HTML" }).catch(async () => {
+          await bot.telegram.sendMessage(telegramId, caption, { parse_mode: "HTML" });
+        });
+      } else {
+        await bot.telegram.sendMessage(telegramId, caption, { parse_mode: "HTML" });
+      }
     } catch (notifErr) {
       console.warn("[cctp_bridge:evm_notif_note]", notifErr.message);
     }
@@ -2316,26 +2337,48 @@ async function processPendingCrosschainWithdrawals(bot = null) {
               ? `\n🔗 <b>${chainUpper} Explorer:</b> <a href="${explorerUrl}">View Transaction</a>`
               : (destTx ? `\n🔗 <b>Tx Hash:</b> <code>${destTx}</code>` : "");
 
+            const caption =
+              `🎉 <b>Withdrawal Arrived on ${chainUpper}!</b>\n` +
+              `──────────────────────────\n` +
+              `🌐 <b>Destination:</b> ${chainUpper}\n` +
+              `📍 <b>Recipient:</b> <code>${w.destination_address}</code>\n` +
+              `🪙 <b>Amount Delivered:</b> <b>${actualAmountOut ? `${Number(actualAmountOut).toFixed(4)} ${chainUpper}` : `$${Number(w.amount_usdc).toFixed(2)} USDC`}</b>\n` +
+              `${explorerLink}\n\n` +
+              `<i>Your cross-chain withdrawal has successfully arrived at your destination address!</i>`;
+
+            const keyboardExtra = {
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: "💰 View Balance", callback_data: "action_balance" }],
+                  [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
+                ],
+              },
+            };
+
+            let receiptPath = null;
             try {
-              await bot.telegram.sendMessage(
-                w.telegram_id,
-                `🎉 <b>Withdrawal Arrived on ${chainUpper}!</b>\n` +
-                `──────────────────────────\n` +
-                `🌐 <b>Destination:</b> ${chainUpper}\n` +
-                `📍 <b>Recipient:</b> <code>${w.destination_address}</code>\n` +
-                `🪙 <b>Amount Delivered:</b> <b>${actualAmountOut ? `${Number(actualAmountOut).toFixed(4)} ${chainUpper}` : `$${Number(w.amount_usdc).toFixed(2)} USDC`}</b>\n` +
-                `${explorerLink}\n\n` +
-                `<i>Your cross-chain withdrawal has successfully arrived at your destination address!</i>`,
-                {
-                  parse_mode: "HTML",
-                  reply_markup: {
-                    inline_keyboard: [
-                      [{ text: "💰 View Balance", callback_data: "action_balance" }],
-                      [{ text: "🏠 Main Menu", callback_data: "main_menu" }],
-                    ],
-                  },
-                }
-              );
+              receiptPath = await generateReceiptPNG({
+                receiptId: `WD-${(destTx || w.arc_tx_hash || "").slice(0, 10) || Date.now()}`,
+                senderName: "Proxim Wallet",
+                recipientName: chainUpper,
+                recipientAddress: w.destination_address,
+                amountUsdc: Number(w.amount_usdc) || 0,
+                token: "USDC",
+                type: "Withdrawal",
+                timestamp: new Date().toISOString(),
+                status: "Confirmed",
+                txHash: destTx || w.arc_tx_hash,
+              });
+            } catch (_) {}
+
+            try {
+              if (receiptPath && typeof bot.telegram.sendPhoto === "function") {
+                await bot.telegram.sendPhoto(w.telegram_id, { source: receiptPath }, { caption, parse_mode: "HTML", ...keyboardExtra }).catch(async () => {
+                  await bot.telegram.sendMessage(w.telegram_id, caption, { parse_mode: "HTML", ...keyboardExtra });
+                });
+              } else {
+                await bot.telegram.sendMessage(w.telegram_id, caption, { parse_mode: "HTML", ...keyboardExtra });
+              }
             } catch (notifErr) {
               console.warn(`[cctp_bridge:cc_sweep] Arrival notification error:`, notifErr.message);
             }
@@ -2526,17 +2569,38 @@ async function processPendingCrosschainWithdrawals(bot = null) {
           if (bot && w.telegram_id) {
             try {
               const solscanUrl = `https://solscan.io/tx/${solResult.solanaTxSignature}`;
-              await bot.telegram.sendMessage(
-                w.telegram_id,
+              const caption =
                 `🎉 <b>Withdrawal Arrived on Solana!</b>\n` +
                 `──────────────────────────\n` +
                 `🌐 <b>Destination:</b> Solana\n` +
                 `📍 <b>Recipient:</b> <code>${w.destination_address}</code>\n` +
                 `🪙 <b>Amount Delivered:</b> $${Number(w.amount_usdc).toFixed(2)} USDC\n` +
                 `🔗 <b>Solscan:</b> <a href="${solscanUrl}">View Transaction</a>\n\n` +
-                `<i>Your USDC withdrawal has been minted on Solana!</i>`,
-                { parse_mode: "HTML" }
-              );
+                `<i>Your USDC withdrawal has been minted on Solana!</i>`;
+
+              let receiptPath = null;
+              try {
+                receiptPath = await generateReceiptPNG({
+                  receiptId: `WD-${solResult.solanaTxSignature.slice(0, 10)}`,
+                  senderName: "Proxim Wallet",
+                  recipientName: "Solana",
+                  recipientAddress: w.destination_address,
+                  amountUsdc: Number(w.amount_usdc) || 0,
+                  token: "USDC",
+                  type: "Withdrawal",
+                  timestamp: new Date().toISOString(),
+                  status: "Confirmed",
+                  txHash: solResult.solanaTxSignature,
+                });
+              } catch (_) {}
+
+              if (receiptPath && typeof bot.telegram.sendPhoto === "function") {
+                await bot.telegram.sendPhoto(w.telegram_id, { source: receiptPath }, { caption, parse_mode: "HTML" }).catch(async () => {
+                  await bot.telegram.sendMessage(w.telegram_id, caption, { parse_mode: "HTML" });
+                });
+              } else {
+                await bot.telegram.sendMessage(w.telegram_id, caption, { parse_mode: "HTML" });
+              }
             } catch (_) {}
           }
         }

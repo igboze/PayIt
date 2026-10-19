@@ -99,6 +99,8 @@ function buildReceiptSvg(opts = {}) {
   const typeLower = (type || "").toLowerCase();
   const isDeposit = typeLower.includes("deposit") || typeLower.includes("received");
   const isCashOut = typeLower.includes("cash out") || typeLower.includes("offramp");
+  const isWithdrawal = typeLower.includes("withdraw");
+  const isSavingsWithdraw = typeLower.includes("savings") && isWithdrawal;
   const isPending = (status || "").toLowerCase().includes("pending");
   const isFailed = (status || "").toLowerCase().includes("fail") || (status || "").toLowerCase().includes("decline");
   const isConfirmed = !isPending && !isFailed;
@@ -106,7 +108,9 @@ function buildReceiptSvg(opts = {}) {
   let heroLabel = "Amount sent";
   if (isFailed) heroLabel = `${escape(type)} Failed`;
   else if (isDeposit) heroLabel = "Amount received";
-  else if (isCashOut) heroLabel = "Cash Out Delivered";
+  else if (isSavingsWithdraw) heroLabel = "Savings Withdrawn";
+  else if (isCashOut) heroLabel = isPending ? "Cash Out Processing" : "Cash Out Delivered";
+  else if (isWithdrawal) heroLabel = isPending ? "Withdrawal Submitted" : "Withdrawal Delivered";
   else heroLabel = `${escape(type)} Successful`;
 
   let dateStr = "";
@@ -210,7 +214,13 @@ function buildReceiptSvg(opts = {}) {
     statusFill = "#D97706";
   }
 
-  const destSubtitle = isDeposit ? "Credited Account" : (isCashOut ? "Destination Account" : "Recipient");
+  const destSubtitle = isDeposit
+    ? "Credited Account"
+    : (isSavingsWithdraw
+        ? "Returned to Account"
+        : ((isCashOut || isWithdrawal)
+            ? (isBankPayout ? "Destination Account" : "Destination Wallet")
+            : "Recipient"));
   const initials = getInitials(cleanRecipientName || senderName);
 
   const rows = [];
