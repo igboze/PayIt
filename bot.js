@@ -267,6 +267,37 @@ function requireUser(ctx) {
   return user;
 }
 
+function escapeHtml(str) {
+  if (!str) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+async function safeReplyHtml(ctx, htmlText, extra = {}) {
+  try {
+    return await ctx.reply(htmlText, { parse_mode: "HTML", ...extra });
+  } catch (err) {
+    console.warn("[bot:safeReplyHtml] HTML reply failed, falling back to plain text:", err.message);
+    const plain = String(htmlText || "").replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+    return await ctx.reply(plain, extra);
+  }
+}
+
+async function safeReplyFormattedResults(ctx, results, extra = {}) {
+  const msg = formatResults(results);
+  try {
+    return await ctx.reply(msg, { parse_mode: "Markdown", ...extra });
+  } catch (err) {
+    console.warn("[bot:safeReplyFormattedResults] Markdown reply failed, falling back to plain text:", err.message);
+    const plain = String(msg || "").replace(/[*_`[\]()]/g, "");
+    return await ctx.reply(plain, extra);
+  }
+}
+
 function buildPlanFromClassifiedIntent(classified) {
   const recipients = Array.isArray(classified.params?.recipients)
     ? classified.params.recipients
@@ -274,7 +305,7 @@ function buildPlanFromClassifiedIntent(classified) {
 
   const payments = recipients.map((r) => {
     const amount = Number(r.amount) || 0;
-    const isOfframp = !!(r.account_number || r.bank_name || r.account_name);
+    const isOfframp = classified?.intent === "offramp" || !!(r.account_number || r.bank_name || r.account_name);
     const to = isOfframp
       ? "__offramp__"
       : r.wallet_address || (r.name_or_address ? `__name__:${r.name_or_address}` : "__offramp__");
@@ -289,7 +320,7 @@ function buildPlanFromClassifiedIntent(classified) {
       bank_name:     r.bank_name || null,
       account_number:r.account_number || null,
       account_name:  r.account_name || null,
-      currency:      r.currency || "USDC",
+      currency:      r.currency || (isOfframp && classified.params?.currency === "NGN" ? "NGN" : "USDC"),
     };
   });
 
@@ -2922,7 +2953,51 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
       liveAccountName = orderData.accountName;
     }
   } catch (valErr) {
+    const msg = String(valErr.message || "");
+    const lowerMsg = msg.toLowerCase();
     console.warn("[bot:use_saved_bank:prevalidation_note]", valErr.message);
+
+    if (
+      lowerMsg.includes("invalid account") ||
+      lowerMsg.includes("could not find account") ||
+      lowerMsg.includes("account not found")
+    ) {
+      return safeReplyHtml(ctx,
+        `❌ <b>Could Not Verify Saved Bank Account</b>\n──────────────────────────\n` +
+        `The banking network (NIBSS) could not verify account <code>${escapeHtml(parsed.accountNumber)}</code> for <b>${escapeHtml(parsed.bankName)}</b>.\n\n` +
+        `Please check that the account is active or update your saved contact.`,
+        backToMenu
+      );
+    }
+    if (lowerMsg.includes("minimum") || lowerMsg.includes("at least") || lowerMsg.includes("below")) {
+      return safeReplyHtml(ctx,
+        `❌ <b>Amount Below Minimum</b>\n──────────────────────────\n` +
+        `The minimum cash-out amount is $1.00 USDC.\n\n` +
+        `Your requested net payout is $${netAmountUsdc.toFixed(2)}.\n` +
+        `Please select a larger amount.`,
+        Markup.inlineKeyboard([
+          [Markup.button.callback("💵 Select Amount", "action_withdraw_menu")],
+          [Markup.button.callback("❌ Cancel", "main_menu")],
+        ])
+      );
+    }
+    if (lowerMsg.includes("offline") || lowerMsg.includes("maintenance")) {
+      return safeReplyHtml(ctx,
+        `❌ <b>Bank Temporarily Unavailable</b>\n──────────────────────────\n` +
+        `<b>${escapeHtml(parsed.bankName)}</b> is currently offline on the interbank settlement switch.\n\n` +
+        `Please try sending to another bank account.`,
+        backToMenu
+      );
+    }
+    if (lowerMsg.includes("400") || lowerMsg.includes("bad request") || lowerMsg.includes("validation")) {
+      const cleanReason = escapeHtml(msg.replace(/^Paj createOfframpOrder failed \(\d+\):\s*/i, "").replace(/[{"}]/g, "").slice(0, 160));
+      return safeReplyHtml(ctx,
+        `❌ <b>Cash Out Could Not Be Initiated</b>\n──────────────────────────\n` +
+        `⚠️ <b>Reason:</b> ${cleanReason || "Validation error"}\n\n` +
+        `Please check your details or try another bank.`,
+        backToMenu
+      );
+    }
   }
 
   const resOrderData = orderReservation?.data || orderReservation;
@@ -6469,14 +6544,21 @@ bot.on("text", async (ctx) => {
           convState.clearState(userId);
           return bot.handleUpdate({ update_id: ctx.update.update_id, message: ctx.message });
         }
-        return ctx.reply(
+        return safeReplyHtml(ctx,
           `⚠️ <b>Please enter a valid 10-digit Nigerian bank account number.</b>\n\n` +
           `Format: <b>Bank Name · Account Number</b>\n` +
           `Example: <code>GTBank · 0123456789</code> or <code>Kuda · 2001234567</code>`,
-          {
-            parse_mode: "HTML",
-            ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]),
-          }
+          Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+        );
+      }
+
+      if (!parsed.bankCode) {
+        return safeReplyHtml(ctx,
+          `⚠️ <b>Could Not Identify Bank</b>\n──────────────────────────\n` +
+          `We found account number <code>${escapeHtml(parsed.accountNumber)}</code>, but could not identify the bank name.\n\n` +
+          `Please provide the bank name along with your account number.\n` +
+          `<i>Example: <code>GTBank · ${escapeHtml(parsed.accountNumber)}</code> or <code>Kuda · ${escapeHtml(parsed.accountNumber)}</code></i>`,
+          Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
         );
       }
 
@@ -6504,26 +6586,62 @@ bot.on("text", async (ctx) => {
         }
       } catch (valErr) {
         const msg = String(valErr.message || "");
+        const lowerMsg = msg.toLowerCase();
+        console.warn("[bot:await_withdraw_bank:prevalidation_note]", valErr.message);
+
         if (
-          msg.toLowerCase().includes("invalid account number") ||
-          msg.toLowerCase().includes("could not find account") ||
-          msg.toLowerCase().includes("account not found") ||
-          msg.toLowerCase().includes("invalid account")
+          lowerMsg.includes("invalid account number") ||
+          lowerMsg.includes("could not find account") ||
+          lowerMsg.includes("account not found") ||
+          lowerMsg.includes("invalid account") ||
+          lowerMsg.includes("account_number")
         ) {
-          return ctx.reply(
+          return safeReplyHtml(ctx,
             `❌ <b>Could Not Verify Bank Account</b>\n──────────────────────────\n` +
-            `The banking network (NIBSS) could not find account <code>${parsed.accountNumber}</code> for <b>${parsed.bankName}</b>.\n\n` +
+            `The banking network (NIBSS) could not find account <code>${escapeHtml(parsed.accountNumber)}</code> for <b>${escapeHtml(parsed.bankName)}</b>.\n\n` +
             `Please double check that:\n` +
             `1. The 10-digit account number is correct.\n` +
             `2. The bank name matches where the account was opened.\n\n` +
-            `<i>Try typing it again (e.g. ${parsed.bankName} · ${parsed.accountNumber}):</i>`,
-            {
-              parse_mode: "HTML",
-              ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]),
-            }
+            `<i>Try typing it again (e.g. ${escapeHtml(parsed.bankName)} · ${escapeHtml(parsed.accountNumber)}):</i>`,
+            Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
           );
         }
-        console.warn("[bot:await_withdraw_bank:prevalidation_note]", valErr.message);
+
+        if (lowerMsg.includes("minimum") || lowerMsg.includes("at least") || lowerMsg.includes("below")) {
+          return safeReplyHtml(ctx,
+            `❌ <b>Amount Below Minimum</b>\n──────────────────────────\n` +
+            `Our banking settlement provider requires a minimum cash-out of $1.00 USDC.\n\n` +
+            `Your requested net payout is $${netAmountUsdc.toFixed(2)}.\n` +
+            `Please cash out a larger amount.`,
+            Markup.inlineKeyboard([
+              [Markup.button.callback("💵 Enter New Amount", "action_withdraw_menu")],
+              [Markup.button.callback("❌ Cancel", "main_menu")],
+            ])
+          );
+        }
+
+        if (lowerMsg.includes("offline") || lowerMsg.includes("maintenance") || lowerMsg.includes("switch")) {
+          return safeReplyHtml(ctx,
+            `❌ <b>Bank Temporarily Unavailable</b>\n──────────────────────────\n` +
+            `<b>${escapeHtml(parsed.bankName)}</b> is currently offline on the interbank settlement switch.\n\n` +
+            `Please try sending to another bank account or try again in a few minutes.`,
+            Markup.inlineKeyboard([
+              [Markup.button.callback("🏦 Try Another Bank", "action_withdraw_menu")],
+              [Markup.button.callback("❌ Cancel", "main_menu")],
+            ])
+          );
+        }
+
+        if (lowerMsg.includes("400") || lowerMsg.includes("bad request") || lowerMsg.includes("validation")) {
+          const cleanReason = escapeHtml(msg.replace(/^Paj createOfframpOrder failed \(\d+\):\s*/i, "").replace(/[{"}]/g, "").slice(0, 160));
+          return safeReplyHtml(ctx,
+            `❌ <b>Cash Out Could Not Be Initiated</b>\n──────────────────────────\n` +
+            `The settlement network rejected this order.\n\n` +
+            `⚠️ <b>Reason:</b> ${cleanReason || "Validation error"}\n\n` +
+            `Please check your details or try another bank.`,
+            Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+          );
+        }
       }
 
       const resOrderData = orderReservation?.data || orderReservation;
@@ -6542,27 +6660,24 @@ bot.on("text", async (ctx) => {
         rate: resOrderData?.rate || orderReservation?.rate || null,
       }, state.context);
 
-      const acctNameLine = liveAccountName ? `👤 <b>Account Name:</b> ${liveAccountName}\n` : "";
+      const acctNameLine = liveAccountName ? `👤 <b>Account Name:</b> ${escapeHtml(liveAccountName)}\n` : "";
       const nairaEst = (resOrderData?.fiatAmount || orderReservation?.fiatAmount) ? ` (approx. ₦${Number(resOrderData?.fiatAmount || orderReservation?.fiatAmount).toLocaleString()})` : "";
       const activeRail = (state.data.rail && state.data.rail !== "auto") ? state.data.rail : preferredRail;
       const railTag = activeRail === "solana" ? " ☀️ via Solana" : " ⚡ via Arc";
 
-      return ctx.reply(
+      return safeReplyHtml(ctx,
         `💵 <b>Confirm Cash Out</b>\n` +
         `──────────────────────────\n` +
         `💰 <b>Total Amount:</b> $${amountUsdc.toFixed(2)}\n` +
         `🏷️ <b>Platform Fee (1%):</b> $${feeUsdc.toFixed(2)}\n` +
         `💵 <b>Net to Bank:</b> $${netAmountUsdc.toFixed(2)}${nairaEst}\n` +
         `🔀 <b>Rail:</b> ${railTag.trim()}\n` +
-        `🏦 <b>Bank:</b> ${parsed.bankName}\n` +
-        `🔢 <b>Account Number:</b> <code>${parsed.accountNumber}</code>\n` +
+        `🏦 <b>Bank:</b> ${escapeHtml(parsed.bankName)}\n` +
+        `🔢 <b>Account Number:</b> <code>${escapeHtml(parsed.accountNumber)}</code>\n` +
         acctNameLine + `\n` +
         `<i>Funds will be transferred directly in Naira to this bank account.</i>\n\n` +
         `Enter your 4-digit PIN to authorize:`,
-        {
-          parse_mode: "HTML",
-          ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]),
-        }
+        Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
       );
     }
 
@@ -6574,6 +6689,15 @@ function formatCustomerFriendlyOfframpError(rawError) {
   if (err.includes("not enough") || err.includes("insufficient") || err.includes("balance")) {
     reason = "Your wallet balance is insufficient to cover this cash-out amount and network gas fees.";
     tip = "Please check your balance or move funds between chains before trying again.";
+  } else if (err.includes("minimum") || err.includes("at least") || err.includes("below")) {
+    reason = "The cash-out amount is below the provider minimum threshold ($1.00 USDC).";
+    tip = "Please enter an amount of at least $1.00 USDC.";
+  } else if (err.includes("bankcode") || err.includes("missing bank") || err.includes("could not identify bank") || err.includes("invalid bank")) {
+    reason = "The destination bank could not be recognized or is not supported.";
+    tip = "Please select a supported Nigerian bank (e.g. GTBank, Kuda, Access, Zenith, OPay).";
+  } else if (err.includes("offline") || err.includes("maintenance") || err.includes("switch")) {
+    reason = "The destination bank is temporarily offline on the banking settlement switch.";
+    tip = "Please try sending to another bank account or try again in a few minutes.";
   } else if (err.includes("solana transfer") || err.includes("custom program error") || err.includes("simulation failed") || err.includes("0x1")) {
     reason = "The blockchain transfer on Solana could not be executed (insufficient SOL for rent/fees or token account issue).";
     tip = "Your funds remain untouched. Please wait 1–2 minutes and retry.";
@@ -6583,6 +6707,12 @@ function formatCustomerFriendlyOfframpError(rawError) {
   } else if (err.includes("invalid account") || err.includes("account number") || err.includes("account_number") || err.includes("could not find account") || err.includes("nibss")) {
     reason = "The destination bank account details could not be validated by the interbank switch (NIBSS).";
     tip = "Please verify your 10-digit account number and bank selection, or try another bank account.";
+  } else if (err.includes("limit") || err.includes("exceed")) {
+    reason = "This cash out exceeds transaction or daily banking limits for the account.";
+    tip = "Try a smaller amount or check your account tier.";
+  } else if (err.includes("paymaster") || err.includes("gas")) {
+    reason = "Network gas fee could not be paid by your wallet.";
+    tip = "Please ensure you have enough USDC for network gas or wait a moment for gas sponsorship.";
   } else if (err.includes("500") || err.includes("502") || err.includes("503") || err.includes("gateway") || err.includes("paj") || err.includes("partner")) {
     reason = "Our settlement banking partner is temporarily undergoing maintenance or experiencing downtime.";
     tip = "Your dollars remain completely safe in your wallet. Please retry in 5–10 minutes.";
@@ -6596,12 +6726,15 @@ function formatCustomerFriendlyOfframpError(rawError) {
     reason = String(rawError).replace(/^Transfer failed:\s*/i, "").replace(/^Paj createOfframpOrder failed \(\d+\):\s*/i, "").replace(/[{"}]/g, "").slice(0, 160);
   }
 
+  const safeReason = escapeHtml(reason);
+  const safeTip = escapeHtml(tip);
+
   return (
     `❌ <b>Cash Out Unsuccessful</b>\n` +
     `──────────────────────────\n` +
-    `⚠️ <b>Reason:</b> ${reason}\n\n` +
+    `⚠️ <b>Reason:</b> ${safeReason}\n\n` +
     `🔒 <b>Status:</b> <b>No funds were deducted.</b> Your USDC balance is safe in your wallet.\n\n` +
-    `💡 <b>Next Step:</b> ${tip}`
+    `💡 <b>Next Step:</b> ${safeTip}`
   );
 }
 
@@ -6661,11 +6794,11 @@ function formatCustomerFriendlyOfframpError(rawError) {
             `• <b>Platform Fee (1%):</b> $${feeUsdc.toFixed(2)}\n` +
             `• <b>Net to Bank:</b> $${netAmountUsdc.toFixed(2)}\n` +
             (result.fiatAmount ? `• <b>Naira Payout:</b> ₦${Number(result.fiatAmount).toLocaleString()}\n` : "") +
-            `• <b>Destination Bank:</b> ${state.data.accountName || state.data.bankName || "Bank Account"} (<code>${state.data.accountNumber}</code>)\n` +
+            `• <b>Destination Bank:</b> ${escapeHtml(state.data.accountName || state.data.bankName || "Bank Account")} (<code>${escapeHtml(state.data.accountNumber)}</code>)\n` +
             `• <b>Status:</b> ⏳ <i>Processing interbank transfer...</i>\n\n` +
             `<i>Naira arrives in your bank account in ~1–2 minutes. Your official receipt will be sent automatically once settled.</i>`;
 
-          await ctx.reply(successCaption, { parse_mode: "HTML", ...afterPaymentButtons });
+          await safeReplyHtml(ctx, successCaption, afterPaymentButtons);
 
           // Proactively watch order status with fast live polling so the user receives their confirmed receipt immediately
           const orderRef = result.reference || state.data.orderId;
@@ -6674,12 +6807,12 @@ function formatCustomerFriendlyOfframpError(rawError) {
           }
         } else {
           const friendlyMessage = formatCustomerFriendlyOfframpError(result.error);
-          await ctx.reply(friendlyMessage, { parse_mode: "HTML", ...backToMenu });
+          await safeReplyHtml(ctx, friendlyMessage, backToMenu);
         }
       } catch (offrampErr) {
         console.error("[bot:confirm_withdraw:error]", offrampErr);
         const friendlyMessage = formatCustomerFriendlyOfframpError(offrampErr.message);
-        await ctx.reply(friendlyMessage, { parse_mode: "HTML", ...backToMenu });
+        await safeReplyHtml(ctx, friendlyMessage, backToMenu);
       }
       return;
     }
@@ -6800,10 +6933,10 @@ function formatCustomerFriendlyOfframpError(rawError) {
           });
           await ctx.replyWithPhoto({ source: receiptPath }, { caption: "✅ Payment sent!", ...afterPaymentButtons });
         } catch {
-          await ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
+          await safeReplyFormattedResults(ctx, results, afterPaymentButtons);
         }
       } else {
-        await ctx.reply(formatResults(results), { parse_mode: "Markdown", ...backToMenu });
+        await safeReplyFormattedResults(ctx, results, backToMenu);
       }
       return;
     }
@@ -7889,8 +8022,12 @@ function formatCustomerFriendlyOfframpError(rawError) {
           currency: product.currency,
         }],
       };
-      const results = await executePlan(plan, text, user, context);
-      return ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
+      try {
+        const results = await executePlan(plan, text, user, context);
+        return await safeReplyFormattedResults(ctx, results, afterPaymentButtons);
+      } catch (err) {
+        return safeReplyHtml(ctx, `❌ <b>Purchase Failed:</b> ${escapeHtml(err.message)}`, afterPaymentButtons);
+      }
     }
 
     // ── Expense entry ────────────────────────────────────────────────────────
@@ -7976,7 +8113,11 @@ function formatCustomerFriendlyOfframpError(rawError) {
         const jobId = saveSchedule(userId.toString(), plan);
         startJob(jobId, userId.toString(), plan, text, context, async (uid, jid, results) => {
           const msg = formatResults(results);
-          await ctx.telegram.sendMessage(parseInt(uid), `🔔 Scheduled payment ran:\n\n${msg}`, { parse_mode: "Markdown" });
+          try {
+            await ctx.telegram.sendMessage(parseInt(uid), `🔔 Scheduled payment ran:\n\n${msg}`, { parse_mode: "Markdown" });
+          } catch (_) {
+            await ctx.telegram.sendMessage(parseInt(uid), `🔔 Scheduled payment ran:\n\n${msg.replace(/[*_`[\]()]/g, "")}`);
+          }
         });
         return ctx.reply(
           `✅ Scheduled!\n${plan.summary}\nRuns ${describeSchedule(plan.schedule)}.\n\nUse /schedules to view or cancel.`,
@@ -7987,8 +8128,12 @@ function formatCustomerFriendlyOfframpError(rawError) {
         );
       } else {
         await ctx.reply("⏳ Sending...");
-        const results = await executePlan(plan, text, user, context);
-        return ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
+        try {
+          const results = await executePlan(plan, text, user, context);
+          return await safeReplyFormattedResults(ctx, results, afterPaymentButtons);
+        } catch (err) {
+          return safeReplyHtml(ctx, `❌ <b>AutoPay Failed:</b> ${escapeHtml(err.message)}`, afterPaymentButtons);
+        }
       }
     }
 
@@ -8021,8 +8166,18 @@ function formatCustomerFriendlyOfframpError(rawError) {
       const user = db.getUser(userId);
       convState.clearState(userId);
       await ctx.reply("⏳ Processing payroll...");
-      const results = await executePlan(state.data.plan, text, user, "business");
-      return ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
+      try {
+        const results = await executePlan(state.data.plan, text, user, "business");
+        return await safeReplyFormattedResults(ctx, results, afterPaymentButtons);
+      } catch (err) {
+        console.error("[bot:confirm_payroll_pin:error]", err);
+        return safeReplyHtml(ctx,
+          `❌ <b>Payroll Failed</b>\n──────────────────────────\n` +
+          `⚠️ <b>Reason:</b> ${escapeHtml(err.message)}\n\n` +
+          `🔒 <b>Status:</b> No funds were deducted.`,
+          afterPaymentButtons
+        );
+      }
     }
 
     if (state.type === "confirm_intent_pin") {
@@ -8050,7 +8205,11 @@ function formatCustomerFriendlyOfframpError(rawError) {
         const jobId = saveSchedule(userId.toString(), plan);
         startJob(jobId, userId.toString(), plan, text, context, async (uid, jid, results) => {
           const msg = formatResults(results);
-          await ctx.telegram.sendMessage(parseInt(uid), `🔔 Scheduled payment ran:\n\n${msg}`, { parse_mode: "Markdown" });
+          try {
+            await ctx.telegram.sendMessage(parseInt(uid), `🔔 Scheduled payment ran:\n\n${msg}`, { parse_mode: "Markdown" });
+          } catch (_) {
+            await ctx.telegram.sendMessage(parseInt(uid), `🔔 Scheduled payment ran:\n\n${msg.replace(/[*_`[\]()]/g, "")}`);
+          }
         });
         return ctx.reply(
           `✅ Scheduled!\n${plan.summary}\nRuns ${describeSchedule(plan.schedule)}.\n\nUse /schedules to view or cancel.`,
@@ -8062,8 +8221,19 @@ function formatCustomerFriendlyOfframpError(rawError) {
       }
 
       await ctx.reply("⏳ Processing your request...");
-      const results = await executePlan(plan, text, user, context);
-      return ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
+      try {
+        const results = await executePlan(plan, text, user, context);
+        return await safeReplyFormattedResults(ctx, results, afterPaymentButtons);
+      } catch (err) {
+        console.error("[bot:confirm_intent_pin:error]", err);
+        return safeReplyHtml(ctx,
+          `❌ <b>Transaction Failed</b>\n──────────────────────────\n` +
+          `⚠️ <b>Reason:</b> ${escapeHtml(err.message)}\n\n` +
+          `🔒 <b>Status:</b> No funds were deducted. Your balance is safe.\n\n` +
+          `💡 <b>Next Step:</b> Please try again or use the main menu.`,
+          afterPaymentButtons
+        );
+      }
     }
 
     // ── File payment PIN confirm ───────────────────────────────────────────────
@@ -8094,8 +8264,12 @@ function formatCustomerFriendlyOfframpError(rawError) {
         }
 
         await ctx.reply(`⏳ Processing ${plan.payments.length} payment(s)...`);
-        const results = await executePlan(plan, text, user, context);
-        return ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
+        try {
+          const results = await executePlan(plan, text, user, context);
+          return await safeReplyFormattedResults(ctx, results, afterPaymentButtons);
+        } catch (err) {
+          return safeReplyHtml(ctx, `❌ <b>Payment Failed:</b> ${escapeHtml(err.message)}`, afterPaymentButtons);
+        }
       }
 
       const batchId = state.data.batchId || `batch_${Date.now()}`;
@@ -8116,8 +8290,12 @@ function formatCustomerFriendlyOfframpError(rawError) {
           idempotency_key: r.idempotency_key || null,
         })),
       };
-      const results = await executePlan(fallbackPlan, text, user, context);
-      return ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
+      try {
+        const results = await executePlan(fallbackPlan, text, user, context);
+        return await safeReplyFormattedResults(ctx, results, afterPaymentButtons);
+      } catch (err) {
+        return safeReplyHtml(ctx, `❌ <b>Batch Payment Failed:</b> ${escapeHtml(err.message)}`, afterPaymentButtons);
+      }
     }
 
     // ── Image payment PIN confirm ─────────────────────────────────────────────
@@ -8143,8 +8321,12 @@ function formatCustomerFriendlyOfframpError(rawError) {
           account_name:   parsed.recipient_name      || null,
         }],
       };
-      const results = await executePlan(plan, text, user, context);
-      return ctx.reply(formatResults(results), { parse_mode: "Markdown", ...afterPaymentButtons });
+      try {
+        const results = await executePlan(plan, text, user, context);
+        return await safeReplyFormattedResults(ctx, results, afterPaymentButtons);
+      } catch (err) {
+        return safeReplyHtml(ctx, `❌ <b>Image Payment Failed:</b> ${escapeHtml(err.message)}`, afterPaymentButtons);
+      }
     }
   } // end if (state)
 

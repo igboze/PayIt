@@ -37,6 +37,16 @@ function verifyAlchemySignature(rawBody, headers, signingKey) {
 
 let _server = null;
 
+function escapeHtml(str) {
+  if (!str) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 /**
  * Send rich on-ramp deposit notification to Telegram user with optional receipt PNG.
  */
@@ -260,19 +270,34 @@ async function processPajEvent(payload, bot) {
         } catch (_) {}
 
         if (botInstance?.telegram && !isNaN(parsedTgId)) {
+          const safeBank = escapeHtml(bankName);
+          const safeAcct = escapeHtml(accountNumber);
+          const safeReason = escapeHtml(reasonNote);
+          const safeRef = escapeHtml(effectiveOrderId || "N/A");
           try {
             await botInstance.telegram.sendMessage(
               parsedTgId,
               `❌ <b>Cash Out Failed (${accountLabel})</b>\n` +
               `──────────────────────────\n` +
-              `The bank transfer to <b>${bankName}</b> (<code>${accountNumber}</code>) could not be completed.\n\n` +
-              `⚠️ <b>Reason:</b> ${reasonNote}\n` +
+              `The bank transfer to <b>${safeBank}</b> (<code>${safeAcct}</code>) could not be completed.\n\n` +
+              `⚠️ <b>Reason:</b> ${safeReason}\n` +
               `🔒 <b>Status:</b> <b>No payment receipt generated.</b> Your funds are safe.\n\n` +
-              `<i>If your USDC was deducted, our automated reconciliation will return it to your wallet, or contact support with Ref: <code>${effectiveOrderId || "N/A"}</code>.</i>`,
+              `<i>If your USDC was deducted, our automated reconciliation will return it to your wallet, or contact support with Ref: <code>${safeRef}</code>.</i>`,
               { parse_mode: "HTML" }
             );
           } catch (err) {
             console.warn(`[webhook_server] Failed to notify TG user ${parsedTgId} of offramp failure:`, err.message);
+            try {
+              await botInstance.telegram.sendMessage(
+                parsedTgId,
+                `❌ Cash Out Failed (${accountLabel})\n` +
+                `──────────────────────────\n` +
+                `The bank transfer to ${bankName} (${accountNumber}) could not be completed.\n\n` +
+                `Reason: ${reasonNote}\n` +
+                `Status: No payment receipt generated. Your funds are safe.\n` +
+                `Ref: ${effectiveOrderId || "N/A"}`
+              );
+            } catch (_) {}
           }
         }
       }

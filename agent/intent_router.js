@@ -182,24 +182,59 @@ async function classifyIntent(message, telegramId, userContext = {}) {
       };
     }
 
-    // Cash out shorthand
+    // Cash out shorthand / natural language
     if (/^(cash out|withdraw|withdrawal)/i.test(m) || m.includes("cash out") || m.includes("withdraw")) {
+      // Try to extract amount
+      let amount = null;
+      let currency = "USDC";
+      const nairaMatch = m.match(/[₦]?\s*(\d[\d,]*(?:\.\d+)?)\s*(naira|ngn)\b/i);
+      const usdcMatch = m.match(/\$?\s*(\d+(?:\.\d+)?)\s*(usdc|usd|dollars?|\$)\b/i);
+      const plainNumMatch = m.match(/(?:cash out|withdraw|withdrawal)\s+\$?(\d+(?:\.\d+)?)\b/i);
+      if (nairaMatch) {
+        amount = parseFloat(nairaMatch[1].replace(/,/g, ""));
+        currency = "NGN";
+      } else if (usdcMatch) {
+        amount = parseFloat(usdcMatch[1]);
+        currency = "USDC";
+      } else if (plainNumMatch) {
+        amount = parseFloat(plainNumMatch[1]);
+        currency = "USDC";
+      }
+
+      // Try to extract 10-digit NUBAN account number
+      const acctMatch = m.match(/\b\d{10}\b/);
+      const accountNumber = acctMatch ? acctMatch[0] : null;
+
+      // Try to extract bank name
+      let bankName = null;
+      const bankKeywords = [
+        "gtbank", "gtb", "kuda", "opay", "palmpay", "access", "zenith", "first bank",
+        "fbn", "uba", "wema", "alat", "moniepoint", "fcmb", "stanbic", "sterling",
+        "polaris", "keystone", "union", "ecobank", "providus", "taj", "jaiz", "vfd"
+      ];
+      for (const b of bankKeywords) {
+        if (new RegExp(`\\b${b}\\b`, "i").test(m)) {
+          bankName = b.toUpperCase();
+          break;
+        }
+      }
+
       return {
         intent: "offramp",
         confidence: "high",
         params: {
           recipients: [{
-            name_or_address: null,
-            amount: null,
-            currency: null,
-            bank_name: null,
-            account_number: null,
+            name_or_address: bankName ? `${bankName} ${accountNumber || ""}`.trim() : null,
+            amount,
+            currency,
+            bank_name: bankName,
+            account_number: accountNumber,
             account_name: null,
           }],
           schedule: {},
           missing: null,
         },
-        raw_summary: "Cash out to Naira",
+        raw_summary: amount ? `Cash out ${currency === "NGN" ? "₦" : "$"}${amount} to Naira` : "Cash out to Naira",
       };
     }
 
@@ -326,22 +361,26 @@ function getMissingQuestion(classified) {
   const { intent, params } = classified;
   const r = params?.recipients?.[0] || {};
 
-  // Missing recipient
-  if (["transfer", "offramp", "bulk_transfer", "scheduled"].includes(intent)) {
+  // Offramp — specific checks for amount and Nigerian bank details
+  if (intent === "offramp") {
+    if (!r.amount) return "How much would you like to cash out?";
+    if (!r.account_number && !r.bank_name && !r.name_or_address) {
+      return "Which bank account should we send the Naira to? (Please provide your Nigerian bank name and 10-digit account number, e.g. GTBank · 0123456789)";
+    }
+    if (!r.account_number) return "What's the 10-digit bank account number to cash out to?";
+    if (!r.bank_name)      return "Which bank is that account with? (e.g. GTBank, Kuda, Access, OPay)";
+  }
+
+  // Missing recipient (transfers / scheduled / bulk)
+  if (["transfer", "bulk_transfer", "scheduled"].includes(intent)) {
     if (!params.recipients?.length || !r.name_or_address) {
       return "Who would you like to send to? (Name from your contacts, or paste a wallet address / bank account number)";
     }
   }
 
   // Missing amount
-  if (["transfer", "offramp", "scheduled"].includes(intent)) {
+  if (["transfer", "scheduled"].includes(intent)) {
     if (!r.amount) return "How much would you like to send?";
-  }
-
-  // Offramp — missing bank details and no saved bank for this payee
-  if (intent === "offramp") {
-    if (!r.account_number) return "What's the bank account number to cash out to?";
-    if (!r.bank_name)      return "Which bank is that account with?";
   }
 
   // Transfer — address unresolved and not a raw 0x

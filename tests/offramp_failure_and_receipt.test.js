@@ -316,5 +316,80 @@ test("Offramp Failure & Receipt Isolation Suite", async (t) => {
     assert.equal(res.txHash, "0xtest_tx_hash");
     assert.equal(passedOptions.nonce, 42, "options.nonce must be forwarded to signer transaction request");
   });
+
+  await t.test("7. Webhook safely escapes failure reasons containing HTML characters (<, >, &)", async () => {
+    const rawFailOrderId = `offramp_html_fail_${Date.now()}`;
+    db.recordOfframpOrder({
+      orderId: rawFailOrderId,
+      telegramId: testTgId,
+      accountType: "personal",
+      accountNumber: "0123456789",
+      bankCode: "000013",
+      bankName: "GTBank",
+      amountUsdc: 20,
+      feeUsdc: 0.2,
+      netAmountUsdc: 19.8,
+      rail: "arc",
+      status: "submitted",
+    });
+
+    const sentMessages = [];
+    const mockBot = {
+      telegram: {
+        sendMessage: async (id, text, extra) => {
+          sentMessages.push({ id, text, extra });
+          return { message_id: 701 };
+        },
+      },
+    };
+
+    const payload = {
+      event: "payout.failed",
+      data: {
+        reference: rawFailOrderId,
+        status: "failed",
+        failureReason: "Amount < 1.00 & order_status: rejected <gateway_error>",
+      },
+    };
+
+    await webhookServer.processPajEvent(payload, { bot: mockBot });
+    assert.equal(sentMessages.length, 1);
+    const sent = sentMessages[0].text;
+    assert.ok(sent.includes("&lt;gateway_error&gt;"), "Must escape < and > as HTML entities");
+    assert.ok(!sent.includes("<gateway_error>"), "Must NOT contain raw unescaped HTML tags");
+  });
+
+  await t.test("8. formatResults sanitizes and escapes markdown characters in error strings", async () => {
+    const { formatResults } = require("../agent/executor");
+    const failedOfframpResult = [{
+      chain: "fiat",
+      success: false,
+      error: "Paj createOfframpOrder failed (400): {\"status\":\"error\",\"message\":\"invalid_account_number\"}",
+    }];
+
+    const formatted = formatResults(failedOfframpResult);
+    assert.ok(formatted.includes("Bank Transfer Failed"));
+    assert.ok(formatted.includes("Destination bank account details could not be validated by NIBSS"));
+    // Ensure no raw unescaped JSON crashes Markdown parsers
+    assert.ok(!formatted.includes("invalid_account_number"));
+  });
+
+  await t.test("9. Intent router parses offramp shorthand and getMissingQuestion asks for bank details", async () => {
+    const { quickClassify, getMissingQuestion } = require("../agent/intent_router");
+
+    // 1. Shorthand with amount, bank and account number
+    const classifiedFull = await require("../agent/intent_router").classifyIntent("cash out $50 to GTBank 0123456789", testTgId);
+    assert.equal(classifiedFull.intent, "offramp");
+    assert.equal(classifiedFull.params.recipients[0].amount, 50);
+    assert.equal(classifiedFull.params.recipients[0].account_number, "0123456789");
+
+    // 2. Shorthand with just "cash out" -> asks for bank details, NOT "Who would you like to send to"
+    const classifiedEmpty = await require("../agent/intent_router").classifyIntent("cash out", testTgId);
+    assert.equal(classifiedEmpty.intent, "offramp");
+    const missing = getMissingQuestion(classifiedEmpty);
+    assert.ok(missing.includes("cash out"), "Question should ask how much or which bank");
+    assert.ok(!missing.includes("Who would you like to send to"), "Must NEVER ask 'Who would you like to send to' for offramp");
+  });
 });
+
 
