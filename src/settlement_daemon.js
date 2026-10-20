@@ -51,6 +51,16 @@ function extractPajFailureReason(orderData) {
   return cleaned.slice(0, 200);
 }
 
+function escapeHtml(str) {
+  if (!str) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 const DEFAULT_TICK_MS = 5000;
 const STALE_RUN_MINUTES = 15;
 
@@ -314,7 +324,17 @@ async function pollPendingOfframpOrders(bot) {
           }
         }
         completedCount++;
-      } else if (status === "failed" || status === "cancelled" || status === "rejected" || status === "reversed" || status === "declined") {
+      } else if (
+        status === "failed" ||
+        status === "cancelled" ||
+        status === "rejected" ||
+        status === "reversed" ||
+        status === "declined" ||
+        status === "expired" ||
+        status === "abandoned" ||
+        status === "timeout" ||
+        status === "timed_out"
+      ) {
         db.completeOfframpOrder(order.order_id, { status: "failed" });
         if (order.telegram_id) {
           try {
@@ -327,18 +347,33 @@ async function pollPendingOfframpOrders(bot) {
           try {
             const failReason = extractPajFailureReason(orderData);
             const amountUsdc = Number(order.amount_usdc || 0);
-            const bankDisplay = order.bank_name
-              ? `${order.bank_name} <code>${order.account_number || ""}</code>`
-              : `<code>${order.account_number || ""}</code>`;
-            await botInstance.telegram.sendMessage(
-              order.telegram_id,
-              `❌ <b>Cash Out Failed</b>\n──────────────────────────\n` +
-              `Your cash out${amountUsdc > 0 ? ` of <b>$${amountUsdc.toFixed(2)}</b>` : ""} to ${bankDisplay} could not be settled.\n\n` +
-              `<b>Reason:</b> ${failReason}\n\n` +
-              `<b>Ref:</b> <code>${order.order_id}</code>\n\n` +
-              `<i>🔒 Your USDC balance is safe in your wallet. Tap the button below to try again.</i>`,
-              { parse_mode: "HTML" }
-            );
+            const safeBank = escapeHtml(order.bank_name || "");
+            const safeAcct = escapeHtml(order.account_number || "");
+            const bankDisplay = safeBank
+              ? `${safeBank} <code>${safeAcct}</code>`
+              : `<code>${safeAcct}</code>`;
+            const safeReason = escapeHtml(failReason);
+            const safeOrderId = escapeHtml(order.order_id);
+            try {
+              await botInstance.telegram.sendMessage(
+                order.telegram_id,
+                `❌ <b>Cash Out Failed</b>\n──────────────────────────\n` +
+                `Your cash out${amountUsdc > 0 ? ` of <b>$${amountUsdc.toFixed(2)}</b>` : ""} to ${bankDisplay} could not be settled.\n\n` +
+                `<b>Reason:</b> ${safeReason}\n\n` +
+                `<b>Ref:</b> <code>${safeOrderId}</code>\n\n` +
+                `<i>🔒 Your USDC balance is safe in your wallet. Tap the button below to try again.</i>`,
+                { parse_mode: "HTML" }
+              );
+            } catch (tgHtmlErr) {
+              console.warn(`[settlement_daemon] HTML fail notify error, trying plain text:`, tgHtmlErr.message);
+              await botInstance.telegram.sendMessage(
+                order.telegram_id,
+                `❌ Cash Out Failed\n──────────────────────────\n` +
+                `Your cash out${amountUsdc > 0 ? ` of $${amountUsdc.toFixed(2)}` : ""} to ${order.bank_name || ""} (${order.account_number || ""}) could not be settled.\n\n` +
+                `Reason: ${failReason}\nRef: ${order.order_id}\n\n` +
+                `Your USDC balance is safe in your wallet.`
+              );
+            }
           } catch (notifErr) {
             console.warn(`[settlement_daemon] offramp fail notify error for ${order.telegram_id}:`, notifErr.message);
           }
@@ -388,6 +423,18 @@ function watchOfframpOrder(orderId, bot, telegramId) {
         await pollPendingOfframpOrders(bot);
         const updated = db.getOfframpOrderByOrderId ? db.getOfframpOrderByOrderId(orderId) : null;
         if (updated && (updated.status === "completed" || updated.status === "failed")) return;
+
+        // Reassuring intermediate update at ~45 seconds if NIBSS is taking longer than usual
+        if (idx === 4 && botInstance?.telegram && telegramId) {
+          botInstance.telegram.sendMessage(
+            telegramId,
+            `⏳ <b>Cash Out In Progress</b>\n──────────────────────────\n` +
+            `Your funds are confirmed on-chain. The interbank network (NIBSS) is currently routing the Naira payout to your bank account.\n\n` +
+            `<i>Ref: <code>${escapeHtml(orderId)}</code> · You will receive the delivery receipt once credited.</i>`,
+            { parse_mode: "HTML" }
+          ).catch(() => {});
+        }
+
         scheduleNext();
       } catch (err) {
         console.warn("[settlement_daemon:watchOfframpOrder]", err.message);

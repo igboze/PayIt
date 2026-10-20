@@ -1182,6 +1182,50 @@ async function executePlan(plan, pin, user, context = "personal") {
 
 // ─── Result formatter ─────────────────────────────────────────────────────────
 
+function escapeMarkdown(text) {
+  if (!text) return "";
+  return String(text).replace(/([_*`\[\]()])/g, "\\$1");
+}
+
+function formatCustomerErrorMarkdown(rawError) {
+  const raw = String(rawError || "");
+  const lower = raw.toLowerCase().replace(/_/g, " ");
+  let reason;
+  if (lower.includes("not enough") || lower.includes("insufficient") || lower.includes("balance") || lower.includes("funds")) {
+    reason = "Insufficient wallet balance to cover amount and network gas.";
+  } else if (lower.includes("minimum") || lower.includes("at least") || lower.includes("below") || lower.includes("less than") || lower.includes("1.00")) {
+    reason = "The amount is below the minimum cash-out limit ($1.00 USDC).";
+  } else if (lower.includes("offline") || lower.includes("maintenance") || lower.includes("unavailable")) {
+    reason = "The destination bank is temporarily offline on the banking switch.";
+  } else if (
+    lower.includes("invalid account") ||
+    lower.includes("account number") ||
+    lower.includes("could not find account") ||
+    lower.includes("nibss") ||
+    lower.includes("account not found") ||
+    lower.includes("lookup failed")
+  ) {
+    reason = "Destination bank account details could not be validated by NIBSS.";
+  } else if (lower.includes("bankcode") || lower.includes("bank code") || lower.includes("missing bank") || lower.includes("could not identify bank") || lower.includes("unknown bank")) {
+    reason = "Could not identify the destination bank name or code.";
+  } else if (lower.includes("gas") || lower.includes("paymaster") || lower.includes("sponsorship")) {
+    reason = "Network transaction could not be sponsored. Please try again.";
+  } else if (lower.includes("reverted") || lower.includes("status: 0")) {
+    reason = "The blockchain network transaction reverted during execution.";
+  } else {
+    reason = raw
+      .replace(/^Transfer failed:\s*/i, "")
+      .replace(/^Paj createOfframpOrder failed \(\d+\):\s*/i, "")
+      .replace(/[{"}]/g, "")
+      .replace(/\\"/g, "")
+      .replace(/status:error,?/i, "")
+      .replace(/message:/i, "")
+      .trim()
+      .slice(0, 160);
+  }
+  return escapeMarkdown(reason);
+}
+
 /**
  * Format an array of execution results as a Telegram confirmation message.
  * Displays rail indicators, transaction hashes, and idempotency status.
@@ -1212,10 +1256,15 @@ function formatResults(results) {
         return (
           `⚠️ *Partially Completed*\n` +
           `   ${r.amount} USDC sent on-chain (Tx: \`${r.txHash}\`)\n` +
-          `   ${r.warning}`
+          `   ${escapeMarkdown(r.warning)}`
         );
       }
-      return `❌ *Bank Transfer Failed*\n   ${r.error}`;
+      const errReason = formatCustomerErrorMarkdown(r.error);
+      return (
+        `❌ *Bank Transfer Failed*\n` +
+        `   ⚠️ ${errReason}\n` +
+        `   🔒 _Status: No funds deducted._`
+      );
     }
 
     // Rail B: Solana On-Chain
@@ -1229,10 +1278,10 @@ function formatResults(results) {
           `   🟣 ${r.amount} ${r.currency || "USDC"}\n` +
           `   → \`${r.to}\`\n` +
           (shortTx ? `   Tx: ${shortTx}\n` : "") +
-          `   (${r.label || "Solana Transfer"})`
+          `   (${escapeMarkdown(r.label || "Solana Transfer")})`
         );
       }
-      return `❌ *Solana Transfer Failed* — ${r.label || r.to}\n   ${r.error}`;
+      return `❌ *Solana Transfer Failed* — ${escapeMarkdown(r.label || r.to)}\n   ${formatCustomerErrorMarkdown(r.error)}`;
     }
 
     // Rail C: Arc EVM On-Chain
@@ -1247,11 +1296,11 @@ function formatResults(results) {
         `   → \`${r.to}\`\n` +
         (shortTx ? `   Tx: ${shortTx}` : "") +
         sponsorBadge + `\n` +
-        `   (${r.label || "Payment"})`
+        `   (${escapeMarkdown(r.label || "Payment")})`
       );
     }
 
-    return `❌ *Payment Failed* — ${r.label || r.to}\n   ${r.error}`;
+    return `❌ *Payment Failed* — ${escapeMarkdown(r.label || r.to)}\n   ${formatCustomerErrorMarkdown(r.error)}`;
   });
 
   // Summary line for bulk/payroll
