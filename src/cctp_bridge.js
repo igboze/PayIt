@@ -87,6 +87,13 @@ function getAlchemyRpcUrl(network, fallback) {
   return map[network] || fallback;
 }
 
+// Helper to detect if a CCTP message has an unfinalized nonce (e.g. all zeros from an on-chain event log)
+const isZeroNonceMsg = (hex) => {
+  if (!hex || typeof hex !== "string") return true;
+  const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
+  return clean.length >= 88 && clean.slice(24, 88) === "0".repeat(64);
+};
+
 // Supported EVM source chains for CCTP V2 burns into Arc (Domain 26)
 const EVM_CCTP_CONTRACTS = {
   BASE: {
@@ -1269,10 +1276,26 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
   console.log(`[cctp_bridge:complete] Starting Arc→Solana CCTP completion for arc tx: ${arcTxHash}`);
   console.log(`[cctp_bridge:complete] Fee-payer: ${feePayerKeypair.publicKey.toBase58()} | ${lamports / 1e9} SOL`);
 
-  // Step 1: Resolve the CCTP message & hash (receipt logs first, Iris API fallback)
-  let msgDetails = (messageHex && messageHash) ? { message: messageHex, messageHash } : null;
+  // Step 1: Resolve the CCTP message & hash (fetch from Iris if message has unfinalized zero nonce)
+  let msgDetails = (messageHex && messageHash && !isZeroNonceMsg(messageHex)) ? { message: messageHex, messageHash } : null;
 
-  if (!msgDetails) {
+  if (!msgDetails || isZeroNonceMsg(msgDetails.message)) {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      try {
+        const res = await fetchCctpMessage(CCTP_DOMAINS.ARC, arcTxHash);
+        if (res && res.message && !isZeroNonceMsg(res.message)) {
+          msgDetails = res;
+          break;
+        }
+      } catch (e) {
+        // Circle may not have indexed the tx yet — retry
+      }
+      console.log(`[cctp_bridge:complete] Message with real nonce not indexed yet, retrying (${attempt + 1}/8)...`);
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+
+  if (!msgDetails?.message) {
     try {
       const { JsonRpcProvider, Interface, keccak256 } = require("ethers");
       const net = getNetworkConfig();
@@ -1300,22 +1323,6 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
   }
 
   if (!msgDetails?.message) {
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        const res = await fetchCctpMessage(CCTP_DOMAINS.ARC, arcTxHash);
-        if (res && res.message && res.messageHash) {
-          msgDetails = res;
-          break;
-        }
-      } catch (e) {
-        // Circle may not have indexed the tx yet — retry
-      }
-      console.log(`[cctp_bridge:complete] Message not indexed yet, retrying (${attempt + 1}/5)...`);
-      await new Promise((r) => setTimeout(r, 3000));
-    }
-  }
-
-  if (!msgDetails?.message) {
     const msg = `CCTP message not found for Arc tx ${arcTxHash}. The tx may not be confirmed yet or CCTP isn't registered for this token.`;
     try { db.failCctpPendingBurn(arcTxHash, msg); } catch {}
     throw new Error(msg);
@@ -1327,10 +1334,15 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
   console.log(`[cctp_bridge:complete] Polling Circle for attestation (max ${maxAttempts} attempts)...`);
   let attestation;
   try {
-    ({ attestation } = await pollCctpAttestation(msgDetails.messageHash, maxAttempts, intervalMs, {
+    const attRes = await pollCctpAttestation(msgDetails.messageHash, maxAttempts, intervalMs, {
       txHash: arcTxHash,
       sourceDomain: CCTP_DOMAINS.ARC,
-    }));
+    });
+    attestation = attRes.attestation;
+    if (attRes.message && !isZeroNonceMsg(attRes.message)) {
+      msgDetails.message = attRes.message;
+      if (attRes.messageHash) msgDetails.messageHash = attRes.messageHash;
+    }
   } catch (attErr) {
     const msg = `Attestation polling failed for ${arcTxHash}: ${attErr.message}`;
     try { db.failCctpPendingBurn(arcTxHash, msg); } catch {}
@@ -1352,15 +1364,16 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
     throw new Error(msg);
   }
 
-  console.log(`[cctp_bridge:complete] USDC minted on Solana ✓ tx=${result.txSignature}`);
+  const solanaTxSig = result.txSignature || "already_minted";
+  console.log(`[cctp_bridge:complete] USDC minted on Solana ✓ tx=${solanaTxSig}`);
 
   // Mark completed in DB so it's not retried again
-  try { db.completeCctpPendingBurn(arcTxHash, result.txSignature); } catch {}
+  try { db.completeCctpPendingBurn(arcTxHash, solanaTxSig); } catch {}
 
   return {
     success: true,
     arcTxHash,
-    solanaTxSignature: result.txSignature,
+    solanaTxSignature: solanaTxSig,
     messageHash: msgDetails.messageHash,
   };
 }
@@ -1886,13 +1899,6 @@ async function completeCctpWithdrawalOnEvm({
   intervalMs = 5000,
 }) {
   if (!arcTxHash) throw new Error("arcTxHash is required");
-
-  // Helper to detect if a CCTP message has an unfinalized nonce (e.g. all zeros from an on-chain event log)
-  const isZeroNonceMsg = (hex) => {
-    if (!hex || typeof hex !== "string") return true;
-    const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
-    return clean.length >= 88 && clean.slice(24, 88) === "0".repeat(64);
-  };
 
   // Step 1: Ensure we have the raw CCTP message
   let msgDetails = { message: messageHex, messageHash };

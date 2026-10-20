@@ -797,6 +797,10 @@ async function receiveCctpMessageOnSolana({ messageHex, attestationHex, feePayer
     return { success: true, txSignature };
   } catch (err) {
     console.warn("[multichain:receive_cctp_error]", err.message);
+    if (err.message && (err.message.includes("already in use") || err.message.includes("custom program error: 0x0"))) {
+      console.log("[multichain:receive_cctp] Nonce already used on Solana; USDC already minted ✓");
+      return { success: true, alreadyCompleted: true };
+    }
     return { success: false, error: err.message };
   }
 }
