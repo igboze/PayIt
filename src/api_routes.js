@@ -18,7 +18,6 @@ const savings = require("./savings");
 const cctpBridge = require("./cctp_bridge");
 const evmDepositSweeper = require("./evm_deposit_sweeper");
 const { generateReceiptPNG } = require("./receipt_generator");
-const raceTerminal = require("./race_terminal");
 const fs = require("node:fs");
 
 function sendJson(res, statusCode, data) {
@@ -93,78 +92,6 @@ async function handleApiRequest(req, res, bot = null) {
     });
   }
 
-  // ── 1B. RaceAlpha Confidential Trading Terminal Endpoints ──────────────────
-  if (method === "GET" && pathname === "/api/v1/race/traders") {
-    return sendJson(res, 200, {
-      success: true,
-      traders: raceTerminal.getTraders(),
-      gateMinimumUsd: 10000,
-      currency: "NEAR",
-    });
-  }
-
-  if (method === "GET" && pathname === "/api/v1/race/intents") {
-    return sendJson(res, 200, {
-      success: true,
-      intents: raceTerminal.getIntentStream(),
-    });
-  }
-
-  if (method === "POST" && pathname === "/api/v1/race/verify-volume") {
-    const body = await parseBody(req);
-    const result = await raceTerminal.verifyTraderVolume(body.accountId);
-    return sendJson(res, 200, {
-      success: true,
-      ...result,
-    });
-  }
-
-  if (method === "GET" && pathname.startsWith("/api/v1/race/account-balance")) {
-    const parsed = url.parse(req.url, true);
-    const accountId = parsed.query.accountId;
-    if (!accountId) {
-      return sendJson(res, 400, { success: false, error: "Missing accountId query parameter" });
-    }
-    try {
-      const nearApi = require("near-api-js");
-      const provider = new nearApi.JsonRpcProvider({ url: "https://rpc.mainnet.near.org" });
-      const accountInfo = await provider.query({
-        request_type: "view_account",
-        finality: "final",
-        account_id: accountId.trim().toLowerCase(),
-      });
-      const balanceNear = nearApi.formatNearAmount(accountInfo.amount, 2);
-      return sendJson(res, 200, {
-        success: true,
-        accountId: accountId.trim().toLowerCase(),
-        balanceYocto: accountInfo.amount,
-        balanceNear,
-        storageUsage: accountInfo.storage_usage,
-        blockHeight: accountInfo.block_height,
-      });
-    } catch (err) {
-      return sendJson(res, 404, {
-        success: false,
-        error: `Account '${accountId}' not found on NEAR mainnet: ${err.message}`,
-      });
-    }
-  }
-
-  if (method === "POST" && pathname === "/api/v1/race/keys/purchase") {
-    const body = await parseBody(req);
-    try {
-      const keyRecord = raceTerminal.purchaseViewingKey(body);
-      return sendJson(res, 200, {
-        success: true,
-        keyRecord,
-      });
-    } catch (err) {
-      return sendJson(res, 400, {
-        success: false,
-        error: err.message,
-      });
-    }
-  }
 
   // ── 2. Authentication & Authorization ─────────────────────────────────────
   const rawKey = extractApiKey(req);

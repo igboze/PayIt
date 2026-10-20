@@ -49,7 +49,6 @@ const flowsMultichain   = require("./src/flows_multichain");
 const flowsDeveloper     = require("./src/flows_developer");
 const autoEarn = require("./src/auto_earn");
 const cashflow = require("./src/cashflow");
-const raceTerminal = require("./src/race_terminal");
 
 // ── Agent modules ─────────────────────────────────────────────────────────────
 const { parsePaymentIntent }      = require("./agent/orchestrator");
@@ -388,7 +387,7 @@ function mainMenu(context) {
     ["💰 My Money",    "📤 Send Money",  "🔄 Swap"],
     ["📥 Add Money",   "📈 Save & Earn", "📋 History"],
     ["🤖 Auto-Pay",   "🧾 Invoice",     "👥 Contacts"],
-    ["🏎️ RaceAlpha",  "🛒 Shop Online", "🔁 Switch Account"],
+    ["🛒 Shop Online", "🔁 Switch Account"],
     ["⚙️ Settings",   "📖 Help"],
   ]).resize();
 }
@@ -4689,73 +4688,6 @@ bot.hears("💰 Balance",          (ctx) => getContext(ctx.from?.id) === "busine
 bot.hears("💼 Biz Balance",      (ctx) => showBizBalance(ctx));
 bot.hears("📊 This Month",       (ctx) => bot.handleUpdate({ ...ctx.update }));
 bot.hears("📈 Reports",          (ctx) => bot.handleUpdate({ ...ctx.update }));
-
-async function showRaceTerminal(ctx) {
-  const host = process.env.BASE_URL || process.env.PUBLIC_URL || "https://proxim.app";
-  const webAppUrl = `${host.replace(/\/+$/, "")}/terminal`;
-
-  return ctx.reply(
-    `🏎️ <b>RaceAlpha — Confidential Copy-Trading Terminal</b>\n` +
-    `──────────────────────────\n` +
-    `Trade privately without revealing your alpha on <b>NEAR Intents</b>.\n\n` +
-    `🛡️ <b>Volume-Gated Masters:</b> Traders verified with >$10k 30d volume\n` +
-    `🔑 <b>Confidential Viewing Keys:</b> Encrypted alpha subscriptions\n` +
-    `⚡ <b>NEAR Intent Solvers:</b> Autonomous copy-trading with zero MEV\n` +
-    `📊 <b>Dual PnL Telemetry:</b> Macro Net Equity & Tactical Win Rates\n\n` +
-    `<i>Tap below to open the Web Terminal:</i>`,
-    {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard([
-        [Markup.button.webApp("🚀 Launch RaceAlpha Web Terminal", webAppUrl)],
-        [Markup.button.callback("📜 Verified Masters", "race_view_masters"), Markup.button.callback("🛡️ $10k Gate Check", "race_check_gate")],
-      ]),
-    }
-  );
-}
-
-bot.hears(["🏎️ RaceAlpha", /^(?:🏎️\s*)?RaceAlpha(?:\s*Terminal)?$/i], (ctx) => showRaceTerminal(ctx));
-bot.command(["race", "racealpha", "terminal"], (ctx) => showRaceTerminal(ctx));
-
-bot.action("race_view_masters", async (ctx) => {
-  const traders = raceTerminal.getTraders();
-  let msg = `🏎️ <b>RaceAlpha — Verified Master Traders</b>\n──────────────────────────\n`;
-  for (const t of traders) {
-    msg += `<b>${t.displayName}</b> (<code>${t.handle}</code>)\n`;
-    msg += `• Strategy: ${t.strategy}\n`;
-    msg += `• 30d Volume: $${t.volume30dUsd.toLocaleString()} USD | 30d PnL: +${t.macro.netEquityGrowthPct}%\n`;
-    msg += `• Win Rate: ${t.tactical.winRatePct}% (${t.tactical.totalTrades30d} trades)\n`;
-    msg += `• Key Pass: ${t.tier1KeyPriceNear} Ⓝ (View) / ${t.tier2KeyPriceNear} Ⓝ (Auto-Copy)\n\n`;
-  }
-  msg += `<i>Open the Web Terminal to view live charts and mint viewing keys.</i>`;
-  const host = process.env.BASE_URL || process.env.PUBLIC_URL || "https://proxim.app";
-  const webAppUrl = `${host.replace(/\/+$/, "")}/terminal`;
-
-  return ctx.reply(msg, {
-    parse_mode: "HTML",
-    ...Markup.inlineKeyboard([
-      [Markup.button.webApp("🚀 Open Web Terminal", webAppUrl)],
-      [Markup.button.callback("🏠 Main Menu", "main_menu")],
-    ]),
-  });
-});
-
-bot.action("race_check_gate", async (ctx) => {
-  const host = process.env.BASE_URL || process.env.PUBLIC_URL || "https://proxim.app";
-  const webAppUrl = `${host.replace(/\/+$/, "")}/terminal`;
-
-  return ctx.reply(
-    `🛡️ <b>RaceAlpha Volume Gatekeeper ($10,000+ USD)</b>\n──────────────────────────\n` +
-    `To protect followers from reckless or fabricated alpha, only traders with at least $10,000 USD in 30-day cumulative trading volume can become Master Traders.\n\n` +
-    `Audit your NEAR account volume directly in the Web Terminal:`,
-    {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard([
-        [Markup.button.webApp("🔍 Audit Volume in Terminal", webAppUrl)],
-        [Markup.button.callback("🏠 Main Menu", "main_menu")],
-      ]),
-    }
-  );
-});
 
 bot.hears("📤 Send Money",  (ctx) => ctx.reply(
   `📤 Send Money\n──────────────────────────\nWhere are you sending?`,

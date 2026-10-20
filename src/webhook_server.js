@@ -751,28 +751,6 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
       return apiRoutes.handleApiRequest(req, res, bot);
     }
 
-    // 0B. RaceAlpha Web Terminal & Static Assets
-    if (req.method === "GET") {
-      const parsedPath = req.url.split("?")[0];
-      const publicDir = path.join(__dirname, "..", "public");
-
-      if (parsedPath === "/" || parsedPath === "/terminal" || parsedPath === "/race" || parsedPath === "/racealpha") {
-        const indexPath = path.join(publicDir, "index.html");
-        if (fs.existsSync(indexPath)) {
-          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-          return fs.createReadStream(indexPath).pipe(res);
-        }
-      }
-
-      if (parsedPath === "/style.css" || parsedPath === "/app.js") {
-        const filePath = path.join(publicDir, parsedPath.replace(/^\//, ""));
-        if (fs.existsSync(filePath)) {
-          const contentType = parsedPath.endsWith(".css") ? "text/css; charset=utf-8" : "application/javascript; charset=utf-8";
-          res.writeHead(200, { "Content-Type": contentType });
-          return fs.createReadStream(filePath).pipe(res);
-        }
-      }
-    }
 
     // 1. Health check
     if (req.method === "GET" && req.url === "/health") {
