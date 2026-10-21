@@ -37,8 +37,8 @@ function shouldReprocessConversationState(stateType, text) {
     return isLikelyNewIntent(normalized) || isGeneralChat(normalized);
   }
 
-  if (stateType === "await_ccw_address" || stateType === "await_near_custom_token") {
-    if (isGeneralChat(normalized) || /^\//.test(normalized)) return true;
+  if (stateType === "await_ccw_address" || stateType === "await_near_custom_token" || stateType === "await_withdraw_narration") {
+    if (isLikelyNewIntent(normalized) || /^\//.test(normalized)) return true;
     return false;
   }
 

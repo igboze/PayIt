@@ -219,6 +219,13 @@ async function classifyIntent(message, telegramId, userContext = {}) {
         }
       }
 
+      // Try to extract narration / note / memo
+      let narration = null;
+      const narrMatch = m.match(/(?:for|narration:?|memo:?|note:?|desc:?|description:?)\s+([^,.;\n]+)/i);
+      if (narrMatch) {
+        narration = narrMatch[1].trim();
+      }
+
       return {
         intent: "offramp",
         confidence: "high",
@@ -230,6 +237,7 @@ async function classifyIntent(message, telegramId, userContext = {}) {
             bank_name: bankName,
             account_number: accountNumber,
             account_name: null,
+            narration,
           }],
           schedule: {},
           missing: null,
@@ -449,6 +457,7 @@ function buildConfirmationText(classified, resolvedRecipients) {
       if (r.bank_name)      lines.push(`Bank: ${r.bank_name}`);
       if (r.account_number) lines.push(`Account: ${r.account_number}`);
       if (r.account_name)   lines.push(`Name: ${r.account_name}`);
+      if (r.narration)      lines.push(`Narration: ${r.narration}`);
     }
     lines.push("(Naira rate shown at confirmation)");
   }

@@ -289,7 +289,8 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
     };
   }
 
-  const txId = db.recordTransaction(telegramId, "offramp", amountMicro, "pending", null, options.accountType || "personal", 18, rail);
+  const effectiveNarration = bankDetails.narration || options.narration || null;
+  const txId = db.recordTransaction(telegramId, "offramp", amountMicro, "pending", null, options.accountType || "personal", 18, rail, effectiveNarration);
 
   // 1% platform fee inside the amount the user wants to trade (not extra)
   const feeUsdc = typeof options.feeUsdc === "number" ? options.feeUsdc : parseFloat((amountUsdc * 0.01).toFixed(4));
@@ -325,6 +326,8 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
         accountType:   options.accountType       || "personal",
         chain:         railCfg.chain,
         mint:          railCfg.mint,
+        narration:     effectiveNarration,
+        description:   effectiveNarration,
       });
       if (!result.success) {
         db.updateTransactionStatus(txId, "failed");
@@ -456,6 +459,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
         status: "submitted",
         txHash,
         feeTxHash,
+        narration: effectiveNarration,
       });
     } catch (orderRecErr) {
       console.warn("[executor:offramp] recordOfframpOrder warning:", orderRecErr.message);
@@ -468,6 +472,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
       feeUsdc,
       netAmountUsdc,
       feeTxHash,
+      narration: effectiveNarration,
     };
     idempotency.completeOperationIdempotency(idempKey, { txHash, responseData: responsePayload });
     return {
@@ -490,6 +495,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
       rail,
       chain: "fiat",
       currency: "NGN",
+      narration: effectiveNarration,
     };
   } catch (err) {
     db.updateTransactionStatus(txId, "failed");
@@ -1110,6 +1116,7 @@ async function executePlan(plan, pin, user, context = "personal") {
           bankName:      resolved.bankName,
           accountName:   payment.account_name,
           fiatAmount,
+          narration:     payment.narration || payment.description || null,
         },
         user.telegram_id,
         payment.label || "Cash Out",
@@ -1117,6 +1124,7 @@ async function executePlan(plan, pin, user, context = "personal") {
           accountType: context,
           idempotencyKey: idempKey,
           rail: payment.chain || payment.rail || "auto",
+          narration: payment.narration || payment.description || null,
         }
       );
 
@@ -1125,6 +1133,7 @@ async function executePlan(plan, pin, user, context = "personal") {
         executionResult.amountUsdc = amountUsdc;
         executionResult.recipientAddress = payment.account_number;
         executionResult.recipientName = payment.account_name || resolved.bankName || "Bank Account";
+        executionResult.narration = payment.narration || payment.description || executionResult.narration || null;
       }
 
     } else if (isSolana) {
@@ -1243,11 +1252,14 @@ function formatResults(results) {
         const ngnDisplay = r.fiatAmount || r.amountNgn
           ? `₦${Number(r.fiatAmount || r.amountNgn).toLocaleString("en-NG", { minimumFractionDigits: 2 })} NGN`
           : `${r.amount} USDC → Naira`;
+        const narr = r.narration || r.bankDetails?.narration;
+        const narrLine = narr ? `   💬 Narration: _${escapeMarkdown(narr)}_\n` : "";
 
         return (
           `✅ *Bank Transfer Submitted*${replayBadge}\n` +
           `   🏦 ${ngnDisplay}\n` +
           `   ${r.bankDetails?.bankName || r.bankName || "Bank"} · \`${r.bankDetails?.accountNumber || ""}\`\n` +
+          narrLine +
           `   Ref: \`${r.reference || "—"}\`\n` +
           `   Naira arrives in recipient bank account in ~1–2 minutes.`
         );
