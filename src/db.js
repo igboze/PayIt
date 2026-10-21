@@ -173,6 +173,7 @@ db.exec(`
     settlement_rail   TEXT NOT NULL DEFAULT 'arc',
     status            TEXT NOT NULL DEFAULT 'pending',
     tx_hash           TEXT,
+    narration         TEXT,
     created_at        TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at      TEXT
   );
@@ -195,6 +196,7 @@ db.exec(`
     status            TEXT NOT NULL DEFAULT 'pending',
     tx_hash           TEXT,
     fee_tx_hash       TEXT,
+    narration         TEXT,
     created_at        TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at      TEXT
@@ -387,6 +389,26 @@ function ensureTransactionsSchema() {
   if (!cols.includes("type")) db.exec("ALTER TABLE transactions ADD COLUMN type TEXT DEFAULT 'general'");
   if (!cols.includes("decimals")) db.exec("ALTER TABLE transactions ADD COLUMN decimals INTEGER NOT NULL DEFAULT 18");
   if (!cols.includes("chain")) db.exec("ALTER TABLE transactions ADD COLUMN chain TEXT NOT NULL DEFAULT 'arc'");
+  if (!cols.includes("narration")) db.exec("ALTER TABLE transactions ADD COLUMN narration TEXT");
+}
+
+function ensurePajOrdersSchema() {
+  try {
+    const offrampCols = db.prepare("PRAGMA table_info(paj_offramp_orders)").all().map(c => c.name);
+    if (!offrampCols.includes("narration")) {
+      db.exec("ALTER TABLE paj_offramp_orders ADD COLUMN narration TEXT");
+    }
+  } catch (err) {
+    console.warn("[db] ensurePajOrdersSchema offramp note:", err.message);
+  }
+  try {
+    const onrampCols = db.prepare("PRAGMA table_info(paj_onramp_orders)").all().map(c => c.name);
+    if (!onrampCols.includes("narration")) {
+      db.exec("ALTER TABLE paj_onramp_orders ADD COLUMN narration TEXT");
+    }
+  } catch (err) {
+    console.warn("[db] ensurePajOrdersSchema onramp note:", err.message);
+  }
 }
 
 function ensureCctpPendingSchema() {
@@ -448,6 +470,7 @@ ensureUserSchema();
 ensureYieldPositionsSchema();
 ensureInvoicesSchema();
 ensureTransactionsSchema();
+ensurePajOrdersSchema();
 ensureCctpPendingSchema();
 ensureCctpInboundSchema();
 cleanupOrphanData();
@@ -928,10 +951,10 @@ function isBlocked(telegramId) {
 }
 // ─── Transactions ─────────────────────────────────────────────────────────────
 
-function recordTransaction(telegramId, type, amountMicro, status, txHash, accountType = "personal", decimals = 18, chain = "arc") {
+function recordTransaction(telegramId, type, amountMicro, status, txHash, accountType = "personal", decimals = 18, chain = "arc", narration = null) {
   const result = db.prepare(
-    "INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, account_type, decimals, chain) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-  ).run(telegramId, type, amountMicro.toString(), status, txHash || null, accountType, decimals, chain);
+    "INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, account_type, decimals, chain, narration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(telegramId, type, amountMicro.toString(), status, txHash || null, accountType, decimals, chain, narration || null);
   return result.lastInsertRowid;
 }
 
@@ -1766,25 +1789,31 @@ function recordOnrampOrder({
   telegramId,
   accountType = "personal",
   fiatAmount,
+  amountNgn,
   amountUsdc,
   rate,
-  recipientAddress,
+  recipientAddress = null,
+  virtualAccount = null,
   settlementRail = "arc",
+  narration = null,
 }) {
   try {
+    const effectiveFiat = fiatAmount !== undefined ? Number(fiatAmount) : (amountNgn !== undefined ? Number(amountNgn) : 0);
+    const effectiveRecipient = recipientAddress || virtualAccount || "0x0000000000000000000000000000000000000000";
     db.prepare(`
       INSERT OR REPLACE INTO paj_onramp_orders
-        (order_id, telegram_id, account_type, fiat_amount, amount_usdc, rate, recipient_address, settlement_rail, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+        (order_id, telegram_id, account_type, fiat_amount, amount_usdc, rate, recipient_address, settlement_rail, status, narration)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
     `).run(
       orderId,
       telegramId,
-      accountType,
-      Number(fiatAmount),
+      accountType || "personal",
+      effectiveFiat,
       amountUsdc ? Number(amountUsdc) : null,
       rate ? Number(rate) : null,
-      recipientAddress,
-      settlementRail
+      effectiveRecipient,
+      settlementRail || "arc",
+      narration || null
     );
   } catch (err) {
     console.warn("[db:onramp_order] recordOnrampOrder error:", err.message);
@@ -1814,17 +1843,26 @@ function getPendingOnrampOrders() {
   }
 }
 
-function completeOnrampOrder(orderId, txHashOrOpts = {}, maybeStatus = "completed") {
+function completeOnrampOrder(orderId, txHashOrOpts = {}, maybeStatusOrNarration = "completed") {
   let txHash = null;
   let amountUsdc = null;
-  let status = maybeStatus || "completed";
+  let status = "completed";
+  let narration = null;
 
   if (typeof txHashOrOpts === "string") {
     txHash = txHashOrOpts;
+    if (typeof maybeStatusOrNarration === "string") {
+      if (maybeStatusOrNarration === "completed" || maybeStatusOrNarration === "failed" || maybeStatusOrNarration === "pending") {
+        status = maybeStatusOrNarration;
+      } else {
+        narration = maybeStatusOrNarration;
+      }
+    }
   } else if (txHashOrOpts && typeof txHashOrOpts === "object") {
     txHash = txHashOrOpts.txHash || null;
     amountUsdc = txHashOrOpts.amountUsdc || null;
     if (txHashOrOpts.status) status = txHashOrOpts.status;
+    if (txHashOrOpts.narration) narration = txHashOrOpts.narration;
   }
 
   try {
@@ -1833,9 +1871,10 @@ function completeOnrampOrder(orderId, txHashOrOpts = {}, maybeStatus = "complete
       SET status = ?,
           tx_hash = COALESCE(?, tx_hash),
           amount_usdc = COALESCE(?, amount_usdc),
+          narration = COALESCE(?, narration),
           completed_at = datetime('now')
       WHERE order_id = ?
-    `).run(status, txHash || null, amountUsdc ? Number(amountUsdc) : null, orderId);
+    `).run(status, txHash || null, amountUsdc ? Number(amountUsdc) : null, narration || null, orderId);
   } catch (err) {
     console.warn("[db:onramp_order] completeOnrampOrder error:", err.message);
   }
@@ -1860,6 +1899,7 @@ function recordOfframpOrder({
   rail = "solana",
   txHash = null,
   feeTxHash = null,
+  narration = null,
   status = "pending",
 }) {
   try {
@@ -1868,8 +1908,8 @@ function recordOfframpOrder({
     db.prepare(`
       INSERT OR REPLACE INTO paj_offramp_orders
         (order_id, telegram_id, account_type, account_number, bank_code, bank_name, account_name,
-         amount_usdc, fee_usdc, net_amount_usdc, fiat_amount, rate, rail, status, tx_hash, fee_tx_hash, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+         amount_usdc, fee_usdc, net_amount_usdc, fiat_amount, rate, rail, status, tx_hash, fee_tx_hash, narration, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `).run(
       orderId,
       telegramId,
@@ -1886,7 +1926,8 @@ function recordOfframpOrder({
       rail,
       status,
       txHash,
-      feeTxHash
+      feeTxHash,
+      narration || null
     );
   } catch (err) {
     console.warn("[db:offramp_order] recordOfframpOrder error:", err.message);

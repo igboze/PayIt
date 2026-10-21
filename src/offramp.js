@@ -45,9 +45,11 @@ async function requestOfframp(telegramId, amountMicro, bankDetails) {
       payload.amount = amountUsdc;
     }
 
-    if (telegramId) {
-      payload.description = `Proxim Cash Out - TG:${telegramId}`;
-    }
+    const effectiveNarration = (bankDetails && (bankDetails.narration || bankDetails.description))
+      ? String(bankDetails.narration || bankDetails.description).trim()
+      : (telegramId ? `Proxim Cash Out - TG:${telegramId}` : "Proxim Cash Out");
+    payload.description = effectiveNarration;
+    payload.narration = effectiveNarration;
 
     const order = await paj.createOfframpOrder(payload);
     const orderData = order?.data || order;

@@ -106,6 +106,7 @@ function buildReceiptSvg(opts = {}) {
     timestamp = new Date().toISOString(),
     status = "Confirmed",
     txHash = null,
+    narration = null,
   } = opts;
 
   const typeLower = (type || "").toLowerCase();
@@ -244,6 +245,9 @@ function buildReceiptSvg(opts = {}) {
       sub: (shortSender && shortSender !== senderName) ? shortSender : null,
     });
   }
+  if (narration && String(narration).trim()) {
+    rows.push({ label: "Narration", val: String(narration).trim() });
+  }
   rows.push({ label: "Date & time", val: dateStr });
   rows.push({ label: "Reference", val: receiptId, isMono: true });
   if (shortHash) {
@@ -296,6 +300,10 @@ function buildReceiptSvg(opts = {}) {
         displayVal = `${displayVal.slice(0, 16)}...`;
       }
       subText = ` <tspan font-size="10.5" font-weight="500" fill="#5F766E" font-family="'DejaVu Sans Mono', monospace">(${escape(r.sub)})</tspan>`;
+    } else if (r.label === "Narration") {
+      if (displayVal.length > 36) {
+        displayVal = `${displayVal.slice(0, 34)}...`;
+      }
     } else if (displayVal.length > 28) {
       displayVal = `${displayVal.slice(0, 26)}...`;
     }

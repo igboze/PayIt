@@ -333,7 +333,7 @@ async function createOfframpOrder(params) {
     chain: params.chain || (selectedChain === "SOLANA" ? RAILS.solana.chain : (isArcRailEnabled() ? RAILS.arc.chain : RAILS.solana.chain)),
     webhookURL: params.webhookURL || process.env.PAJ_WEBHOOK_URL || undefined,
     businessUSDCFee: typeof params.businessUSDCFee === "number" ? params.businessUSDCFee : 0,
-    description: params.description || "Proxim Cashout",
+    description: params.narration || params.description || "Proxim Cashout",
   };
 
   if (params.amount !== undefined && params.amount !== null) {

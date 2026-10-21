@@ -319,6 +319,7 @@ function buildPlanFromClassifiedIntent(classified) {
       bank_name:     r.bank_name || null,
       account_number:r.account_number || null,
       account_name:  r.account_name || null,
+      narration:     r.narration || classified.params?.narration || null,
       currency:      r.currency || (isOfframp && classified.params?.currency === "NGN" ? "NGN" : "USDC"),
     };
   });
@@ -2750,6 +2751,51 @@ function buildWithdrawAmountKeyboard() {
   ]);
 }
 
+function promptForWithdrawNarration(ctx, userId, withdrawData, context) {
+  convState.setState(userId, "await_withdraw_narration", withdrawData, context);
+  const acctLine = withdrawData.accountName ? `👤 <b>Account Name:</b> ${escapeHtml(withdrawData.accountName)}\n` : "";
+  const promptText =
+    `💬 <b>Add a Narration (Optional)</b>\n` +
+    `──────────────────────────\n` +
+    `🏦 <b>Bank:</b> ${escapeHtml(withdrawData.bankName)}\n` +
+    `🔢 <b>Account:</b> <code>${escapeHtml(withdrawData.accountNumber)}</code>\n` +
+    acctLine +
+    `\nAdding a narration helps the recipient recognize where the funds came from.\n\n` +
+    `👉 <b>Type your narration into the chat</b> (e.g. <i>"Salary for October"</i> or <i>"From John"</i>),\n` +
+    `or tap <b>Skip</b> to use the default:`;
+
+  return safeReplyHtml(ctx, promptText, Markup.inlineKeyboard([
+    [Markup.button.callback("⏩ Skip (Default)", "skip_withdraw_narration")],
+    [Markup.button.callback("❌ Cancel", "main_menu")],
+  ]));
+}
+
+function promptForWithdrawConfirmation(ctx, userId, withdrawData, context) {
+  convState.setState(userId, "confirm_withdraw", withdrawData, context);
+
+  const acctNameLine = withdrawData.accountName ? `👤 <b>Account Name:</b> ${escapeHtml(withdrawData.accountName)}\n` : "";
+  const nairaEst = withdrawData.fiatAmount ? ` (approx. ₦${Number(withdrawData.fiatAmount).toLocaleString()})` : "";
+  const activeRail = (withdrawData.rail && withdrawData.rail !== "auto") ? withdrawData.rail : "arc";
+  const railTag = activeRail === "solana" ? " ☀️ via Solana" : " ⚡ via Arc";
+  const narrLine = withdrawData.narration ? `💬 <b>Narration:</b> <i>${escapeHtml(withdrawData.narration)}</i>\n` : "";
+
+  return safeReplyHtml(ctx,
+    `💵 <b>Confirm Cash Out</b>\n` +
+    `──────────────────────────\n` +
+    `💰 <b>Total Amount:</b> $${withdrawData.amountUsdc.toFixed(2)}\n` +
+    `🏷️ <b>Platform Fee (1%):</b> $${withdrawData.feeUsdc.toFixed(2)}\n` +
+    `💵 <b>Net to Bank:</b> $${withdrawData.netAmountUsdc.toFixed(2)}${nairaEst}\n` +
+    `🔀 <b>Rail:</b> ${railTag.trim()}\n` +
+    `🏦 <b>Bank:</b> ${escapeHtml(withdrawData.bankName)}\n` +
+    `🔢 <b>Account Number:</b> <code>${escapeHtml(withdrawData.accountNumber)}</code>\n` +
+    acctNameLine +
+    narrLine + `\n` +
+    `<i>Funds will be transferred directly in Naira to this bank account.</i>\n\n` +
+    `Enter your 4-digit PIN to authorize:`,
+    Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+  );
+}
+
 async function promptForWithdrawBank(ctx, userId, amountUsdc, rail, context) {
   const feeUsdc = Number((amountUsdc * 0.01).toFixed(4));
   const netAmountUsdc = Number((amountUsdc - feeUsdc).toFixed(4));
@@ -3000,7 +3046,7 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
   }
 
   const resOrderData = orderReservation?.data || orderReservation;
-  convState.setState(userId, "confirm_withdraw", {
+  const withdrawData = {
     amountUsdc,
     feeUsdc,
     netAmountUsdc,
@@ -3013,30 +3059,30 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
     orderAddress: resOrderData?.address || orderReservation?.address || null,
     fiatAmount: resOrderData?.fiatAmount || orderReservation?.fiatAmount || null,
     rate: resOrderData?.rate || orderReservation?.rate || null,
-  }, state.context);
+    narration: state.data.narration || null,
+  };
 
-  const acctNameLine = liveAccountName ? `👤 <b>Account Name:</b> ${liveAccountName}\n` : "";
-  const nairaEst = (resOrderData?.fiatAmount || orderReservation?.fiatAmount) ? ` (approx. ₦${Number(resOrderData?.fiatAmount || orderReservation?.fiatAmount).toLocaleString()})` : "";
-  const activeRail = (state.data.rail && state.data.rail !== "auto") ? state.data.rail : preferredRail;
-  const railTag = activeRail === "solana" ? " ☀️ via Solana" : " ⚡ via Arc";
+  if (withdrawData.narration) {
+    return promptForWithdrawConfirmation(ctx, userId, withdrawData, state.context);
+  }
+  return promptForWithdrawNarration(ctx, userId, withdrawData, state.context);
+});
 
-  return ctx.reply(
-    `💵 <b>Confirm Cash Out</b>\n` +
-    `──────────────────────────\n` +
-    `💰 <b>Total Amount:</b> $${amountUsdc.toFixed(2)}\n` +
-    `🏷️ <b>Platform Fee (1%):</b> $${feeUsdc.toFixed(2)}\n` +
-    `💵 <b>Net to Bank:</b> $${netAmountUsdc.toFixed(2)}${nairaEst}\n` +
-    `🔀 <b>Rail:</b> ${railTag.trim()}\n` +
-    `🏦 <b>Bank:</b> ${parsed.bankName}\n` +
-    `🔢 <b>Account Number:</b> <code>${parsed.accountNumber}</code>\n` +
-    acctNameLine + `\n` +
-    `<i>Funds will be transferred directly in Naira to this bank account.</i>\n\n` +
-    `💬 <i>Send your 4-digit PIN into the chat (e.g. 1234) to authorize:</i>`,
-    {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]),
-    }
-  );
+bot.action("skip_withdraw_narration", async (ctx) => {
+  ctx.answerCbQuery();
+  const userId = ctx.from.id;
+  const state = convState.getState(userId);
+  if (!state || state.type !== "await_withdraw_narration" || !state.data?.amountUsdc) {
+    return ctx.reply("Session expired. Please start a new cash out.", backToMenu);
+  }
+  const user = db.getUser(userId);
+  const senderName = user?.first_name || (user?.username ? `@${user.username}` : "Proxim");
+  const defaultNarration = `Payment from ${senderName}`.slice(0, 70);
+  const withdrawData = {
+    ...state.data,
+    narration: defaultNarration,
+  };
+  return promptForWithdrawConfirmation(ctx, userId, withdrawData, state.context);
 });
 
 // Rail picker: user has funds on both Arc and Solana — ask which chain funds the cash out.
@@ -6577,7 +6623,7 @@ bot.on("text", async (ctx) => {
       }
 
       const resOrderData = orderReservation?.data || orderReservation;
-      convState.setState(userId, "confirm_withdraw", {
+      const withdrawData = {
         amountUsdc,
         feeUsdc,
         netAmountUsdc,
@@ -6590,27 +6636,13 @@ bot.on("text", async (ctx) => {
         orderAddress: resOrderData?.address || orderReservation?.address || null,
         fiatAmount: resOrderData?.fiatAmount || orderReservation?.fiatAmount || null,
         rate: resOrderData?.rate || orderReservation?.rate || null,
-      }, state.context);
+        narration: state.data.narration || null,
+      };
 
-      const acctNameLine = liveAccountName ? `👤 <b>Account Name:</b> ${escapeHtml(liveAccountName)}\n` : "";
-      const nairaEst = (resOrderData?.fiatAmount || orderReservation?.fiatAmount) ? ` (approx. ₦${Number(resOrderData?.fiatAmount || orderReservation?.fiatAmount).toLocaleString()})` : "";
-      const activeRail = (state.data.rail && state.data.rail !== "auto") ? state.data.rail : preferredRail;
-      const railTag = activeRail === "solana" ? " ☀️ via Solana" : " ⚡ via Arc";
-
-      return safeReplyHtml(ctx,
-        `💵 <b>Confirm Cash Out</b>\n` +
-        `──────────────────────────\n` +
-        `💰 <b>Total Amount:</b> $${amountUsdc.toFixed(2)}\n` +
-        `🏷️ <b>Platform Fee (1%):</b> $${feeUsdc.toFixed(2)}\n` +
-        `💵 <b>Net to Bank:</b> $${netAmountUsdc.toFixed(2)}${nairaEst}\n` +
-        `🔀 <b>Rail:</b> ${railTag.trim()}\n` +
-        `🏦 <b>Bank:</b> ${escapeHtml(parsed.bankName)}\n` +
-        `🔢 <b>Account Number:</b> <code>${escapeHtml(parsed.accountNumber)}</code>\n` +
-        acctNameLine + `\n` +
-        `<i>Funds will be transferred directly in Naira to this bank account.</i>\n\n` +
-        `Enter your 4-digit PIN to authorize:`,
-        Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-      );
+      if (withdrawData.narration) {
+        return promptForWithdrawConfirmation(ctx, userId, withdrawData, state.context);
+      }
+      return promptForWithdrawNarration(ctx, userId, withdrawData, state.context);
     }
 
 function formatCustomerFriendlyOfframpError(rawError) {
@@ -6670,6 +6702,23 @@ function formatCustomerFriendlyOfframpError(rawError) {
   );
 }
 
+    if (state.type === "await_withdraw_narration") {
+      const cleanNarration = String(text || "").trim().slice(0, 70);
+      if (cleanNarration.startsWith("/")) {
+        convState.clearState(userId);
+        return bot.handleUpdate({ update_id: ctx.update.update_id, message: ctx.message });
+      }
+      const user = db.getUser(userId);
+      const senderName = user?.first_name || (user?.username ? `@${user.username}` : "Proxim");
+      const isSkip = /^skip\b/i.test(cleanNarration);
+      const narration = isSkip || !cleanNarration ? `Payment from ${senderName}`.slice(0, 70) : cleanNarration;
+      const withdrawData = {
+        ...state.data,
+        narration,
+      };
+      return promptForWithdrawConfirmation(ctx, userId, withdrawData, state.context);
+    }
+
     if (state.type === "confirm_withdraw") {
       await deleteSensitiveMessage(ctx);
       if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
@@ -6691,6 +6740,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
       try {
         const feeUsdc = typeof state.data.feeUsdc === "number" ? state.data.feeUsdc : Number((state.data.amountUsdc * 0.01).toFixed(4));
         const netAmountUsdc = typeof state.data.netAmountUsdc === "number" ? state.data.netAmountUsdc : Number((state.data.amountUsdc - feeUsdc).toFixed(4));
+        const narration = state.data.narration || null;
         const result = await executeOfframp(
           userWallet,
           state.data.amountUsdc,
@@ -6703,14 +6753,17 @@ function formatCustomerFriendlyOfframpError(rawError) {
             orderId: state.data.orderId,
             fiatAmount: state.data.fiatAmount,
             rate: state.data.rate,
+            narration,
+            description: narration,
           },
           userId,
-          "Cash Out",
+          narration || "Cash Out",
           {
             accountType: context,
             rail: state.data.rail || "auto",
             feeUsdc,
             netAmountUsdc,
+            narration,
           }
         );
 
@@ -6727,6 +6780,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
             `• <b>Net to Bank:</b> $${netAmountUsdc.toFixed(2)}\n` +
             (result.fiatAmount ? `• <b>Naira Payout:</b> ₦${Number(result.fiatAmount).toLocaleString()}\n` : "") +
             `• <b>Destination Bank:</b> ${escapeHtml(state.data.accountName || state.data.bankName || "Bank Account")} (<code>${escapeHtml(state.data.accountNumber)}</code>)\n` +
+            (narration ? `• <b>Narration:</b> <i>${escapeHtml(narration)}</i>\n` : "") +
             `• <b>Status:</b> ⏳ <i>Processing interbank transfer...</i>\n\n` +
             `<i>Naira arrives in your bank account in ~1–2 minutes. Your official receipt will be sent automatically once settled.</i>`;
 

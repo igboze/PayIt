@@ -268,12 +268,15 @@ async function pollPendingOfframpOrders(bot) {
             const fiatAmount = Number(orderData.fiatAmount || order.fiat_amount || 0);
             const bankName = order.bank_name || orderData.bankName || "Bank";
             const accountNumber = String(order.account_number || orderData.accountNumber || "");
+            const effectiveNarration = order.narration || orderData.narration || orderData.description || null;
+            const narrationLine = effectiveNarration ? `💬 <b>Narration:</b> <i>${escapeHtml(effectiveNarration)}</i>\n` : "";
 
             const caption =
               `✅ <b>Cash Out Delivered (${accountLabel})!</b>\n` +
               `──────────────────────────\n` +
               `💵 <b>Delivered:</b> ₦${fiatAmount > 0 ? Number(fiatAmount).toLocaleString() : "..."}\n` +
               `🏦 <b>Destination:</b> ${bankName} <code>${accountNumber}</code>\n` +
+              narrationLine +
               `💰 <b>Amount:</b> $${amountUsdc.toFixed(2)} USDC\n` +
               `💼 <b>Source:</b> ${accountLabel}\n` +
               `🔖 <b>Ref:</b> <code>${order.order_id}</code>\n\n` +
@@ -296,6 +299,7 @@ async function pollPendingOfframpOrders(bot) {
                 timestamp: new Date().toISOString(),
                 status: "Confirmed",
                 txHash: txHash,
+                narration: effectiveNarration,
               });
             } catch (recErr) {
               console.warn("[settlement_daemon:offramp_receipt_err]", recErr.message);

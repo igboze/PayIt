@@ -61,8 +61,10 @@ async function sendOnrampDepositNotification({
   orderId = null,
   rate = null,
   network = "Arc Mainnet",
+  narration = null,
 }) {
-  if (!bot || !telegramId) return;
+  const botInstance = (bot && bot.telegram) ? bot : (bot && bot.bot && bot.bot.telegram ? bot.bot : bot);
+  if (!botInstance || !botInstance.telegram || !telegramId) return;
 
   const isBiz = accountType === "business";
   const accountLabel = isBiz ? "Business Treasury" : "Personal Wallet";
@@ -105,6 +107,10 @@ async function sendOnrampDepositNotification({
     caption += `📈 <b>Exchange Rate:</b> ₦${Number(rate).toLocaleString()}/$\n`;
   }
 
+  if (narration && String(narration).trim()) {
+    caption += `💬 <b>Narration:</b> <i>${escapeHtml(String(narration).trim())}</i>\n`;
+  }
+
   caption +=
     `💼 <b>Account:</b> ${accountLabel}\n` +
     `💳 <b>New Balance:</b> ${currentBalanceStr}\n` +
@@ -145,15 +151,16 @@ async function sendOnrampDepositNotification({
       timestamp: new Date().toISOString(),
       status: "Confirmed",
       txHash: txHash || orderId || null,
+      narration: narration || null,
     });
   } catch (recErr) {
     // Best-effort PNG generation
   }
 
   const photoCaption = caption.length > 950 ? caption.slice(0, 940) + "..." : caption;
-  if (receiptPath && typeof bot.telegram.sendPhoto === "function") {
+  if (receiptPath && typeof botInstance.telegram.sendPhoto === "function") {
     try {
-      await bot.telegram.sendPhoto(
+      await botInstance.telegram.sendPhoto(
         telegramId,
         { source: receiptPath },
         {
@@ -169,8 +176,8 @@ async function sendOnrampDepositNotification({
     }
   }
 
-  if (typeof bot.telegram.sendMessage === "function") {
-    await bot.telegram.sendMessage(telegramId, caption, {
+  if (typeof botInstance.telegram.sendMessage === "function") {
+    await botInstance.telegram.sendMessage(telegramId, caption, {
       parse_mode: "HTML",
       reply_markup: { inline_keyboard: inlineKeyboard },
     });
@@ -345,11 +352,15 @@ async function processPajEvent(payload, bot) {
           try {
             const user = db.getUser(parsedTgId);
             const userAddress = user ? (accountType === "business" ? (user.business_deposit_address || user.deposit_address) : user.deposit_address) : null;
+            const effectiveNarration = trackedOfframp?.narration || data.narration || data.description || null;
+            const narrationLine = effectiveNarration ? `💬 <b>Narration:</b> <i>${escapeHtml(effectiveNarration)}</i>\n` : "";
+
             const caption =
               `✅ <b>Cash Out Delivered (${accountLabel})!</b>\n` +
               `──────────────────────────\n` +
               `💵 <b>Delivered:</b> ₦${Number(fiatAmount).toLocaleString()}\n` +
               `🏦 <b>Destination:</b> ${bankName} <code>${accountNumber}</code>\n` +
+              narrationLine +
               `💰 <b>Amount:</b> $${amountUsdc.toFixed(2)} USDC\n` +
               `💼 <b>Source:</b> ${accountLabel}\n` +
               `🔖 <b>Ref:</b> <code>${effectiveOrderId || "N/A"}</code>\n\n` +
@@ -371,6 +382,7 @@ async function processPajEvent(payload, bot) {
                 timestamp: new Date().toISOString(),
                 status: "Confirmed",
                 txHash: data.txHash || trackedOfframp?.tx_hash || null,
+                narration: effectiveNarration,
               });
             } catch (_) {}
 
@@ -406,6 +418,7 @@ async function processPajEvent(payload, bot) {
     eventStr === "onramp.successful" ||
     eventStr === "onramp.completed" ||
     eventStr === "payment.successful" ||
+    eventStr.startsWith("collection") ||
     statusStr === "completed" ||
     statusStr === "successful" ||
     statusStr === "paid" ||
@@ -663,6 +676,8 @@ async function processPajEvent(payload, bot) {
     const creditedAmountUsdc = feeTxHash ? netAmountUsdc : effectiveAmountUsdc;
     const amountMicro = walletLib.parseToMicro(creditedAmountUsdc.toFixed(6));
 
+    const onrampNarration = data.narration || data.description || data.paymentReference || data.remark || data.metadata?.narration || null;
+
     // Record onramp transaction in ledger
     const settlementTxHash = (bridgeResult && bridgeResult.arcTxHash) || solanaTxSignature || data.id;
     try {
@@ -672,21 +687,24 @@ async function processPajEvent(payload, bot) {
         amountMicro,
         isDirectlySettled ? "confirmed" : "pending_bridge",
         settlementTxHash,
-        isBizAccount ? "business" : "personal"
+        isBizAccount ? "business" : "personal",
+        18,
+        "arc",
+        onrampNarration
       );
       if (fiatOrderId) {
-        db.completeOnrampOrder(fiatOrderId, settlementTxHash);
+        db.completeOnrampOrder(fiatOrderId, { txHash: settlementTxHash, narration: onrampNarration });
       }
     } catch (recErr) {
       console.warn("[webhook_server] Record onramp tx error:", recErr.message);
     }
 
     // Send Telegram alert with accurate status, new balance, and PNG receipt when settled
-    if (bot && targetTelegramId) {
+    if (botInstance && targetTelegramId) {
       try {
         if (isDirectlySettled) {
           await sendOnrampDepositNotification({
-            bot,
+            bot: botInstance,
             telegramId: targetTelegramId,
             fiatAmount: effectiveFiatAmount,
             amountUsdc: creditedAmountUsdc,
@@ -696,10 +714,11 @@ async function processPajEvent(payload, bot) {
             orderId: fiatOrderId,
             rate: orderRate,
             network: "Arc Mainnet",
+            narration: onrampNarration,
           });
         } else if (process.env.AUTO_BRIDGE_SOLANA_TO_ARC !== "true") {
           await sendOnrampDepositNotification({
-            bot,
+            bot: botInstance,
             telegramId: targetTelegramId,
             fiatAmount: effectiveFiatAmount,
             amountUsdc: creditedAmountUsdc,
@@ -709,9 +728,10 @@ async function processPajEvent(payload, bot) {
             orderId: fiatOrderId,
             rate: orderRate,
             network: "Solana Mainnet",
+            narration: onrampNarration,
           });
-        } else {
-          await bot.telegram.sendMessage(
+        } else if (typeof botInstance.telegram?.sendMessage === "function") {
+          await botInstance.telegram.sendMessage(
             targetTelegramId,
             `⏳ <b>Transaction in Progress (${accountLabel})</b>\n` +
             `──────────────────────────\n` +
