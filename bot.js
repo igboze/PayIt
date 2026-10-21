@@ -4794,6 +4794,30 @@ bot.hears("🧾 Invoice", (ctx) => {
 
 bot.hears("🧾 New Invoice", (ctx) => showBizInvoiceMenu(ctx));
 
+bot.hears(["🏎️ RaceAlpha", /^(?:🏎️\s*)?RaceAlpha(?:\s*Terminal)?$/i], (ctx) => {
+  const context = getContext(ctx.from?.id);
+  return ctx.reply(
+    "🏎️ <b>RaceAlpha has been removed.</b>\n──────────────────────────\n" +
+    "This feature has been removed from Proxim. Your menu has been refreshed.",
+    {
+      parse_mode: "HTML",
+      ...mainMenu(context),
+    }
+  );
+});
+
+bot.command(["race", "racealpha", "terminal"], (ctx) => {
+  const context = getContext(ctx.from?.id);
+  return ctx.reply(
+    "🏎️ <b>RaceAlpha has been removed.</b>\n──────────────────────────\n" +
+    "This feature has been removed from Proxim. Your menu has been refreshed.",
+    {
+      parse_mode: "HTML",
+      ...mainMenu(context),
+    }
+  );
+});
+
 bot.hears("🛒 Shop Online", (ctx) => {
   const context = getContext(ctx.from?.id);
   convState.setState(ctx.from.id, "await_shopping_instruction", {}, context);
