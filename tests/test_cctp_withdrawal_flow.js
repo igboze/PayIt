@@ -120,3 +120,26 @@ test("CCTP Withdrawal Suite: CCTP V2 Message Parsing & Nonce PDA", () => {
   const noncePda = multichain.getUsedNoncePda(parsed.nonceBytes);
   assert.ok(noncePda instanceof PublicKey, "used_nonce PDA must be a valid Solana PublicKey");
 });
+
+test("CCTP Withdrawal Suite: Recipient ATA Creation Instruction", () => {
+  assert.equal(typeof multichain.createAssociatedTokenAccountInstruction, "function");
+
+  const payer = Keypair.generate().publicKey;
+  const owner = Keypair.generate().publicKey;
+  const ata = multichain.getAssociatedTokenAddress(owner, multichain.SOLANA_USDC_MINT);
+
+  const ix = multichain.createAssociatedTokenAccountInstruction(
+    payer,
+    ata,
+    owner,
+    multichain.SOLANA_USDC_MINT
+  );
+
+  assert.ok(ix, "Instruction should be created");
+  assert.equal(ix.programId.toBase58(), multichain.ASSOCIATED_TOKEN_PROGRAM_ID.toBase58());
+  assert.equal(ix.keys.length, 6);
+  assert.equal(ix.keys[0].pubkey.toBase58(), payer.toBase58());
+  assert.equal(ix.keys[1].pubkey.toBase58(), ata.toBase58());
+  assert.equal(ix.keys[2].pubkey.toBase58(), owner.toBase58());
+});
+
