@@ -1031,8 +1031,8 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
   console.log(`[cctp_bridge:preflight] Fee payer SOL check passed ✓ (${feeCheck.balanceSol.toFixed(4)} SOL)`);
 
   try {
-    const { PublicKey } = require("@solana/web3.js");
-    const { getAssociatedTokenAddress, SOLANA_USDC_MINT } = require("./multichain");
+    const { PublicKey, Transaction } = require("@solana/web3.js");
+    const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, SOLANA_USDC_MINT } = require("./multichain");
 
     const recipientPubkey = new PublicKey(recipientSolanaAddress);
     // On Solana, CCTP mints directly to recipient_token_account, which must be the recipient's USDC Associated Token Account.
@@ -1068,7 +1068,6 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
           };
         }
         console.log(`[cctp_bridge] Initializing recipient ATA ${recipientAta.toBase58()} for ${recipientPubkey.toBase58()}...`);
-        const { Transaction, createAssociatedTokenAccountInstruction } = require("@solana/web3.js");
         const latestBlockhash = await conn.getLatestBlockhash();
         const createAtaTx = new Transaction({
           feePayer: feePayerKeypair.publicKey,
