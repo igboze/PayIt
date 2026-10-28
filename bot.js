@@ -2733,21 +2733,22 @@ flowsDeveloper.registerDeveloperFlows(bot, {
   backToMenu,
 });
 
-// ─── Withdraw / Cash Out ──────────────────────────────────────────────────────
+// ─── Withdraw / Cash Out (Naira-first UX) ────────────────────────────────────
 
+// Quick-pick NGN amounts for the Naira cash-out flow.
 function buildWithdrawAmountKeyboard() {
   return Markup.inlineKeyboard([
     [
-      btnPrimary("$10", "cashout_amt_10"),
-      btnPrimary("$25", "cashout_amt_25"),
-      btnPrimary("$50", "cashout_amt_50"),
+      btnPrimary("₦5,000",   "cashout_ngn_5000"),
+      btnPrimary("₦10,000",  "cashout_ngn_10000"),
+      btnPrimary("₦20,000",  "cashout_ngn_20000"),
     ],
     [
-      btnPrimary("$100", "cashout_amt_100"),
-      btnPrimary("$250", "cashout_amt_250"),
-      btnSuccess("💰 All / Max", "cashout_amt_max"),
+      btnPrimary("₦50,000",  "cashout_ngn_50000"),
+      btnPrimary("₦100,000", "cashout_ngn_100000"),
+      btnPrimary("₦200,000", "cashout_ngn_200000"),
     ],
-    [btnDanger("❌ Cancel", "main_menu")],
+    [btnSuccess("💰 Cash Out All", "cashout_amt_max"), btnDanger("❌ Cancel", "main_menu")],
   ]);
 }
 
@@ -2774,17 +2775,24 @@ function promptForWithdrawConfirmation(ctx, userId, withdrawData, context) {
   convState.setState(userId, "confirm_withdraw", withdrawData, context);
 
   const acctNameLine = withdrawData.accountName ? `👤 <b>Account Name:</b> ${escapeHtml(withdrawData.accountName)}\n` : "";
-  const nairaEst = withdrawData.fiatAmount ? ` (approx. ₦${Number(withdrawData.fiatAmount).toLocaleString()})` : "";
   const activeRail = (withdrawData.rail && withdrawData.rail !== "auto") ? withdrawData.rail : "arc";
   const railTag = activeRail === "solana" ? " ☀️ via Solana" : " ⚡ via Arc";
   const narrLine = withdrawData.narration ? `💬 <b>Narration:</b> <i>${escapeHtml(withdrawData.narration)}</i>\n` : "";
 
+  // Show Naira as the primary figure if we have it, USDC as the technical detail.
+  const ngnLine = withdrawData.ngnAmount
+    ? `🇳🇬 <b>You Receive (Naira):</b> <b>₦${Math.round(withdrawData.ngnAmount).toLocaleString("en-NG")}</b>\n`
+    : `💵 <b>Net to Bank:</b> $${withdrawData.netAmountUsdc.toFixed(2)} USDC\n`;
+  const usdcDetail = withdrawData.ngnAmount
+    ? `💵 <b>USDC Sold:</b> $${withdrawData.netAmountUsdc.toFixed(2)} (rate: ₦${Math.round(withdrawData.ngnRate || 0).toLocaleString("/\$")})\n`
+    : "";
+
   return safeReplyHtml(ctx,
-    `💵 <b>Confirm Cash Out</b>\n` +
+    `🇳🇬 <b>Confirm Cash Out to Naira</b>\n` +
     `──────────────────────────\n` +
-    `💰 <b>Total Amount:</b> $${withdrawData.amountUsdc.toFixed(2)}\n` +
-    `🏷️ <b>Platform Fee (1%):</b> $${withdrawData.feeUsdc.toFixed(2)}\n` +
-    `💵 <b>Net to Bank:</b> $${withdrawData.netAmountUsdc.toFixed(2)}${nairaEst}\n` +
+    ngnLine +
+    usdcDetail +
+    `🏷️ <b>Platform Fee (1%):</b> $${withdrawData.feeUsdc.toFixed(2)} USDC\n` +
     `🔀 <b>Rail:</b> ${railTag.trim()}\n` +
     `🏦 <b>Bank:</b> ${escapeHtml(withdrawData.bankName)}\n` +
     `🔢 <b>Account Number:</b> <code>${escapeHtml(withdrawData.accountNumber)}</code>\n` +
@@ -2796,23 +2804,34 @@ function promptForWithdrawConfirmation(ctx, userId, withdrawData, context) {
   );
 }
 
-async function promptForWithdrawBank(ctx, userId, amountUsdc, rail, context) {
+async function promptForWithdrawBank(ctx, userId, amountUsdc, rail, context, ngnAmount) {
   const feeUsdc = Number((amountUsdc * 0.01).toFixed(4));
   const netAmountUsdc = Number((amountUsdc - feeUsdc).toFixed(4));
-  convState.setState(userId, "await_withdraw_bank", { amountUsdc, feeUsdc, netAmountUsdc, rail }, context);
-  let rateNote = "";
+
+  // Fetch live NGN rate to show the Naira payout estimate prominently.
+  let liveRate = null;
+  let ngnPayout = ngnAmount || null;  // may already be set when called from NGN quick-pick
   try {
-    const rate = await fx.getUsdToNgnRate();
-    const nairaEst = rate ? fx.formatNaira(netAmountUsdc * rate) : null;
-    if (rate && nairaEst) {
-      rateNote = `Today's rate: ₦${Math.round(rate).toLocaleString()}/$\n` +
-                 `• Amount: $${amountUsdc.toFixed(2)}\n` +
-                 `• Platform Fee (1%): $${feeUsdc.toFixed(2)}\n` +
-                 `• Net Payout: $${netAmountUsdc.toFixed(2)} (~${nairaEst})\n\n`;
-    }
+    liveRate = await fx.getUsdToNgnRate();
+    if (liveRate && !ngnPayout) ngnPayout = netAmountUsdc * liveRate;
   } catch (err) {
     console.warn("[promptForWithdrawBank:fx]", err.message);
   }
+
+  convState.setState(userId, "await_withdraw_bank", {
+    amountUsdc,
+    feeUsdc,
+    netAmountUsdc,
+    rail,
+    ngnAmount: ngnPayout ? Math.round(ngnPayout) : null,
+    ngnRate: liveRate,
+  }, context);
+
+  const nairaLine = ngnPayout
+    ? `🇳🇬 <b>You'll Receive:</b> ~<b>₦${Math.round(ngnPayout).toLocaleString("en-NG")}</b>\n` +
+      `💵 <b>USDC Sold:</b> $${amountUsdc.toFixed(2)} (fee 1% = $${feeUsdc.toFixed(2)})\n` +
+      (liveRate ? `📈 <b>Rate:</b> ₦${Math.round(liveRate).toLocaleString()}/$\n` : "")
+    : `💵 <b>Amount:</b> $${amountUsdc.toFixed(2)} · Fee 1%: $${feeUsdc.toFixed(2)} · Net: $${netAmountUsdc.toFixed(2)}\n`;
 
   // Look up saved bank payees for this user
   let bankButtons = [];
@@ -2827,8 +2846,8 @@ async function promptForWithdrawBank(ctx, userId, amountUsdc, rail, context) {
   }
 
   const promptText =
-    `💵 <b>Cash Out $${amountUsdc.toFixed(2)} ${rail === "arc" ? "⚡ via Arc" : "☀️ via Solana"}</b>\n──────────────────────────\n` +
-    `${rateNote}` +
+    `🇳🇬 <b>Cash Out to Naira ${rail === "arc" ? "⚡ Arc" : "☀️ Solana"}</b>\n──────────────────────────\n` +
+    nairaLine + `\n` +
     `Which bank account should we pay the Naira into?\n\n` +
     (bankButtons.length > 0 ? `👉 <b>Tap a saved bank below</b>, or send your account details:\n` : `👉 <b>Send your bank details into the chat:</b>\n`) +
     `💬 <i>Format: <b>Bank Name · 10-digit Account Number</b>\nExample: <code>GTBank · 0123456789</code> or <code>Kuda · 2001234567</code></i>`;
@@ -2911,16 +2930,123 @@ async function handleCashOutAmount(ctx, userId, amount, context) {
   return promptForWithdrawBank(ctx, userId, amount, rail, context);
 }
 
-bot.action("action_withdraw_menu", (ctx) => {
+/**
+ * Naira-first cash out entry point.
+ * Converts the user-supplied Naira amount to USDC using the live rate,
+ * checks balance, and proceeds to the bank-entry step.
+ * The ngnAmount is kept in the session so it appears as the primary
+ * figure throughout the confirmation screens.
+ */
+async function handleCashOutNgn(ctx, userId, ngnAmount, context) {
+  const user = requireUser(ctx);
+  if (!user) return;
+
+  await ctx.reply("⏳ Fetching live rate…");
+
+  let rate;
+  try {
+    rate = await fx.getUsdToNgnRate();
+  } catch (err) {
+    console.warn("[handleCashOutNgn:fx]", err.message);
+    return ctx.reply("⚠️ Could not fetch live rate. Please try again in a moment.", backToMenu);
+  }
+
+  const amountUsdc = ngnAmount / rate;
+
+  const unified = await chains.getUnifiedBalance(user, context || "personal");
+  const arcUsdc = unified.arc.usdc;
+  const solUsdc = unified.solana.usdc;
+  const totalUsdc = arcUsdc + solUsdc;
+
+  if (totalUsdc < amountUsdc) {
+    const availNgn = Math.round(totalUsdc * rate);
+    const targetContext = context || "personal";
+    const position = db.getOpenYieldPosition(userId, targetContext) || db.getOpenYieldPosition(userId);
+    if (position && ((totalUsdc + position.amount_usdc) * rate) >= ngnAmount) {
+      const grossProfit = savings.calcAccruedYield(position);
+      const netProfit = grossProfit * (1 - savings.PAYIT_FEE_FRACTION);
+      return ctx.reply(
+        `⚠️ <b>Funds Saved in Vault</b>\n──────────────────────────\n` +
+        `You need <b>₦${Math.round(ngnAmount).toLocaleString("en-NG")}</b> but your spendable balance is only ` +
+        `<b>₦${availNgn.toLocaleString("en-NG")}</b>.\n\n` +
+        `You have <b>$${position.amount_usdc.toFixed(2)} USDC</b> (+${netProfit.toFixed(4)} yield) in your vault — withdraw savings first.`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback("💵 Withdraw Savings Now", "yield_withdraw_start")],
+            [Markup.button.callback("❌ Cancel", "main_menu")],
+          ]),
+        }
+      );
+    }
+    return ctx.reply(
+      `⚠️ Not enough balance. You have <b>₦${availNgn.toLocaleString("en-NG")}</b> (~$${totalUsdc.toFixed(2)}) but need <b>₦${Math.round(ngnAmount).toLocaleString("en-NG")}</b>.`,
+      { parse_mode: "HTML", ...backToMenu }
+    );
+  }
+
+  const arcRailUsable = paj.isArcRailEnabled() && arcUsdc >= amountUsdc;
+  const solRailUsable = solUsdc >= amountUsdc;
+
+  if (arcRailUsable && solRailUsable) {
+    // Store ngnAmount in state so the rail-selection step can pass it through
+    convState.setState(userId, "await_withdraw_rail", {
+      amountUsdc,
+      arcUsdc,
+      solUsdc,
+      ngnAmount: Math.round(ngnAmount),
+      ngnRate: rate,
+    }, context);
+    return ctx.reply(
+      `🇳🇬 <b>Cash Out ₦${Math.round(ngnAmount).toLocaleString("en-NG")} to Naira</b>\n──────────────────────────\n` +
+      `(≈ $${amountUsdc.toFixed(2)} USDC at ₦${Math.round(rate).toLocaleString()}/$)\n\n` +
+      `You have funds on both chains:\n` +
+      `⚡ <b>Arc:</b> $${arcUsdc.toFixed(2)} — fastest (~1s on-chain)\n` +
+      `☀️ <b>Solana:</b> $${solUsdc.toFixed(2)}\n\n` +
+      `Which chain should fund this cash out?`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("⚡ Arc (fastest)", "action_withdraw_rail_arc")],
+          [Markup.button.callback("☀️ Solana", "action_withdraw_rail_solana")],
+          [Markup.button.callback("❌ Cancel", "main_menu")],
+        ]),
+      }
+    );
+  }
+
+  let rail;
+  if (arcRailUsable) rail = "arc";
+  else if (solRailUsable) rail = "solana";
+  else {
+    return ctx.reply(
+      `You have $${totalUsdc.toFixed(2)} total but not enough on a single chain ` +
+      `(Arc: $${arcUsdc.toFixed(2)} · Solana: $${solUsdc.toFixed(2)}). ` +
+      `Use "Move Funds" to consolidate, or enter a smaller amount.`
+    );
+  }
+
+  return promptForWithdrawBank(ctx, userId, amountUsdc, rail, context, Math.round(ngnAmount));
+}
+
+bot.action("action_withdraw_menu", async (ctx) => {
   ctx.answerCbQuery();
   const user = requireUser(ctx);
   if (!user) return;
-  convState.setState(ctx.from.id, "await_withdraw_amount", {}, getContext(ctx.from.id));
+
+  // Show live rate so users know what they'll get in Naira.
+  let rateInfo = "";
+  try {
+    const rate = await fx.getUsdToNgnRate();
+    if (rate) rateInfo = `\n📈 <b>Live Rate:</b> ₦${Math.round(rate).toLocaleString()}/$\n`;
+  } catch (_) {}
+
+  convState.setState(ctx.from.id, "await_withdraw_ngn_amount", {}, getContext(ctx.from.id));
   return ctx.reply(
-    `💵 <b>Cash Out to Naira</b>\n──────────────────────────\n` +
-    `How much would you like to cash out?\n\n` +
-    `👉 <b>Tap a quick amount below</b>, or type your amount into the chat:\n` +
-    `💬 <i>Example: send <b>25</b> or <b>50.50</b></i>`,
+    `🇳🇬 <b>Cash Out to Naira</b>\n──────────────────────────\n` +
+    `Enter how many <b>Naira (₦)</b> you want to receive.${rateInfo}\n` +
+    `👉 <b>Tap a quick amount below</b>, or type your Naira amount into the chat:\n` +
+    `💬 <i>Example: type <b>20000</b> or <b>50000</b></i>`,
     {
       parse_mode: "HTML",
       ...buildWithdrawAmountKeyboard(),
@@ -2928,26 +3054,29 @@ bot.action("action_withdraw_menu", (ctx) => {
   );
 });
 
-bot.action(/^cashout_amt_(\d+(?:\.\d+)?|max)$/, async (ctx) => {
+// ─── NGN quick-pick buttons ───────────────────────────────────────────────────
+bot.action(/^cashout_ngn_(\d+)$/, async (ctx) => {
   ctx.answerCbQuery();
   const userId = ctx.from.id;
   const user = requireUser(ctx);
   if (!user) return;
   const context = getContext(userId);
-  const param = ctx.match[1];
-  let amount;
-  if (param === "max") {
-    const unified = await chains.getUnifiedBalance(user, context);
-    amount = unified.arc.usdc + unified.solana.usdc;
-    if (amount <= 0) {
-      return ctx.reply("Your spendable balance is $0.00.");
-    }
-  } else {
-    amount = parseFloat(param);
-  }
-  if (isNaN(amount) || amount <= 0) {
-    return ctx.reply("Invalid amount.");
-  }
+  const ngnAmount = parseInt(ctx.match[1]);
+  if (isNaN(ngnAmount) || ngnAmount <= 0) return ctx.reply("Invalid amount.");
+  return handleCashOutNgn(ctx, userId, ngnAmount, context);
+});
+
+// ─── "Cash Out All" button (stays in USDC-max logic) ─────────────────────────
+bot.action("cashout_amt_max", async (ctx) => {
+  ctx.answerCbQuery();
+  const userId = ctx.from.id;
+  const user = requireUser(ctx);
+  if (!user) return;
+  const context = getContext(userId);
+  const unified = await chains.getUnifiedBalance(user, context);
+  const amount = unified.arc.usdc + unified.solana.usdc;
+  if (amount <= 0) return ctx.reply("Your spendable balance is $0.00.");
+  // Convert full USDC balance to Naira for the NGN-first confirmation flow.
   return handleCashOutAmount(ctx, userId, amount, context);
 });
 
@@ -3094,7 +3223,11 @@ for (const [rail, label] of [["arc", "⚡ Arc"], ["solana", "☀️ Solana"]]) {
     if (!state || state.type !== "await_withdraw_rail" || !state.data?.amountUsdc) {
       return ctx.reply("Session expired. Start a new cash out.", backToMenu);
     }
-    return promptForWithdrawBank(ctx, userId, state.data.amountUsdc, rail, state.context);
+    // Forward the original NGN amount if it came from the Naira-first flow.
+    return promptForWithdrawBank(
+      ctx, userId, state.data.amountUsdc, rail, state.context,
+      state.data.ngnAmount || null
+    );
   });
 }
 
@@ -4755,13 +4888,20 @@ bot.hears("📤 Send Payment", (ctx) => ctx.reply(
   ])
 ));
 
-bot.hears("💵 Cash Out", (ctx) => {
-  convState.setState(ctx.from.id, "await_withdraw_amount", {}, getContext(ctx.from.id));
+bot.hears("💵 Cash Out", async (ctx) => {
+  // Show live NGN rate
+  let rateInfo = "";
+  try {
+    const rate = await fx.getUsdToNgnRate();
+    if (rate) rateInfo = `\n📈 <b>Live Rate:</b> ₦${Math.round(rate).toLocaleString()}/$\n`;
+  } catch (_) {}
+
+  convState.setState(ctx.from.id, "await_withdraw_ngn_amount", {}, getContext(ctx.from.id));
   return ctx.reply(
-    `💵 <b>Cash Out to Naira</b>\n──────────────────────────\n` +
-    `How much would you like to cash out?\n\n` +
-    `👉 <b>Tap a quick amount below</b>, or type your amount into the chat:\n` +
-    `💬 <i>Example: send <b>25</b> or <b>50.50</b></i>`,
+    `🇳🇬 <b>Cash Out to Naira</b>\n──────────────────────────\n` +
+    `Enter how many <b>Naira (₦)</b> you want to receive.${rateInfo}\n` +
+    `👉 <b>Tap a quick amount below</b>, or type your Naira amount into the chat:\n` +
+    `💬 <i>Example: type <b>20000</b> or <b>50000</b></i>`,
     {
       parse_mode: "HTML",
       ...buildWithdrawAmountKeyboard(),
@@ -6456,7 +6596,25 @@ bot.on("text", async (ctx) => {
       return flowsDeveloper.handleDeveloperState(bot, ctx, state, text, userId);
     }
 
+    // ── Naira-first Cash Out: free-text Naira amount ─────────────────────────
+    if (state.type === "await_withdraw_ngn_amount") {
+      const ngnAmount = parseFloat(text.replace(/[^0-9.]/g, ""));
+      if (isNaN(ngnAmount) || ngnAmount < 500) {
+        if (shouldReprocessConversationState("await_withdraw_ngn_amount", text)) {
+          convState.clearState(userId);
+          return bot.handleUpdate({ update_id: ctx.update.update_id, message: ctx.message });
+        }
+        return ctx.reply("Please enter a valid Naira amount (minimum ₦500, e.g. 20000). Type cancel to stop.");
+      }
+      const user = requireUser(ctx);
+      if (!user) return;
+      convState.clearState(userId);
+      return handleCashOutNgn(ctx, userId, ngnAmount, state.context || getContext(userId));
+    }
+
     if (state.type === "await_withdraw_amount") {
+      // Legacy USDC-amount state (kept for backward compat with any
+      // outstanding sessions or API callers that set this state directly).
       const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
       if (isNaN(amount) || amount <= 0) {
         if (shouldReprocessConversationState("await_withdraw_amount", text)) {

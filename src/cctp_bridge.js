@@ -1068,29 +1068,50 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
           };
         }
         console.log(`[cctp_bridge] Initializing recipient ATA ${recipientAta.toBase58()} for ${recipientPubkey.toBase58()}...`);
-        const latestBlockhash = await conn.getLatestBlockhash();
+        const { ComputeBudgetProgram } = require("@solana/web3.js");
+        const latestBlockhash = await conn.getLatestBlockhash("confirmed");
         const createAtaTx = new Transaction({
           feePayer: feePayerKeypair.publicKey,
           recentBlockhash: latestBlockhash.blockhash,
-        }).add(createAssociatedTokenAccountInstruction(
-          feePayerKeypair.publicKey,
-          recipientAta,
-          recipientPubkey,
-          SOLANA_USDC_MINT
-        ));
+        }).add(
+          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }),
+          createAssociatedTokenAccountInstruction(
+            feePayerKeypair.publicKey,
+            recipientAta,
+            recipientPubkey,
+            SOLANA_USDC_MINT
+          )
+        );
         createAtaTx.sign(feePayerKeypair);
-        const sig = await conn.sendRawTransaction(createAtaTx.serialize());
-        await conn.confirmTransaction({
-          signature: sig,
-          blockhash: latestBlockhash.blockhash,
-          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+        const sig = await conn.sendRawTransaction(createAtaTx.serialize(), {
+          skipPreflight: false,
+          maxRetries: 3,
         });
-        console.log(`[cctp_bridge] Recipient ATA initialized ✓ (${sig})`);
 
-        ataInfo = await conn.getAccountInfo(recipientAta);
+        // Wait for confirmation with fallback verification
+        try {
+          await conn.confirmTransaction({
+            signature: sig,
+            blockhash: latestBlockhash.blockhash,
+            lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+          }, "confirmed");
+        } catch (confErr) {
+          console.warn(`[cctp_bridge] ATA confirmTransaction note (${confErr.message}), verifying on-chain state...`);
+        }
+
+        // Verify if account exists on-chain even if confirmation timed out or block height was exceeded
+        ataInfo = await conn.getAccountInfo(recipientAta, "confirmed");
+        if (!ataInfo) {
+          for (let i = 0; i < 3 && !ataInfo; i++) {
+            await new Promise((r) => setTimeout(r, 2000));
+            ataInfo = await conn.getAccountInfo(recipientAta, "confirmed");
+          }
+        }
+
         if (!ataInfo) {
           throw new Error("Recipient ATA could not be confirmed on Solana after creation.");
         }
+        console.log(`[cctp_bridge] Recipient ATA initialized ✓ (${sig})`);
       }
     } catch (ataErr) {
       console.error("[cctp_bridge:ata_init_error] Solana ATA preparation failed:", ataErr.message);

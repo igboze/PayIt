@@ -7,11 +7,11 @@ const path = require("node:path");
 test("In-Chat Buttons: bot.js includes quick action buttons for Cash Out and Yields", () => {
   const botContent = fs.readFileSync(path.join(__dirname, "../bot.js"), "utf8");
 
-  // Verify withdraw / cashout keyboard
-  assert.ok(botContent.includes('"cashout_amt_10"'), "Must include $10 cashout button");
-  assert.ok(botContent.includes('"cashout_amt_25"'), "Must include $25 cashout button");
-  assert.ok(botContent.includes('"cashout_amt_50"'), "Must include $50 cashout button");
-  assert.ok(botContent.includes('"cashout_amt_max"'), "Must include Max cashout button");
+  // Verify withdraw / cashout keyboard — quick amounts are in Naira (NGN-first UX)
+  assert.ok(botContent.includes('"cashout_ngn_5000"'),  "Must include ₦5,000 cashout button");
+  assert.ok(botContent.includes('"cashout_ngn_10000"'), "Must include ₦10,000 cashout button");
+  assert.ok(botContent.includes('"cashout_ngn_20000"'), "Must include ₦20,000 cashout button");
+  assert.ok(botContent.includes('"cashout_amt_max"'),   "Must include Max cashout button");
 
   // Verify yield deposit buttons
   assert.ok(botContent.includes('"yield_amt_5"'), "Must include $5 yield deposit button");

@@ -19,10 +19,15 @@ function isLikelyNewIntent(text) {
   return false;
 }
 
+/**
+ * Determines whether the current conversation state should be re‑processed based on the
+ * user's latest input.
+ */
 function shouldReprocessConversationState(stateType, text) {
   const normalized = String(text || "").trim();
   if (!normalized) return false;
 
+  // Numeric amount states
   if (
     stateType === "await_withdraw_amount" ||
     stateType === "await_ccw_amount" ||
@@ -34,21 +39,37 @@ function shouldReprocessConversationState(stateType, text) {
   ) {
     const amount = parseFloat(normalized.replace(/[^0-9.]/g, ""));
     if (!Number.isNaN(amount) && amount > 0) return false;
+    // If the user typed something that looks like a new intent, re‑process
     return isLikelyNewIntent(normalized) || isGeneralChat(normalized);
   }
 
-  if (stateType === "await_ccw_address" || stateType === "await_near_custom_token" || stateType === "await_withdraw_narration") {
-    if (isLikelyNewIntent(normalized) || /^\//.test(normalized)) return true;
+  // Address or token identifier states
+  if (
+    stateType === "await_ccw_address" ||
+    stateType === "await_near_custom_token" ||
+    stateType === "await_withdraw_narration"
+  ) {
+    // Detect valid Ethereum or NEAR addresses and do not reprocess
+    const isEthereumAddress = /^0x[0-9a-fA-F]{40}$/.test(normalized);
+    const isNearAddress = /^[\w.-]+\.near$/i.test(normalized);
+    if (isEthereumAddress || isNearAddress) return false;
+    // Reprocess for slash commands, generic chat, or other new intents
+    if (/^\//.test(normalized) || isGeneralChat(normalized) || isLikelyNewIntent(normalized)) return true;
     return false;
   }
 
+  // Bank withdrawal details
   if (stateType === "await_withdraw_bank") {
-    const parts = normalized.split(/[·,\-|]/).map((s) => s.trim()).filter(Boolean);
+    const parts = normalized
+      .split(/[·,\-|]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
     const accountNumber = (parts[1] || "").replace(/\D/g, "") || null;
     if (accountNumber && accountNumber.length >= 6) return false;
     return isLikelyNewIntent(normalized) || isGeneralChat(normalized) || parts.length === 0;
   }
 
+  // Default – no re‑processing needed
   return false;
 }
 
