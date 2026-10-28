@@ -641,16 +641,15 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     }
     swapTxHash = relayResult.txHash;
 
-    // Self-funding gas model & platform fee monetization
+    // Self-funding gas model & network fee deduction
     let networkFee = 0;
     const grossAmount = parseFloat(rawAmount.toString() || effectiveAmountUsdc.toString());
     if (!isNative) {
       networkFee = CCTP_BRIDGE_FEES_USDC[Number(effectiveChainId)] ?? 0.05;
     }
-    const depositFeeBps = Number(process.env.DEPOSIT_PROTOCOL_FEE_BPS ?? 100);
-    const protocolDepositFee = parseFloat(((grossAmount * depositFeeBps) / 10000).toFixed(4));
-    const totalDeductedFee = parseFloat((networkFee + protocolDepositFee).toFixed(4));
-    effectiveAmountUsdc = parseFloat(Math.max(0, effectiveAmountUsdc - totalDeductedFee).toFixed(6));
+    // Deduct only network fee from user's credited balance
+    // Protocol monetization happens at the offramp/trade step, not at deposit credit.
+    effectiveAmountUsdc = parseFloat(Math.max(0, effectiveAmountUsdc - networkFee).toFixed(6));
 
     if (effectiveAmountUsdc < 0.5) {
       console.warn(`[evm_sweeper] Effective USDC amount too low ($${effectiveAmountUsdc}), minimum $0.50.`);
@@ -795,11 +794,12 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
       return { success: false, error: "Amount below minimum threshold ($1.00 USDC for gas-free bridging)" };
     }
 
-    // Deduct flat network fee to self-fund relayer gas advance and platform deposit fee
+    // Deduct only the flat network bridging fee (covers relayer gas advance).
+    // Protocol monetization happens at the offramp/trade step, not at deposit credit.
     networkFee = CCTP_BRIDGE_FEES_USDC[Number(effectiveChainId)] ?? 0.05;
     const depositFeeBps = Number(process.env.DEPOSIT_PROTOCOL_FEE_BPS ?? 100);
     protocolDepositFee = parseFloat(((grossAmountUsdc * depositFeeBps) / 10000).toFixed(4));
-    effectiveAmountUsdc = parseFloat(Math.max(0, grossAmountUsdc - networkFee - protocolDepositFee).toFixed(6));
+    effectiveAmountUsdc = parseFloat(Math.max(0, grossAmountUsdc - networkFee).toFixed(6));
   }
 
   if (effectiveAmountUsdc < 0.5) {

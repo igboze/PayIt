@@ -45,7 +45,7 @@ test("NEAR deposit lifecycle: quote, poll transitions, terminal notifications", 
   const originalGetStatus = near.getExecutionStatus;
 
   // cleanup any residue
-  db.db.prepare("DELETE FROM near_deposits WHERE telegram_id = ?").run(testUserId);
+  db.db.prepare("DELETE FROM near_deposits").run();
 
   try {
     let statusQueue = [];
@@ -112,7 +112,7 @@ test("NEAR deposit lifecycle: quote, poll transitions, terminal notifications", 
   } finally {
     near.getQuote = originalGetQuote;
     near.getExecutionStatus = originalGetStatus;
-    db.db.prepare("DELETE FROM near_deposits WHERE telegram_id = ?").run(testUserId);
+    db.db.prepare("DELETE FROM near_deposits").run();
   }
 });
 
@@ -125,6 +125,9 @@ test("REFUNDED deposits notify with the refund address", async () => {
   };
   const originalGetStatus = near.getExecutionStatus;
   try {
+    // Clean any residue from previous tests so the poll count is exactly 1
+    db.db.prepare("DELETE FROM near_deposits").run();
+
     near.getExecutionStatus = async () => ({ status: "REFUNDED" });
     const id = db.createNearDeposit({
       telegramId: testUserId,
@@ -146,8 +149,10 @@ test("REFUNDED deposits notify with the refund address", async () => {
     db.db.prepare("DELETE FROM near_deposits WHERE id = ?").run(id);
   } finally {
     near.getExecutionStatus = originalGetStatus;
+    db.db.prepare("DELETE FROM near_deposits").run();
   }
 });
+
 
 // ─── 4. toBaseUnits unit tests ───────────────────────────────────────────────
 
