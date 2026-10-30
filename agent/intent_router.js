@@ -453,7 +453,19 @@ function buildConfirmationText(classified, resolvedRecipients) {
   if (intent === "offramp") {
     lines.push("💵 Cash Out Summary\n──────────────────────────");
     for (const r of resolvedRecipients) {
-      lines.push(`Amount: ${r.amount} USDC`);
+      const cur = r.currency || classified.params?.currency || "USDC";
+      const amt = Number(r.amount) || 0;
+      const fee = Number((amt * 0.01).toFixed(cur === "NGN" ? 0 : 4));
+      const total = Number((amt + fee).toFixed(cur === "NGN" ? 0 : 4));
+      if (cur === "NGN") {
+        lines.push(`Recipient Gets: ₦${amt.toLocaleString("en-NG")}`);
+        lines.push(`Platform Fee (1%): +₦${fee.toLocaleString("en-NG")} (from main balance)`);
+        lines.push(`Total Deducted: ₦${total.toLocaleString("en-NG")}`);
+      } else {
+        lines.push(`Amount: ${amt} USDC`);
+        lines.push(`Platform Fee (1%): +${fee} USDC (from main balance)`);
+        lines.push(`Total Deducted: ${total} USDC`);
+      }
       if (r.bank_name)      lines.push(`Bank: ${r.bank_name}`);
       if (r.account_number) lines.push(`Account: ${r.account_number}`);
       if (r.account_name)   lines.push(`Name: ${r.account_name}`);

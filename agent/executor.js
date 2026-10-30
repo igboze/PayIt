@@ -126,7 +126,55 @@ async function executeOnchainPayment(userWallet, toAddress, amountUsdc, telegram
 // ─── Single off-ramp payment (Naira Bank Payout) ──────────────────────────────
 
 /**
+ * Calculate the maximum amount a user can off-ramp (send) from a given USDC balance
+ * so that sendAmount + 1% platform fee <= balanceUsdc.
+ *
+ * @param {number} balanceUsdc - Available USDC balance
+ * @param {number|null} [rate=null] - Optional USD/NGN exchange rate
+ * @returns {{ maxSendUsdc: number, feeUsdc: number, totalUsdc: number, maxSendNgn: number, feeNgn: number, totalNgn: number }}
+ */
+function calcMaxOfframpFromBalance(balanceUsdc, rate = null) {
+  const bal = Number(balanceUsdc);
+  if (!bal || isNaN(bal) || bal <= 0) {
+    return { maxSendUsdc: 0, feeUsdc: 0, totalUsdc: 0, maxSendNgn: 0, feeNgn: 0, totalNgn: 0 };
+  }
+
+  // Floor to 4 decimals of bal / 1.01, then step down if rounding exceeds bal
+  let maxSendUsdc = Math.floor((bal / 1.01) * 10000) / 10000;
+  let feeUsdc = Number((maxSendUsdc * 0.01).toFixed(4));
+  while (Number((maxSendUsdc + feeUsdc).toFixed(4)) > bal && maxSendUsdc > 0) {
+    maxSendUsdc = Number(Math.max(0, maxSendUsdc - 0.0001).toFixed(4));
+    feeUsdc = Number((maxSendUsdc * 0.01).toFixed(4));
+  }
+  const totalUsdc = Number((maxSendUsdc + feeUsdc).toFixed(4));
+
+  let maxSendNgn = 0;
+  let feeNgn = 0;
+  let totalNgn = 0;
+  const numRate = Number(rate);
+  if (numRate && !isNaN(numRate) && numRate > 0) {
+    maxSendNgn = Math.floor(maxSendUsdc * numRate);
+    // Guarantee that converting maxSendNgn back to USDC + 1% fee never exceeds bal
+    while (maxSendNgn > 0) {
+      const testUsdc = maxSendNgn / numRate;
+      const testFee = Number((testUsdc * 0.01).toFixed(4));
+      if (Number((testUsdc + testFee).toFixed(4)) <= bal + 1e-9) break;
+      maxSendNgn -= 1;
+    }
+    feeNgn = Math.ceil(maxSendNgn * 0.01);
+    totalNgn = maxSendNgn + feeNgn;
+  }
+
+  return { maxSendUsdc, feeUsdc, totalUsdc, maxSendNgn, feeNgn, totalNgn };
+}
+
+/**
  * Execute a single Naira cashout via Paj v2 offramp order.
+ *
+ * Additive fee model:
+ *   - `amountUsdc` is the full payout amount the user intends to send to the bank.
+ *   - The 1% platform fee (`feeUsdc`) is charged on top from the user's main balance,
+ *     NOT deducted from inside `amountUsdc`.
  *
  * @param {object} userWallet
  * @param {number} amountUsdc
@@ -144,19 +192,26 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
     return { success: false, error: "Invalid amount: " + err.message, label, amount: amountUsdc, chain: "fiat" };
   }
 
+  // 1% platform fee is added on top of the amount the user wants to send (charged from main balance)
+  const feeUsdc = typeof options.feeUsdc === "number" ? options.feeUsdc : parseFloat((amountUsdc * 0.01).toFixed(4));
+  const netAmountUsdc = typeof options.netAmountUsdc === "number" ? options.netAmountUsdc : parseFloat(Number(amountUsdc).toFixed(4));
+  const totalDebitUsdc = parseFloat((netAmountUsdc + feeUsdc).toFixed(4));
+  const feeMicro = walletLib.parseToMicro(feeUsdc.toFixed(6));
+  const netMicro = walletLib.parseToMicro(netAmountUsdc.toFixed(6));
+  const totalRequiredMicro = netMicro + feeMicro;
+
   // Idempotency check: prevent duplicate cash out orders
   const idempotency = require("../src/idempotency");
   const idempKey = options.idempotencyKey || `offramp:${telegramId}:${bankDetails.accountNumber}:${amountUsdc}`;
   const existing = idempotency.checkOperationIdempotency(idempKey);
   if (existing && existing.status === "completed") {
-    const feeUsdc = typeof options.feeUsdc === "number" ? options.feeUsdc : parseFloat((amountUsdc * 0.01).toFixed(4));
-    const netAmountUsdc = typeof options.netAmountUsdc === "number" ? options.netAmountUsdc : parseFloat((amountUsdc - feeUsdc).toFixed(4));
     return {
       success: true,
       txHash: existing.txHash,
       amount: amountUsdc,
       feeUsdc: existing.responseData?.feeUsdc ?? feeUsdc,
       netAmountUsdc: existing.responseData?.netAmountUsdc ?? netAmountUsdc,
+      totalDebitUsdc: existing.responseData?.totalDebitUsdc ?? totalDebitUsdc,
       chain: "fiat",
       currency: "NGN",
       duplicate: true,
@@ -241,8 +296,8 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
   }
 
   if (rail === "auto") {
-    if (arcRailEnabled && arcBalanceMicro >= amountMicro) rail = "arc";
-    else if (solBalanceMicro >= amountMicro) rail = "solana";
+    if (arcRailEnabled && arcBalanceMicro >= totalRequiredMicro) rail = "arc";
+    else if (solBalanceMicro >= totalRequiredMicro) rail = "solana";
     else rail = arcRailEnabled ? "arc" : "solana";
   }
   if (rail === "arc" && !arcRailEnabled) {
@@ -258,12 +313,12 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
   }
 
   let balance = rail === "arc" ? arcBalanceMicro : solBalanceMicro;
-  if (balance < amountMicro && rail === "arc") {
+  if (balance < totalRequiredMicro && rail === "arc") {
     const autoEarn = require("../src/auto_earn");
     const liqRes = await autoEarn.ensureLiquidBalance({
       userWallet,
       telegramId,
-      requiredAmountMicro: amountMicro,
+      requiredAmountMicro: totalRequiredMicro,
       accountType: options.accountType,
     });
     if (liqRes.liquidated) {
@@ -274,17 +329,28 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
     }
   }
 
-  if (balance < amountMicro) {
+  if (balance < totalRequiredMicro) {
     idempotency.failOperationIdempotency(idempKey, "Insufficient funds");
     const railName = rail === "arc" ? "Arc" : "Solana";
+    const availUsdc = parseFloat(walletLib.formatMicro(balance));
+    const estRate = bankDetails?.rate || (bankDetails?.fiatAmount && amountUsdc > 0 ? Number(bankDetails.fiatAmount) / amountUsdc : null);
+    const maxInfo = calcMaxOfframpFromBalance(availUsdc, estRate);
+    const maxSendDisplayUsdc = (Math.floor(maxInfo.maxSendUsdc * 100) / 100).toFixed(2);
+    const maxFeeDisplayUsdc = maxInfo.feeUsdc.toFixed(2);
+    const ngnHint = maxInfo.maxSendNgn > 0
+      ? `₦${maxInfo.maxSendNgn.toLocaleString("en-NG")} (~$${maxSendDisplayUsdc} USDC + ₦${maxInfo.feeNgn.toLocaleString("en-NG")} fee)`
+      : `$${maxSendDisplayUsdc} USDC (+ $${maxFeeDisplayUsdc} fee)`;
+
     return {
       success: false,
       error:
-        `Not enough USDC on ${railName}. You have $${walletLib.formatMicro(balance)} there ` +
-        `(Arc: $${walletLib.formatMicro(arcBalanceMicro)} · Solana: $${walletLib.formatMicro(solBalanceMicro)}), need ${amountUsdc}. ` +
-        `Use "Move Funds" to rebalance between chains.`,
+        `Not enough USDC on ${railName} to send $${netAmountUsdc.toFixed(2)} + $${feeUsdc.toFixed(2)} (1% fee) = $${totalDebitUsdc.toFixed(2)} total. ` +
+        `You have $${walletLib.formatMicro(balance)} there (Arc: $${walletLib.formatMicro(arcBalanceMicro)} · Solana: $${walletLib.formatMicro(solBalanceMicro)}). ` +
+        `With fees included, you can send up to ${ngnHint}.`,
       label,
       amount: amountUsdc,
+      maxSendUsdc: maxInfo.maxSendUsdc,
+      maxSendNgn: maxInfo.maxSendNgn || null,
       chain: "fiat",
     };
   }
@@ -292,13 +358,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
   const effectiveNarration = bankDetails.narration || options.narration || null;
   const txId = db.recordTransaction(telegramId, "offramp", amountMicro, "pending", null, options.accountType || "personal", 18, rail, effectiveNarration);
 
-  // 1% platform fee inside the amount the user wants to trade (not extra)
-  const feeUsdc = typeof options.feeUsdc === "number" ? options.feeUsdc : parseFloat((amountUsdc * 0.01).toFixed(4));
-  const netAmountUsdc = typeof options.netAmountUsdc === "number" ? options.netAmountUsdc : parseFloat((amountUsdc - feeUsdc).toFixed(4));
-  const feeMicro = walletLib.parseToMicro(feeUsdc.toFixed(6));
-  const netMicro = amountMicro > feeMicro ? amountMicro - feeMicro : 0n;
-
-  // Step 1: Create or reuse existing offramp order via Paj v2 for the net amount
+  // Step 1: Create or reuse existing offramp order via Paj v2 for the full netAmountUsdc (payout amount)
   let result;
   if (bankDetails && bankDetails.orderAddress && bankDetails.orderId) {
     result = {
@@ -322,7 +382,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
         bankCode:      bankDetails.bankCode,
         accountName:   bankDetails.accountName,
         fiatAmount:    bankDetails.fiatAmount,
-        businessUSDCFee: feeUsdc,
+        businessUSDCFee: 0,
         accountType:   options.accountType       || "personal",
         chain:         railCfg.chain,
         mint:          railCfg.mint,
@@ -471,6 +531,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
       rate: result.rate,
       feeUsdc,
       netAmountUsdc,
+      totalDebitUsdc,
       feeTxHash,
       narration: effectiveNarration,
     };
@@ -482,6 +543,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
       amount: amountUsdc,
       feeUsdc,
       netAmountUsdc,
+      totalDebitUsdc,
       fiatAmount: result.fiatAmount || bankDetails.fiatAmount,
       rate: result.rate,
       to: targetAddress,
@@ -1200,7 +1262,9 @@ function formatCustomerErrorMarkdown(rawError) {
   const raw = String(rawError || "");
   const lower = raw.toLowerCase().replace(/_/g, " ");
   let reason;
-  if (lower.includes("not enough") || lower.includes("insufficient") || lower.includes("balance") || lower.includes("funds")) {
+  if (lower.includes("you can send up to")) {
+    reason = raw.replace(/^Transfer failed:\s*/i, "").trim();
+  } else if (lower.includes("not enough") || lower.includes("insufficient") || lower.includes("balance") || lower.includes("funds")) {
     reason = "Insufficient wallet balance to cover amount and network gas.";
   } else if (lower.includes("minimum") || lower.includes("at least") || lower.includes("below") || lower.includes("less than") || lower.includes("1.00")) {
     reason = "The amount is below the minimum cash-out limit ($1.00 USDC).";
@@ -1338,6 +1402,7 @@ module.exports = {
   executePlan,
   executeOnchainPayment,
   executeOfframp,
+  calcMaxOfframpFromBalance,
   moveFundsBetweenChains,
   executeCrossChainWithdrawal,
   formatResults,
