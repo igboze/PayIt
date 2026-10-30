@@ -1904,7 +1904,7 @@ function recordOfframpOrder({
 }) {
   try {
     const cleanAccountNum = String(accountNumber || "").trim();
-    const effectiveNet = netAmountUsdc != null ? Number(netAmountUsdc) : Number((amountUsdc - feeUsdc).toFixed(4));
+    const effectiveNet = netAmountUsdc != null ? Number(netAmountUsdc) : Number(Number(amountUsdc).toFixed(4));
     db.prepare(`
       INSERT OR REPLACE INTO paj_offramp_orders
         (order_id, telegram_id, account_type, account_number, bank_code, bank_name, account_name,

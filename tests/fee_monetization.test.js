@@ -78,18 +78,24 @@ test("Swap: protocol fee calculated with 100 BPS (1.00%) rate", async () => {
   }
 });
 
-test("Offramp: 1% fee is inside trade amount and routed to APP_FEE_RECIPIENT_ADDRESS", async () => {
-  const executor = require("../agent/executor");
-  const walletLib = require("../src/wallet");
-  const paj = require("../src/paj");
+test("Offramp: 1% fee is added on top of send amount (charged from main balance) and routed to APP_FEE_RECIPIENT_ADDRESS", async () => {
+  const { calcMaxOfframpFromBalance } = require("../agent/executor");
 
   const amountUsdc = 100;
   const feeUsdc = Number((amountUsdc * 0.01).toFixed(4));
-  const netAmountUsdc = Number((amountUsdc - feeUsdc).toFixed(4));
+  const netAmountUsdc = Number(amountUsdc.toFixed(4));
+  const totalDebitUsdc = Number((netAmountUsdc + feeUsdc).toFixed(4));
 
   assert.equal(feeUsdc, 1.0);
-  assert.equal(netAmountUsdc, 99.0);
-  assert.equal(feeUsdc + netAmountUsdc, amountUsdc, "1% fee must be inside the trade amount");
+  assert.equal(netAmountUsdc, 100.0, "Full send amount goes to recipient");
+  assert.equal(totalDebitUsdc, 101.0, "1% fee is charged on top from main balance");
+
+  // If user only has ₦20,000 ($12.50 at 1600/$), max sendable with 1% fee is ₦19,801
+  const maxInfo = calcMaxOfframpFromBalance(12.5, 1600);
+  assert.equal(maxInfo.maxSendNgn, 19801);
+  assert.equal(maxInfo.feeNgn, 199);
+  assert.equal(maxInfo.totalNgn, 20000);
+  assert.ok(maxInfo.totalUsdc <= 12.5, "Total USDC with fee must not exceed available balance");
 });
 test("Fee Routing: Default fee recipient is on Arc, Solana fee recipient only for native Solana transactions", () => {
   const arcFeeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";

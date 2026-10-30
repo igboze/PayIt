@@ -52,7 +52,7 @@ const cashflow = require("./src/cashflow");
 
 // ── Agent modules ─────────────────────────────────────────────────────────────
 const { parsePaymentIntent }      = require("./agent/orchestrator");
-const { executePlan, executeOfframp, moveFundsBetweenChains, formatResults } = require("./agent/executor");
+const { executePlan, executeOfframp, calcMaxOfframpFromBalance, moveFundsBetweenChains, formatResults } = require("./agent/executor");
 const { startJob, cancelJob, reloadAll, describeSchedule } = require("./agent/scheduler");
 const { saveSchedule, removeSchedule, getUserSchedules }   = require("./agent/store");
 const { parseSmartInvoiceIntent } = require("./agent/smart_invoice_agent");
@@ -2779,12 +2779,18 @@ function promptForWithdrawConfirmation(ctx, userId, withdrawData, context) {
   const railTag = activeRail === "solana" ? " ☀️ via Solana" : " ⚡ via Arc";
   const narrLine = withdrawData.narration ? `💬 <b>Narration:</b> <i>${escapeHtml(withdrawData.narration)}</i>\n` : "";
 
+  const netUsdc = Number(withdrawData.netAmountUsdc ?? withdrawData.amountUsdc ?? 0);
+  const feeUsdc = Number(withdrawData.feeUsdc ?? 0);
+  const totalDebitUsdc = Number((netUsdc + feeUsdc).toFixed(4));
+  const displayNgn = withdrawData.ngnAmount || withdrawData.fiatAmount || null;
+  const displayRate = withdrawData.ngnRate || withdrawData.rate || null;
+
   // Show Naira as the primary figure if we have it, USDC as the technical detail.
-  const ngnLine = withdrawData.ngnAmount
-    ? `🇳🇬 <b>You Receive (Naira):</b> <b>₦${Math.round(withdrawData.ngnAmount).toLocaleString("en-NG")}</b>\n`
-    : `💵 <b>Net to Bank:</b> $${withdrawData.netAmountUsdc.toFixed(2)} USDC\n`;
-  const usdcDetail = withdrawData.ngnAmount
-    ? `💵 <b>USDC Sold:</b> $${withdrawData.netAmountUsdc.toFixed(2)} (rate: ₦${Math.round(withdrawData.ngnRate || 0).toLocaleString("/\$")})\n`
+  const ngnLine = displayNgn
+    ? `🇳🇬 <b>Recipient Receives:</b> <b>₦${Math.round(displayNgn).toLocaleString("en-NG")}</b>\n`
+    : `💵 <b>Amount to Bank:</b> $${netUsdc.toFixed(2)} USDC\n`;
+  const usdcDetail = displayNgn
+    ? `💵 <b>Amount Sent:</b> $${netUsdc.toFixed(2)} USDC${displayRate ? ` (rate: ₦${Math.round(displayRate).toLocaleString()}/$)` : ""}\n`
     : "";
 
   return safeReplyHtml(ctx,
@@ -2792,7 +2798,8 @@ function promptForWithdrawConfirmation(ctx, userId, withdrawData, context) {
     `──────────────────────────\n` +
     ngnLine +
     usdcDetail +
-    `🏷️ <b>Platform Fee (1%):</b> $${withdrawData.feeUsdc.toFixed(2)} USDC\n` +
+    `🏷️ <b>Platform Fee (1%):</b> +$${feeUsdc.toFixed(2)} USDC <i>(charged from balance)</i>\n` +
+    `💳 <b>Total Deducted:</b> $${totalDebitUsdc.toFixed(2)} USDC\n` +
     `🔀 <b>Rail:</b> ${railTag.trim()}\n` +
     `🏦 <b>Bank:</b> ${escapeHtml(withdrawData.bankName)}\n` +
     `🔢 <b>Account Number:</b> <code>${escapeHtml(withdrawData.accountNumber)}</code>\n` +
@@ -2805,8 +2812,10 @@ function promptForWithdrawConfirmation(ctx, userId, withdrawData, context) {
 }
 
 async function promptForWithdrawBank(ctx, userId, amountUsdc, rail, context, ngnAmount) {
+  // Additive fee model: the full amountUsdc goes to the recipient; 1% fee is charged on top from main balance.
   const feeUsdc = Number((amountUsdc * 0.01).toFixed(4));
-  const netAmountUsdc = Number((amountUsdc - feeUsdc).toFixed(4));
+  const netAmountUsdc = Number(amountUsdc.toFixed(4));
+  const totalDebitUsdc = Number((netAmountUsdc + feeUsdc).toFixed(4));
 
   // Fetch live NGN rate to show the Naira payout estimate prominently.
   let liveRate = null;
@@ -2822,16 +2831,20 @@ async function promptForWithdrawBank(ctx, userId, amountUsdc, rail, context, ngn
     amountUsdc,
     feeUsdc,
     netAmountUsdc,
+    totalDebitUsdc,
     rail,
     ngnAmount: ngnPayout ? Math.round(ngnPayout) : null,
     ngnRate: liveRate,
   }, context);
 
+  const feeNgn = liveRate ? Math.ceil(feeUsdc * liveRate) : null;
+  const totalNgn = ngnPayout && feeNgn != null ? Math.round(ngnPayout) + feeNgn : null;
   const nairaLine = ngnPayout
-    ? `🇳🇬 <b>You'll Receive:</b> ~<b>₦${Math.round(ngnPayout).toLocaleString("en-NG")}</b>\n` +
-      `💵 <b>USDC Sold:</b> $${amountUsdc.toFixed(2)} (fee 1% = $${feeUsdc.toFixed(2)})\n` +
+    ? `🇳🇬 <b>Recipient Gets:</b> ~<b>₦${Math.round(ngnPayout).toLocaleString("en-NG")}</b> ($${netAmountUsdc.toFixed(2)} USDC)\n` +
+      `🏷️ <b>Platform Fee (1%):</b> +$${feeUsdc.toFixed(2)}${feeNgn ? ` (~₦${feeNgn.toLocaleString("en-NG")})` : ""} <i>(from balance)</i>\n` +
+      `💳 <b>Total Deducted:</b> $${totalDebitUsdc.toFixed(2)} USDC${totalNgn ? ` (~₦${totalNgn.toLocaleString("en-NG")})` : ""}\n` +
       (liveRate ? `📈 <b>Rate:</b> ₦${Math.round(liveRate).toLocaleString()}/$\n` : "")
-    : `💵 <b>Amount:</b> $${amountUsdc.toFixed(2)} · Fee 1%: $${feeUsdc.toFixed(2)} · Net: $${netAmountUsdc.toFixed(2)}\n`;
+    : `💵 <b>Amount:</b> $${netAmountUsdc.toFixed(2)} · Fee (1%): +$${feeUsdc.toFixed(2)} · Total Deducted: $${totalDebitUsdc.toFixed(2)}\n`;
 
   // Look up saved bank payees for this user
   let bankButtons = [];
@@ -2865,21 +2878,24 @@ async function handleCashOutAmount(ctx, userId, amount, context) {
   const user = requireUser(ctx);
   if (!user) return;
 
+  const feeUsdc = Number((amount * 0.01).toFixed(4));
+  const totalRequiredUsdc = Number((amount + feeUsdc).toFixed(4));
+
   const unified = await chains.getUnifiedBalance(user, context || "personal");
   const arcUsdc = unified.arc.usdc;
   const solUsdc = unified.solana.usdc;
   const totalUsdc = arcUsdc + solUsdc;
 
-  if (totalUsdc < amount) {
+  if (totalUsdc < totalRequiredUsdc) {
     const targetContext = context || "personal";
     const position = db.getOpenYieldPosition(userId, targetContext) || db.getOpenYieldPosition(userId);
-    if (position && (totalUsdc + position.amount_usdc) >= amount) {
+    if (position && (totalUsdc + position.amount_usdc) >= totalRequiredUsdc) {
       const grossProfit = savings.calcAccruedYield(position);
       const netProfit = grossProfit * (1 - savings.PAYIT_FEE_FRACTION);
       return ctx.reply(
         `⚠️ <b>Funds Saved in Vault</b>\n──────────────────────────\n` +
-        `Your spendable wallet has <b>$${totalUsdc.toFixed(2)}</b>, but you have <b>$${position.amount_usdc.toFixed(2)} USDC</b> saved in your high-yield vault (+${netProfit.toFixed(4)} profit).\n\n` +
-        `Withdraw your savings to your wallet first to cash out this amount.`,
+        `Your spendable wallet has <b>$${totalUsdc.toFixed(2)}</b>, and sending <b>$${amount.toFixed(2)}</b> + 1% fee ($${feeUsdc.toFixed(2)}) requires <b>$${totalRequiredUsdc.toFixed(2)}</b>.\n\n` +
+        `You have <b>$${position.amount_usdc.toFixed(2)} USDC</b> saved in your high-yield vault (+${netProfit.toFixed(4)} profit). Withdraw your savings to your wallet first to cash out this amount.`,
         {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
@@ -2889,18 +2905,22 @@ async function handleCashOutAmount(ctx, userId, amount, context) {
         }
       );
     }
+    const maxInfo = calcMaxOfframpFromBalance(totalUsdc);
+    const maxSendDisplay = (Math.floor(maxInfo.maxSendUsdc * 100) / 100).toFixed(2);
+    const maxFeeDisplay = maxInfo.feeUsdc.toFixed(2);
     return ctx.reply(
-      `Not enough dollars. You have $${totalUsdc.toFixed(2)} ` +
-      `(Arc: $${arcUsdc.toFixed(2)} · Solana: $${solUsdc.toFixed(2)}).`
+      `Not enough dollars to send $${amount.toFixed(2)} + $${feeUsdc.toFixed(2)} (1% fee) = $${totalRequiredUsdc.toFixed(2)}. ` +
+      `You have $${totalUsdc.toFixed(2)} (Arc: $${arcUsdc.toFixed(2)} · Solana: $${solUsdc.toFixed(2)}). ` +
+      `With fees included, you can send up to $${maxSendDisplay} USDC (fee: $${maxFeeDisplay}).`
     );
   }
 
-  const arcRailUsable = paj.isArcRailEnabled() && arcUsdc >= amount;
-  const solRailUsable = solUsdc >= amount;
+  const arcRailUsable = paj.isArcRailEnabled() && arcUsdc >= totalRequiredUsdc;
+  const solRailUsable = solUsdc >= totalRequiredUsdc;
   if (arcRailUsable && solRailUsable) {
-    convState.setState(userId, "await_withdraw_rail", { amountUsdc: amount, arcUsdc, solUsdc }, context);
+    convState.setState(userId, "await_withdraw_rail", { amountUsdc: amount, feeUsdc, totalRequiredUsdc, arcUsdc, solUsdc }, context);
     return ctx.reply(
-      `💵 Cash Out $${amount.toFixed(2)}\n──────────────────────────\n` +
+      `💵 Cash Out $${amount.toFixed(2)} (+ $${feeUsdc.toFixed(2)} fee = $${totalRequiredUsdc.toFixed(2)})\n──────────────────────────\n` +
       `You have funds on both chains:\n` +
       `⚡ <b>Arc:</b> $${arcUsdc.toFixed(2)} — fastest (~1s on-chain)\n` +
       `☀️ <b>Solana:</b> $${solUsdc.toFixed(2)}\n\n` +
@@ -2920,10 +2940,13 @@ async function handleCashOutAmount(ctx, userId, amount, context) {
   if (arcRailUsable) rail = "arc";
   else if (solRailUsable) rail = "solana";
   else {
+    const bestSingleUsdc = paj.isArcRailEnabled() ? Math.max(arcUsdc, solUsdc) : solUsdc;
+    const singleMax = calcMaxOfframpFromBalance(bestSingleUsdc);
+    const singleMaxDisplay = (Math.floor(singleMax.maxSendUsdc * 100) / 100).toFixed(2);
     return ctx.reply(
-      `You have $${totalUsdc.toFixed(2)} total, but not $${amount.toFixed(2)} on a single chain ` +
+      `You have $${totalUsdc.toFixed(2)} total, but not $${totalRequiredUsdc.toFixed(2)} ($${amount.toFixed(2)} + $${feeUsdc.toFixed(2)} fee) on a single chain ` +
       `(Arc: $${arcUsdc.toFixed(2)} · Solana: $${solUsdc.toFixed(2)}). ` +
-      `Use "Move Funds" to consolidate, or enter a smaller amount.`
+      `With fees included, you can currently send up to $${singleMaxDisplay} on a single chain, or use "Move Funds" to consolidate.`
     );
   }
 
@@ -2933,9 +2956,9 @@ async function handleCashOutAmount(ctx, userId, amount, context) {
 /**
  * Naira-first cash out entry point.
  * Converts the user-supplied Naira amount to USDC using the live rate,
- * checks balance, and proceeds to the bank-entry step.
- * The ngnAmount is kept in the session so it appears as the primary
- * figure throughout the confirmation screens.
+ * adds the 1% platform fee on top (charged from main balance),
+ * checks balance (telling the user the exact max they can send with fees if short),
+ * and proceeds to the bank-entry step.
  */
 async function handleCashOutNgn(ctx, userId, ngnAmount, context) {
   const user = requireUser(ctx);
@@ -2952,23 +2975,27 @@ async function handleCashOutNgn(ctx, userId, ngnAmount, context) {
   }
 
   const amountUsdc = ngnAmount / rate;
+  const feeUsdc = Number((amountUsdc * 0.01).toFixed(4));
+  const totalRequiredUsdc = Number((amountUsdc + feeUsdc).toFixed(4));
+  const feeNgn = Math.ceil(ngnAmount * 0.01);
+  const totalNeededNgn = Math.round(ngnAmount) + feeNgn;
 
   const unified = await chains.getUnifiedBalance(user, context || "personal");
   const arcUsdc = unified.arc.usdc;
   const solUsdc = unified.solana.usdc;
   const totalUsdc = arcUsdc + solUsdc;
 
-  if (totalUsdc < amountUsdc) {
-    const availNgn = Math.round(totalUsdc * rate);
+  if (totalUsdc < totalRequiredUsdc) {
+    const availNgn = Math.floor(totalUsdc * rate);
     const targetContext = context || "personal";
     const position = db.getOpenYieldPosition(userId, targetContext) || db.getOpenYieldPosition(userId);
-    if (position && ((totalUsdc + position.amount_usdc) * rate) >= ngnAmount) {
+    if (position && (totalUsdc + position.amount_usdc) >= totalRequiredUsdc) {
       const grossProfit = savings.calcAccruedYield(position);
       const netProfit = grossProfit * (1 - savings.PAYIT_FEE_FRACTION);
       return ctx.reply(
         `⚠️ <b>Funds Saved in Vault</b>\n──────────────────────────\n` +
-        `You need <b>₦${Math.round(ngnAmount).toLocaleString("en-NG")}</b> but your spendable balance is only ` +
-        `<b>₦${availNgn.toLocaleString("en-NG")}</b>.\n\n` +
+        `To send <b>₦${Math.round(ngnAmount).toLocaleString("en-NG")}</b> + <b>₦${feeNgn.toLocaleString("en-NG")}</b> (1% fee), you need <b>₦${totalNeededNgn.toLocaleString("en-NG")}</b>, ` +
+        `but your spendable balance is only <b>₦${availNgn.toLocaleString("en-NG")}</b>.\n\n` +
         `You have <b>$${position.amount_usdc.toFixed(2)} USDC</b> (+${netProfit.toFixed(4)} yield) in your vault — withdraw savings first.`,
         {
           parse_mode: "HTML",
@@ -2979,19 +3006,46 @@ async function handleCashOutNgn(ctx, userId, ngnAmount, context) {
         }
       );
     }
+
+    const maxInfo = calcMaxOfframpFromBalance(totalUsdc, rate);
+    const maxButtons = [];
+    if (maxInfo.maxSendNgn >= 500) {
+      // Keep user in await_withdraw_ngn_amount so they can also type an amount directly
+      convState.setState(userId, "await_withdraw_ngn_amount", {}, targetContext);
+      maxButtons.push([
+        btnSuccess(
+          `✅ Send ₦${maxInfo.maxSendNgn.toLocaleString("en-NG")} (+ ₦${maxInfo.feeNgn.toLocaleString("en-NG")} fee)`,
+          `cashout_ngn_${maxInfo.maxSendNgn}`
+        ),
+      ]);
+    }
+    maxButtons.push([btnPrimary("🏠 Main Menu", "main_menu")]);
+
+    const canSendLine = maxInfo.maxSendNgn > 0
+      ? `\n\n💡 <b>With the 1% fee included, you can send up to ₦${maxInfo.maxSendNgn.toLocaleString("en-NG")}</b> ` +
+        `(fee: ₦${maxInfo.feeNgn.toLocaleString("en-NG")} · total: ₦${maxInfo.totalNgn.toLocaleString("en-NG")}).`
+      : "";
+
     return ctx.reply(
-      `⚠️ Not enough balance. You have <b>₦${availNgn.toLocaleString("en-NG")}</b> (~$${totalUsdc.toFixed(2)}) but need <b>₦${Math.round(ngnAmount).toLocaleString("en-NG")}</b>.`,
-      { parse_mode: "HTML", ...backToMenu }
+      `⚠️ <b>Not Enough Balance for Amount + Fee</b>\n──────────────────────────\n` +
+      `• <b>Amount to Send:</b> ₦${Math.round(ngnAmount).toLocaleString("en-NG")}\n` +
+      `• <b>Platform Fee (1%):</b> +₦${feeNgn.toLocaleString("en-NG")}\n` +
+      `• <b>Total Needed:</b> ₦${totalNeededNgn.toLocaleString("en-NG")} (~$${totalRequiredUsdc.toFixed(2)})\n` +
+      `• <b>Your Balance:</b> ₦${availNgn.toLocaleString("en-NG")} (~$${totalUsdc.toFixed(2)})` +
+      canSendLine,
+      { parse_mode: "HTML", ...Markup.inlineKeyboard(maxButtons) }
     );
   }
 
-  const arcRailUsable = paj.isArcRailEnabled() && arcUsdc >= amountUsdc;
-  const solRailUsable = solUsdc >= amountUsdc;
+  const arcRailUsable = paj.isArcRailEnabled() && arcUsdc >= totalRequiredUsdc;
+  const solRailUsable = solUsdc >= totalRequiredUsdc;
 
   if (arcRailUsable && solRailUsable) {
     // Store ngnAmount in state so the rail-selection step can pass it through
     convState.setState(userId, "await_withdraw_rail", {
       amountUsdc,
+      feeUsdc,
+      totalRequiredUsdc,
       arcUsdc,
       solUsdc,
       ngnAmount: Math.round(ngnAmount),
@@ -2999,7 +3053,7 @@ async function handleCashOutNgn(ctx, userId, ngnAmount, context) {
     }, context);
     return ctx.reply(
       `🇳🇬 <b>Cash Out ₦${Math.round(ngnAmount).toLocaleString("en-NG")} to Naira</b>\n──────────────────────────\n` +
-      `(≈ $${amountUsdc.toFixed(2)} USDC at ₦${Math.round(rate).toLocaleString()}/$)\n\n` +
+      `Send: $${amountUsdc.toFixed(2)} + 1% Fee: $${feeUsdc.toFixed(2)} = <b>$${totalRequiredUsdc.toFixed(2)} USDC</b> (at ₦${Math.round(rate).toLocaleString()}/$)\n\n` +
       `You have funds on both chains:\n` +
       `⚡ <b>Arc:</b> $${arcUsdc.toFixed(2)} — fastest (~1s on-chain)\n` +
       `☀️ <b>Solana:</b> $${solUsdc.toFixed(2)}\n\n` +
@@ -3019,10 +3073,15 @@ async function handleCashOutNgn(ctx, userId, ngnAmount, context) {
   if (arcRailUsable) rail = "arc";
   else if (solRailUsable) rail = "solana";
   else {
+    const bestSingleUsdc = paj.isArcRailEnabled() ? Math.max(arcUsdc, solUsdc) : solUsdc;
+    const singleMax = calcMaxOfframpFromBalance(bestSingleUsdc, rate);
+    const singleHint = singleMax.maxSendNgn > 0
+      ? `With fees included, you can currently send up to ₦${singleMax.maxSendNgn.toLocaleString("en-NG")} (+ ₦${singleMax.feeNgn.toLocaleString("en-NG")} fee) on a single chain, or use "Move Funds" to consolidate.`
+      : `Use "Move Funds" to consolidate, or enter a smaller amount.`;
     return ctx.reply(
-      `You have $${totalUsdc.toFixed(2)} total but not enough on a single chain ` +
+      `You have $${totalUsdc.toFixed(2)} total but not enough on a single chain to cover $${totalRequiredUsdc.toFixed(2)} ($${amountUsdc.toFixed(2)} + $${feeUsdc.toFixed(2)} fee) ` +
       `(Arc: $${arcUsdc.toFixed(2)} · Solana: $${solUsdc.toFixed(2)}). ` +
-      `Use "Move Funds" to consolidate, or enter a smaller amount.`
+      singleHint
     );
   }
 
@@ -3066,7 +3125,7 @@ bot.action(/^cashout_ngn_(\d+)$/, async (ctx) => {
   return handleCashOutNgn(ctx, userId, ngnAmount, context);
 });
 
-// ─── "Cash Out All" button (stays in USDC-max logic) ─────────────────────────
+// ─── "Cash Out All" button (calculates max sendable amount so amount + 1% fee <= balance) ───
 bot.action("cashout_amt_max", async (ctx) => {
   ctx.answerCbQuery();
   const userId = ctx.from.id;
@@ -3074,10 +3133,14 @@ bot.action("cashout_amt_max", async (ctx) => {
   if (!user) return;
   const context = getContext(userId);
   const unified = await chains.getUnifiedBalance(user, context);
-  const amount = unified.arc.usdc + unified.solana.usdc;
-  if (amount <= 0) return ctx.reply("Your spendable balance is $0.00.");
-  // Convert full USDC balance to Naira for the NGN-first confirmation flow.
-  return handleCashOutAmount(ctx, userId, amount, context);
+  const usableBalance = paj.isArcRailEnabled()
+    ? Math.max(unified.arc.usdc, unified.solana.usdc)
+    : unified.solana.usdc;
+  const totalBalance = unified.arc.usdc + unified.solana.usdc;
+  if (totalBalance <= 0) return ctx.reply("Your spendable balance is $0.00.");
+  const { maxSendUsdc } = calcMaxOfframpFromBalance(usableBalance > 0 ? usableBalance : totalBalance);
+  if (maxSendUsdc <= 0) return ctx.reply("Your spendable balance is too low to cover a cash out and the 1% fee.");
+  return handleCashOutAmount(ctx, userId, maxSendUsdc, context);
 });
 
 bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
@@ -3107,7 +3170,7 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
 
   const amountUsdc = state.data.amountUsdc;
   const feeUsdc = typeof state.data.feeUsdc === "number" ? state.data.feeUsdc : Number((amountUsdc * 0.01).toFixed(4));
-  const netAmountUsdc = typeof state.data.netAmountUsdc === "number" ? state.data.netAmountUsdc : Number((amountUsdc - feeUsdc).toFixed(4));
+  const netAmountUsdc = typeof state.data.netAmountUsdc === "number" ? state.data.netAmountUsdc : Number(amountUsdc.toFixed(4));
 
   let liveAccountName = parsed.accountName || payee.account_name || payee.name;
   let orderReservation = null;
@@ -3186,8 +3249,10 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
     accountName: liveAccountName,
     orderId: resOrderData?.id || resOrderData?.orderId || resOrderData?.reference || orderReservation?.id || null,
     orderAddress: resOrderData?.address || orderReservation?.address || null,
-    fiatAmount: resOrderData?.fiatAmount || orderReservation?.fiatAmount || null,
-    rate: resOrderData?.rate || orderReservation?.rate || null,
+    fiatAmount: resOrderData?.fiatAmount || orderReservation?.fiatAmount || state.data.ngnAmount || null,
+    rate: resOrderData?.rate || orderReservation?.rate || state.data.ngnRate || null,
+    ngnAmount: state.data.ngnAmount || resOrderData?.fiatAmount || orderReservation?.fiatAmount || null,
+    ngnRate: state.data.ngnRate || resOrderData?.rate || orderReservation?.rate || null,
     narration: state.data.narration || null,
   };
 
@@ -6631,21 +6696,23 @@ bot.on("text", async (ctx) => {
       }
 
       // Unified balance read path (Phase 4): Arc + Solana in one call
+      const feeUsdc = Number((amount * 0.01).toFixed(4));
+      const totalRequiredUsdc = Number((amount + feeUsdc).toFixed(4));
       const unified = await chains.getUnifiedBalance(user, state.context || "personal");
       const arcUsdc = unified.arc.usdc;
       const solUsdc = unified.solana.usdc;
 
       const totalUsdc = arcUsdc + solUsdc;
-      if (totalUsdc < amount) {
+      if (totalUsdc < totalRequiredUsdc) {
         const targetContext = state.context || "personal";
         const position = db.getOpenYieldPosition(userId, targetContext) || db.getOpenYieldPosition(userId);
-        if (position && (totalUsdc + position.amount_usdc) >= amount) {
+        if (position && (totalUsdc + position.amount_usdc) >= totalRequiredUsdc) {
           const grossProfit = savings.calcAccruedYield(position);
           const netProfit = grossProfit * (1 - savings.PAYIT_FEE_FRACTION);
           return ctx.reply(
             `⚠️ <b>Funds Saved in Vault</b>\n──────────────────────────\n` +
-            `Your spendable wallet has <b>$${totalUsdc.toFixed(2)}</b>, but you have <b>$${position.amount_usdc.toFixed(2)} USDC</b> saved in your high-yield vault (+${netProfit.toFixed(4)} profit).\n\n` +
-            `Withdraw your savings to your wallet first to cash out this amount.`,
+            `Your spendable wallet has <b>$${totalUsdc.toFixed(2)}</b>, and sending <b>$${amount.toFixed(2)}</b> + 1% fee ($${feeUsdc.toFixed(2)}) requires <b>$${totalRequiredUsdc.toFixed(2)}</b>.\n\n` +
+            `You have <b>$${position.amount_usdc.toFixed(2)} USDC</b> saved in your high-yield vault (+${netProfit.toFixed(4)} profit). Withdraw your savings to your wallet first to cash out this amount.`,
             {
               parse_mode: "HTML",
               ...Markup.inlineKeyboard([
@@ -6655,19 +6722,23 @@ bot.on("text", async (ctx) => {
             }
           );
         }
+        const maxInfo = calcMaxOfframpFromBalance(totalUsdc);
+        const maxSendDisplay = (Math.floor(maxInfo.maxSendUsdc * 100) / 100).toFixed(2);
+        const maxFeeDisplay = maxInfo.feeUsdc.toFixed(2);
         return ctx.reply(
-          `Not enough dollars. You have $${totalUsdc.toFixed(2)} ` +
-          `(Arc: $${arcUsdc.toFixed(2)} · Solana: $${solUsdc.toFixed(2)}).`
+          `Not enough dollars to send $${amount.toFixed(2)} + $${feeUsdc.toFixed(2)} (1% fee) = $${totalRequiredUsdc.toFixed(2)}. ` +
+          `You have $${totalUsdc.toFixed(2)} (Arc: $${arcUsdc.toFixed(2)} · Solana: $${solUsdc.toFixed(2)}). ` +
+          `With fees included, you can send up to $${maxSendDisplay} USDC (fee: $${maxFeeDisplay}).`
         );
       }
 
       // Rail selection: ask only when both chains can fund the cash out.
-      const arcRailUsable = paj.isArcRailEnabled() && arcUsdc >= amount;
-      const solRailUsable = solUsdc >= amount;
+      const arcRailUsable = paj.isArcRailEnabled() && arcUsdc >= totalRequiredUsdc;
+      const solRailUsable = solUsdc >= totalRequiredUsdc;
       if (arcRailUsable && solRailUsable) {
-        convState.setState(userId, "await_withdraw_rail", { amountUsdc: amount, arcUsdc, solUsdc }, state.context);
+        convState.setState(userId, "await_withdraw_rail", { amountUsdc: amount, feeUsdc, totalRequiredUsdc, arcUsdc, solUsdc }, state.context);
         return ctx.reply(
-          `💵 Cash Out $${amount.toFixed(2)}\n──────────────────────────\n` +
+          `💵 Cash Out $${amount.toFixed(2)} (+ $${feeUsdc.toFixed(2)} fee = $${totalRequiredUsdc.toFixed(2)})\n──────────────────────────\n` +
           `You have funds on both chains:\n` +
           `⚡ <b>Arc:</b> $${arcUsdc.toFixed(2)} — fastest (~1s on-chain)\n` +
           `☀️ <b>Solana:</b> $${solUsdc.toFixed(2)}\n\n` +
@@ -6687,10 +6758,13 @@ bot.on("text", async (ctx) => {
       if (arcRailUsable) rail = "arc";
       else if (solRailUsable) rail = "solana";
       else {
+        const bestSingleUsdc = paj.isArcRailEnabled() ? Math.max(arcUsdc, solUsdc) : solUsdc;
+        const singleMax = calcMaxOfframpFromBalance(bestSingleUsdc);
+        const singleMaxDisplay = (Math.floor(singleMax.maxSendUsdc * 100) / 100).toFixed(2);
         return ctx.reply(
-          `You have $${totalUsdc.toFixed(2)} total, but not $${amount.toFixed(2)} on a single chain ` +
+          `You have $${totalUsdc.toFixed(2)} total, but not $${totalRequiredUsdc.toFixed(2)} ($${amount.toFixed(2)} + $${feeUsdc.toFixed(2)} fee) on a single chain ` +
           `(Arc: $${arcUsdc.toFixed(2)} · Solana: $${solUsdc.toFixed(2)}). ` +
-          `Use "Move Funds" to consolidate, or enter a smaller amount.`
+          `With fees included, you can currently send up to $${singleMaxDisplay} on a single chain, or use "Move Funds" to consolidate.`
         );
       }
       return promptForWithdrawBank(ctx, userId, amount, rail, state.context);
@@ -6725,7 +6799,7 @@ bot.on("text", async (ctx) => {
       // Pre-validate with Paj v2 to get live account name if possible
       const amountUsdc = state.data.amountUsdc;
       const feeUsdc = typeof state.data.feeUsdc === "number" ? state.data.feeUsdc : Number((amountUsdc * 0.01).toFixed(4));
-      const netAmountUsdc = typeof state.data.netAmountUsdc === "number" ? state.data.netAmountUsdc : Number((amountUsdc - feeUsdc).toFixed(4));
+      const netAmountUsdc = typeof state.data.netAmountUsdc === "number" ? state.data.netAmountUsdc : Number(amountUsdc.toFixed(4));
 
       let liveAccountName = parsed.accountName;
       let orderReservation = null;
@@ -6816,8 +6890,10 @@ bot.on("text", async (ctx) => {
         accountName: liveAccountName,
         orderId: resOrderData?.id || resOrderData?.orderId || resOrderData?.reference || orderReservation?.id || null,
         orderAddress: resOrderData?.address || orderReservation?.address || null,
-        fiatAmount: resOrderData?.fiatAmount || orderReservation?.fiatAmount || null,
-        rate: resOrderData?.rate || orderReservation?.rate || null,
+        fiatAmount: resOrderData?.fiatAmount || orderReservation?.fiatAmount || state.data.ngnAmount || null,
+        rate: resOrderData?.rate || orderReservation?.rate || state.data.ngnRate || null,
+        ngnAmount: state.data.ngnAmount || resOrderData?.fiatAmount || orderReservation?.fiatAmount || null,
+        ngnRate: state.data.ngnRate || resOrderData?.rate || orderReservation?.rate || null,
         narration: state.data.narration || null,
       };
 
@@ -6832,8 +6908,11 @@ function formatCustomerFriendlyOfframpError(rawError) {
   let reason = "An unexpected issue occurred while communicating with the banking settlement network.";
   let tip = "Please check your network connection and retry in a few moments.";
 
-  if (err.includes("not enough") || err.includes("insufficient") || err.includes("balance")) {
-    reason = "Your wallet balance is insufficient to cover this cash-out amount and network gas fees.";
+  if (err.includes("you can send up to")) {
+    reason = String(rawError).replace(/^Transfer failed:\s*/i, "").trim();
+    tip = "Try sending the suggested maximum amount above so your balance covers both the transfer and the 1% fee.";
+  } else if (err.includes("not enough") || err.includes("insufficient") || err.includes("balance")) {
+    reason = "Your wallet balance is insufficient to cover this cash-out amount and the 1% fee.";
     tip = "Please check your balance or move funds between chains before trying again.";
   } else if (err.includes("minimum") || err.includes("at least") || err.includes("below")) {
     reason = "The cash-out amount is below the provider minimum threshold ($1.00 USDC).";
@@ -6921,7 +7000,8 @@ function formatCustomerFriendlyOfframpError(rawError) {
 
       try {
         const feeUsdc = typeof state.data.feeUsdc === "number" ? state.data.feeUsdc : Number((state.data.amountUsdc * 0.01).toFixed(4));
-        const netAmountUsdc = typeof state.data.netAmountUsdc === "number" ? state.data.netAmountUsdc : Number((state.data.amountUsdc - feeUsdc).toFixed(4));
+        const netAmountUsdc = typeof state.data.netAmountUsdc === "number" ? state.data.netAmountUsdc : Number(state.data.amountUsdc.toFixed(4));
+        const totalDebitUsdc = Number((netAmountUsdc + feeUsdc).toFixed(4));
         const narration = state.data.narration || null;
         const result = await executeOfframp(
           userWallet,
@@ -6933,8 +7013,8 @@ function formatCustomerFriendlyOfframpError(rawError) {
             accountName: state.data.accountName,
             orderAddress: state.data.orderAddress,
             orderId: state.data.orderId,
-            fiatAmount: state.data.fiatAmount,
-            rate: state.data.rate,
+            fiatAmount: state.data.fiatAmount || state.data.ngnAmount,
+            rate: state.data.rate || state.data.ngnRate,
             narration,
             description: narration,
           },
@@ -6957,9 +7037,9 @@ function formatCustomerFriendlyOfframpError(rawError) {
           }
           const successCaption = result.warning ||
             `✅ <b>Cash Out Submitted!</b>\n──────────────────────────\n` +
-            `• <b>Total:</b> $${state.data.amountUsdc.toFixed(2)}\n` +
-            `• <b>Platform Fee (1%):</b> $${feeUsdc.toFixed(2)}\n` +
-            `• <b>Net to Bank:</b> $${netAmountUsdc.toFixed(2)}\n` +
+            `• <b>Amount Sent:</b> $${netAmountUsdc.toFixed(2)} USDC\n` +
+            `• <b>Platform Fee (1%):</b> +$${feeUsdc.toFixed(2)} USDC\n` +
+            `• <b>Total Deducted:</b> $${totalDebitUsdc.toFixed(2)} USDC\n` +
             (result.fiatAmount ? `• <b>Naira Payout:</b> ₦${Number(result.fiatAmount).toLocaleString()}\n` : "") +
             `• <b>Destination Bank:</b> ${escapeHtml(state.data.accountName || state.data.bankName || "Bank Account")} (<code>${escapeHtml(state.data.accountNumber)}</code>)\n` +
             (narration ? `• <b>Narration:</b> <i>${escapeHtml(narration)}</i>\n` : "") +
