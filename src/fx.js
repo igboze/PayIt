@@ -14,10 +14,14 @@ const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 async function getUsdToNgnRate() {
   if (_cachedRate && Date.now() - _cacheTime < CACHE_TTL) return _cachedRate;
 
-  // 1. Try Paj live market rate
+  // 1. Try Paj live market rate (use offRampRate so cash-out & wallet NGN valuations
+  // reflect the real sell rate rather than the on-ramp buy rate + ₦5 markup)
   try {
     const pajRates = await paj.getRates("NGN");
-    const liveRate = pajRates?.onRampRate?.rate || pajRates?.offRampRate?.rate;
+    const liveRate =
+      pajRates?.offRampRate?.rate ||
+      pajRates?.onRampRate?.rawRate ||
+      pajRates?.onRampRate?.rate;
     if (liveRate && Number(liveRate) > 0) {
       _cachedRate = Number(liveRate);
       _cacheTime = Date.now();

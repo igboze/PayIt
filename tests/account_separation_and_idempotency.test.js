@@ -239,4 +239,8 @@ test("Account Separation & Idempotency Test Suite", async (t) => {
     assert.equal(bHasPersonal, false, "Business tx list must NEVER contain personal tx");
   });
 
+  // Final cleanup of synthetic test user so background sweepers do not scan 0x1111... / 0x2222...
+  db.db.prepare("DELETE FROM users WHERE telegram_id = ?").run(testUserId);
+  db.db.prepare("DELETE FROM yield_positions WHERE telegram_id = ?").run(testUserId);
+  db.db.prepare("DELETE FROM transactions WHERE telegram_id = ?").run(testUserId);
 });

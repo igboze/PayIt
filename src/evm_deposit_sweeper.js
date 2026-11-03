@@ -1023,7 +1023,7 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
   ];
 
   for (const { address, accountType } of addresses) {
-    if (!address) continue;
+    if (!address || /^0x([0-9a-fA-F])\1{39}$/i.test(address)) continue;
 
     for (const cfg of allScanChains) {
       try {

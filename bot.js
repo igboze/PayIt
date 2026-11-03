@@ -3168,26 +3168,36 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
     parsed.bankCode = "000013";
   }
 
-  const amountUsdc = state.data.amountUsdc;
-  const feeUsdc = typeof state.data.feeUsdc === "number" ? state.data.feeUsdc : Number((amountUsdc * 0.01).toFixed(4));
-  const netAmountUsdc = typeof state.data.netAmountUsdc === "number" ? state.data.netAmountUsdc : Number(amountUsdc.toFixed(4));
+  let amountUsdc = state.data.amountUsdc;
+  let feeUsdc = typeof state.data.feeUsdc === "number" ? state.data.feeUsdc : Number((amountUsdc * 0.01).toFixed(4));
+  let netAmountUsdc = typeof state.data.netAmountUsdc === "number" ? state.data.netAmountUsdc : Number(amountUsdc.toFixed(4));
 
   let liveAccountName = parsed.accountName || payee.account_name || payee.name;
   let orderReservation = null;
   const preferredRail = state.data.rail && state.data.rail !== "auto" ? state.data.rail : (paj.isArcRailEnabled() ? "arc" : "solana");
   try {
     const railCfg = paj.RAILS[preferredRail] || (paj.isArcRailEnabled() ? paj.RAILS.arc : paj.RAILS.solana);
-    orderReservation = await paj.createOfframpOrder({
+    const orderPayload = {
       accountNumber: parsed.accountNumber,
       bankCode: parsed.bankCode,
-      amount: netAmountUsdc,
       chain: railCfg.chain,
       mint: railCfg.mint,
       description: `Proxim Cashout - TG:${userId}`,
-    });
+    };
+    if (state.data.ngnAmount && Number(state.data.ngnAmount) > 0) {
+      orderPayload.fiatAmount = Math.round(Number(state.data.ngnAmount));
+    } else {
+      orderPayload.amount = netAmountUsdc;
+    }
+    orderReservation = await paj.createOfframpOrder(orderPayload);
     const orderData = orderReservation?.data || orderReservation;
     if (orderData && orderData.accountName) {
       liveAccountName = orderData.accountName;
+    }
+    if (orderData && Number(orderData.amount) > 0) {
+      netAmountUsdc = Number(orderData.amount);
+      amountUsdc = netAmountUsdc;
+      feeUsdc = Number((netAmountUsdc * 0.01).toFixed(4));
     }
   } catch (valErr) {
     const msg = String(valErr.message || "");
@@ -3238,6 +3248,8 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
   }
 
   const resOrderData = orderReservation?.data || orderReservation;
+  const resolvedFiat = resOrderData?.fiatAmount || orderReservation?.fiatAmount || state.data.ngnAmount || null;
+  const resolvedRate = resOrderData?.rate || orderReservation?.rate || state.data.ngnRate || null;
   const withdrawData = {
     amountUsdc,
     feeUsdc,
@@ -3249,10 +3261,10 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
     accountName: liveAccountName,
     orderId: resOrderData?.id || resOrderData?.orderId || resOrderData?.reference || orderReservation?.id || null,
     orderAddress: resOrderData?.address || orderReservation?.address || null,
-    fiatAmount: resOrderData?.fiatAmount || orderReservation?.fiatAmount || state.data.ngnAmount || null,
-    rate: resOrderData?.rate || orderReservation?.rate || state.data.ngnRate || null,
-    ngnAmount: state.data.ngnAmount || resOrderData?.fiatAmount || orderReservation?.fiatAmount || null,
-    ngnRate: state.data.ngnRate || resOrderData?.rate || orderReservation?.rate || null,
+    fiatAmount: resolvedFiat,
+    rate: resolvedRate,
+    ngnAmount: resolvedFiat,
+    ngnRate: resolvedRate,
     narration: state.data.narration || null,
   };
 
@@ -6796,27 +6808,37 @@ bot.on("text", async (ctx) => {
         );
       }
 
-      // Pre-validate with Paj v2 to get live account name if possible
-      const amountUsdc = state.data.amountUsdc;
-      const feeUsdc = typeof state.data.feeUsdc === "number" ? state.data.feeUsdc : Number((amountUsdc * 0.01).toFixed(4));
-      const netAmountUsdc = typeof state.data.netAmountUsdc === "number" ? state.data.netAmountUsdc : Number(amountUsdc.toFixed(4));
+      // Pre-validate with Paj v2 to get live account name and lock exact Naira payout
+      let amountUsdc = state.data.amountUsdc;
+      let feeUsdc = typeof state.data.feeUsdc === "number" ? state.data.feeUsdc : Number((amountUsdc * 0.01).toFixed(4));
+      let netAmountUsdc = typeof state.data.netAmountUsdc === "number" ? state.data.netAmountUsdc : Number(amountUsdc.toFixed(4));
 
       let liveAccountName = parsed.accountName;
       let orderReservation = null;
       const preferredRail = state.data.rail && state.data.rail !== "auto" ? state.data.rail : (paj.isArcRailEnabled() ? "arc" : "solana");
       try {
         const railCfg = paj.RAILS[preferredRail] || (paj.isArcRailEnabled() ? paj.RAILS.arc : paj.RAILS.solana);
-        orderReservation = await paj.createOfframpOrder({
+        const orderPayload = {
           accountNumber: parsed.accountNumber,
           bankCode: parsed.bankCode,
-          amount: netAmountUsdc,
           chain: railCfg.chain,
           mint: railCfg.mint,
           description: `Proxim Cashout - TG:${userId}`,
-        });
+        };
+        if (state.data.ngnAmount && Number(state.data.ngnAmount) > 0) {
+          orderPayload.fiatAmount = Math.round(Number(state.data.ngnAmount));
+        } else {
+          orderPayload.amount = netAmountUsdc;
+        }
+        orderReservation = await paj.createOfframpOrder(orderPayload);
         const orderData = orderReservation?.data || orderReservation;
         if (orderData && orderData.accountName) {
           liveAccountName = orderData.accountName;
+        }
+        if (orderData && Number(orderData.amount) > 0) {
+          netAmountUsdc = Number(orderData.amount);
+          amountUsdc = netAmountUsdc;
+          feeUsdc = Number((netAmountUsdc * 0.01).toFixed(4));
         }
       } catch (valErr) {
         const msg = String(valErr.message || "");
@@ -6879,6 +6901,8 @@ bot.on("text", async (ctx) => {
       }
 
       const resOrderData = orderReservation?.data || orderReservation;
+      const resolvedFiat = resOrderData?.fiatAmount || orderReservation?.fiatAmount || state.data.ngnAmount || null;
+      const resolvedRate = resOrderData?.rate || orderReservation?.rate || state.data.ngnRate || null;
       const withdrawData = {
         amountUsdc,
         feeUsdc,
@@ -6890,10 +6914,10 @@ bot.on("text", async (ctx) => {
         accountName: liveAccountName,
         orderId: resOrderData?.id || resOrderData?.orderId || resOrderData?.reference || orderReservation?.id || null,
         orderAddress: resOrderData?.address || orderReservation?.address || null,
-        fiatAmount: resOrderData?.fiatAmount || orderReservation?.fiatAmount || state.data.ngnAmount || null,
-        rate: resOrderData?.rate || orderReservation?.rate || state.data.ngnRate || null,
-        ngnAmount: state.data.ngnAmount || resOrderData?.fiatAmount || orderReservation?.fiatAmount || null,
-        ngnRate: state.data.ngnRate || resOrderData?.rate || orderReservation?.rate || null,
+        fiatAmount: resolvedFiat,
+        rate: resolvedRate,
+        ngnAmount: resolvedFiat,
+        ngnRate: resolvedRate,
         narration: state.data.narration || null,
       };
 

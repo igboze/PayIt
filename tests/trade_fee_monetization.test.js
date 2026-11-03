@@ -230,3 +230,20 @@ test("Offramp: tells user how much they can send with fees when balance is insuf
   }
 });
 
+test("Offramp FX: fx.getUsdToNgnRate uses Paj offRampRate rather than inflated onRampRate", async () => {
+  const fx = require("../src/fx");
+  const origGetRates = paj.getRates;
+
+  paj.getRates = async () => ({
+    onRampRate: { rate: 1392.65, rawRate: 1387.65, payitFeeNgn: 5 },
+    offRampRate: { rate: 1367.13 },
+  });
+
+  try {
+    const rate = await fx.getUsdToNgnRate();
+    assert.equal(rate, 1367.13, "Must use offRampRate so Naira withdrawal calculations match Paj payout rate");
+  } finally {
+    paj.getRates = origGetRates;
+  }
+});
+
