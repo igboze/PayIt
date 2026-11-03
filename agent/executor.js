@@ -458,7 +458,9 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
       }
 
     } else {
-      // Arc rail: plain native-USDC transfer of netMicro to Paj order address
+      // Arc rail: plain native-USDC transfer of exact Paj order amount (or netMicro) to Paj order address
+      const effectiveArcSendUsdc = (result && Number(result.amount) > 0) ? Number(result.amount) : netAmountUsdc;
+      const effectiveArcSendMicro = walletLib.parseToMicro(effectiveArcSendUsdc.toFixed(6));
       let baseNonce = null;
       try {
         if (typeof userWallet.getNonce === "function") {
@@ -466,7 +468,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
         }
       } catch {}
 
-      txHash = await walletLib.sendFromWallet(userWallet, targetAddress, netMicro, {
+      txHash = await walletLib.sendFromWallet(userWallet, targetAddress, effectiveArcSendMicro, {
         nonce: baseNonce != null ? baseNonce : undefined,
       });
 
@@ -1146,14 +1148,14 @@ async function executePlan(plan, pin, user, context = "personal") {
           const rates = await paj.getRates("NGN");
           const offrampRate = Number(rates?.offRampRate?.rate);
           if (offrampRate && offrampRate > 0) {
-            amountUsdc = Math.ceil((fiatAmount / offrampRate) * 100) / 100;
+            amountUsdc = Number((fiatAmount / offrampRate).toFixed(4));
           } else {
             const liveFxRate = await fx.getUsdToNgnRate();
-            amountUsdc = Math.ceil((fiatAmount / liveFxRate) * 100) / 100;
+            amountUsdc = Number((fiatAmount / liveFxRate).toFixed(4));
           }
         } catch (rateErr) {
           const liveFxRate = await fx.getUsdToNgnRate();
-          amountUsdc = Math.ceil((fiatAmount / liveFxRate) * 100) / 100;
+          amountUsdc = Number((fiatAmount / liveFxRate).toFixed(4));
         }
       }
 

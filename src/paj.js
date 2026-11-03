@@ -39,7 +39,7 @@ function getClient() {
   });
 }
 
-const ONRAMP_FEE_NGN_PER_USD = Number(process.env.ONRAMP_FEE_NGN_PER_USD ?? 5.0);
+const ONRAMP_FEE_NGN_PER_USD = Number(process.env.ONRAMP_FEE_NGN_PER_USD ?? 0);
 
 // Settlement rails supported by Paj.
 // `solana` is the battle-tested rail; `arc` is gated by PAJ_ARC_OFFRAMP_ENABLED
@@ -73,7 +73,7 @@ function isArcRailEnabled() {
 
 /**
  * 1. Fetch live conversion rates for onramp and offramp.
- * Applies Proxim's ₦5/USD onramp fee markup while preserving market offramp rate.
+ * Uses live market rates directly (platform monetizes via the 1% USDC fee).
  * @param {string} currency - e.g. "NGN"
  * @returns {Promise<{ onRampRate: object, offRampRate: object }>}
  */
