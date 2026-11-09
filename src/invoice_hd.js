@@ -4,6 +4,7 @@
 // Embeds address QR codes directly onto the invoice card
 
 const walletLib = require("./wallet");
+const nearLib = require("./near");
 const invoiceDb = require("./invoice_db");
 const bizDb = require("./biz_db");
 const paj = require("./paj");
@@ -30,6 +31,8 @@ function createHDInvoice(telegramId, decryptedPrivateKey, invoiceData) {
   const derivationIndex = invoiceDb.getNextDerivationIndex(telegramId);
   const derived = walletLib.deriveInvoiceAddress(decryptedPrivateKey, derivationIndex);
   const paymentAddress = derived.address;
+  let nearAddress = null;
+  try { nearAddress = nearLib.deriveNearAddress(derived.childPrivateKey).nearAddress; } catch (_) {}
   const invoicePrivateKeyEncrypted = walletLib.encryptSensitiveValue(
     derived.childPrivateKey,
     process.env.INVOICE_FORWARDING_SECRET
@@ -88,6 +91,8 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
   const derivationIndex = invoiceDb.getNextDerivationIndex(telegramId);
   const derived = walletLib.deriveInvoiceAddress(decryptedPrivateKey, derivationIndex);
   const paymentAddress = derived.address;
+  let nearAddress = null;
+  try { nearAddress = nearLib.deriveNearAddress(derived.childPrivateKey).nearAddress; } catch (_) {}
   const invoicePrivateKeyEncrypted = walletLib.encryptSensitiveValue(
     derived.childPrivateKey,
     process.env.INVOICE_FORWARDING_SECRET
@@ -161,6 +166,7 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
     notes,
     businessName: businessName || user.username || `User ${telegramId}`,
     walletAddress: paymentAddress,
+    nearAddress,
     issueDate,
     currency: "USDC",
     fiatDetails,
@@ -184,6 +190,7 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
     invoicePrivateKeyEncrypted,
   });
 
+  if (nearAddress) { try { invoiceDb.db.prepare("UPDATE invoices SET near_address = ? WHERE id = ?").run(nearAddress, invoiceId); } catch (_) {} }
   if (fiatDetails) {
     invoiceDb.updateInvoiceFiatDetails(invoiceId, {
       fiatAccountNumber: fiatDetails.accountNumber,
@@ -206,6 +213,7 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
     fiatDetails,
     pngPath,
     mainWalletAddress,
+    nearAddress,
   };
 }
 
@@ -232,6 +240,8 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
   const derivationIndex = bizDb.getNextBizDerivationIndex(telegramId);
   const derived = walletLib.deriveInvoiceAddress(decryptedBizKey, derivationIndex);
   const paymentAddress = derived.address;
+  let nearAddress = null;
+  try { nearAddress = nearLib.deriveNearAddress(derived.childPrivateKey).nearAddress; } catch (_) {}
   const invoicePrivateKeyEncrypted = walletLib.encryptSensitiveValue(
     derived.childPrivateKey,
     process.env.INVOICE_FORWARDING_SECRET
@@ -309,6 +319,7 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
     businessAddress: profile?.address || null,
     logoDataUri: profile ? require("./biz_profile").getLogoDataUri(telegramId) : null,
     walletAddress: paymentAddress,
+    nearAddress,
     issueDate,
     currency: "USDC",
     fiatDetails,
@@ -332,6 +343,7 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
     expectedAmountMicro: expectedAmountMicro.toString(),
   });
 
+  if (nearAddress) { try { bizDb.db.prepare("UPDATE biz_invoices SET near_address = ? WHERE id = ?").run(nearAddress, invoiceId); } catch (_) {} }
   if (fiatDetails) {
     bizDb.updateBizInvoiceFiatDetails(invoiceId, {
       fiatAccountNumber: fiatDetails.accountNumber,
@@ -354,6 +366,7 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
     fiatDetails,
     pngPath,
     mainWalletAddress,
+    nearAddress,
   };
 }
 

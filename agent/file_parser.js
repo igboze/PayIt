@@ -8,6 +8,7 @@ const crypto = require("crypto");
 const { getJSONCompletion } = require("./ai_provider");
 const { resolveBankCode } = require("../src/bank_resolver");
 const { isSolanaAddress } = require("../src/multichain");
+const { isNearAddress } = require("../src/near");
 const { generateIdempotencyKey } = require("../src/idempotency");
 
 function parseAmountValue(value) {
@@ -50,8 +51,9 @@ function buildLocalPaymentPlan(rows, instruction, options = {}) {
 
   const payments = (rows || []).map((r, index) => {
     const isSolana = r.chain === "solana" || (r.wallet_address && isSolanaAddress(r.wallet_address));
+    const isNear = r.chain === "near" || (r.wallet_address && isNearAddress(r.wallet_address));
     const isEvm = (r.wallet_address && r.wallet_address.startsWith("0x")) || r.chain === "arc" || r.chain === "evm";
-    const isOfframp = r.method === "fiat_offramp" || (!isSolana && !isEvm && (r.account_number || r.bank_name || r.currency === "NGN"));
+    const isOfframp = r.method === "fiat_offramp" || (!isSolana && !isNear && !isEvm && (r.account_number || r.bank_name || r.currency === "NGN"));
 
     let method = "onchain_evm";
     let chain = "arc";
@@ -64,6 +66,10 @@ function buildLocalPaymentPlan(rows, instruction, options = {}) {
     } else if (isSolana) {
       method = "onchain_solana";
       chain = "solana";
+      to = r.wallet_address;
+    } else if (isNear) {
+      method = "intent_near";
+      chain = "near";
       to = r.wallet_address;
     } else {
       method = "onchain_evm";

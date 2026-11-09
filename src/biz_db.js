@@ -82,6 +82,7 @@ function initBizTables() {
   try { db.exec("ALTER TABLE biz_invoices ADD COLUMN fiat_amount REAL;"); } catch (e) {}
   try { db.exec("ALTER TABLE biz_invoices ADD COLUMN fiat_order_id TEXT;"); } catch (e) {}
   try { db.exec("ALTER TABLE biz_invoices ADD COLUMN fiat_rate REAL;"); } catch (e) {}
+try { db.exec("ALTER TABLE biz_invoices ADD COLUMN near_address TEXT;"); } catch (e) {}
   try { db.exec("CREATE INDEX IF NOT EXISTS idx_biz_invoices_fiat_order_id ON biz_invoices(fiat_order_id);"); } catch (e) {}
 }
 

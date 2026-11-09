@@ -81,6 +81,7 @@ try { db.exec("ALTER TABLE invoices ADD COLUMN fiat_account_name TEXT;"); } catc
 try { db.exec("ALTER TABLE invoices ADD COLUMN fiat_amount REAL;"); } catch (e) {}
 try { db.exec("ALTER TABLE invoices ADD COLUMN fiat_order_id TEXT;"); } catch (e) {}
 try { db.exec("ALTER TABLE invoices ADD COLUMN fiat_rate REAL;"); } catch (e) {}
+try { db.exec("ALTER TABLE invoices ADD COLUMN near_address TEXT;"); } catch (e) {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_invoices_fiat_order_id ON invoices(fiat_order_id);"); } catch (e) {}
 
 // Auto-initialize tables

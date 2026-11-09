@@ -746,6 +746,12 @@ async function apiRequest(method, path, body) {
  * @param {string} evmPrivateKey - hex private key (0x-prefixed or not)
  * @returns {{ nearAddress: string, publicKeyHex: string, secretKeyHex: string }}
  */
+function isNearAddress(address) {
+  const clean = String(address || "").trim();
+  if (!clean) return false;
+  return /^(([a-z0-9_-]+\.)*(near|tg)|[a-f0-9]{64})$/i.test(clean);
+}
+
 function deriveNearAddress(evmPrivateKey) {
   if (!evmPrivateKey) throw new Error("EVM private key required to derive NEAR address");
   const cleanHex = evmPrivateKey.startsWith("0x") ? evmPrivateKey.slice(2) : evmPrivateKey;
@@ -1299,6 +1305,7 @@ module.exports = {
   resolveSolanaToken,
   resolveRobinhoodToken,
   resolveStarknetToken,
+  isNearAddress,
   deriveNearAddress,
   deriveStarknetAddress,
   getQuote,

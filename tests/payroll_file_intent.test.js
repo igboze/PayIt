@@ -53,7 +53,7 @@ test("Multichain: correctly distinguishes Arc EVM 0x and Solana Base58 addresses
   assert.ok(derived.keypair);
 });
 
-test("File Parser: maps mixed multi-rail payroll rows (NGN, Arc EVM, Solana)", () => {
+test("File Parser: maps mixed multi-rail payroll rows (NGN, Arc EVM, Solana, NEAR)", () => {
   const rawRows = [
     {
       "Employee Name": "Tunde Bakare",

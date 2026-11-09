@@ -1127,10 +1127,14 @@ async function executePlan(plan, pin, user, context = "personal") {
       payment.chain === "solana" ||
       multichain.isSolanaAddress(payment.to);
 
+    const isNear = payment.method === "intent_near" ||
+      payment.chain === "near" ||
+      (nearLib.isNearAddress && nearLib.isNearAddress(payment.to));
+
     const isOfframp = payment.method === "fiat_offramp" ||
       payment.to === "__offramp__" ||
       payment.currency === "NGN" ||
-      (payment.account_number && !isSolana && !payment.to?.startsWith("0x"));
+      (payment.account_number && !isSolana && !isNear && !payment.to?.startsWith("0x"));
 
     let executionResult;
 
@@ -1220,6 +1224,19 @@ async function executePlan(plan, pin, user, context = "personal") {
         executionResult.label = payment.label;
         executionResult.chain = "solana";
       }
+
+    } else if (isNear) {
+      // ── Rail D: NEAR Intents Cross-Chain Payout ──────────────────────────────
+      executionResult = await executeCrossChainWithdrawal(userWallet, {
+        destinationChain: "near",
+        destinationAddress: payment.to,
+        destinationAsset: "NEAR",
+        amountUsdc: payment.amount,
+        telegramId: user.telegram_id,
+        accountType: context,
+      });
+      executionResult.label = payment.label;
+      executionResult.chain = "near";
 
     } else {
       // ── Rail C: Arc EVM On-Chain Transfer ───────────────────────────────────

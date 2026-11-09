@@ -36,6 +36,7 @@ function buildSvg(opts) {
     businessAddress = null,
     logoDataUri = null,
     walletAddress,
+    nearAddress = null,
     issueDate,
     currency = "USDC",
     fiatDetails = null, // { bankName, accountNumber, accountName, fiatAmount }
@@ -120,7 +121,7 @@ function buildSvg(opts) {
     <text x="45" y="${cryptoBoxY + 44}" font-size="11" fill="#475569" font-family="${FONT}">Send exactly <tspan font-weight="bold" fill="#0f766e">$${total.toFixed(2)} ${escape(currency)}</tspan> to this dedicated invoice address:</text>
     <rect x="45" y="${cryptoBoxY + 54}" width="${textWrapWidth}" height="28" fill="#ffffff" rx="4" stroke="#cbd5e1" stroke-width="1"/>
     <text x="55" y="${cryptoBoxY + 73}" font-size="10" font-weight="bold" fill="#0f766e" font-family="${FONT_MONO}">${escape(walletAddress)}</text>
-    <text x="45" y="${cryptoBoxY + 100}" font-size="10" fill="#64748b" font-family="${FONT}">Scan QR code with any Web3 / Arc wallet to pay instantly.</text>
+    <text x="45" y="${cryptoBoxY + 100}" font-size="10" fill="#64748b" font-family="${FONT}">Scan QR to pay directly on Arc (USDC) or via NEAR Intents cross-chain routing.</text>
     ${qrImageSvg}
   `;
 
