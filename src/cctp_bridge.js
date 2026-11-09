@@ -6,7 +6,8 @@ const axios = require("axios");
 const { JsonRpcProvider, Contract, Wallet, keccak256, getAddress, zeroPadValue } = require("ethers");
 const { getNetworkConfig, getExplorerUrl } = require("./network");
 const gateway = require("./gateway");
-const { receiveCctpMessageOnSolana, getSolanaConnection } = require("./multichain");
+const multichain = require("./multichain");
+const { receiveCctpMessageOnSolana, getSolanaConnection } = multichain;
 const db = require("./db");
 const { generateReceiptPNG } = require("./receipt_generator");
 

@@ -108,6 +108,7 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
 
     const invoiceFeeBps = Number(process.env.INVOICE_PROCESSING_FEE_BPS ?? 50);
     const invoiceFeeUsdc = Number((Number(totalUsdc) * (invoiceFeeBps / 10000)).toFixed(4));
+    const walletAddress = user.deposit_address;
 
     let order = null;
     if (paj.isArcOnrampEnabled() && walletAddress) {
@@ -257,6 +258,7 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
 
     const invoiceFeeBps = Number(process.env.INVOICE_PROCESSING_FEE_BPS ?? 50);
     const invoiceFeeUsdc = Number((Number(totalUsdc) * (invoiceFeeBps / 10000)).toFixed(4));
+    const bizWalletAddress = user.business_deposit_address || user.deposit_address;
 
     let order = null;
     if (paj.isArcOnrampEnabled() && bizWalletAddress) {

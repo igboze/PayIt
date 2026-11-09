@@ -7829,7 +7829,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
           `\n🌐 <b>Option 2: Direct Crypto / Web3 Payment (USDC)</b>\n` +
           `• <b>Deposit Address:</b> <code>${fullInvoice.paymentAddress}</code>\n` +
           `• <b>Network:</b> Arc Mainnet (USDC)\n` +
-          (fullInvoice?.nearAddress || fullBizInvoice?.nearAddress ? `• <b>NEAR / 1Click:</b> <code>${fullInvoice?.nearAddress || fullBizInvoice?.nearAddress}</code>\n` : "") +
+          (fullInvoice?.nearAddress ? `• <b>NEAR / 1Click:</b> <code>${fullInvoice.nearAddress}</code>\n` : "") +
           `<i>(Dedicated single-invoice address · QR code on card)</i>\n\n` +
           `⚡ <i>Payments settle automatically to your account!</i>`;
 
@@ -7923,7 +7923,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
           `\n🌐 <b>Option 2: Direct Crypto / Web3 Payment (USDC)</b>\n` +
           `• <b>Deposit Address:</b> <code>${fullBizInvoice.paymentAddress}</code>\n` +
           `• <b>Network:</b> Arc Mainnet (USDC)\n` +
-          (fullInvoice?.nearAddress || fullBizInvoice?.nearAddress ? `• <b>NEAR / 1Click:</b> <code>${fullInvoice?.nearAddress || fullBizInvoice?.nearAddress}</code>\n` : "") +
+          (fullBizInvoice?.nearAddress ? `• <b>NEAR / 1Click:</b> <code>${fullBizInvoice.nearAddress}</code>\n` : "") +
           `<i>(Dedicated address · QR code on invoice card)</i>\n` +
           goalNote +
           `\n⚡ <i>Payments settle directly into your main business account!</i>`;
