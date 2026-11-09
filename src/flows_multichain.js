@@ -39,14 +39,15 @@ function registerNearDepositActions(bot) {
   const { requireUser, getContext } = deps;
 
   bot.action("action_near_deposit", async (ctx) => {
-    ctx.answerCbQuery();
+    ctx.answerCbQuery().catch(() => {});
     const user = requireUser(ctx);
     if (!user) return;
     return showNearTokenSelection(ctx);
   });
 
-  bot.action(/^action_near_tok_([A-Za-z0-9_-]+)$/, async (ctx) => {
-    ctx.answerCbQuery();
+  // Supports both action_near_tok_ and legacy near_dep_token_ prefixes
+  bot.action(/^(?:action_near_tok_|near_dep_token_)([A-Za-z0-9_.-]+)$/, async (ctx) => {
+    ctx.answerCbQuery().catch(() => {});
     const user = requireUser(ctx);
     if (!user) return;
     const sym = ctx.match[1];
@@ -55,7 +56,7 @@ function registerNearDepositActions(bot) {
       convState.setState(ctx.from.id, "await_near_custom_token", {}, getContext(ctx.from.id));
       return ctx.reply(
         `🔍 <b>Custom NEAR Token</b>\n──────────────────────────\n` +
-        `Enter the token symbol (e.g. <code>AURORA</code>, <code>DAI</code>) or NEP-141 contract address (e.g. <code>wrap.near</code> or <code>nep141:...</code>):\n\n` +
+        `Enter the token symbol (e.g. <code>AURORA</code>, <code>DAI</code>, <code>SWEAT</code>) or NEP-141 contract address (e.g. <code>wrap.near</code> or <code>nep141:...</code>):\n\n` +
         `<i>Type cancel to return.</i>`,
         {
           parse_mode: "HTML",
@@ -65,7 +66,7 @@ function registerNearDepositActions(bot) {
     }
 
     const token = await nearLib.resolveNearToken(sym);
-    if (!token) return ctx.reply("Token not found. Please choose from the list.", deps.backToMenu);
+    if (!token) return ctx.reply("Token not found on NEAR. Please choose from the list.", deps.backToMenu);
 
     convState.setState(
       ctx.from.id,
@@ -80,18 +81,33 @@ function registerNearDepositActions(bot) {
     );
 
     return ctx.reply(
-      `Ⓝ <b>Deposit ${token.name || token.symbol}</b>\n──────────────────────────\n` +
+      `Ⓝ <b>Deposit ${token.name || token.symbol} (NEAR Protocol)</b>\n──────────────────────────\n` +
       `How much <b>${token.symbol}</b> would you like to deposit? (min ${token.minDeposit || 1} ${token.symbol})\n\n` +
-      `<i>NEAR Intents will auto-convert your ${token.symbol} into USDC and sweep it to your Arc balance.</i>`,
+      `<i>NEAR Intents will auto-convert your ${token.symbol} into Dollars ($) and sweep it to your account balance.</i>`,
       {
         parse_mode: "HTML",
-        ...Markup.inlineKeyboard([[Markup.button.callback("« Back to Tokens", "action_near_deposit")]]),
+        ...Markup.inlineKeyboard([[Markup.button.callback("« Back to NEAR", "action_near_deposit")]]),
       }
     );
   });
 
+  bot.action("action_near_all_tokens", async (ctx) => {
+    ctx.answerCbQuery().catch(() => {});
+    const user = requireUser(ctx);
+    if (!user) return;
+    return showAllNearTokens(ctx, 1);
+  });
+
+  bot.action(/^action_near_tokens_page_(\d+)$/, async (ctx) => {
+    ctx.answerCbQuery().catch(() => {});
+    const user = requireUser(ctx);
+    if (!user) return;
+    const page = parseInt(ctx.match[1], 10) || 1;
+    return showAllNearTokens(ctx, page);
+  });
+
   bot.action(/^action_near_status_(\d+)$/, async (ctx) => {
-    ctx.answerCbQuery();
+    ctx.answerCbQuery().catch(() => {});
     const row = db.getNearDepositById(Number(ctx.match[1]));
     if (!row) return ctx.reply("Deposit request not found.", deps.backToMenu);
 
@@ -125,7 +141,7 @@ function registerNearDepositActions(bot) {
     return ctx.reply(
       `Ⓝ <b>NEAR Deposit Status</b>\n──────────────────────────\n` +
       `📥 <b>Depositing:</b> ${inAmount} ${inSymbol}\n` +
-      (row.amount_out ? `💵 <b>Converted to:</b> ~$${Number(row.amount_out).toFixed(2)} USDC (Arc)\n` : "") +
+      (row.amount_out ? `💵 <b>Converted to:</b> ~${Number(row.amount_out).toFixed(2)} USDC (Arc)\n` : "") +
       `📊 <b>Status:</b> ${labels[status] || status}\n\n` +
       (status === "SUCCESS"
         ? `<i>Your Arc credit confirmation arrives separately once the sweep completes.</i>`
@@ -145,29 +161,79 @@ function registerNearDepositActions(bot) {
 async function showNearTokenSelection(ctx) {
   const keyboard = [
     [
-      Markup.button.callback("💵 USDC", "action_near_tok_USDC"),
-      Markup.button.callback("🟢 USDT", "action_near_tok_USDT"),
+      Markup.button.callback("💵 USDC (Native NEAR)", "action_near_tok_USDC"),
+      Markup.button.callback("🟢 USDT (NEAR)", "action_near_tok_USDT"),
     ],
     [
-      Markup.button.callback("Ⓝ NEAR", "action_near_tok_NEAR"),
+      Markup.button.callback("Ⓝ NEAR Protocol", "action_near_tok_NEAR"),
       Markup.button.callback("🪙 WBTC", "action_near_tok_WBTC"),
     ],
     [
-      Markup.button.callback("🔷 WETH", "action_near_tok_WETH"),
+      Markup.button.callback("💧 SWEAT", "action_near_tok_SWEAT"),
+      Markup.button.callback("🅰️ AURORA", "action_near_tok_AURORA"),
+    ],
+    [
+      Markup.button.callback("🔷 ETH", "action_near_tok_ETH"),
       Markup.button.callback("🟡 DAI", "action_near_tok_DAI"),
     ],
     [
-      Markup.button.callback("🔍 Other / Custom Token", "action_near_tok_custom"),
+      Markup.button.callback("📋 All NEAR Tokens (35+)", "action_near_all_tokens"),
+      Markup.button.callback("🔍 Custom Token", "action_near_tok_custom"),
     ],
     [
-      Markup.button.callback("❌ Cancel", "main_menu"),
+      Markup.button.callback("« Back to Networks", "action_gateway"),
+      Markup.button.callback("🏠 Main Menu", "main_menu"),
     ],
   ];
 
   return ctx.reply(
-    `Ⓝ <b>Deposit from NEAR (All Tokens Supported)</b>\n──────────────────────────\n` +
-    `Deposit <b>any token</b> on NEAR Protocol. NEAR Intents will automatically convert your deposit into <b>USDC</b> and sweep it to your <b>Arc</b> balance (~2–5 minutes).\n\n` +
-    `Select a token to deposit:`,
+    `Ⓝ <b>Deposit via NEAR Protocol</b>\n──────────────────────────\n` +
+    `Send tokens from any NEAR wallet (Here, Meteor, Sender, Bitget) or exchange.\n` +
+    `NEAR Intents automatically converts your tokens to <b>USDC</b> and sweeps them to your account balance (~2–5 mins).\n\n` +
+    `<b>Select a token to deposit:</b>`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard(keyboard),
+    }
+  );
+}
+
+async function showAllNearTokens(ctx, page = 1) {
+  const allTokens = await nearLib.getSupportedNearTokens();
+  const tokens = allTokens.filter(t => t.blockchain === "near");
+  const pageSize = 10;
+  const totalPages = Math.ceil(tokens.length / pageSize) || 1;
+  const currentPage = Math.max(1, Math.min(page, totalPages));
+  const start = (currentPage - 1) * pageSize;
+  const pageTokens = tokens.slice(start, start + pageSize);
+
+  const keyboard = [];
+  for (let i = 0; i < pageTokens.length; i += 2) {
+    const row = [Markup.button.callback(`${pageTokens[i].icon || "🪙"} ${pageTokens[i].symbol}`, `action_near_tok_${pageTokens[i].symbol}`)];
+    if (pageTokens[i + 1]) {
+      row.push(Markup.button.callback(`${pageTokens[i + 1].icon || "🪙"} ${pageTokens[i + 1].symbol}`, `action_near_tok_${pageTokens[i + 1].symbol}`));
+    }
+    keyboard.push(row);
+  }
+
+  const navRow = [];
+  if (currentPage > 1) {
+    navRow.push(Markup.button.callback(`« Page ${currentPage - 1}`, `action_near_tokens_page_${currentPage - 1}`));
+  }
+  if (currentPage < totalPages) {
+    navRow.push(Markup.button.callback(`Page ${currentPage + 1} »`, `action_near_tokens_page_${currentPage + 1}`));
+  }
+  if (navRow.length > 0) keyboard.push(navRow);
+
+  keyboard.push([
+    Markup.button.callback("🔍 Custom Token", "action_near_tok_custom"),
+    Markup.button.callback("« Back to NEAR", "action_near_deposit"),
+  ]);
+
+  return ctx.reply(
+    `Ⓝ <b>All Supported NEAR Tokens (${tokens.length} Available)</b>\n──────────────────────────\n` +
+    `Page ${currentPage} of ${totalPages} — select any token below to get your one-time deposit address:\n\n` +
+    `<i>Every token is auto-converted into Dollars ($) by NEAR Intents solvers.</i>`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard(keyboard),
@@ -864,7 +930,7 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
     // no PIN needed). Refunds from failed/expired bridges land here.
     let refundTo;
     try {
-      const sysKey = db.getSystemDecryptedPrivateKey(user);
+      const sysKey = db.getSystemDecryptedPrivateKey(user, context);
       refundTo = nearLib.deriveNearAddress(sysKey).nearAddress;
     } catch (_) {
       convState.clearState(userId);
@@ -1444,6 +1510,8 @@ module.exports = {
   registerMultichainFlows,
   handleMultichainState,
   handlesState,
+  showNearTokenSelection,
+  showAllNearTokens,
   validateAddressForChain,
   CCW_CHAINS,
 };

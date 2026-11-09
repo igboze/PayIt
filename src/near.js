@@ -49,19 +49,21 @@ const ASSETS = {
 const SUPPORTED_NEAR_TOKENS = [
   {
     symbol: "USDC",
-    name: "USD Coin (Native)",
+    name: "USD Coin (Native NEAR)",
     assetId: ASSETS.NEAR_USDC,
     decimals: 6,
     icon: "💵",
     minDeposit: 2,
+    blockchain: "near",
   },
   {
     symbol: "USDT",
-    name: "Tether USD",
+    name: "Tether USD (NEAR)",
     assetId: ASSETS.NEAR_USDT,
     decimals: 6,
     icon: "🟢",
     minDeposit: 2,
+    blockchain: "near",
   },
   {
     symbol: "NEAR",
@@ -70,22 +72,61 @@ const SUPPORTED_NEAR_TOKENS = [
     decimals: 24,
     icon: "Ⓝ",
     minDeposit: 0.5,
+    blockchain: "near",
+  },
+  {
+    symbol: "wNEAR",
+    name: "Wrapped NEAR",
+    assetId: ASSETS.NEAR_WNEAR,
+    decimals: 24,
+    icon: "Ⓝ",
+    minDeposit: 0.5,
+    blockchain: "near",
   },
   {
     symbol: "WBTC",
-    name: "Wrapped Bitcoin",
-    assetId: process.env.NEAR_INTENTS_WBTC || "nep141:btc.omft.near",
+    name: "Wrapped Bitcoin (Rainbow)",
+    assetId: "nep141:2260fac5e5542a773aa44fbcfedf7c193bc2c599.factory.bridge.near",
     decimals: 8,
     icon: "🪙",
     minDeposit: 0.0001,
+    blockchain: "near",
   },
   {
-    symbol: "WETH",
-    name: "Wrapped Ethereum",
-    assetId: process.env.NEAR_INTENTS_WETH || "nep141:eth.omft.near",
+    symbol: "BTC",
+    name: "Bitcoin (Rainbow Bridge)",
+    assetId: "nep141:nbtc.bridge.near",
+    decimals: 8,
+    icon: "🪙",
+    minDeposit: 0.0001,
+    blockchain: "near",
+  },
+  {
+    symbol: "ETH",
+    name: "Ethereum (Rainbow Bridge)",
+    assetId: "nep141:eth.bridge.near",
     decimals: 18,
     icon: "🔷",
     minDeposit: 0.001,
+    blockchain: "near",
+  },
+  {
+    symbol: "AURORA",
+    name: "Aurora",
+    assetId: "nep141:aaaaaa20d9e0e2461697782ef11675f668207961.factory.bridge.near",
+    decimals: 18,
+    icon: "🅰️",
+    minDeposit: 10,
+    blockchain: "near",
+  },
+  {
+    symbol: "SWEAT",
+    name: "Sweat Economy",
+    assetId: "nep141:token.sweat",
+    decimals: 18,
+    icon: "💧",
+    minDeposit: 50,
+    blockchain: "near",
   },
   {
     symbol: "DAI",
@@ -94,6 +135,52 @@ const SUPPORTED_NEAR_TOKENS = [
     decimals: 18,
     icon: "🟡",
     minDeposit: 2,
+    blockchain: "near",
+  },
+  {
+    symbol: "FRAX",
+    name: "Frax",
+    assetId: "nep141:853d955acef822db058eb8505911ed77f175b99e.factory.bridge.near",
+    decimals: 18,
+    icon: "🟡",
+    minDeposit: 2,
+    blockchain: "near",
+  },
+  {
+    symbol: "BLACKDRAGON",
+    name: "Black Dragon",
+    assetId: "nep141:blackdragon.tkn.near",
+    decimals: 24,
+    icon: "🐉",
+    minDeposit: 1000000,
+    blockchain: "near",
+  },
+  {
+    symbol: "SHITZU",
+    name: "Shitzu",
+    assetId: "nep141:token.0xshitzu.near",
+    decimals: 18,
+    icon: "🐶",
+    minDeposit: 10000,
+    blockchain: "near",
+  },
+  {
+    symbol: "mpDAO",
+    name: "Meta Pool DAO",
+    assetId: "nep141:mpdao-token.near",
+    decimals: 6,
+    icon: "🌊",
+    minDeposit: 50,
+    blockchain: "near",
+  },
+  {
+    symbol: "stNEAR",
+    name: "Staked NEAR",
+    assetId: "nep141:meta-pool.near",
+    decimals: 24,
+    icon: "🌊",
+    minDeposit: 0.5,
+    blockchain: "near",
   },
 ];
 
@@ -369,10 +456,12 @@ async function getSupportedNearTokens(forceRefresh = false) {
 
     const tokens = Array.isArray(res.data) ? res.data : [];
     for (const item of tokens) {
-      const isNear =
-        item.blockchain === "near" ||
-        (typeof item.assetId === "string" && item.assetId.startsWith("nep141:"));
-      if (!isNear) continue;
+      // CRITICAL FIX: Only include tokens whose origin blockchain is natively "near"!
+      // Bridged OMFT tokens from other chains (like sui-*, miden-*, arb-*, eth-*, hood-*)
+      // have assetIds ending in .omft.near, but their blockchain is "sui", "eth", etc.,
+      // which causes 1Click to return non-NEAR (EVM) deposit addresses and require non-NEAR refund addresses!
+      const isNativeNear = item.blockchain === "near";
+      if (!isNativeNear) continue;
 
       const sym = (item.symbol || "").toUpperCase();
       const existing = tokenMap.get(sym);
@@ -381,9 +470,10 @@ async function getSupportedNearTokens(forceRefresh = false) {
         name: item.name || sym,
         assetId: item.assetId,
         decimals: Number(item.decimals ?? 6),
-        icon: sym === "NEAR" ? "Ⓝ" : sym === "USDT" ? "🟢" : sym.includes("USD") ? "💵" : sym === "WBTC" ? "🪙" : sym === "WETH" ? "🔷" : "🪙",
+        icon: sym === "NEAR" || sym === "WNEAR" ? "Ⓝ" : sym === "USDT" ? "🟢" : sym.includes("USD") ? "💵" : sym === "WBTC" || sym === "BTC" ? "🪙" : sym === "WETH" || sym === "ETH" ? "🔷" : sym === "AURORA" ? "🅰️" : sym === "SWEAT" ? "💧" : "🪙",
         priceUsd: item.price ? Number(item.price) : undefined,
-        minDeposit: existing?.minDeposit ?? 1,
+        minDeposit: existing?.minDeposit ?? (sym.includes("USD") ? 2 : (item.price && item.price > 0 ? Math.max(0.001, Math.ceil(2 / item.price * 1000) / 1000) : 1)),
+        blockchain: "near",
       };
       tokenMap.set(sym, entry);
       tokenMap.set(item.assetId.toLowerCase(), entry);
@@ -391,6 +481,44 @@ async function getSupportedNearTokens(forceRefresh = false) {
   } catch (_) {
     // Dynamic endpoint fallback to standard catalog
   }
+
+  // Ensure canonical native NEAR tokens always map strictly to their official NEAR contracts
+  tokenMap.set("USDC", {
+    symbol: "USDC",
+    name: "USD Coin (Native NEAR)",
+    assetId: ASSETS.NEAR_USDC,
+    decimals: 6,
+    icon: "💵",
+    minDeposit: 2,
+    blockchain: "near",
+  });
+  tokenMap.set("USDT", {
+    symbol: "USDT",
+    name: "Tether USD (NEAR)",
+    assetId: ASSETS.NEAR_USDT,
+    decimals: 6,
+    icon: "🟢",
+    minDeposit: 2,
+    blockchain: "near",
+  });
+  tokenMap.set("NEAR", {
+    symbol: "NEAR",
+    name: "NEAR Protocol / wNEAR",
+    assetId: ASSETS.NEAR_WNEAR,
+    decimals: 24,
+    icon: "Ⓝ",
+    minDeposit: 0.5,
+    blockchain: "near",
+  });
+  tokenMap.set("WNEAR", {
+    symbol: "wNEAR",
+    name: "Wrapped NEAR",
+    assetId: ASSETS.NEAR_WNEAR,
+    decimals: 24,
+    icon: "Ⓝ",
+    minDeposit: 0.5,
+    blockchain: "near",
+  });
 
   const list = [];
   const seenAssets = new Set();
@@ -405,10 +533,6 @@ async function getSupportedNearTokens(forceRefresh = false) {
   return list;
 }
 
-/**
- * Fetch Solana tokens supported by 1Click. Returns static catalog merged with
- * any extra sol-blockchain tokens from the /v0/tokens endpoint.
- */
 async function getSupportedSolanaTokens(forceRefresh = false) {
   const now = Date.now();
   if (!forceRefresh && _cachedSolanaTokens && now < _cachedSolanaTokensExpiry) {
@@ -696,6 +820,41 @@ async function resolveNearToken(query) {
   const qUpper = q.toUpperCase();
   const qLower = q.toLowerCase();
 
+  // Canonical shortcuts
+  if (qUpper === "NEAR" || qUpper === "WNEAR") {
+    return {
+      symbol: qUpper === "WNEAR" ? "wNEAR" : "NEAR",
+      name: "NEAR Protocol / wNEAR",
+      assetId: ASSETS.NEAR_WNEAR,
+      decimals: 24,
+      icon: "Ⓝ",
+      minDeposit: 0.5,
+      blockchain: "near",
+    };
+  }
+  if (qUpper === "USDC") {
+    return {
+      symbol: "USDC",
+      name: "USD Coin (Native NEAR)",
+      assetId: ASSETS.NEAR_USDC,
+      decimals: 6,
+      icon: "💵",
+      minDeposit: 2,
+      blockchain: "near",
+    };
+  }
+  if (qUpper === "USDT") {
+    return {
+      symbol: "USDT",
+      name: "Tether USD (NEAR)",
+      assetId: ASSETS.NEAR_USDT,
+      decimals: 6,
+      icon: "🟢",
+      minDeposit: 2,
+      blockchain: "near",
+    };
+  }
+
   const tokens = await getSupportedNearTokens();
   const bySymbol = tokens.find((t) => t.symbol.toUpperCase() === qUpper);
   if (bySymbol) return bySymbol;
@@ -703,7 +862,19 @@ async function resolveNearToken(query) {
   const byAssetId = tokens.find((t) => t.assetId.toLowerCase() === qLower);
   if (byAssetId) return byAssetId;
 
-  if (q.startsWith("nep141:") || q.endsWith(".near")) {
+  // Match contract address without nep141: prefix
+  const byContract = tokens.find((t) => {
+    const raw = t.assetId.replace(/^nep141:/, "").toLowerCase();
+    return raw === qLower;
+  });
+  if (byContract) return byContract;
+
+  // Custom NEAR token handling
+  if (q.startsWith("nep141:") || q.endsWith(".near") || isNearAddress(q)) {
+    // Reject foreign OMFT wrappers disguised with nep141: prefix
+    if (/nep141:(sui|miden|hood|sol|eth|arb|base|aptos|bera|gnosis|doge|cardano|movement|plasma)-/i.test(q)) {
+      return null;
+    }
     const assetId = q.startsWith("nep141:") ? q : `nep141:${q}`;
     const cleanSym = (q.split(/[:.]/)[1] || "TOKEN").toUpperCase();
     return {
@@ -713,6 +884,7 @@ async function resolveNearToken(query) {
       decimals: 18,
       icon: "🪙",
       minDeposit: 0.1,
+      blockchain: "near",
     };
   }
 
@@ -890,8 +1062,12 @@ async function createNearDeposit({
   recipientAddress,
   refundTo,
 }) {
+  if (!isNearAddress(refundTo)) {
+    throw new Error(`refundTo must be a valid NEAR account or 64-char implicit address (got: ${refundTo})`);
+  }
+
   const chosenAmount = amount !== undefined && amount !== null ? amount : amountUsdc;
-  const chosenAsset = originAsset || ASSETS.NEAR_USDC;
+  let chosenAsset = originAsset || ASSETS.NEAR_USDC;
 
   let resolvedDecimals = originDecimals;
   let resolvedSymbol = originSymbol;

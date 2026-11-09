@@ -8,6 +8,7 @@ const assert = require("node:assert/strict");
 const near = require("../src/near");
 const multichain = require("../src/multichain");
 const db = require("../src/db");
+const walletLib = require("../src/wallet");
 
 const testUserId = 555666777;
 
@@ -240,3 +241,95 @@ test("createNearDeposit with non-USDC token (e.g. NEAR): converts to 24-dec base
   }
 });
 
+// ─── 7. Native NEAR token resolution & EVM prevention ──────────────────────
+
+test("resolveNearToken: strictly resolves native NEAR USDC/USDT and never foreign OMFT tokens", async () => {
+  const usdc = await near.resolveNearToken("USDC");
+  assert.ok(usdc, "USDC must resolve");
+  assert.equal(usdc.symbol, "USDC");
+  assert.equal(usdc.assetId, near.ASSETS.NEAR_USDC);
+  assert.equal(usdc.decimals, 6);
+  assert.equal(usdc.blockchain, "near");
+  assert.ok(!usdc.assetId.includes("sui-"), "Must not resolve to Sui OMFT");
+  assert.ok(!usdc.assetId.includes("arb-"), "Must not resolve to Arbitrum OMFT");
+  assert.ok(!usdc.assetId.includes("eth-"), "Must not resolve to Ethereum OMFT");
+
+  const usdt = await near.resolveNearToken("USDT");
+  assert.ok(usdt, "USDT must resolve");
+  assert.equal(usdt.symbol, "USDT");
+  assert.equal(usdt.assetId, near.ASSETS.NEAR_USDT);
+  assert.equal(usdt.decimals, 6);
+  assert.equal(usdt.blockchain, "near");
+  assert.ok(!usdt.assetId.includes("miden-"), "Must not resolve to Miden OMFT");
+
+  const nearToken = await near.resolveNearToken("NEAR");
+  assert.equal(nearToken.symbol, "NEAR");
+  assert.equal(nearToken.assetId, near.ASSETS.NEAR_WNEAR);
+  assert.equal(nearToken.decimals, 24);
+
+  const wnear = await near.resolveNearToken("wNEAR");
+  assert.equal(wnear.symbol, "wNEAR");
+  assert.equal(wnear.assetId, near.ASSETS.NEAR_WNEAR);
+  assert.equal(wnear.decimals, 24);
+
+  const sweat = await near.resolveNearToken("SWEAT");
+  assert.ok(sweat, "SWEAT must resolve");
+  assert.equal(sweat.symbol, "SWEAT");
+  assert.equal(sweat.assetId, "nep141:token.sweat");
+
+  const aurora = await near.resolveNearToken("AURORA");
+  assert.ok(aurora, "AURORA must resolve");
+  assert.equal(aurora.symbol, "AURORA");
+  assert.ok(aurora.assetId.includes("aaaaaa20d9e0e2461697782ef11675f668207961"));
+});
+
+test("getSupportedNearTokens: every token is native NEAR and never non-NEAR origin chain", async () => {
+  const tokens = await near.getSupportedNearTokens();
+  assert.ok(tokens.length >= 10, "Must contain at least 10 tokens");
+  for (const t of tokens) {
+    assert.equal(t.blockchain, "near", `Token ${t.symbol} (${t.assetId}) must have blockchain === 'near'`);
+    assert.ok(
+      !t.assetId.includes("sui-") &&
+      !t.assetId.includes("miden-") &&
+      !t.assetId.includes("hood-") &&
+      !t.assetId.includes("sol-"),
+      `Token ${t.symbol} (${t.assetId}) must not be a non-NEAR bridge token`
+    );
+  }
+});
+
+test("createNearDeposit: validates refundTo format and prevents EVM address", async () => {
+  await assert.rejects(
+    async () => {
+      await near.createNearDeposit({
+        telegramId: testUserId,
+        accountType: "personal",
+        originAsset: near.ASSETS.NEAR_USDC,
+        originSymbol: "USDC",
+        amount: 10,
+        recipientAddress: "0x1111111111111111111111111111111111111111",
+        refundTo: "0x1111111111111111111111111111111111111111", // Invalid: EVM address cannot be used as NEAR refund
+      });
+    },
+    /refundTo must be a valid NEAR account/,
+    "Must reject EVM address for NEAR deposit refundTo"
+  );
+});
+
+test("Personal and Business account isolation for NEAR deposits", () => {
+  const user = {
+    telegram_id: testUserId,
+    system_encrypted_key: walletLib.encryptSensitiveValue("0x1111111111111111111111111111111111111111111111111111111111111111"),
+    biz_system_encrypted_key: walletLib.encryptSensitiveValue("0x2222222222222222222222222222222222222222222222222222222222222222"),
+  };
+
+  const personalKey = db.getSystemDecryptedPrivateKey(user, "personal");
+  const businessKey = db.getSystemDecryptedPrivateKey(user, "business");
+
+  const personalNear = near.deriveNearAddress(personalKey);
+  const businessNear = near.deriveNearAddress(businessKey);
+
+  assert.notEqual(personalNear.nearAddress, businessNear.nearAddress, "Personal and business NEAR addresses must be isolated");
+  assert.match(personalNear.nearAddress, /^[0-9a-f]{64}$/);
+  assert.match(businessNear.nearAddress, /^[0-9a-f]{64}$/);
+});

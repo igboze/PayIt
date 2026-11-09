@@ -1725,70 +1725,8 @@ bot.action(/^action_chain_(base|ethereum|polygon|arbitrum|optimism|avalanche|bsc
 
 // ─── Multi-Chain Deposit Flows (NEAR Intents) ──────────────────────────────────
 
-bot.action("action_near_deposit", async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
-  const user = requireUser(ctx);
-  if (!user) return;
-
-  await ctx.reply(
-    `Ⓝ <b>Deposit via NEAR</b>\n──────────────────────────\n` +
-    `Send tokens from any NEAR wallet or exchange.\n` +
-    `Deposits automatically arrive as <b>Dollars ($)</b> in your account.\n\n` +
-    `<b>Select token to deposit:</b>`,
-    {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard([
-        [
-          btnPrimary("Ⓝ NEAR", "near_dep_token_NEAR"),
-          btnPrimary("💵 USDC", "near_dep_token_USDC"),
-        ],
-        [
-          btnPrimary("🟢 USDT", "near_dep_token_USDT"),
-          btnPrimary("🪙 Wrapped Bitcoin (WBTC)", "near_dep_token_WBTC"),
-        ],
-        [
-          btnDefault("« Back to Networks", "action_gateway"),
-          btnDefault("🏠 Main Menu",        "main_menu"),
-        ],
-      ]),
-    }
-  );
-});
-
-bot.action(/^near_dep_token_(.+)$/, async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
-  const tokenSym = ctx.match[1];
-  const user = requireUser(ctx);
-  if (!user) return;
-  const context = user.active_context || "personal";
-
-  const tokenInfo = await nearLib.resolveNearToken(tokenSym);
-  const minDeposit = tokenInfo?.minDeposit || (tokenSym === "NEAR" ? 0.5 : 1);
-
-  convState.setState(
-    ctx.from.id,
-    "await_near_amount",
-    {
-      originAsset: tokenInfo?.assetId || nearLib.ASSETS.NEAR_WNEAR,
-      originSymbol: tokenSym,
-      originDecimals: tokenInfo?.decimals || (tokenSym === "NEAR" ? 24 : 6),
-      minDeposit,
-    },
-    context
-  );
-
-  await ctx.reply(
-    `Ⓝ <b>Deposit ${tokenInfo?.name || tokenSym} (NEAR Protocol)</b>\n──────────────────────────\n` +
-    `How much <b>${tokenSym}</b> would you like to deposit? (min ${minDeposit} ${tokenSym})\n\n` +
-    `<i>NEAR Intents will auto-convert your ${tokenSym} into Dollars ($) and sweep it to your account balance.</i>`,
-    {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard([
-        [btnDefault("« Back to NEAR", "action_near_deposit"), btnDefault("🏠 Main Menu", "main_menu")],
-      ]),
-    }
-  );
-});
+// NEAR Protocol deposit flows are fully handled by flowsMultichain.registerMultichainFlows(bot, ...)
+// with support for all 35+ native NEAR tokens, custom NEP-141 tokens, and automatic solver bridging.
 
 bot.action("action_starknet_deposit", async (ctx) => {
   ctx.answerCbQuery().catch(() => {});
