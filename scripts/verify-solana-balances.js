@@ -1,22 +1,29 @@
 /**
  * On-Chain Solana Verification Script
- * Checks live Solana Mainnet RPC balances and account details for User's addresses.
+ * Checks live Solana Mainnet RPC balances and account details for specified addresses.
+ *
+ * Usage: node scripts/verify-solana-balances.js <SOLANA_ADDRESS_1> [SOLANA_ADDRESS_2] ...
  */
 
 const { PublicKey } = require("@solana/web3.js");
 const multichain = require("../src/multichain");
 
-const ADDRESSES = [
-  { label: "Paj Deposit Address (legacy_solana_address...)", address: "legacy_solana_deposit_address_placeholder" },
-  { label: "Current Derived Solana Address (target_solana_address...)", address: "target_solana_address_placeholder" },
-  { label: "Previous Derived Solana Address (previous_solana_address...)", address: "previous_solana_address_placeholder" },
-];
-
 async function verifyOnChain() {
+  const args = process.argv.slice(2);
+  if (args.length === 0) {
+    console.log("Usage: node scripts/verify-solana-balances.js <SOLANA_ADDRESS_1> [SOLANA_ADDRESS_2] ...");
+    process.exit(1);
+  }
+
+  const addresses = args.map((addr, idx) => ({
+    label: `Address #${idx + 1}`,
+    address: addr.trim(),
+  }));
+
   console.log("🌐 Querying Solana Mainnet RPC directly...\n");
   const conn = multichain.getSolanaConnection();
 
-  for (const item of ADDRESSES) {
+  for (const item of addresses) {
     console.log(`📌 ${item.label}`);
     console.log(`   Address: ${item.address}`);
     try {

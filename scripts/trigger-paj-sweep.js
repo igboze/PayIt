@@ -1,10 +1,10 @@
 /**
  * Trigger Paj Deposit Sweep Script
  * 
- * Calls Paj API to sweep funds from legacy deposit wallet legacy_solana_address...
- * to User's target Solana address and records settlement in DB.
+ * Calls Paj API to sweep funds from a deposit wallet
+ * to the target Solana address and records settlement in DB.
  * 
- * Run with: node scripts/trigger-paj-sweep.js [SOURCE_ADDRESS] [RECIPIENT_ADDRESS] [TELEGRAM_ID]
+ * Run with: node scripts/trigger-paj-sweep.js <SOURCE_ADDRESS> <RECIPIENT_ADDRESS> <TELEGRAM_ID>
  */
 
 require("dotenv").config();
@@ -15,9 +15,14 @@ const multichain = require("../src/multichain");
 
 async function runSweep() {
   const args = process.argv.slice(2);
-  const sourceAddr = args[0] || "legacy_solana_deposit_address_placeholder";
-  const recipientAddr = args[1] || "target_solana_address_placeholder";
-  const telegramId = args[2] || 000000000;
+  const sourceAddr = args[0];
+  const recipientAddr = args[1];
+  const telegramId = args[2] ? Number(args[2]) : null;
+
+  if (!sourceAddr || !recipientAddr || !telegramId) {
+    console.log("Usage: node scripts/trigger-paj-sweep.js <SOURCE_ADDRESS> <RECIPIENT_ADDRESS> <TELEGRAM_ID>");
+    process.exit(1);
+  }
 
   console.log("🚀 Initiating Paj Deposit Sweep...");
   console.log(`📍 Source Address:    ${sourceAddr}`);
@@ -26,7 +31,7 @@ async function runSweep() {
 
   console.log("🔍 Checking live SPL USDC balance on source address...");
   const splBal = await multichain.getSplTokenBalance(sourceAddr);
-  const amountUsdc = splBal?.uiAmount || 12.083618;
+  const amountUsdc = splBal?.uiAmount || 0;
   console.log(`💰 Live SPL USDC Balance: $${amountUsdc} USDC\n`);
 
   console.log("📡 Dispatching triggerOnrampSweep to Paj API...");

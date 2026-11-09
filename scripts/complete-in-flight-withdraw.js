@@ -5,10 +5,15 @@ const axios = require("axios");
 const nearLib = require("../src/near");
 const { EVM_CCTP_CONTRACTS, CCTP_DOMAINS } = require("../src/cctp_bridge");
 
-const ARC_TX_HASH = process.argv[2] || "0x0000000000000000000000000000000000000000000000000000000000000000";
+const ARC_TX_HASH = process.argv[2];
 const DESTINATION_CHAIN = (process.argv[3] || "near").toLowerCase();
-const DESTINATION_RECIPIENT = process.argv[4] || "user.near";
+const DESTINATION_RECIPIENT = process.argv[4];
 const USER_PRIVATE_KEY = process.argv[5] || process.env.USER_PRIVATE_KEY;
+
+if (!ARC_TX_HASH || !DESTINATION_RECIPIENT) {
+  console.log("Usage: node scripts/complete-in-flight-withdraw.js <arcTxHash> <chain> <recipient> [privateKey]");
+  process.exit(1);
+}
 
 async function run() {
   console.log("=== Completing In-Flight Cross-Chain Withdrawal ===");

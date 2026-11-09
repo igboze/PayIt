@@ -5,7 +5,7 @@
 const { SwapKit, KitError } = require("@circle-fin/swap-kit");
 const { createEthersAdapterFromPrivateKey } = require("@circle-fin/adapter-ethers-v6");
 const { getNetworkConfig } = require("./network");
-const { formatUnits, parseUnits } = require("ethers");
+const { formatUnits, parseUnits, Wallet } = require("ethers");
 
 let _swapKit = null;
 function getSwapKit() {
@@ -35,7 +35,7 @@ async function getSwapQuote(tokenIn, tokenOut, amountInMicro, privateKey = null)
   const chain = net.isTestnet ? "Arc_Testnet" : "Arc";
   const apiKey = process.env.CIRCLE_KIT_KEY || process.env.ARC_API_KEY;
 
-  const pk = privateKey || "0x0123456789012345678901234567890123456789012345678901234567890123";
+  const pk = privateKey || Wallet.createRandom().privateKey;
   const adapter = createEthersAdapterFromPrivateKey({ privateKey: pk });
   const humanAmount = formatUnits(BigInt(amountInMicro.toString()), 18);
 

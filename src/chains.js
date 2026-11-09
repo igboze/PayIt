@@ -188,11 +188,10 @@ async function getUnifiedBalance(user, accountType = "personal") {
     } catch (_) {}
   }
 
-  // Solana (SPL USDC across derived + stored/legacy addresses)
+  // Solana (SPL USDC across derived + stored addresses)
   const solPrimary = deriveAddress(user, accountType, "solana");
   const solStored = accountType === "business" ? user.biz_solana_deposit_address : user.solana_deposit_address;
-  const legacySol = String(user.telegram_id) === "000000000" ? "legacy_solana_deposit_address_placeholder" : null;
-  const solAddrs = [...new Set([solPrimary, solStored, user.paj_permanent_offramp_address, legacySol].filter(Boolean))];
+  const solAddrs = [...new Set([solPrimary, solStored, user.paj_permanent_offramp_address].filter(Boolean))];
   result.solanaAddresses = solAddrs;
   let solUsdc = 0;
   for (const a of solAddrs) {

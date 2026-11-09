@@ -1954,10 +1954,6 @@ async function handleSweepDeposits(ctx) {
     if (user.solana_deposit_address) {
       pajTempAddrs.push(user.solana_deposit_address);
     }
-    // User (000000000) original deposit address holding $12.08 USDC
-    if (String(user.telegram_id) === "000000000" && !pajTempAddrs.includes("legacy_solana_deposit_address_placeholder")) {
-      pajTempAddrs.push("legacy_solana_deposit_address_placeholder");
-    }
 
     // Determine target non-custodial Solana address for recipient
     let payitSolAddr = null;
@@ -5581,13 +5577,15 @@ bot.command("complete_withdraw", async (ctx) => {
     let pendingBurns = [];
     try { pendingBurns = db.getPendingCctpBurns() || []; } catch {}
     const userBurns = pendingBurns.filter(b => b.telegram_id === telegramId || b.telegram_id === 0);
-    const inFlightTxHash = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
-    const targetBurn = userBurns.find(b => b.arc_tx_hash === inFlightTxHash) || userBurns[0];
-    const arcTxHash = targetBurn?.arc_tx_hash || inFlightTxHash;
-    const destChain = "near";
-    const destRecipient = "user.near";
-    const amountUsdc = targetBurn?.amount_usdc || 7.70;
+    const targetBurn = userBurns[0];
+    if (!targetBurn) {
+      return ctx.reply("ℹ️ No pending in-flight cross-chain withdrawals found for your account.");
+    }
+    const arcTxHash = targetBurn.arc_tx_hash;
+    const destChain = targetBurn.destination_chain || "near";
+    const destRecipient = targetBurn.recipient_solana || targetBurn.destination_address || targetBurn.recipient;
+    const amountUsdc = targetBurn.amount_usdc;
 
     await cctpBridge.completeIntentWithdrawal({
       arcTxHash,

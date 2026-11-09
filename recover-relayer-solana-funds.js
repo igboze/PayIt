@@ -1,31 +1,12 @@
 // recover-relayer-solana-funds.js
 //
-// CONTEXT: legacy_solana_deposit_address_placeholder is hardcoded identically for every
-// user in bot.js - it's a single shared address, not a per-user derived one. Per your
-// description, this is almost certainly the OLD RELAYER wallet from before the switch to
-// full non-custodial CCTP wallets: it received deposits on users' behalf and the bot
-// credited balances internally, rather than moving funds on-chain per user.
-//
-// This script does NOT guess or fabricate a key. It tests candidate keys/seeds you provide
-// (things like an old RELAYER_PRIVATE_KEY or DEPLOYER_PRIVATE_KEY env var, an old .env
-// backup, or a key from git history / your hosting provider's env var history) against the
-// target address. Only if one of them actually derives or matches that exact address does
-// this script do anything further - and even then, moving funds requires EXECUTE=1.
-//
-// ── WHERE TO LOOK FOR THE OLD KEY ──
-// - Railway (you're using nixpacks/railway per your repo files): Railway keeps a history of
-//   environment variable changes in the dashboard under your service's Variables tab -
-//   check for an old RELAYER_PRIVATE_KEY or similar that predates the CCTP switch.
-// - git history: `git log -p --all -- .env .env.example | grep -i relayer` (only useful if a
-//   key was ever accidentally committed - check but don't rely on it).
-// - Any local backup of the old .env from before the rewrite.
-// - A password manager entry made when the relayer wallet was first funded.
+// Tests candidate keys/seeds you provide against a target address to see if
+// a candidate keypair controls it.
 //
 // ── USAGE ──
-// 1. Fill in CANDIDATES below with anything you find (safe to leave placeholders blank).
-// 2. Dry run (default): node recover-relayer-solana-funds.js
-// 3. If a match is found and confirmed, transfer the funds:
-//      DEST_ADDRESS=<user's current correct Solana address> EXECUTE=1 node recover-relayer-solana-funds.js
+// 1. Dry run: node recover-relayer-solana-funds.js <TARGET_SOLANA_ADDRESS>
+// 2. If a match is found and confirmed, transfer the funds:
+//      DEST_ADDRESS=<user's current correct Solana address> EXECUTE=1 node recover-relayer-solana-funds.js <TARGET_SOLANA_ADDRESS>
 
 require("dotenv").config();
 const { Keypair } = require("@solana/web3.js");
@@ -33,7 +14,11 @@ const bs58mod = require("bs58");
 const bs58 = bs58mod.default || bs58mod;
 const multichain = require("./src/multichain");
 
-const TARGET_ADDRESS = process.argv[2] || "legacy_solana_deposit_address_placeholder";
+const TARGET_ADDRESS = process.argv[2];
+if (!TARGET_ADDRESS) {
+  console.log("Usage: node recover-relayer-solana-funds.js <TARGET_SOLANA_ADDRESS>");
+  process.exit(1);
+}
 
 // Add anything plausible here. Each entry is tried; wrong guesses are just skipped, nothing
 // is sent anywhere until a match is found AND EXECUTE=1 is set.

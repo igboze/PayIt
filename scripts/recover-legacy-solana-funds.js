@@ -17,10 +17,10 @@ const db = require("../src/db");
 async function recoverLegacyFunds() {
   const args = process.argv.slice(2);
   const oldEvmKey = args[0];
-  const targetSolAddress = args[1] || "target_solana_address_placeholder";
+  const targetSolAddress = args[1];
 
-  if (!oldEvmKey) {
-    console.log("Usage: node scripts/recover-legacy-solana-funds.js <OLD_EVM_PRIVATE_KEY> [RECIPIENT_SOLANA_ADDRESS]");
+  if (!oldEvmKey || !targetSolAddress) {
+    console.log("Usage: node scripts/recover-legacy-solana-funds.js <OLD_EVM_PRIVATE_KEY> <RECIPIENT_SOLANA_ADDRESS>");
     process.exit(1);
   }
 

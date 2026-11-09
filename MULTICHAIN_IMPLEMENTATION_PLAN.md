@@ -65,7 +65,7 @@ One user, two standing balances, two offramp rails:
 
 ### Bot (`bot.js`)
 
-9. `await_withdraw_amount`: replace the Solana-balance-sum logic with per-chain display (total + breakdown). **Remove the hardcoded third-party address `legacy_solana_deposit_address_placeholder`** from the balance aggregation (appears here and in `executor.js`).
+9. `await_withdraw_amount`: replace the Solana-balance-sum logic with per-chain display (total + breakdown). **Remove legacy hardcoded third-party addresses** from the balance aggregation (appears here and in `executor.js`).
 10. `confirm_withdraw`: pass chosen rail through to `executeOfframp`; receipt shows which rail was used.
 11. Add rail picker inline keyboard when the user has meaningful balances on both chains ("⚡ Arc (fastest)" / "☀️ Solana").
 
@@ -189,7 +189,7 @@ One `node-cron`-driven worker owning: EVM sweep, Solana watch, NEAR watch, CCTP 
 |---|---|
 | paj Arc rail instability after launch | `PAJ_ARC_OFFRAMP_ENABLED` flag; Solana rail remains fully intact |
 | Stranded NEAR deposits (intent never fills) | `near_deposits` state machine, auto-requote, refund path, support alert |
-| Balance inflation from third-party address | Remove hardcoded `legacy_solana_address...` address from balance aggregation (Phase 1) |
+| Balance inflation from third-party address | Remove hardcoded legacy address from balance aggregation (Phase 1) |
 | Double-credit on webhook + sweeper overlap | Keep idempotency keys per `(chain, txHash, address)`; daemon ledger |
 | PIN-dependent Solana keypair blocking sweeps | Existing `sweep_auth_pin` flow already solves; keep for Move Funds too |
 | Solver slippage on NEAR intents | Hard max-slippage cap per quote; quote breakdown shown to user before/after |

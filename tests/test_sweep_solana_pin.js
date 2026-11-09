@@ -25,9 +25,10 @@ test("Solana Sweep PIN Authorization & Settlement Flow", async (t) => {
   const derivedSol = multichain.deriveSolanaFromEvmKey(wallet.privateKey);
 
   // Set initial temporary address
-  db.updateSolanaAddress(telegramId, "legacy_solana_deposit_address_placeholder");
+  const mockTempSolAddress = "TestTempAddress11111111111111111111111111111";
+  db.updateSolanaAddress(telegramId, mockTempSolAddress);
   const user = db.getUser(telegramId);
-  assert.equal(user.solana_deposit_address, "legacy_solana_deposit_address_placeholder");
+  assert.equal(user.solana_deposit_address, mockTempSolAddress);
 
   // Verify PIN
   const pinCheck = db.verifyPinWithStatus(telegramId, pin);
