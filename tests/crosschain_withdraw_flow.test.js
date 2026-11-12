@@ -98,7 +98,7 @@ test("handleMultichainState: entering NEAR address responds and advances state t
 
     // Verify response was sent
     assert.match(repliedMessage, /Withdraw to Ⓝ NEAR/);
-    assert.match(repliedMessage, /nackam\.near/);
+    assert.match(repliedMessage, /user\.near/);
     assert.match(repliedMessage, /How much USD would you like to withdraw\?/);
 
     // Verify conversation state was updated to await_ccw_amount
