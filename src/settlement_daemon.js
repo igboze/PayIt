@@ -277,7 +277,7 @@ async function pollPendingOfframpOrders(bot) {
               `💵 <b>Delivered:</b> ₦${fiatAmount > 0 ? Number(fiatAmount).toLocaleString() : "..."}\n` +
               `🏦 <b>Destination:</b> ${bankName} <code>${accountNumber}</code>\n` +
               narrationLine +
-              `💰 <b>Amount:</b> $${amountUsdc.toFixed(2)} USDC\n` +
+              (fiatAmount > 0 ? "" : `💰 <b>Amount:</b> $${amountUsdc.toFixed(2)} USDC\n`) +
               `💼 <b>Source:</b> ${accountLabel}\n` +
               `🔖 <b>Ref:</b> <code>${order.order_id}</code>\n\n` +
               `<i>Funds have been delivered directly to your bank account.</i>`;
@@ -293,7 +293,7 @@ async function pollPendingOfframpOrders(bot) {
                 recipientAddress: accountNumber,
                 bankName: bankName,
                 amountUsdc: amountUsdc,
-                token: "USDC",
+                token: fiatAmount > 0 ? "NGN" : "USDC",
                 nairaEquiv: fiatAmount > 0 ? `₦${Number(fiatAmount).toLocaleString()}` : null,
                 type: "Cash Out",
                 timestamp: new Date().toISOString(),

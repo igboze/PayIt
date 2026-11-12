@@ -111,7 +111,11 @@ function buildReceiptSvg(opts = {}) {
 
   const typeLower = (type || "").toLowerCase();
   const isDeposit = typeLower.includes("deposit") || typeLower.includes("received");
-  const isCashOut = typeLower.includes("cash out") || typeLower.includes("offramp");
+  const isCashOut =
+    typeLower.includes("cash out") ||
+    typeLower.includes("cashout") ||
+    typeLower.includes("offramp") ||
+    typeLower.includes("off-ramp");
   const isWithdrawal = typeLower.includes("withdraw");
   const isSavingsWithdraw = typeLower.includes("savings") && isWithdrawal;
   const isPending = (status || "").toLowerCase().includes("pending");
@@ -196,13 +200,34 @@ function buildReceiptSvg(opts = {}) {
       const s = String(nairaEquiv).trim();
       cleanNaira = s.startsWith("₦") ? s : `₦${s}`;
     }
+  } else if (opts.amountPrimary && String(opts.amountPrimary).includes("₦")) {
+    cleanNaira = String(opts.amountPrimary).trim();
   }
 
-  const amtNum = Number(amountUsdc || 0);
-  const amtFormatted = isNaN(amtNum)
-    ? "0.00"
-    : amtNum.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const amtFontSize = amtFormatted.length > 10 ? 30 : (amtFormatted.length > 8 ? 34 : 38);
+  const isNairaOnlyOfframp = Boolean(isCashOut && (cleanNaira || String(token).toUpperCase() === "NGN"));
+
+  let displayAmount = "0.00";
+  let displayToken = token;
+  if (isNairaOnlyOfframp) {
+    if (cleanNaira) {
+      const numericNaira = parseFloat(cleanNaira.replace(/[^0-9.]/g, ""));
+      displayAmount = !isNaN(numericNaira)
+        ? `₦${numericNaira.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+        : cleanNaira;
+    } else {
+      const amtNumNgn = Number(amountUsdc || 0);
+      displayAmount = isNaN(amtNumNgn)
+        ? "₦0.00"
+        : `₦${amtNumNgn.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+    displayToken = "NGN";
+  } else {
+    const amtNum = Number(amountUsdc || 0);
+    displayAmount = isNaN(amtNum)
+      ? "0.00"
+      : amtNum.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  const amtFontSize = displayAmount.length > 12 ? 26 : (displayAmount.length > 10 ? 30 : (displayAmount.length > 8 ? 34 : 38));
 
   // Dimensions & Layout
   const canvasW = 460;
@@ -211,7 +236,7 @@ function buildReceiptSvg(opts = {}) {
   const slipY = 24;
 
   const heroY = slipY + 68;
-  const heroH = cleanNaira ? 156 : 126;
+  const heroH = (!isNairaOnlyOfframp && cleanNaira) ? 156 : 126;
 
   const toY = heroY + heroH + 14;
   const toH = 68;
@@ -237,12 +262,12 @@ function buildReceiptSvg(opts = {}) {
   const initials = getInitials(cleanRecipientName || senderName);
 
   const rows = [];
-  rows.push({ label: "Payment type", val: type });
+  rows.push({ label: "Payment type", val: isNairaOnlyOfframp ? "Bank Transfer" : type });
   if (senderName) {
     rows.push({
       label: isDeposit ? "Source" : "From",
       val: senderName,
-      sub: (shortSender && shortSender !== senderName) ? shortSender : null,
+      sub: (!isNairaOnlyOfframp && shortSender && shortSender !== senderName) ? shortSender : null,
     });
   }
   if (narration && String(narration).trim()) {
@@ -250,7 +275,7 @@ function buildReceiptSvg(opts = {}) {
   }
   rows.push({ label: "Date & time", val: dateStr });
   rows.push({ label: "Reference", val: receiptId, isMono: true });
-  if (shortHash) {
+  if (shortHash && !isNairaOnlyOfframp) {
     rows.push({ label: "Transaction ID", val: shortHash, isMono: true });
   }
   rows.push({
@@ -322,7 +347,7 @@ function buildReceiptSvg(opts = {}) {
   const figY = labelY + 38;
   const ngnY = figY + 24;
 
-  const nairaLine = cleanNaira
+  const nairaLine = (!isNairaOnlyOfframp && cleanNaira)
     ? `<text x="${heroMidX}" y="${ngnY}" font-size="14.5" font-weight="700" fill="#ffffff" text-anchor="middle">
         ${escape(cleanNaira)} <tspan font-size="12" font-weight="500" fill="#A9C9BC">NGN</tspan>
       </text>`
@@ -391,8 +416,8 @@ function buildReceiptSvg(opts = {}) {
 
   <!-- Figure: Amount + Token -->
   <text x="${heroMidX}" y="${figY}" text-anchor="middle">
-    <tspan font-size="${amtFontSize}" font-weight="800" fill="#ffffff" letter-spacing="-1">${escape(amtFormatted)}</tspan>
-    <tspan dx="6" font-size="16" font-weight="700" fill="#A9C9BC">${escape(token)}</tspan>
+    <tspan font-size="${amtFontSize}" font-weight="800" fill="#ffffff" letter-spacing="-1">${escape(displayAmount)}</tspan>
+    <tspan dx="6" font-size="16" font-weight="700" fill="#A9C9BC">${escape(displayToken)}</tspan>
   </text>
 
   <!-- NGN Equivalent -->
@@ -419,7 +444,7 @@ function buildReceiptSvg(opts = {}) {
   <g transform="translate(0, ${footY})">
     <line x1="${slipX + 22}" y1="0" x2="${slipX + slipW - 22}" y2="0" stroke="#CBD8D2" stroke-width="1.5" stroke-dasharray="4 4"/>
     <text x="${heroMidX}" y="24" font-size="13.5" font-weight="800" fill="#0F5540" text-anchor="middle">Proxim</text>
-    <text x="${heroMidX}" y="42" font-size="11.5" font-weight="500" fill="#5F766E" text-anchor="middle">Save in dollars. Spend in Naira.</text>
+    <text x="${heroMidX}" y="42" font-size="11.5" font-weight="500" fill="#5F766E" text-anchor="middle">${isNairaOnlyOfframp ? "Instant bank transfers via Proxim." : "Save in dollars. Spend in Naira."}</text>
   </g>
 </svg>`;
 }

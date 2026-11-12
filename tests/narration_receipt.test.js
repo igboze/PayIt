@@ -230,4 +230,30 @@ test("Narration and Receipt Integration Suite", async (t) => {
     assert.ok(recipient.narration, "Should extract narration");
     assert.equal(recipient.narration.toLowerCase(), "project supplies");
   });
+
+  await t.test("8. Off-ramp Naira receipt shows ONLY Naira and never quotes USDC or crypto hashes", () => {
+    const svg = receiptGenerator.buildReceiptSvg({
+      receiptId: "CO-998877",
+      senderName: "Proxim Wallet",
+      senderAddress: "0x1234567890abcdef1234567890abcdef12345678",
+      recipientName: "Jane Doe",
+      recipientAddress: "0123456789",
+      bankName: "GTBank",
+      amountUsdc: 35,
+      token: "USDC",
+      nairaEquiv: "₦50,000",
+      type: "Cash Out",
+      timestamp: new Date().toISOString(),
+      status: "Confirmed",
+      txHash: "0xdeadbeef1234567890abcdef1234567890abcdef",
+      narration: "Rent payment",
+    });
+
+    assert.ok(svg.includes("₦50,000.00"), "Off-ramp receipt must display Naira amount");
+    assert.ok(svg.includes("NGN"), "Off-ramp receipt must display NGN currency");
+    assert.ok(!svg.includes("USDC"), "Off-ramp Naira receipt must NEVER mention USDC");
+    assert.ok(!svg.includes("0x1234"), "Off-ramp Naira receipt must omit sender crypto address");
+    assert.ok(!svg.includes("0xdeadbeef"), "Off-ramp Naira receipt must omit blockchain txHash");
+    assert.ok(!svg.includes("Save in dollars"), "Off-ramp Naira receipt must omit dollar tagline");
+  });
 });
