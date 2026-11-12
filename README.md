@@ -7,6 +7,19 @@
 
 ---
 
+## 📊 Live Production Traction
+
+Proxim is not a prototype or concept — it is a production neobank with real economic activity:
+
+| Metric | Production Value | Context |
+| :--- | :--- | :--- |
+| **Active Users** | **600+ registered users** | Organic adoption across freelancers and individual remitters |
+| **Processed Volume** | **$45,000+ USD** | Real-world liquidity settled through live payment & banking rails |
+| **Active Businesses** | **7 onboarded SMEs** | Actively issuing multimodal invoices, managing payroll & ledgers |
+| **Average Cash-Out Speed** | **< 35 seconds** | Instant NIBSS rail settlement into 100+ commercial bank accounts |
+
+---
+
 ## Executive Overview
 
 **Proxim** is a non-custodial digital neobank built directly inside Telegram. It bridges **NEAR Intents (1Click Chain Defuser)** and stablecoin liquidity directly into real-world commercial banking rails, allowing African freelancers and small-to-medium enterprises (SMEs) to receive cross-chain payments and cash out into local bank accounts in under 35 seconds.
