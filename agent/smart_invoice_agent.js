@@ -42,6 +42,8 @@ function parseSmartInvoiceHeuristic(userMessage) {
   let currency = "USDC";
   if (/\b(eurc|eur|euros?)\b/i.test(raw)) {
     currency = "EURC";
+  } else if (/[₦]|(?:^|\b)(?:ngn|naira)\b/i.test(raw)) {
+    currency = "NGN";
   }
 
   let dueDate = null;
@@ -65,8 +67,8 @@ function parseSmartInvoiceHeuristic(userMessage) {
     clientEmail = emailMatch[0];
   }
 
-  // Match: "$200 to Jerry for attending Arc event"
-  const startAmountMatch = clean.match(/^[\$]?([\d,]+(?:\.\d+)?)\s*(?:usdc|eurc|usd|eur)?\s+(?:to|for)\s+([A-Za-z0-9_.\s@-]+?)\s+(?:for\s+)(.+)$/i);
+  // Match: "$200 to Jerry for attending Arc event" or "₦50000 to Jerry for branding"
+  const startAmountMatch = clean.match(/^[\$₦]?([\d,]+(?:\.\d+)?)\s*(?:usdc|eurc|usd|eur|ngn|naira)?\s+(?:to|for)\s+([A-Za-z0-9_.\s@-]+?)\s+(?:for\s+)(.+)$/i);
   if (startAmountMatch) {
     const amount = parseFloat(startAmountMatch[1].replace(/,/g, ""));
     clientName = startAmountMatch[2].trim();
@@ -77,15 +79,15 @@ function parseSmartInvoiceHeuristic(userMessage) {
   }
 
   if (!items.length) {
-    // Match: "Jerry $200 for attending Arc event" or "Acme Ltd $500 for web design"
-    const clientSplit = clean.match(/^([A-Za-z0-9_.\s@-]+?)\s+(?:for\s+)?[\$]?([\d,]+(?:\.\d+)?)\s*(?:usdc|eurc|usd|eur)?\s+(?:for\s+)?(.+)$/i);
+    // Match: "Jerry $200 for attending Arc event" or "Acme Ltd ₦50,000 for web design"
+    const clientSplit = clean.match(/^([A-Za-z0-9_.\s@-]+?)\s+(?:for\s+)?[\$₦]?([\d,]+(?:\.\d+)?)\s*(?:usdc|eurc|usd|eur|ngn|naira)?\s+(?:for\s+)?(.+)$/i);
     if (clientSplit) {
       clientName = clientSplit[1].trim();
       const firstAmount = parseFloat(clientSplit[2].replace(/,/g, ""));
       const rest = clientSplit[3].trim();
 
       // Check if 'rest' contains multiple items: e.g. "consulting and $100 hosting"
-      const restMultiMatch = rest.match(/^(.+?)\s+(?:and|,|\+)\s+[\$]?([\d,]+(?:\.\d+)?)\s*(?:usdc|eurc|usd|eur)?\s+(?:for\s+)?(.+)$/i);
+      const restMultiMatch = rest.match(/^(.+?)\s+(?:and|,|\+)\s+[\$₦]?([\d,]+(?:\.\d+)?)\s*(?:usdc|eurc|usd|eur|ngn|naira)?\s+(?:for\s+)?(.+)$/i);
       if (restMultiMatch) {
         items.push({ description: restMultiMatch[1].trim(), quantity: 1, unitPrice: firstAmount });
         items.push({ description: restMultiMatch[3].trim(), quantity: 1, unitPrice: parseFloat(restMultiMatch[2].replace(/,/g, "")) });

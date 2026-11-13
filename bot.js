@@ -377,19 +377,16 @@ async function downloadTelegramFile(ctx, fileId) {
 function mainMenu(context) {
   if (context === "business") {
     return Markup.keyboard([
-      ["💼 Business Balance", "🧾 New Invoice", "💸 Log Expense"],
-      ["📋 My Invoices",      "👥 Pay Team",    "📊 This Month"],
-      ["💰 Business Savings", "📈 Reports",     "📤 Send Payment"],
-      ["💵 Cash Out",         "🔄 Swap",        "⚙️ Settings"],
-      ["📖 Help",             "✨ What's New"],
+      ["💼 Business Balance", "📥 Add Money",    "💵 Cash Out / Withdraw"],
+      ["🧾 New Invoice",      "👥 Pay Team",     "📤 Send Payment"],
+      ["📋 My Invoices",      "📊 Cash Flow",    "🔁 Switch to Personal"],
+      ["⚙️ Settings & Help"],
     ]).resize();
   }
   return Markup.keyboard([
-    ["💰 My Money",    "📤 Send Money",  "🔄 Swap"],
-    ["📥 Add Money",   "📈 Save & Earn", "📋 History"],
-    ["🤖 Auto-Pay",   "🧾 Invoice",     "👥 Contacts"],
-    ["🛒 Shop Online", "🔁 Switch Account"],
-    ["⚙️ Settings",   "📖 Help"],
+    ["💰 My Money",    "📥 Add Money",    "💵 Cash Out / Withdraw"],
+    ["📤 Send Money",   "🧾 Invoice",      "📈 Save & Earn"],
+    ["📋 History",      "🔁 Switch Account","⚙️ Settings & Help"],
   ]).resize();
 }
 
@@ -517,23 +514,22 @@ bot.start(async (ctx) => {
 
   return ctx.reply(
     `${referralGreeting}` +
-    `👋 Welcome to Proxim.\n\n` +
-    `Save in dollars. Spend in Naira.\n` +
-    `Everything right here in Telegram.\n\n` +
-    `Earn points while you use Proxim:\n` +
-    `• 5 points for Cash Out\n` +
-    `• 4 points for sending money\n` +
-    `• 10 points for creating an invoice\n` +
-    `• 12 points for a business invoice\n` +
-    `• 5 points for saving to interest\n` +
-    `• 3 points for withdrawing savings\n` +
-    `• 20 points when a friend you refer earns their first point\n\n` +
-    `Your money stays yours — Proxim never holds it for you.\n\n` +
-    `How will you use Proxim?`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("👤 Personal",  "onboard_personal")],
-      [Markup.button.callback("💼 Business",  "onboard_business")],
-    ])
+    `👋 <b>Welcome to Proxim</b>\n` +
+    `──────────────────────────\n` +
+    `Your non-custodial neobank living right inside Telegram.\n\n` +
+    `💵 <b>Save in Digital Dollars ($)</b> — preserve value against inflation\n` +
+    `🇳🇬 <b>Spend or Cash Out in Naira</b> — direct to your bank in <35 seconds\n` +
+    `🌐 <b>Deposit & Withdraw Crypto</b> — NEAR, Solana, Base & 10+ chains\n` +
+    `🧾 <b>SME Invoicing & Bulk Payroll</b> — voice notes to invoices & ledgers\n\n` +
+    `🔒 <i>100% Non-Custodial: secured by your private PIN. You hold your own money.</i>\n\n` +
+    `How will you use Proxim today?`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("👤 Personal Account", "onboard_personal")],
+        [Markup.button.callback("💼 Business Account", "onboard_business")],
+      ])
+    }
   );
 });
 
@@ -552,13 +548,11 @@ bot.action("onboard_personal", async (ctx) => {
     referrerId,
   }, "personal");
   await ctx.reply(
-    `👤 <b>Personal account</b> — great.\n\n` +
-    `We'll set up your Account now.\n\n` +
-    `First, choose a 4-digit PIN. This is the only thing protecting your money — ` +
-    `write it down somewhere safe.\n\n` +
-    `⚠️ If you forget your PIN and haven't saved your security phrase, ` +
-    `your money cannot be recovered by anyone, including us.\n\n` +
-    `💬 <i>Send your 4-digit PIN into the chat (e.g. 1234):</i>`,
+    `👤 <b>Personal Account Setup</b>\n──────────────────────────\n` +
+    `Choose a secret <b>4-digit PIN</b> to secure your wallet.\n\n` +
+    `🔐 Your PIN encrypts your keys client-side with AES-256-GCM.\n` +
+    `Every payment and cash-out will require this PIN.\n\n` +
+    `💬 <i>Type your 4-digit PIN into the chat (e.g. <b>1234</b>):</i>`,
     { parse_mode: "HTML" }
   );
 });
@@ -688,9 +682,9 @@ bot.action("onboard_skip_logo", (ctx) => {
   }, "business");
   return ctx.reply(
     `✅ <b>Profile saved!</b>\n\n` +
-    `Now let's secure your wallet.\n\n` +
-    `Choose a 4-digit PIN — write it down somewhere safe. If you forget it and haven't saved your security phrase, your money cannot be recovered.\n\n` +
-    `💬 <i>Send your 4-digit PIN into the chat (e.g. 1234):</i>`,
+    `Now let's secure your Business wallet.\n\n` +
+    `Choose a secret <b>4-digit PIN</b> — it encrypts your business keys client-side with AES-256-GCM.\n\n` +
+    `💬 <i>Type your 4-digit PIN into the chat (e.g. <b>1234</b>):</i>`,
     { parse_mode: "HTML" }
   );
 });
@@ -862,7 +856,7 @@ async function showBalance(ctx) {
     buttonRows.push(
       [btnSuccess("📥 Add Money",         "action_receive"),
        btnPrimary("💳 Send Money",        "action_send_menu")],
-      [btnPrimary("🏦 Cash Out to Naira", "action_withdraw_menu"),
+      [btnPrimary("💵 Withdraw Funds",    "action_unified_withdraw"),
        btnSuccess("📈 Earn 15% Interest", "action_yields")],
       [btnPrimary("🌐 Deposit Crypto",    "action_gateway"),
        btnPrimary("🔀 Move Funds",        "action_move_funds")],
@@ -957,9 +951,10 @@ async function showBizBalance(ctx) {
        btnPrimary("💸 Log Expense", "action_log_expense")],
       [btnPrimary("📋 Invoices",    "action_list_biz_invoices"),
        btnPrimary("📊 Cash Flow",   "action_cash_flow")],
-      [btnSuccess("🌐 Deposit Crypto", "action_gateway"),
-       btnPrimary("⚡ Check for Deposits", "action_sweep_deposits")],
-      [btnPrimary("🔐 Export Keys", "action_export_keys")],
+      [btnSuccess("💵 Withdraw Funds", "action_unified_withdraw"),
+       btnPrimary("🌐 Deposit Crypto", "action_gateway")],
+      [btnPrimary("⚡ Check for Deposits", "action_sweep_deposits"),
+       btnPrimary("🔐 Export Keys", "action_export_keys")],
       ...accountToggle("business")
     );
 
@@ -2793,7 +2788,7 @@ async function promptForWithdrawBank(ctx, userId, amountUsdc, rail, context, ngn
   }
 
   const promptText =
-    `🇳🇬 <b>Cash Out to Naira ${rail === "arc" ? "⚡ Arc" : "☀️ Solana"}</b>\n──────────────────────────\n` +
+    `🇳🇬 <b>Cash Out to Naira</b>\n──────────────────────────\n` +
     nairaLine + `\n` +
     `Which bank account should we pay the Naira into?\n\n` +
     (bankButtons.length > 0 ? `👉 <b>Tap a saved bank below</b>, or send your account details:\n` : `👉 <b>Send your bank details into the chat:</b>\n`) +
@@ -3021,6 +3016,44 @@ async function handleCashOutNgn(ctx, userId, ngnAmount, context) {
 
   return promptForWithdrawBank(ctx, userId, amountUsdc, rail, context, Math.round(ngnAmount));
 }
+
+async function showUnifiedWithdrawMenu(ctx) {
+  const user = requireUser(ctx);
+  if (!user) return;
+  const context = user.active_context || getContext(ctx.from?.id);
+  const addr = getActiveWallet(user);
+  let balDisplay = "$0.00";
+  try {
+    const bal = await safeGetBalance(addr);
+    balDisplay = bal.display;
+  } catch (_) {}
+
+  return ctx.reply(
+    `💵 <b>Withdraw Funds — ${context === "business" ? "Business 💼" : "Personal 👤"}</b>\n` +
+    `──────────────────────────\n` +
+    `Available Balance: <b>${balDisplay}</b>\n\n` +
+    `Choose your withdrawal destination:\n\n` +
+    `🇳🇬 <b>Cash Out to Naira (Bank Account)</b>\n` +
+    `• Instant payout to 100+ commercial banks & mobile money operators\n` +
+    `• Direct NIBSS settlement into your bank account in <35 seconds\n\n` +
+    `🌐 <b>Withdraw Crypto (Multi-Chain)</b>\n` +
+    `• Transfer to any external wallet or exchange\n` +
+    `• Supports Solana, NEAR, Base, Arbitrum, Polygon, Ethereum, Bitcoin, Tron & more\n`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [btnSuccess("🇳🇬 Cash Out to Naira (Bank)", "action_withdraw_menu")],
+        [btnPrimary("🌐 Withdraw Crypto (10+ Chains)", "action_crosschain_withdraw")],
+        [btnDefault("🏠 Main Menu", "main_menu")],
+      ]),
+    }
+  );
+}
+
+bot.action("action_unified_withdraw", async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  return showUnifiedWithdrawMenu(ctx);
+});
 
 bot.action("action_withdraw_menu", async (ctx) => {
   ctx.answerCbQuery();
@@ -4882,24 +4915,28 @@ bot.hears("📈 Reports",          (ctx) => bot.handleUpdate({ ...ctx.update }))
 bot.hears("📤 Send Money",  (ctx) => ctx.reply(
   `📤 Send Money\n──────────────────────────\nWhere are you sending?`,
   Markup.inlineKeyboard([
-    [Markup.button.callback("💵 Cash Out to Naira",       "action_withdraw_menu")],
-    [Markup.button.callback("👛 Send to a Wallet Address", "action_sendout_menu")],
-    [Markup.button.callback("👥 Send to a Saved Contact",  "action_send_contact")],
-    [Markup.button.callback("🏠 Main Menu",               "main_menu")],
+    [Markup.button.callback("💵 Cash Out / Withdraw",       "action_unified_withdraw")],
+    [Markup.button.callback("👛 Send to a Wallet Address",  "action_sendout_menu")],
+    [Markup.button.callback("👥 Send to a Saved Contact",   "action_send_contact")],
+    [Markup.button.callback("🏠 Main Menu",                "main_menu")],
   ])
 ));
 
 bot.hears("📤 Send Payment", (ctx) => ctx.reply(
-  `📤 Business Payment`,
+  `📤 Business Payment\n──────────────────────────\nWhere would you like to disburse?`,
   Markup.inlineKeyboard([
-    [Markup.button.callback("👛 Send Dollars",            "action_sendout_menu")],
-    [Markup.button.callback("💵 Cash Out to Naira",       "action_withdraw_menu")],
-    [Markup.button.callback("👥 Saved Contacts",           "action_send_contact")],
-    [Markup.button.callback("🏠 Main Menu",               "main_menu")],
+    [Markup.button.callback("💵 Cash Out / Withdraw",       "action_unified_withdraw")],
+    [Markup.button.callback("👛 Send Dollars (Wallet)",     "action_sendout_menu")],
+    [Markup.button.callback("👥 Saved Contacts",            "action_send_contact")],
+    [Markup.button.callback("🏠 Main Menu",                "main_menu")],
   ])
 ));
 
-bot.hears("💵 Cash Out", async (ctx) => {
+bot.hears(["💵 Cash Out / Withdraw", "💵 Cash Out", "Withdraw", /^(?:💵\s*)?(?:cash\s*out\s*(?:\/\s*withdraw)?|withdraw(?:\s*funds)?)$/i], async (ctx) => {
+  return showUnifiedWithdrawMenu(ctx);
+});
+
+bot.hears(["🇳🇬 Cash Out to Naira", /cash\s*out\s*to\s*naira/i], async (ctx) => {
   // Show live NGN rate
   let rateInfo = "";
   try {
@@ -4918,6 +4955,47 @@ bot.hears("💵 Cash Out", async (ctx) => {
       ...buildWithdrawAmountKeyboard(),
     }
   );
+});
+
+bot.hears(["🌐 Withdraw Crypto", /withdraw\s*crypto/i], async (ctx) => {
+  convState.clearState(ctx.from.id);
+  return showCrossChainWithdrawChainSelection(ctx);
+});
+
+bot.hears(["🔁 Switch Account", "🔁 Switch to Business", "🔁 Switch to Personal", /switch\s*(?:account|to\s*business|to\s*personal)/i], async (ctx) => {
+  const currentContext = getContext(ctx.from?.id);
+  const user = requireUser(ctx);
+  if (!user) return;
+  if (currentContext === "business") {
+    db.setActiveContext(ctx.from.id, "personal");
+    const bal = await safeGetBalance(getActiveWallet(user));
+    return ctx.reply(
+      `👤 <b>Switched to Personal Account</b>\n──────────────────────────\nBalance: ${bal.display}\n\nWhat would you like to do?`,
+      { parse_mode: "HTML", ...mainMenu("personal") }
+    );
+  } else {
+    if (!user.business_deposit_address) {
+      return startBusinessOnboarding(ctx, { source: "switch" });
+    }
+    db.setActiveContext(ctx.from.id, "business");
+    const bal = await safeGetBalance(getActiveWallet(user));
+    return ctx.reply(
+      `💼 <b>Switched to Business Account</b>\n──────────────────────────\nBalance: ${bal.display}\n\nWhat would you like to do?`,
+      { parse_mode: "HTML", ...mainMenu("business") }
+    );
+  }
+});
+
+bot.hears(["⚙️ Settings & Help", "⚙️ Settings", "📖 Help"], (ctx) => {
+  convState.clearState(ctx.from.id);
+  return showSettings(ctx);
+});
+
+bot.hears(["📊 Cash Flow", "📊 This Month"], (ctx) => {
+  return bot.handleUpdate({
+    ...ctx.update,
+    callback_query: { id: "syn_cash_flow", from: ctx.from, message: ctx.message, data: "action_cash_flow" }
+  });
 });
 
 bot.hears("🔄 Swap", (ctx) => ctx.reply(
@@ -5911,19 +5989,20 @@ bot.on("text", async (ctx) => {
       db.setActiveContext(userId, isBusiness ? "business" : "personal");
 
       // Show only relevant keys
-      let exportText = "\u2705 You're all set!\n\n";
+      let exportText = `🎉 <b>You're all set!</b>\n──────────────────────────\n`;
       if (!existingUser) {
-        exportText += `Personal account number:\n${state.data.address}\n`;
-        exportText += `Personal security phrase:\n${state.data.privateKey}\n\n`;
+        exportText += `👤 <b>Personal Account Number:</b>\n<code>${state.data.address}</code>\n\n`;
+        exportText += `🔐 <b>Private Key:</b>\n<code>${state.data.privateKey}</code>\n\n`;
       }
       if (isBusiness && state.data.businessAddress) {
-        exportText += `Business account number:\n${state.data.businessAddress}\n`;
-        exportText += `Business security phrase:\n${state.data.businessPrivateKey}\n\n`;
+        exportText += `💼 <b>Business Account Number:</b>\n<code>${state.data.businessAddress}</code>\n\n`;
+        exportText += `🔐 <b>Business Private Key:</b>\n<code>${state.data.businessPrivateKey}</code>\n\n`;
       }
-      exportText += "\u26a0\ufe0f Save your security phrase NOW \u2014 use a password manager or write it down. Not a screenshot.\n";
-      exportText += "This message deletes in 60 seconds.";
+      exportText += `💡 <b>Security Note:</b> Your keys are safely encrypted with your 4-digit PIN on your device.\n`;
+      exportText += `You can view your balances or export keys anytime in <b>Settings</b>.\n\n`;
+      exportText += `<i>For your safety, this key message will be automatically cleared in 60 seconds.</i>`;
 
-      const exportMsg = await ctx.reply(exportText);
+      const exportMsg = await ctx.reply(exportText, { parse_mode: "HTML" });
       scheduleDelete(ctx, exportMsg.message_id, 60000);
 
       const context = isBusiness ? "business" : "personal";

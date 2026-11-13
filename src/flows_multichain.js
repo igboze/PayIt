@@ -132,7 +132,7 @@ function registerNearDepositActions(bot) {
       KNOWN_DEPOSIT_TX: "✅ Deposit seen — confirming…",
       INCOMPLETE_DEPOSIT: "⚠️ Deposit amount didn't match exactly — refunding the difference…",
       PROCESSING: "🌉 Converting to USDC and bridging…",
-      SUCCESS: "✅ Bridged to Base — sweeping into your Arc balance…",
+      SUCCESS: "✅ Deposit received — crediting your Proxim balance…",
       REFUNDED: "↩️ Refunded to your NEAR refund address.",
       FAILED: "❌ Bridge failed — contact support.",
       expired: "⏰ Deposit window expired.",
@@ -772,7 +772,7 @@ async function showCrossChainWithdrawChainSelection(ctx) {
 
   return ctx.reply(
     `📤 <b>Withdraw to External Chain / Wallet</b>\n──────────────────────────\n` +
-    `Withdraw your Arc balance to <b>any chain</b> with zero bridge hassle.\n\n` +
+    `Withdraw your balance to <b>any blockchain</b> with zero bridge hassle.\n\n` +
     `• <b>Solana & Major Networks:</b> Instant Direct Transfer (100% 1:1 USDC, 0 slippage)\n` +
     `• <b>Bitcoin, Tron & NEAR:</b> NEAR Intent routing (auto-swapped & delivered)\n\n` +
     `Select destination chain:`,

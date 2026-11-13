@@ -50,6 +50,14 @@ test("parses EURC currency: Bill Alice 150 EURC for logo design", async () => {
   assert.equal(result.items[0].unitPrice, 150);
 });
 
+test("parses NGN currency: Invoice Jerry ₦50,000 for brand identity", async () => {
+  const result = await parseSmartInvoiceIntent("Invoice Jerry ₦50,000 for brand identity");
+  assert.equal(result.clientName, "Jerry");
+  assert.equal(result.currency, "NGN");
+  assert.equal(result.items[0].unitPrice, 50000);
+  assert.equal(result.items[0].description, "brand identity");
+});
+
 test("returns error for unparseable input missing amount and client", async () => {
   const result = await parseSmartInvoiceIntent("just a random greeting");
   assert.ok(result.error);

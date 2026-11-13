@@ -39,9 +39,9 @@ With over 900 million Telegram users, Proxim eliminates the friction of traditio
 ### The Solution
 * **Telegram Native:** Instant onboarding with a 4-digit PIN, securing client-side non-custodial wallets via AES-256-GCM.
 * **NEAR Intents Engine:** Clients pay in native NEAR or any NEP-141 token (`wNEAR`, `USDC`, `USDT`). Decentralized 1Click solvers route and fulfill the swap into digital dollar liquidity behind the scenes.
-* **Direct Real-World Bank Cash-Out:** Live NIBSS payment rails connect directly to 100+ commercial banks and mobile money operators, depositing cash into merchant accounts in under 35 seconds.
+* **Dual Withdrawal Rails (Naira Fiat & Multi-Chain Crypto):** Flexible off-ramping for individuals and businesses — cash out to Naira with direct payouts to 100+ commercial banks via NIBSS rails in under 35 seconds, or withdraw crypto across 10+ blockchains (NEAR, Solana, Base, Arbitrum, Polygon, Ethereum, Bitcoin, and Tron).
 * **Dual-Account Architecture:** One-tap toggle between personal spending and corporate SME business operations with independent deposit addresses, tax ledgers, and revenue reporting.
-* **Multimodal Business Suite:** AI voice note & text invoicing (auto-generating PDF invoices with QR codes), batch multi-rail payroll, and auto-earn vault yield.
+* **Multimodal Business Suite:** AI voice note & text invoicing (auto-generating PDF invoices with QR codes in USD and NGN), batch multi-rail payroll, and auto-earn vault yield.
 
 ---
 
