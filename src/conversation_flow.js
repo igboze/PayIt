@@ -8,14 +8,17 @@ function isGeneralChat(text) {
 }
 
 function isLikelyNewIntent(text) {
-  const lower = String(text || "").trim().toLowerCase();
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+  // Strip leading emojis, symbols, variation selectors before first letter/digit
+  const lower = raw.replace(/^[^\p{L}\p{N}]+/u, "").toLowerCase();
   if (!lower) return false;
-  if (/^\//.test(lower)) return true;
-  if (/^help|^balance|^history|^invoice|^contacts|^settings|^deposit|^bank|^send|^pay|^cash out|^withdraw/.test(lower)) {
+  if (/^\//.test(raw)) return true;
+  if (/^(?:help|balance|history|invoice|invoices|contacts|settings|deposit|bank|send|pay|cash\s*out|withdraw|add\s*money|my\s*money|business|team|cash\s*flow|save|switch)/.test(lower)) {
     return true;
   }
-  if (/0x[a-fA-F0-9]{40}/.test(lower)) return true;
-  if (/\b(send|pay|invoice|cash out|withdraw|schedule|autopay|auto-pay|deposit|balance|history)\b/.test(lower)) return true;
+  if (/0x[a-fA-F0-9]{40}/.test(raw)) return true;
+  if (/\b(send|pay|invoice|cash\s*out|withdraw|schedule|autopay|auto-pay|deposit|balance|history|savings|switch)\b/.test(lower)) return true;
   return false;
 }
 

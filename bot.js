@@ -377,16 +377,15 @@ async function downloadTelegramFile(ctx, fileId) {
 function mainMenu(context) {
   if (context === "business") {
     return Markup.keyboard([
-      ["💼 Business Balance", "📥 Add Money",    "💵 Cash Out / Withdraw"],
-      ["🧾 New Invoice",      "👥 Pay Team",     "📤 Send Payment"],
-      ["📋 My Invoices",      "📊 Cash Flow",    "🔁 Switch to Personal"],
-      ["⚙️ Settings & Help"],
+      ["💼 Business Balance", "📥 Add Money",    "📤 Send Money"],
+      ["🧾 New Invoice",      "👥 Pay Team",     "📋 My Invoices"],
+      ["📊 Cash Flow",        "🔁 Switch to Personal", "⚙️ Settings & Help"],
     ]).resize();
   }
   return Markup.keyboard([
-    ["💰 My Money",    "📥 Add Money",    "💵 Cash Out / Withdraw"],
-    ["📤 Send Money",   "🧾 Invoice",      "📈 Save & Earn"],
-    ["📋 History",      "🔁 Switch Account","⚙️ Settings & Help"],
+    ["💰 My Money",    "📥 Add Money",    "📤 Send Money"],
+    ["🧾 Invoice",      "📈 Save & Earn",  "📋 History"],
+    ["🔁 Switch Account","⚙️ Settings & Help"],
   ]).resize();
 }
 
@@ -855,13 +854,11 @@ async function showBalance(ctx) {
     }
     buttonRows.push(
       [btnSuccess("📥 Add Money",         "action_receive"),
-       btnPrimary("💳 Send Money",        "action_send_menu")],
-      [btnPrimary("💵 Withdraw Funds",    "action_unified_withdraw"),
-       btnSuccess("📈 Earn 15% Interest", "action_yields")],
-      [btnPrimary("🌐 Deposit Crypto",    "action_gateway"),
-       btnPrimary("🔀 Move Funds",        "action_move_funds")],
-      [btnPrimary("⚡ Check for Deposits","action_sweep_deposits"),
+       btnPrimary("📤 Send Money",        "action_send_menu")],
+      [btnSuccess("📈 Earn 15% Interest", "action_yields"),
        btnDefault("📜 Activity History",  "action_history")],
+      [btnPrimary("⚡ Check for Deposits","action_sweep_deposits"),
+       btnPrimary("🔀 Move Funds",        "action_move_funds")],
       [btnPrimary("🔐 Export Key",        "action_export_keys"),
        btnDefault("🛠️ Developer API",     "action_developer_menu")]
     );
@@ -947,14 +944,15 @@ async function showBizBalance(ctx) {
       ]);
     }
     buttonRows.push(
-      [btnSuccess("🧾 New Invoice", "action_new_biz_invoice"),
-       btnPrimary("💸 Log Expense", "action_log_expense")],
-      [btnPrimary("📋 Invoices",    "action_list_biz_invoices"),
-       btnPrimary("📊 Cash Flow",   "action_cash_flow")],
-      [btnSuccess("💵 Withdraw Funds", "action_unified_withdraw"),
-       btnPrimary("🌐 Deposit Crypto", "action_gateway")],
-      [btnPrimary("⚡ Check for Deposits", "action_sweep_deposits"),
-       btnPrimary("🔐 Export Keys", "action_export_keys")],
+      [btnSuccess("📥 Add Money",     "action_receive"),
+       btnPrimary("📤 Send Money",    "action_send_menu")],
+      [btnSuccess("🧾 New Invoice",   "action_new_biz_invoice"),
+       btnPrimary("👥 Pay Team",      "action_pay_team")],
+      [btnPrimary("📋 Invoices",      "action_list_biz_invoices"),
+       btnPrimary("📊 Cash Flow",     "action_cash_flow")],
+      [btnPrimary("💸 Log Expense",   "action_log_expense"),
+       btnPrimary("⚡ Check for Deposits", "action_sweep_deposits")],
+      [btnPrimary("🔐 Export Keys",   "action_export_keys")],
       ...accountToggle("business")
     );
 
@@ -2381,25 +2379,56 @@ bot.action(/^gateway_xfer_chain_(\d+)$/, async (ctx) => {
   );
 });
 
-// ─── Send menu ────────────────────────────────────────────────────────────────
+// ─── Send & Withdraw unified menu ─────────────────────────────────────────────
 
-bot.action("action_send_menu", (ctx) => {
-  ctx.answerCbQuery();
+async function showSendMoneyMenu(ctx) {
   const user = requireUser(ctx);
   if (!user) return;
-  return ctx.reply(
-    `📤 <b>Send & Withdraw</b>\n──────────────────────────\nWhere are you sending to?`,
-    {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard([
-        [btnPrimary("💵 Cash Out to Naira (Bank)", "action_withdraw_menu")],
-        [btnPrimary("🌐 Withdraw to External Chain (Solana, Base, BTC…)", "action_crosschain_withdraw")],
-        [btnPrimary("👛 Send on Arc (0x Address)", "action_sendout_menu")],
-        [btnPrimary("👥 Send to a Saved Contact", "action_send_contact")],
-        [btnDefault("🏠 Main Menu", "main_menu")],
-      ]),
-    }
-  );
+  convState.clearState(ctx.from.id);
+  const context = user.active_context || getContext(ctx.from?.id);
+  const addr = getActiveWallet(user);
+  let balDisplay = "$0.00";
+  try {
+    const bal = await safeGetBalance(addr);
+    balDisplay = bal.display;
+  } catch (_) {}
+
+  const keyboard = Markup.inlineKeyboard([
+    [btnSuccess("🇳🇬 Bank Transfer (Cash Out to Naira)", "action_withdraw_menu")],
+    [btnPrimary("🌐 Withdraw Crypto (10+ Chains)",        "action_crosschain_withdraw")],
+    [btnPrimary("👛 Send to Wallet Address",              "action_sendout_menu")],
+    [btnPrimary("👥 Send to Saved Contact",               "action_send_contact")],
+    [btnDefault("🏠 Main Menu",                           "main_menu")],
+  ]);
+
+  const msgText =
+    `📤 <b>Send & Withdraw — ${context === "business" ? "Business 💼" : "Personal 👤"}</b>\n` +
+    `──────────────────────────\n` +
+    `Available Balance: <b>${balDisplay}</b>\n\n` +
+    `Where would you like to send or withdraw funds?\n\n` +
+    `🇳🇬 <b>Bank Transfer (Cash Out to Naira)</b>\n` +
+    `• Instant payout to 100+ Nigerian commercial banks & neobanks\n` +
+    `• Direct NIBSS settlement into bank accounts in <35 seconds\n\n` +
+    `🌐 <b>Withdraw Crypto (Multi-Chain)</b>\n` +
+    `• Supports Solana, NEAR, Base, Arbitrum, Polygon, Ethereum, Bitcoin, Tron & more\n` +
+    `• 1:1 USDC & cross-chain intent settlement with 0 slippage\n\n` +
+    `👛 <b>Send to Wallet Address</b>\n` +
+    `• Send USDC directly to any 0x wallet address on Arc\n\n` +
+    `👥 <b>Send to Saved Contact</b>\n` +
+    `• Instant transfer to saved contacts or team members\n`;
+
+  if (ctx.callbackQuery) {
+    try {
+      await ctx.editMessageText(msgText, { parse_mode: "HTML", ...keyboard });
+      return;
+    } catch (_) {}
+  }
+  return ctx.reply(msgText, { parse_mode: "HTML", ...keyboard });
+}
+
+bot.action("action_send_menu", async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  return showSendMoneyMenu(ctx);
 });
 
 bot.action("action_send_contact", async (ctx) => {
@@ -3018,41 +3047,17 @@ async function handleCashOutNgn(ctx, userId, ngnAmount, context) {
 }
 
 async function showUnifiedWithdrawMenu(ctx) {
-  const user = requireUser(ctx);
-  if (!user) return;
-  const context = user.active_context || getContext(ctx.from?.id);
-  const addr = getActiveWallet(user);
-  let balDisplay = "$0.00";
-  try {
-    const bal = await safeGetBalance(addr);
-    balDisplay = bal.display;
-  } catch (_) {}
-
-  return ctx.reply(
-    `💵 <b>Withdraw Funds — ${context === "business" ? "Business 💼" : "Personal 👤"}</b>\n` +
-    `──────────────────────────\n` +
-    `Available Balance: <b>${balDisplay}</b>\n\n` +
-    `Choose your withdrawal destination:\n\n` +
-    `🇳🇬 <b>Cash Out to Naira (Bank Account)</b>\n` +
-    `• Instant payout to 100+ commercial banks & mobile money operators\n` +
-    `• Direct NIBSS settlement into your bank account in <35 seconds\n\n` +
-    `🌐 <b>Withdraw Crypto (Multi-Chain)</b>\n` +
-    `• Transfer to any external wallet or exchange\n` +
-    `• Supports Solana, NEAR, Base, Arbitrum, Polygon, Ethereum, Bitcoin, Tron & more\n`,
-    {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard([
-        [btnSuccess("🇳🇬 Cash Out to Naira (Bank)", "action_withdraw_menu")],
-        [btnPrimary("🌐 Withdraw Crypto (10+ Chains)", "action_crosschain_withdraw")],
-        [btnDefault("🏠 Main Menu", "main_menu")],
-      ]),
-    }
-  );
+  return showSendMoneyMenu(ctx);
 }
 
 bot.action("action_unified_withdraw", async (ctx) => {
   ctx.answerCbQuery().catch(() => {});
-  return showUnifiedWithdrawMenu(ctx);
+  return showSendMoneyMenu(ctx);
+});
+
+bot.action("action_pay_team", async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  return showPayTeamMenu(ctx);
 });
 
 bot.action("action_withdraw_menu", async (ctx) => {
@@ -4912,28 +4917,12 @@ bot.hears("💼 Biz Balance",      (ctx) => showBizBalance(ctx));
 bot.hears("📊 This Month",       (ctx) => bot.handleUpdate({ ...ctx.update }));
 bot.hears("📈 Reports",          (ctx) => bot.handleUpdate({ ...ctx.update }));
 
-bot.hears("📤 Send Money",  (ctx) => ctx.reply(
-  `📤 Send Money\n──────────────────────────\nWhere are you sending?`,
-  Markup.inlineKeyboard([
-    [Markup.button.callback("💵 Cash Out / Withdraw",       "action_unified_withdraw")],
-    [Markup.button.callback("👛 Send to a Wallet Address",  "action_sendout_menu")],
-    [Markup.button.callback("👥 Send to a Saved Contact",   "action_send_contact")],
-    [Markup.button.callback("🏠 Main Menu",                "main_menu")],
-  ])
-));
-
-bot.hears("📤 Send Payment", (ctx) => ctx.reply(
-  `📤 Business Payment\n──────────────────────────\nWhere would you like to disburse?`,
-  Markup.inlineKeyboard([
-    [Markup.button.callback("💵 Cash Out / Withdraw",       "action_unified_withdraw")],
-    [Markup.button.callback("👛 Send Dollars (Wallet)",     "action_sendout_menu")],
-    [Markup.button.callback("👥 Saved Contacts",            "action_send_contact")],
-    [Markup.button.callback("🏠 Main Menu",                "main_menu")],
-  ])
-));
+bot.hears(["📤 Send Money", "📤 Send Payment", /^(?:📤\s*)?send(?:\s*(?:money|payment))?$/i], async (ctx) => {
+  return showSendMoneyMenu(ctx);
+});
 
 bot.hears(["💵 Cash Out / Withdraw", "💵 Cash Out", "Withdraw", /^(?:💵\s*)?(?:cash\s*out\s*(?:\/\s*withdraw)?|withdraw(?:\s*funds)?)$/i], async (ctx) => {
-  return showUnifiedWithdrawMenu(ctx);
+  return showSendMoneyMenu(ctx);
 });
 
 bot.hears(["🇳🇬 Cash Out to Naira", /cash\s*out\s*to\s*naira/i], async (ctx) => {
@@ -4959,7 +4948,7 @@ bot.hears(["🇳🇬 Cash Out to Naira", /cash\s*out\s*to\s*naira/i], async (ctx
 
 bot.hears(["🌐 Withdraw Crypto", /withdraw\s*crypto/i], async (ctx) => {
   convState.clearState(ctx.from.id);
-  return showCrossChainWithdrawChainSelection(ctx);
+  return flowsMultichain.showCrossChainWithdrawChainSelection(ctx);
 });
 
 bot.hears(["🔁 Switch Account", "🔁 Switch to Business", "🔁 Switch to Personal", /switch\s*(?:account|to\s*business|to\s*personal)/i], async (ctx) => {
@@ -5002,9 +4991,10 @@ bot.hears("🔄 Swap", (ctx) => ctx.reply(
   `🔄 Swap between currencies — coming very soon.`, backToMenu
 ));
 
-bot.hears("🧾 Invoice", (ctx) => {
+function promptForPersonalInvoice(ctx) {
   const context = getContext(ctx.from?.id);
   if (context === "business") return showBizInvoiceMenu(ctx);
+  convState.clearState(ctx.from.id);
   convState.setState(ctx.from.id, "await_invoice_instruction", {}, context);
   return ctx.reply(
     `🧾 <b>Create an Invoice</b>\n──────────────────────────\n` +
@@ -5019,6 +5009,25 @@ bot.hears("🧾 Invoice", (ctx) => {
       ])
     }
   );
+}
+
+function showPayTeamMenu(ctx) {
+  convState.clearState(ctx.from.id);
+  convState.setState(ctx.from.id, "await_payroll_instruction", {}, "business");
+  return ctx.reply(
+    `👥 <b>Pay Your Team</b>\n──────────────────────────\n` +
+    `👉 <b>Send your payroll instruction into the chat or upload a CSV file:</b>\n\n` +
+    `💬 <i>Example: <b>Pay Emeka $100 and Amara $80 for this week</b></i>\n` +
+    `💬 <i>Or: <b>Pay 0xABC...123 $150 salary</b></i>`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+    }
+  );
+}
+
+bot.hears("🧾 Invoice", (ctx) => {
+  return promptForPersonalInvoice(ctx);
 });
 
 bot.hears("🧾 New Invoice", (ctx) => showBizInvoiceMenu(ctx));
@@ -5087,19 +5096,7 @@ bot.hears("💸 Log Expense", (ctx) => {
   );
 });
 
-bot.hears("👥 Pay Team", (ctx) => {
-  convState.setState(ctx.from.id, "await_payroll_instruction", {}, "business");
-  return ctx.reply(
-    `👥 <b>Pay Your Team</b>\n──────────────────────────\n` +
-    `👉 <b>Send your payroll instruction into the chat or upload a CSV file:</b>\n\n` +
-    `💬 <i>Example: <b>Pay Emeka $100 and Amara $80 for this week</b></i>\n` +
-    `💬 <i>Or: <b>Pay 0xABC...123 $150 salary</b></i>`,
-    {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
-    }
-  );
-});
+bot.hears("👥 Pay Team", (ctx) => showPayTeamMenu(ctx));
 
 bot.hears("💰 Business Savings", async (ctx) => {
   const user   = requireUser(ctx);
@@ -5752,7 +5749,89 @@ bot.on("text", async (ctx) => {
   const text  = ctx.message.text.trim();
   const userId = ctx.from.id;
 
-  if (isSettingsRequest(text)) {
+  // ── Fixed Menu Button & Navigation Interceptor ─────────────────────────────
+  // If the user clicks any fixed keyboard button or types a top-level menu action,
+  // ALWAYS clear any conversation state immediately and route directly to the action.
+  const cleanNav = text.replace(/^[^\p{L}\p{N}]+/u, "").trim().toLowerCase();
+
+  if (/^(?:send(?:\s*(?:money|payment))?|cash\s*out(?:\s*\/\s*withdraw)?|withdraw(?:\s*funds)?)$/i.test(cleanNav)) {
+    convState.clearState(userId);
+    return showSendMoneyMenu(ctx);
+  }
+
+  if (/^(?:add\s*money|deposit)$/i.test(cleanNav)) {
+    convState.clearState(userId);
+    return showReceive(ctx);
+  }
+
+  if (/^(?:my\s*(?:money|balance)|business\s*balance|biz\s*balance|balance)$/i.test(cleanNav)) {
+    convState.clearState(userId);
+    return getContext(userId) === "business" ? showBizBalance(ctx) : showBalance(ctx);
+  }
+
+  if (/^(?:new\s*invoice|invoice|invoices|my\s*invoices)$/i.test(cleanNav)) {
+    convState.clearState(userId);
+    if (getContext(userId) === "business") {
+      if (/my\s*invoices/i.test(cleanNav)) {
+        return bot.handleUpdate({
+          update_id: ctx.update.update_id,
+          callback_query: { id: "0", from: ctx.from, chat_instance: "0", data: "action_list_biz_invoices", message: ctx.message }
+        });
+      }
+      return showBizInvoiceMenu(ctx);
+    }
+    return promptForPersonalInvoice(ctx);
+  }
+
+  if (/^(?:save\s*&\s*earn|savings|business\s*savings)$/i.test(cleanNav)) {
+    convState.clearState(userId);
+    return showYields(ctx);
+  }
+
+  if (/^(?:pay\s*team)$/i.test(cleanNav)) {
+    convState.clearState(userId);
+    return showPayTeamMenu(ctx);
+  }
+
+  if (/^(?:history)$/i.test(cleanNav)) {
+    convState.clearState(userId);
+    return showHistory(ctx);
+  }
+
+  if (/^(?:cash\s*flow|this\s*month|reports)$/i.test(cleanNav)) {
+    convState.clearState(userId);
+    return bot.handleUpdate({
+      ...ctx.update,
+      callback_query: { id: "syn_cash_flow", from: ctx.from, message: ctx.message, data: "action_cash_flow" }
+    });
+  }
+
+  if (/^(?:switch\s*(?:account|to\s*business|to\s*personal))$/i.test(cleanNav)) {
+    convState.clearState(userId);
+    const currentContext = getContext(userId);
+    const user = requireUser(ctx);
+    if (!user) return;
+    if (currentContext === "business") {
+      db.setActiveContext(userId, "personal");
+      const bal = await safeGetBalance(getActiveWallet(user));
+      return ctx.reply(
+        `👤 <b>Switched to Personal Account</b>\n──────────────────────────\nBalance: ${bal.display}\n\nWhat would you like to do?`,
+        { parse_mode: "HTML", ...mainMenu("personal") }
+      );
+    } else {
+      if (!user.business_deposit_address) {
+        return startBusinessOnboarding(ctx, { source: "switch" });
+      }
+      db.setActiveContext(userId, "business");
+      const bal = await safeGetBalance(getActiveWallet(user));
+      return ctx.reply(
+        `💼 <b>Switched to Business Account</b>\n──────────────────────────\nBalance: ${bal.display}\n\nWhat would you like to do?`,
+        { parse_mode: "HTML", ...mainMenu("business") }
+      );
+    }
+  }
+
+  if (isSettingsRequest(text) || /^(?:settings(?:\s*&\s*help)?|help)$/i.test(cleanNav)) {
     convState.clearState(userId);
     return showSettings(ctx);
   }

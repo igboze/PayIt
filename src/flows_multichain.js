@@ -1512,6 +1512,7 @@ module.exports = {
   handlesState,
   showNearTokenSelection,
   showAllNearTokens,
+  showCrossChainWithdrawChainSelection,
   validateAddressForChain,
   CCW_CHAINS,
 };
