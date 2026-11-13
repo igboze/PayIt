@@ -34,7 +34,7 @@ test("In-Chat Balance Cards: Symmetrical Add and Send buttons", () => {
   assert.ok(botCode.includes('btnPrimary("👥 Pay Team",      "action_pay_team")'), "showBizBalance must have 👥 Pay Team button");
 });
 
-test("Unified Send & Withdraw Menu: Includes all rails", () => {
+test("Unified Send & Withdraw Menu: Includes all rails and safe HTML", () => {
   const botCode = fs.readFileSync(path.join(__dirname, "../bot.js"), "utf8");
 
   assert.ok(botCode.includes('async function showSendMoneyMenu(ctx)'), "showSendMoneyMenu must be defined");
@@ -43,12 +43,22 @@ test("Unified Send & Withdraw Menu: Includes all rails", () => {
   assert.ok(botCode.includes('"action_sendout_menu"'), "Must include 0x wallet transfer");
   assert.ok(botCode.includes('"action_send_contact"'), "Must include saved contacts transfer");
 
+  // Verify no unescaped '<35' or invalid HTML tags inside showSendMoneyMenu
+  const sendMoneyMatch = botCode.match(/async function showSendMoneyMenu\(ctx\) \{([\s\S]*?)\n\}/);
+  assert.ok(sendMoneyMatch, "showSendMoneyMenu should exist");
+  assert.ok(!sendMoneyMatch[1].includes('<35'), "Must not contain unescaped '<35' tag in HTML mode");
+  assert.ok(sendMoneyMatch[1].includes('safeReplyHtml'), "Must use safeReplyHtml fallback");
+
   // action_unified_withdraw and action_send_menu both route to showSendMoneyMenu
   assert.ok(botCode.includes('bot.action("action_send_menu", async (ctx) => {'), "action_send_menu must be wired");
   assert.ok(botCode.includes('bot.action("action_unified_withdraw", async (ctx) => {'), "action_unified_withdraw must be wired");
+
+  // Slash commands
+  assert.ok(botCode.includes('bot.command(["send", "withdraw", "cashout"]'), "send/withdraw slash commands must be wired");
+  assert.ok(botCode.includes('bot.command("switch"'), "switch command must be wired");
 });
 
-test("Fixed Button Responsiveness & State Clearing", () => {
+test("Fixed Button Responsiveness & State Clearing for all 8 buttons", () => {
   const botCode = fs.readFileSync(path.join(__dirname, "../bot.js"), "utf8");
 
   // Navigation interceptor before state
@@ -58,6 +68,24 @@ test("Fixed Button Responsiveness & State Clearing", () => {
 
   // flowsMultichain export
   assert.equal(typeof flowsMultichain.showCrossChainWithdrawChainSelection, "function", "showCrossChainWithdrawChainSelection must be exported");
+
+  // Test the 8 buttons from the user UI screenshot
+  const eightButtons = [
+    "💰 My Money",
+    "📥 Add Money",
+    "📤 Send Money",
+    "🧾 Invoice",
+    "📈 Save & Earn",
+    "📋 History",
+    "🔁 Switch Account",
+    "⚙️ Settings & Help",
+  ];
+
+  for (const btn of eightButtons) {
+    const cleanNav = btn.replace(/^[^\p{L}\p{N}]+/u, "").trim().toLowerCase();
+    assert.ok(cleanNav.length > 0, `Button ${btn} must clean to non-empty string`);
+    assert.equal(isLikelyNewIntent(btn), true, `isLikelyNewIntent must recognize ${btn}`);
+  }
 });
 
 test("Conversation Flow: isLikelyNewIntent recognizes emoji-prefixed and plain navigation phrases", () => {

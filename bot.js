@@ -517,7 +517,7 @@ bot.start(async (ctx) => {
     `──────────────────────────\n` +
     `Your non-custodial neobank living right inside Telegram.\n\n` +
     `💵 <b>Save in Digital Dollars ($)</b> — preserve value against inflation\n` +
-    `🇳🇬 <b>Spend or Cash Out in Naira</b> — direct to your bank in <35 seconds\n` +
+    `🇳🇬 <b>Spend or Cash Out in Naira</b> — direct to your bank in under 35 seconds\n` +
     `🌐 <b>Deposit & Withdraw Crypto</b> — NEAR, Solana, Base & 10+ chains\n` +
     `🧾 <b>SME Invoicing & Bulk Payroll</b> — voice notes to invoices & ledgers\n\n` +
     `🔒 <i>100% Non-Custodial: secured by your private PIN. You hold your own money.</i>\n\n` +
@@ -2408,7 +2408,7 @@ async function showSendMoneyMenu(ctx) {
     `Where would you like to send or withdraw funds?\n\n` +
     `🇳🇬 <b>Bank Transfer (Cash Out to Naira)</b>\n` +
     `• Instant payout to 100+ Nigerian commercial banks & neobanks\n` +
-    `• Direct NIBSS settlement into bank accounts in <35 seconds\n\n` +
+    `• Direct NIBSS settlement into bank accounts in under 35 seconds\n\n` +
     `🌐 <b>Withdraw Crypto (Multi-Chain)</b>\n` +
     `• Supports Solana, NEAR, Base, Arbitrum, Polygon, Ethereum, Bitcoin, Tron & more\n` +
     `• 1:1 USDC & cross-chain intent settlement with 0 slippage\n\n` +
@@ -2423,7 +2423,7 @@ async function showSendMoneyMenu(ctx) {
       return;
     } catch (_) {}
   }
-  return ctx.reply(msgText, { parse_mode: "HTML", ...keyboard });
+  return safeReplyHtml(ctx, msgText, keyboard);
 }
 
 bot.action("action_send_menu", async (ctx) => {
@@ -4951,7 +4951,8 @@ bot.hears(["🌐 Withdraw Crypto", /withdraw\s*crypto/i], async (ctx) => {
   return flowsMultichain.showCrossChainWithdrawChainSelection(ctx);
 });
 
-bot.hears(["🔁 Switch Account", "🔁 Switch to Business", "🔁 Switch to Personal", /switch\s*(?:account|to\s*business|to\s*personal)/i], async (ctx) => {
+async function handleSwitchAccount(ctx) {
+  convState.clearState(ctx.from?.id);
   const currentContext = getContext(ctx.from?.id);
   const user = requireUser(ctx);
   if (!user) return;
@@ -4973,6 +4974,10 @@ bot.hears(["🔁 Switch Account", "🔁 Switch to Business", "🔁 Switch to Per
       { parse_mode: "HTML", ...mainMenu("business") }
     );
   }
+}
+
+bot.hears(["🔁 Switch Account", "🔁 Switch to Business", "🔁 Switch to Personal", /switch\s*(?:account|to\s*business|to\s*personal)/i], async (ctx) => {
+  return handleSwitchAccount(ctx);
 });
 
 bot.hears(["⚙️ Settings & Help", "⚙️ Settings", "📖 Help"], (ctx) => {
@@ -5210,6 +5215,8 @@ bot.command("yields",   showYields);
 bot.command("deposit",  showReceive);
 bot.command("contacts", showContacts);
 bot.command("autopay",  showAutoPay);
+bot.command(["send", "withdraw", "cashout"], (ctx) => showSendMoneyMenu(ctx));
+bot.command("switch",   (ctx) => handleSwitchAccount(ctx));
 bot.command("invoice",  (ctx) => {
   const context = getContext(ctx.from?.id);
   if (context === "business") return showBizInvoiceMenu(ctx);
@@ -5807,28 +5814,7 @@ bot.on("text", async (ctx) => {
   }
 
   if (/^(?:switch\s*(?:account|to\s*business|to\s*personal))$/i.test(cleanNav)) {
-    convState.clearState(userId);
-    const currentContext = getContext(userId);
-    const user = requireUser(ctx);
-    if (!user) return;
-    if (currentContext === "business") {
-      db.setActiveContext(userId, "personal");
-      const bal = await safeGetBalance(getActiveWallet(user));
-      return ctx.reply(
-        `👤 <b>Switched to Personal Account</b>\n──────────────────────────\nBalance: ${bal.display}\n\nWhat would you like to do?`,
-        { parse_mode: "HTML", ...mainMenu("personal") }
-      );
-    } else {
-      if (!user.business_deposit_address) {
-        return startBusinessOnboarding(ctx, { source: "switch" });
-      }
-      db.setActiveContext(userId, "business");
-      const bal = await safeGetBalance(getActiveWallet(user));
-      return ctx.reply(
-        `💼 <b>Switched to Business Account</b>\n──────────────────────────\nBalance: ${bal.display}\n\nWhat would you like to do?`,
-        { parse_mode: "HTML", ...mainMenu("business") }
-      );
-    }
+    return handleSwitchAccount(ctx);
   }
 
   if (isSettingsRequest(text) || /^(?:settings(?:\s*&\s*help)?|help)$/i.test(cleanNav)) {
