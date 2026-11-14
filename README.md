@@ -1,7 +1,7 @@
 # Proxim — Real-World Money on Telegram via NEAR Intents
 
 > **Built for NEAR HACKATHON 2026**  
-> **Tracks:** Real-World Money (`realworld`) & Autonomous Business (`business`)  
+> **Tracks:** Real-World Money (`realworld`), Autonomous Business (`business`), and Unstoppable DeFi (`defi`)  
 > **Live Bot:** [@payeetbot](https://t.me/payeetbot)  
 > **Demo Video:** [Watch on X](https://x.com/proximfi/status/2120615455899652534)
 
@@ -82,14 +82,15 @@ PayIt-2/
 │   ├── near.js                 # NEAR Intents & 1Click solver quote/deposit engine
 │   ├── wallet.js               # Client-side non-custodial key management & AES-256-GCM
 │   ├── multichain.js           # Multi-chain key derivation (NEAR, Solana, EVM)
+│   ├── flows_multichain.js     # Multi-chain crypto withdrawal router (10+ chains)
 │   ├── db.js                   # Dual-account relational ledger & idempotency store
 │   ├── offramp.js              # Live commercial bank cash-out integration (NIBSS rails)
 │   ├── bank_resolver.js        # Fuzzy resolution for 100+ commercial banks & neobanks
 │   ├── ai_invoice_agent.js     # Multimodal AI invoice parser (voice notes & text)
 │   ├── invoice_pdf_generator.js# Branded PDF generator with payment QR codes
 │   ├── bulk_payroll.js         # CSV/spreadsheet multi-rail payroll processor
-│   └── savings.js              # Auto-earn ERC-4626 liquidity vault manager
-└── tests/                      # Automated test suite (260 passing unit & integration tests)
+│   └── savings.js              # 15% APY Morpho yield vault manager & 2-hr idle auto-earn
+└── tests/                      # Automated test suite (266 passing unit & integration tests)
 ```
 
 ---
@@ -118,8 +119,11 @@ npm test
 ✔ File Parser: maps mixed multi-rail payroll rows (NGN, EVM, Solana, NEAR)
 ✔ Idempotency Ledger: guarantees deterministic keys and prevents double spending
 ✔ Trade Monetization & Offramp Execution
-ℹ tests 260
-ℹ pass 260
+✔ Unified Send & Withdraw Menu: Includes all rails and safe HTML
+✔ Fixed Button Responsiveness & State Clearing for all 8 buttons
+ℹ tests 266
+ℹ suites 11
+ℹ pass 266
 ℹ fail 0
 ```
 
@@ -149,9 +153,11 @@ node --test tests/bank_resolver.test.js
 
 1. Open Telegram and search for [@payeetbot](https://t.me/payeetbot).
 2. Send `/start` and set a 4-digit PIN.
-3. Tap **Receive** -> **NEAR Protocol** to view dynamic NEAR deposit details and solver address.
-4. Tap **Switch to Business** to access SME corporate invoicing and payroll.
-5. Tap **Cash Out** to test instant account verification and bank payout estimation.
+3. Tap **Add Money** -> **NEAR Protocol** to view dynamic 1Click solver quotes and deposit instructions.
+4. Tap **Send Money** -> Choose **Local Bank (NGN)** for instant NIBSS bank payout (<35s), or **Crypto (Multi-Chain)** to withdraw across 10+ blockchains (NEAR, Solana, Base, Arbitrum, Polygon, Ethereum, Bitcoin, Tron).
+5. Tap **Switch Account** to seamlessly toggle between Personal spending and SME Corporate business mode.
+6. Tap **Save & Earn** to inspect active Morpho yield vaults (15% APY) and toggle 2-hour idle Auto-Earn.
+7. Send a voice note or type: *"Invoice Acme Ltd $500 for web design"* to auto-generate a branded PDF invoice with embedded payment QR codes.
 
 ---
 
@@ -160,8 +166,10 @@ node --test tests/bank_resolver.test.js
 * **Hackathon Build Window (Nov 1 – Nov 14, 2026):**
   * Integrated NEAR Intents (1Click solver quoting, deposit tracking, status polling, and sweep mechanics in `src/near.js`).
   * Implemented deterministic NEAR implicit address generation and refund routing.
+  * Built dual withdrawal rails: instant Naira bank cash-out (<35s) + multi-chain crypto withdrawals across 10+ blockchains (`src/flows_multichain.js`).
+  * Deployed 15% APY Morpho yield vault integration with automated 2-hour idle Auto-Earn rebalancing (`src/savings.js`).
   * Extended multi-rail payroll and dual-account ledgers to support native NEAR and NEP-141 assets.
-  * Added 260 comprehensive unit and integration tests covering cross-chain flows and idempotency.
+  * Added 266 comprehensive unit and integration tests covering cross-chain flows, idempotency, and button responsiveness.
 * **Pre-existing Baseline Libraries:**
   * Core EVM smart contracts, existing Telegram session skeleton, and general cryptography utilities (`tweetnacl`, `ethers`).
 

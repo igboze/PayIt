@@ -1,7 +1,7 @@
 {
   "name": "proxim-telegram-bot",
   "version": "0.3.0",
-  "description": "Proxim — non-custodial Telegram wallet on Arc (testnet). Personal + Business accounts, USDC + EURC, Circle Gateway, SME financial management.",
+  "description": "Proxim — non-custodial Telegram neobank powered by NEAR Intents. Real-world money, dual personal/business accounts, multimodal AI invoicing, 15% APY Morpho yield vaults, instant local bank payout (<35s), and multi-chain crypto withdrawals.",
   "main": "bot.js",
   "type": "commonjs",
   "scripts": {
