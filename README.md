@@ -4,6 +4,9 @@
 
 > **Vision:** Bridge the gap between stablecoin wealth and local currency transactions. Hold dollars, spend in pesos. Issue invoices in pesos, get paid in USDC. No middleman. No currency conversion fees for transfers.
 
+> 🏆 **NEAR hackathon judges:** PayIT existed before the hackathon. The hackathon work is separated from it. **[HACKATHON.md](HACKATHON.md)** lists what was added, how PayIT uses NEAR Intents, and what is and isn't verified.
+> Diff: [`pre-near-hackathon...near-hackathon`](https://github.com/igboze/PayIt/compare/pre-near-hackathon...near-hackathon)
+
 ---
 
 ## Table of Contents
