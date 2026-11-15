@@ -47,6 +47,20 @@ Assets to prepare (next actions)
 - Screenshots: onboarding, invoice, receipt PNG, admin menu
 - Press kit: mission, team bios, contact email
 
+Preview screenshots
+
+- Onboarding
+
+	![Onboarding screenshot](assets/screenshot_onboarding.png)
+
+- Send payment (natural language)
+
+	![Send payment screenshot](assets/screenshot_send_payment.png)
+
+- Invoice preview
+
+	![Invoice preview screenshot](assets/screenshot_invoice_preview.png)
+
 Pricing / Go-to-market ideas
 
 - Freemium: Basic bot features free; fees for settlement (on/off ramp partner fees) and premium business features (reporting, payroll automation)

@@ -228,7 +228,7 @@ function requireUser(ctx) {
   const user = db.getUser(ctx.from?.id);
   if (!user) {
     ctx.reply(
-      "Welcome to PayIT!\n\nSend /start to set up your wallet in under a minute."
+      "Welcome to PayIT!\n\nSend /start to set up your wallet in under a minute.\n\nNote: the points system is a promotional testnet feature used to demonstrate flows; it does not represent real funds."
     );
     return null;
   }
@@ -378,7 +378,7 @@ bot.start(async (ctx) => {
     const addr    = getActiveWallet(existing);
     const bal     = await safeGetBalance(addr);
     await ctx.reply(
-      `👋 Welcome back, ${ctx.from.first_name || "there"}!\n\n` +
+        `👋 Welcome to PayIT.\n\n` +
       `Your balance: ${bal.display}\n` +
       `Account: ${context === "business" ? "Business 💼" : "Personal 👤"}\n\n` +
       `What would you like to do?`,
@@ -396,25 +396,22 @@ bot.start(async (ctx) => {
     convState.setState(ctx.from.id, "pending_referral", { referrerId: referrer.telegram_id }, "personal");
   }
 
-  return ctx.reply(
-    `👋 Welcome to PayIT.\n\n` +
-    `Save in dollars. Spend in Naira.\n` +
-    `Everything right here in Telegram.\n\n` +
-    `Earn points while you use PayIT:\n` +
-    `• 5 points for Cash Out\n` +
-    `• 4 points for sending money\n` +
-    `• 10 points for creating an invoice\n` +
-    `• 12 points for a business invoice\n` +
-    `• 5 points for saving to interest\n` +
-    `• 3 points for withdrawing savings\n` +
-    `• 20 points when a friend you refer earns their first point\n\n` +
-    `Your money stays yours — PayIT never holds it for you.\n\n` +
-    `How will you use PayIT?`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("👤 Personal",  "onboard_personal")],
-      [Markup.button.callback("💼 Business",  "onboard_business")],
-    ])
-  );
+    return ctx.reply(
+      `👋 Welcome to PayIT.\n\nPlease send /start to begin the wallet setup process.\n\nPlease note: the points system is a promotional testnet feature provided to demonstrate workflows and reward mechanics; it does not constitute or represent monetary value.\n\n` +
+      `Points (promotional testnet):\n` +
+      `• Cash Out: 5 points\n` +
+      `• Send Money: 4 points\n` +
+      `• Create Invoice: 10 points\n` +
+      `• Business Invoice: 12 points\n` +
+      `• Savings deposit: 5 points\n` +
+      `• Savings withdrawal: 3 points\n` +
+      `• Referral first-point bonus: 20 points\n\n` +
+      `Your funds remain fully under your control — PayIT does not custody user funds.\n\nHow will you use PayIT?`,
+      Markup.inlineKeyboard([
+        [Markup.button.callback("👤 Personal",  "onboard_personal")],
+        [Markup.button.callback("💼 Business",  "onboard_business")],
+      ])
+    );
 });
 
 // ── Personal onboarding path ──────────────────────────────────────────────────

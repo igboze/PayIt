@@ -10,7 +10,8 @@
     "compile-contracts": "node scripts/compile-contracts.js",
     "deploy:invoice-settlement": "dotenv -e .env -- node scripts/deploy-invoice-settlement.js",
     "test": "node --test tests",
-    "test:contracts": "node --test tests/contract_invoice_settlement.test.js"
+    "test:contracts": "node --test tests/contract_invoice_settlement.test.js",
+    "convert-assets": "node scripts/convert-assets.js"
   },
   "engines": {
     "node": ">=22.5.0"

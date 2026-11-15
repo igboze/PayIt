@@ -2,6 +2,8 @@ FROM node:22-bookworm
 
 WORKDIR /app
 
+RUN mkdir -p /data
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     python3 \
@@ -22,6 +24,7 @@ RUN npm install
 COPY . .
 
 ENV NODE_ENV=production
-ENV PAYIT_DB_PATH=/app/payit.db
+ENV PAYIT_DB_PATH=/data/payit.db
+VOLUME ["/data"]
 
 CMD ["npm", "start"]

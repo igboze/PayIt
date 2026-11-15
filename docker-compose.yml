@@ -8,10 +8,14 @@ services:
       - .env
     environment:
       NODE_ENV: production
-      PAYIT_DB_PATH: /app/payit.db
+      PAYIT_DB_PATH: /data/payit.db
     volumes:
+      - payit-data:/data
       - .:/app
       - /app/node_modules
     restart: unless-stopped
     stdin_open: true
     tty: true
+
+volumes:
+  payit-data:
