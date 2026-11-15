@@ -25,6 +25,7 @@ const otp           = require("./src/otp");
 const savings       = require("./src/savings");
 const tokens        = require("./src/tokens");
 const gateway       = require("./src/gateway");
+const nearIntents   = require("./src/near_intents");
 const invoiceDb     = require("./src/invoice_db");
 const bizDb         = require("./src/biz_db");
 const bizProfile    = require("./src/biz_profile");
@@ -258,6 +259,7 @@ function buildPlanFromClassifiedIntent(classified) {
       account_number:r.account_number || null,
       account_name:  r.account_name || null,
       currency:      r.currency || "USDC",
+      amount_ngn:    r.amount_ngn || null,
     };
   });
 
@@ -266,6 +268,42 @@ function buildPlanFromClassifiedIntent(classified) {
     schedule: classified.params?.schedule || { frequency: null, day: null, time: null },
     summary: classified.raw_summary || "Payment",
   };
+}
+
+/**
+ * Convert Naira amounts in a classified payment intent to the USDC we actually
+ * move, keeping the Naira figure for display. Idempotent: converted recipients
+ * are tagged USDC, so running it again is a no-op.
+ * A cash-out amount with no currency is read as Naira; a transfer's as dollars.
+ */
+async function normalizeIntentAmounts(classified) {
+  const recipients = classified?.params?.recipients || [];
+  if (!recipients.length) return classified;
+  const rate = await fx.getUsdToNgnRate();
+  for (const r of recipients) {
+    const amount = Number(r.amount);
+    if (!amount) continue;
+    const currency = String(r.currency || (classified.intent === "offramp" ? "NGN" : "USDC")).toUpperCase();
+    if (currency === "NGN" || currency === "NAIRA") {
+      r.amount_ngn = amount;
+      r.amount     = fx.roundUsdc(amount / rate);
+      r.currency   = "USDC";
+    } else if (currency === "USD" || currency === "USDC") {
+      r.amount_ngn = r.amount_ngn || amount * rate;
+      r.currency   = "USDC";
+    }
+  }
+  return classified;
+}
+
+async function askIntentPin(ctx, userId, classified, context) {
+  await normalizeIntentAmounts(classified);
+  convState.setState(userId, "confirm_intent_pin", { classified }, context);
+  const confirmText = buildConfirmationText(classified, classified.params.recipients);
+  return ctx.reply(`${confirmText}\n\nEnter your PIN to confirm:`, {
+    parse_mode: "Markdown",
+    ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]),
+  });
 }
 
 // Delete a message after a delay (used for PIN and key exports)
@@ -545,20 +583,21 @@ async function showBalance(ctx) {
     const eurc      = parseFloat(walletLib.formatMicro(eurcMicro));
     const rate      = await fx.getUsdToNgnRate();
 
-    const nairaLine = rate
-      ? `≈ ${fx.formatNaira(usdc * rate)} at ₦${Math.round(rate).toLocaleString()}/$`
-      : "";
     const eurcLine  = eurc > 0 ? `\n€${eurc.toFixed(2)} euros` : "";
 
     await ctx.reply(
       `💰 ${label} Balance\n──────────────────────────\n` +
-      `$${usdc.toFixed(2)} dollars${eurcLine}\n${nairaLine}\n\n` +
+      `${fx.formatNaira(usdc * rate)}\n` +
+      `($${usdc.toFixed(2)} dollars)${eurcLine}\n` +
+      `Rate: ₦${Math.round(rate).toLocaleString()}/$\n\n` +
       `Your PayIT account number (tap to copy):\n${address}`,
       Markup.inlineKeyboard([
         [Markup.button.callback("📥 Add Money",       "action_receive"),
          Markup.button.callback("📤 Send Money",      "action_send_menu")],
         [Markup.button.callback("💵 Cash Out to Naira", "action_withdraw_menu"),
          Markup.button.callback("📈 Earn Interest",   "action_yields")],
+        [Markup.button.callback("🌐 Send Crypto",     "nit_send"),
+         Markup.button.callback("🌐 Receive Crypto",  "nit_recv")],
         [Markup.button.callback("🌍 Add from Abroad", "action_gateway")],
         [Markup.button.callback("📋 History",         "action_history")],
       ])
@@ -585,14 +624,13 @@ async function showBizBalance(ctx) {
     const eurcMicro = await tokens.getEurcBalance(addr);
     const eurc      = parseFloat(walletLib.formatMicro(eurcMicro));
     const rate      = await fx.getUsdToNgnRate();
-    const nairaLine = rate ? `≈ ${fx.formatNaira(usdc * rate)}` : "";
     const eurcLine  = eurc > 0 ? `\n€${eurc.toFixed(2)} euros` : "";
     const pending   = bizDb.getPendingInvoiceCount(ctx.from.id);
     const expenses  = bizDb.getMonthExpenses(ctx.from.id);
 
     await ctx.reply(
       `💼 Business Balance\n──────────────────────────\n` +
-      `$${usdc.toFixed(2)} dollars${eurcLine}\n${nairaLine}\n\n` +
+      `${fx.formatNaira(usdc * rate)}\n($${usdc.toFixed(2)} dollars)${eurcLine}\n\n` +
       `📬 Unpaid invoices: ${pending}\n` +
       `📉 Expenses this month: $${expenses.toFixed(2)}\n\n` +
       `Account number:\n${addr}`,
@@ -624,8 +662,9 @@ async function showReceive(ctx) {
     `Your PayIT account number (tap to copy):\n\n` +
     `${address}\n\n` +
     `Anyone can send you dollars or euros to this address from any compatible wallet.\n\n` +
-    `Or use 🌍 Add from Abroad to bring money in from Binance, Coinbase, MetaMask, and others.`,
+    `Or use 🌐 Receive Crypto to get paid in USDT, SOL, ETH, BNB and 200+ other tokens on any chain — PayIT converts it to dollars for you.`,
     Markup.inlineKeyboard([
+      [Markup.button.callback("🌐 Receive Crypto (any token)", "nit_recv")],
       [Markup.button.callback("🌍 Add from Abroad", "action_gateway")],
       [Markup.button.callback("💰 Check Balance", "action_balance")],
       [Markup.button.callback("🏠 Main Menu",     "main_menu")],
@@ -656,6 +695,7 @@ async function showHistory(ctx) {
     autopay:                    "Auto-payment",
     yield_deposit:              "Saved to interest pool",
     yield_withdraw:             "Withdrew from interest pool",
+    intents_send:               "Sent crypto cross-chain",
   };
 
   const lines = txs.map(t => {
@@ -1265,8 +1305,8 @@ bot.action(/^gateway_dep_chain_(\d+)$/, async (ctx) => {
     `🚀 Deposit from ${chain.name}\n──────────────────────────\n` +
     `USDC available: <b>${usdc}</b>\n` +
     `Gas available: <b>${gas}</b> ${chain.symbol}${gasWarning}\n` +
-    `How much USDC do you want to deposit into Gateway?\n` +
-    `(e.g. <code>5</code> or <code>10.50</code>)\n\n` +
+    `How much do you want to deposit into Gateway?\n` +
+    `(e.g. <code>₦20,000</code> or <code>$10</code> — we convert Naira to USDC for you)\n\n` +
     `PayIT will approve + call deposit() for you.`,
     {
       parse_mode: "HTML",
@@ -1330,6 +1370,7 @@ bot.action("action_send_menu", (ctx) => {
     Markup.inlineKeyboard([
       [Markup.button.callback("💵 Cash Out to Naira",      "action_withdraw_menu")],
       [Markup.button.callback("👛 Send to a Wallet",       "action_sendout_menu")],
+      [Markup.button.callback("🌐 Send Crypto (any chain)", "nit_send")],
       [Markup.button.callback("👥 Send to a Saved Contact","action_send_contact")],
       [Markup.button.callback("🏠 Main Menu",              "main_menu")],
     ])
@@ -1390,7 +1431,7 @@ bot.action("action_withdraw_menu", (ctx) => {
   convState.setState(ctx.from.id, "await_withdraw_amount", {}, getContext(ctx.from.id));
   return ctx.reply(
     `💵 Cash Out to Naira\n──────────────────────────\n` +
-    `How much would you like to cash out?`,
+    `How much Naira do you want in your bank?\ne.g. ₦20,000 (or $50 to cash out a dollar amount)`,
     Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
   );
 });
@@ -1409,8 +1450,179 @@ bot.action("action_sendout_menu", (ctx) => {
   );
 });
 
-// ─── Yield actions ────────────────────────────────────────────────────────────
+// ─── Cross-chain send / receive (NEAR Intents) ────────────────────────────────
+// mode "send": user pays USDC on the settlement chain → recipient gets any token on any chain
+// mode "recv": payer sends any token on any chain → user gets USDC on the settlement chain
 
+const NIT_CHAINS_PER_PAGE = 12;
+const cancelButton = Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]);
+
+function settlementLabel() {
+  return `USDC on ${nearIntents.chainLabel(nearIntents.SETTLEMENT_CHAIN)}`;
+}
+
+async function showNitChains(ctx, mode, page = 0) {
+  let chains;
+  try { chains = await nearIntents.getChains(); } catch (err) {
+    console.error("[near_intents_chains]", err);
+    return ctx.reply("Couldn't load supported chains right now — please try again shortly.", backToMenu);
+  }
+  const slice = chains.slice(page * NIT_CHAINS_PER_PAGE, (page + 1) * NIT_CHAINS_PER_PAGE);
+  const rows  = [];
+  for (let i = 0; i < slice.length; i += 3) {
+    rows.push(slice.slice(i, i + 3).map(c =>
+      Markup.button.callback(nearIntents.chainLabel(c), `nit_${mode}_c_${c}`)));
+  }
+  const nav = [];
+  if (page > 0) nav.push(Markup.button.callback("⬅️ Back", `nit_${mode}_p_${page - 1}`));
+  if ((page + 1) * NIT_CHAINS_PER_PAGE < chains.length) nav.push(Markup.button.callback("More ➡️", `nit_${mode}_p_${page + 1}`));
+  if (nav.length) rows.push(nav);
+  rows.push([Markup.button.callback("❌ Cancel", "main_menu")]);
+
+  const intro = mode === "send"
+    ? `🌐 Send Crypto\n──────────────────────────\nWhich chain is the recipient on?`
+    : `🌐 Receive Crypto\n──────────────────────────\nWhich chain will the payer send from?`;
+  return ctx.reply(intro, Markup.inlineKeyboard(rows));
+}
+
+async function showNitTokens(ctx, mode, chain) {
+  let usdc, native, usdt;
+  try {
+    [usdc, native, usdt] = await Promise.all([
+      nearIntents.getUsdcToken(chain),
+      nearIntents.getNativeToken(chain),
+      nearIntents.findToken(chain, "USDT"),
+    ]);
+  } catch (err) {
+    console.error("[near_intents_tokens]", err);
+    return ctx.reply("Couldn't load tokens right now — please try again shortly.", backToMenu);
+  }
+  const picks = [usdc, native, usdt].filter(Boolean);
+  const rows  = picks.map(t => [Markup.button.callback(
+    t === native ? `${t.symbol} (native)` : t.symbol, `nit_${mode}_t_${chain}_${t.symbol}`)]);
+  rows.push([Markup.button.callback("🔎 Other token", `nit_${mode}_o_${chain}`)]);
+  rows.push([Markup.button.callback("❌ Cancel", "main_menu")]);
+
+  const label = nearIntents.chainLabel(chain);
+  return ctx.reply(
+    mode === "send"
+      ? `🌐 Send on ${label}\n──────────────────────────\nWhich token should the recipient get?`
+      : `🌐 Receive from ${label}\n──────────────────────────\nWhich token will the payer send?\nIt lands in your wallet as ${settlementLabel()}.`,
+    Markup.inlineKeyboard(rows)
+  );
+}
+
+/** Token chosen — move on to address (send) or amount (recv). */
+function startNitTokenStep(ctx, mode, chain, token) {
+  const data  = { chain, symbol: token.symbol, assetId: token.assetId, decimals: token.decimals };
+  const label = nearIntents.chainLabel(chain);
+  if (mode === "send") {
+    convState.setState(ctx.from.id, "await_nit_send_address", data, getContext(ctx.from.id));
+    return ctx.reply(
+      `🌐 Send ${token.symbol} on ${label}\n──────────────────────────\n` +
+      `Paste the recipient's ${label} address:`,
+      cancelButton
+    );
+  }
+  convState.setState(ctx.from.id, "await_nit_recv_amount", data, getContext(ctx.from.id));
+  return ctx.reply(
+    `🌐 Receive ${token.symbol} on ${label}\n──────────────────────────\n` +
+    `How much do you want to receive? e.g. ₦20,000 (or $50)`,
+    cancelButton
+  );
+}
+
+/**
+ * Receive: quote EXACT_OUTPUT so the user gets exactly the Naira value they asked
+ * for (as settlement USDC) and the payer is told how much of their token to send.
+ */
+async function createNitReceive(ctx, data) {
+  const user = requireUser(ctx);
+  if (!user) return;
+  convState.clearState(ctx.from.id);
+  const { chain, symbol, assetId, usd, ngn, rate } = data;
+  const wallet = getActiveWallet(user);
+  const live   = nearIntents.isEnabled();
+  const label  = nearIntents.chainLabel(chain);
+
+  let quote;
+  try {
+    const settlement = await nearIntents.getSettlementToken();
+    quote = await nearIntents.getQuote({
+      dry:              !live,
+      swapType:         "EXACT_OUTPUT",
+      originAsset:      assetId,
+      destinationAsset: settlement.assetId,
+      amount:           nearIntents.toUnits(usd, settlement.decimals),
+      recipient:        wallet,
+      refundTo:         data.refundTo || wallet,
+    });
+  } catch (err) {
+    console.error("[near_intents_recv_quote]", err);
+    return ctx.reply(`Couldn't create a payment request: ${err.message}`, backToMenu);
+  }
+
+  if (!live) {
+    return ctx.reply(
+      `🌐 Receive ${fx.formatNaira(ngn)}\n──────────────────────────\n` +
+      `The payer would send ~${quote.amountInFormatted} ${symbol} on ${label}.\n\n` +
+      `Cross-chain receiving isn't switched on yet — no payment address was created.`,
+      backToMenu
+    );
+  }
+
+  nearIntents.watchSwap(quote.depositAddress, (status) => {
+    if (status.status === "SUCCESS") {
+      notifyUser(ctx.from.id, `✅ Received ${fx.formatDual(usd, rate)} — paid in ${symbol} on ${label}, now in your ${settlementLabel()}.`);
+    } else if (status.status === "REFUNDED") {
+      notifyUser(ctx.from.id, `↩️ The ${symbol} payment for ${fx.formatNaira(ngn)} was refunded to the payer.`);
+    }
+  }, { timeoutMs: 2 * 60 * 60 * 1000 });
+
+  const expires = quote.deadline ? new Date(quote.deadline).toUTCString() : "in 30 minutes";
+  return ctx.reply(
+    `🌐 Payment Request — ${fx.formatNaira(ngn)}\n──────────────────────────\n` +
+    `Ask the payer to send exactly:\n` +
+    `<b>${quote.amountInFormatted} ${symbol}</b> on <b>${label}</b>\n\n` +
+    `To this address (tap to copy):\n<code>${quote.depositAddress}</code>\n\n` +
+    `You'll get ${fx.formatDual(usd, rate)} as ${settlementLabel()}.\n` +
+    `⚠️ Only send ${symbol} on ${label} — other tokens or chains will be lost.\n` +
+    `Expires: ${expires}`,
+    { parse_mode: "HTML", ...afterPaymentButtons }
+  );
+}
+
+bot.action("nit_send", (ctx) => { ctx.answerCbQuery(); if (!requireUser(ctx)) return; return showNitChains(ctx, "send"); });
+bot.action("nit_recv", (ctx) => { ctx.answerCbQuery(); if (!requireUser(ctx)) return; return showNitChains(ctx, "recv"); });
+
+bot.action(/^nit_(send|recv)_p_(\d+)$/, (ctx) => {
+  ctx.answerCbQuery();
+  return showNitChains(ctx, ctx.match[1], parseInt(ctx.match[2]));
+});
+
+bot.action(/^nit_(send|recv)_c_([a-z0-9]+)$/, (ctx) => {
+  ctx.answerCbQuery();
+  return showNitTokens(ctx, ctx.match[1], ctx.match[2]);
+});
+
+bot.action(/^nit_(send|recv)_t_([a-z0-9]+)_(.+)$/, async (ctx) => {
+  ctx.answerCbQuery();
+  if (!requireUser(ctx)) return;
+  const [, mode, chain, symbol] = ctx.match;
+  const token = await nearIntents.findToken(chain, symbol).catch(() => null);
+  if (!token) return ctx.reply("That token isn't available any more — pick another.", backToMenu);
+  return startNitTokenStep(ctx, mode, chain, token);
+});
+
+bot.action(/^nit_(send|recv)_o_([a-z0-9]+)$/, (ctx) => {
+  ctx.answerCbQuery();
+  if (!requireUser(ctx)) return;
+  const [, mode, chain] = ctx.match;
+  convState.setState(ctx.from.id, "await_nit_token_symbol", { mode, chain }, getContext(ctx.from.id));
+  return ctx.reply(`Type the token symbol on ${nearIntents.chainLabel(chain)} (e.g. USDT, WETH, BONK):`, cancelButton);
+});
+
+// ─── Yield actions ────────────────────────────────────────────────────────────
 bot.action("yield_deposit_start", async (ctx) => {
   ctx.answerCbQuery();
   const user = requireUser(ctx);
@@ -2352,6 +2564,7 @@ bot.hears("📤 Send Money",  (ctx) => ctx.reply(
   Markup.inlineKeyboard([
     [Markup.button.callback("💵 Cash Out to Naira",       "action_withdraw_menu")],
     [Markup.button.callback("👛 Send to a Wallet Address", "action_sendout_menu")],
+    [Markup.button.callback("🌐 Send Crypto (any chain)",  "nit_send")],
     [Markup.button.callback("👥 Send to a Saved Contact",  "action_send_contact")],
     [Markup.button.callback("🏠 Main Menu",               "main_menu")],
   ])
@@ -2361,6 +2574,7 @@ bot.hears("📤 Send Payment", (ctx) => ctx.reply(
   `📤 Business Payment`,
   Markup.inlineKeyboard([
     [Markup.button.callback("👛 Send Dollars",            "action_sendout_menu")],
+    [Markup.button.callback("🌐 Send Crypto (any chain)", "nit_send")],
     [Markup.button.callback("💵 Cash Out to Naira",       "action_withdraw_menu")],
     [Markup.button.callback("👥 Saved Contacts",           "action_send_contact")],
     [Markup.button.callback("🏠 Main Menu",               "main_menu")],
@@ -2370,7 +2584,7 @@ bot.hears("📤 Send Payment", (ctx) => ctx.reply(
 bot.hears("💵 Cash Out", (ctx) => {
   convState.setState(ctx.from.id, "await_withdraw_amount", {}, getContext(ctx.from.id));
   return ctx.reply(
-    `💵 Cash Out to Naira\n──────────────────────────\nHow much would you like to cash out?`,
+    `💵 Cash Out to Naira\n──────────────────────────\nHow much Naira do you want in your bank?\ne.g. ₦20,000 (or $50 to cash out a dollar amount)`,
     Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
   );
 });
@@ -2966,16 +3180,18 @@ bot.on("text", async (ctx) => {
     // ── Gateway deposit amount ───────────────────────────────────────────────
 
     if (state.type === "await_gateway_deposit_amount") {
-      const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
-      if (isNaN(amount) || amount <= 0) {
-        return ctx.reply("Enter a valid USDC amount (e.g. 5):");
+      const parsed = fx.parseMoneyInput(text, { defaultCurrency: "NGN" });
+      if (!parsed || parsed.currency === "EUR") {
+        return ctx.reply("Enter how much to deposit, e.g. ₦20,000 or $10:");
       }
+      const { usd: amount, rate } = await fx.resolveAmount(parsed);
+      if (amount < 0.01) return ctx.reply("That amount is too small — the minimum is $0.01.");
       const { chainName } = state.data;
       convState.setState(userId, "confirm_gateway_deposit_pin", { chainName, amount }, state.context);
       return ctx.reply(
         `🚀 Confirm Gateway Deposit\n──────────────────────────\n` +
         `Chain: ${chainName}\n` +
-        `Amount: ${amount.toFixed(2)} USDC\n\n` +
+        `Amount: ${fx.formatDual(amount, rate)} · ${amount.toFixed(2)} USDC\n\n` +
         `PayIT will approve + deposit into Circle Gateway.\n` +
         `You need USDC + gas on ${chainName}.\n\n` +
         `Enter your PIN to confirm:`,
@@ -3094,33 +3310,34 @@ bot.on("text", async (ctx) => {
     // ── Withdraw amount ──────────────────────────────────────────────────────
 
     if (state.type === "await_withdraw_amount") {
-      const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
-      if (isNaN(amount) || amount <= 0) {
-        if (shouldReprocessConversationState("await_withdraw_amount", text)) {
+      const parsed = fx.parseMoneyInput(text, { defaultCurrency: "NGN" });
+      if (!parsed || parsed.currency === "EUR") {
+        if (!parsed && shouldReprocessConversationState("await_withdraw_amount", text)) {
           convState.clearState(userId);
           return bot.handleUpdate({ update_id: ctx.update.update_id, message: ctx.message });
         }
-        return ctx.reply("Enter a valid amount (e.g. 50). Type cancel to stop.");
+        return ctx.reply("Enter the Naira amount you want (e.g. ₦20,000), or a dollar amount like $50. Type cancel to stop.");
       }
       const user = requireUser(ctx);
       if (!user) return;
-      const address     = getActiveWallet(user);
+      const address = getActiveWallet(user);
+      const { usd: amount, ngn, rate } = await fx.resolveAmount(parsed);
       let amountMicro;
-      try { amountMicro = walletLib.parseToMicro(amount.toString()); } catch {
+      try { amountMicro = walletLib.parseToMicro(amount.toFixed(6)); } catch {
         return ctx.reply("Invalid amount. Try again.");
       }
+      if (amountMicro <= 0n) return ctx.reply("That amount is too small to cash out. Try a bigger amount.");
       const balance = await walletLib.getNativeBalanceMicro(address);
       if (balance < amountMicro) {
-        return ctx.reply(`Not enough dollars. You have $${parseFloat(walletLib.formatMicro(balance)).toFixed(2)}.`);
+        const have = parseFloat(walletLib.formatMicro(balance));
+        return ctx.reply(`Not enough money. You have ${fx.formatDual(have, rate)}.`);
       }
-      const rate      = await fx.getUsdToNgnRate();
-      const nairaEst  = rate ? fx.formatNaira(amount * rate) : null;
-      const rateNote  = rate ? `Today's rate: ₦${Math.round(rate).toLocaleString()}/$\nYou'll receive: ~${nairaEst}` : "";
 
-      convState.setState(userId, "await_withdraw_bank", { amountUsdc: amount }, state.context);
+      convState.setState(userId, "await_withdraw_bank", { amountUsdc: amount, amountNgn: ngn, rate }, state.context);
       return ctx.reply(
-        `💵 Cash Out $${amount.toFixed(2)}\n──────────────────────────\n` +
-        `${rateNote}\n\n` +
+        `💵 Cash Out ${fx.formatNaira(ngn)}\n──────────────────────────\n` +
+        `Today's rate: ₦${Math.round(rate).toLocaleString()}/$\n` +
+        `We'll convert ${fx.formatUsd(amount)} from your wallet and pay ~${fx.formatNaira(ngn)} to your bank.\n\n` +
         `Which bank account should we pay the Naira into?\n` +
         `Type it like this: Bank name · Account number · Account name\n\nFor example: GTBank · 0123456789 · Emeka Johnson`,
         Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
@@ -3147,12 +3364,17 @@ bot.on("text", async (ctx) => {
 
       convState.setState(userId, "confirm_withdraw", {
         amountUsdc: state.data.amountUsdc,
+        amountNgn:  state.data.amountNgn,
+        rate:       state.data.rate,
         bankName, accountNumber: acctNumber, accountName: acctName,
       }, state.context);
 
+      const ngnLine = state.data.amountNgn
+        ? `You receive: ~${fx.formatNaira(state.data.amountNgn)}\nFrom wallet: ${fx.formatUsd(state.data.amountUsdc)}\n`
+        : `Amount: $${state.data.amountUsdc.toFixed(2)}\n`;
       return ctx.reply(
         `💵 Confirm Cash Out\n──────────────────────────\n` +
-        `Amount: $${state.data.amountUsdc.toFixed(2)}\n` +
+        ngnLine +
         `Bank: ${bankName || "?"}\n` +
         `Account: ${acctNumber}\n` +
         `Name: ${acctName || "?"}\n\n` +
@@ -3183,8 +3405,10 @@ bot.on("text", async (ctx) => {
         state.data.amountUsdc,
         { accountNumber: state.data.accountNumber, bankCode: "000", accountName: state.data.accountName },
         userId,
-        "Cash Out"
+        "Cash Out",
+        { amountNgn: state.data.amountNgn, rate: state.data.rate }
       );
+      const nairaNote = state.data.amountNgn ? `~${fx.formatNaira(state.data.amountNgn)}` : "Naira";
 
       if (result.success) {
         try {
@@ -3207,11 +3431,11 @@ bot.on("text", async (ctx) => {
             txHash:           result.txHash || null,
           });
           await ctx.replyWithPhoto({ source: receiptPath }, {
-            caption: result.warning || `✅ Cash out submitted! Naira arrives in ~10 minutes.`,
+            caption: result.warning || `✅ Cash out submitted! ${nairaNote} arrives in your bank in ~10 minutes.`,
             ...afterPaymentButtons,
           });
         } catch {
-          await ctx.reply(result.warning || `✅ Cash out submitted! Naira arrives in ~10 minutes.`, afterPaymentButtons);
+          await ctx.reply(result.warning || `✅ Cash out submitted! ${nairaNote} arrives in your bank in ~10 minutes.`, afterPaymentButtons);
         }
       } else {
         await ctx.reply(`❌ ${result.error}`, backToMenu);
@@ -3239,15 +3463,22 @@ bot.on("text", async (ctx) => {
     }
 
     if (state.type === "await_sendout_amount") {
-      const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
-      if (isNaN(amount) || amount <= 0) return ctx.reply("Enter a valid amount:");
+      const isEurc = state.data.token === "EURC";
+      const parsed = fx.parseMoneyInput(text, { defaultCurrency: isEurc ? "EUR" : "NGN" });
+      if (!parsed) return ctx.reply(isEurc ? "Enter a valid euro amount:" : "Enter a valid amount, e.g. ₦20,000 or $50:");
+      if (isEurc !== (parsed.currency === "EUR")) {
+        return ctx.reply(isEurc ? "This is a euro payment — enter the amount in euros (e.g. €20)." : "Enter the amount in Naira (₦20,000) or dollars ($50).");
+      }
       const user    = requireUser(ctx);
       if (!user) return;
       const address = getActiveWallet(user);
+      const resolved = isEurc ? null : await fx.resolveAmount(parsed);
+      const amount   = isEurc ? fx.roundUsdc(parsed.amount) : resolved.usd;
       let amountMicro;
-      try { amountMicro = walletLib.parseToMicro(amount.toString()); } catch {
+      try { amountMicro = walletLib.parseToMicro(amount.toFixed(6)); } catch {
         return ctx.reply("Invalid amount.");
       }
+      if (amountMicro <= 0n) return ctx.reply("That amount is too small to send.");
       const balance = state.data.token === "EURC"
         ? await tokens.getEurcBalance(address)
         : await walletLib.getNativeBalanceMicro(address);
@@ -3261,9 +3492,10 @@ bot.on("text", async (ctx) => {
         walletAddress: state.data.walletAddress,
         recipientName: state.data.recipientName || null,
       }, state.context);
+      const amountLine = isEurc ? `€${amount.toFixed(2)} EURC` : `${fx.formatDual(amount, resolved.rate)} · USDC`;
       return ctx.reply(
         `📤 Confirm Payment\n──────────────────────────\n` +
-        `To: ${recipient}\nAmount: $${amount.toFixed(2)} ${state.data.token || "USDC"}\n\n` +
+        `To: ${recipient}\nAmount: ${amountLine}\n\n` +
         `Enter your PIN:`,
         Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
       );
@@ -3319,6 +3551,179 @@ bot.on("text", async (ctx) => {
     }
 
     // ── Yield amount ─────────────────────────────────────────────────────────
+
+    // ── Cross-chain send / receive (NEAR Intents) ────────────────────────────
+
+    if (state.type === "await_nit_token_symbol") {
+      const { mode, chain } = state.data;
+      const token = await nearIntents.findToken(chain, text).catch(() => null);
+      if (!token) {
+        return ctx.reply(
+          `${text.trim().toUpperCase()} isn't supported on ${nearIntents.chainLabel(chain)}. Check the symbol and try again, or type cancel.`,
+          cancelButton
+        );
+      }
+      return startNitTokenStep(ctx, mode, chain, token);
+    }
+
+    if (state.type === "await_nit_send_address") {
+      const recipient = text.trim();
+      if (!nearIntents.isValidRecipient(state.data.chain, recipient)) {
+        return ctx.reply(
+          `That doesn't look like a valid ${nearIntents.chainLabel(state.data.chain)} address. Paste it again, or type cancel.`,
+          cancelButton
+        );
+      }
+      convState.setState(userId, "await_nit_send_amount", { ...state.data, recipient }, state.context);
+      return ctx.reply(
+        `How much do you want to send?\ne.g. ₦20,000 (or $50)\n\n` +
+        `The recipient gets the same value in ${state.data.symbol}.`,
+        cancelButton
+      );
+    }
+
+    if (state.type === "await_nit_send_amount") {
+      const parsed = fx.parseMoneyInput(text, { defaultCurrency: "NGN" });
+      if (!parsed || parsed.currency === "EUR") return ctx.reply("Enter an amount like ₦20,000 or $50:", cancelButton);
+      const user = requireUser(ctx);
+      if (!user) return;
+      const { usd, ngn, rate } = await fx.resolveAmount(parsed);
+      if (usd < 1) return ctx.reply(`The minimum cross-chain send is $1 (≈ ${fx.formatNaira(rate)}).`, cancelButton);
+
+      const { chain, symbol, assetId, decimals, recipient } = state.data;
+      let settlement, quote;
+      try {
+        settlement = await nearIntents.getSettlementToken();
+        quote = await nearIntents.getQuote({
+          dry:              true,
+          swapType:         "EXACT_INPUT",
+          originAsset:      settlement.assetId,
+          destinationAsset: assetId,
+          amount:           nearIntents.toUnits(usd, settlement.decimals),
+          recipient,
+          refundTo:         getActiveWallet(user),
+        });
+      } catch (err) {
+        console.error("[near_intents_send_quote]", err);
+        return ctx.reply(`Couldn't get a price for that: ${err.message}`, cancelButton);
+      }
+
+      convState.setState(userId, "confirm_nit_send", { chain, symbol, assetId, decimals, recipient, usd, ngn, rate }, state.context);
+      const label = nearIntents.chainLabel(chain);
+      return ctx.reply(
+        `🌐 Confirm Cross-chain Send\n──────────────────────────\n` +
+        `You pay: ${fx.formatDual(usd, rate)}\n` +
+        `They get: ~${quote.amountOutFormatted} ${symbol} on ${label}\n` +
+        `To: ${recipient}\n` +
+        `Arrives in: ~${Math.max(1, Math.round((quote.timeEstimate || 60) / 60))} min\n\n` +
+        `Paid from your ${settlementLabel()}. Prices move — if the rate shifts more than 1% it's refunded.\n\n` +
+        `Enter your PIN to confirm:`,
+        cancelButton
+      );
+    }
+
+    if (state.type === "confirm_nit_send") {
+      await deleteSensitiveMessage(ctx);
+      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
+      if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
+      const user    = db.getUser(userId);
+      const context = state.context || "personal";
+      convState.clearState(userId);
+      const { chain, symbol, assetId, recipient, usd, ngn } = state.data;
+
+      if (!nearIntents.isEnabled()) {
+        return ctx.reply("🌐 Cross-chain sends aren't switched on yet — your money hasn't moved.", backToMenu);
+      }
+
+      let privateKey;
+      try {
+        privateKey = context === "business" && user.business_deposit_address
+          ? db.decryptBusinessPrivateKey(text, user)
+          : db.decryptPrivateKey(text, user);
+      } catch {
+        return ctx.reply("Couldn't unlock your wallet with that PIN.");
+      }
+
+      await ctx.reply("⏳ Sending...");
+      const from = getActiveWallet(user);
+      let txId = null;
+      try {
+        const settlement = await nearIntents.getSettlementToken();
+        const balance    = await nearIntents.getSettlementUsdcBalance(from);
+        if (balance < usd) {
+          return ctx.reply(
+            `Not enough ${settlementLabel()}. You have $${balance.toFixed(2)} there, need $${usd.toFixed(2)}.\n` +
+            `Top up ${from} on ${nearIntents.chainLabel(nearIntents.SETTLEMENT_CHAIN)} and try again.`,
+            backToMenu
+          );
+        }
+        const amountUnits = nearIntents.toUnits(usd, settlement.decimals);
+        const quote = await nearIntents.getQuote({
+          dry:              false,
+          swapType:         "EXACT_INPUT",
+          originAsset:      settlement.assetId,
+          destinationAsset: assetId,
+          amount:           amountUnits,
+          recipient,
+          refundTo:         from,
+        });
+        txId = db.recordTransaction(userId, "intents_send", walletLib.parseToMicro(usd.toFixed(6)), "pending", null);
+        const txHash = await nearIntents.sendSettlementUsdc(privateKey, quote.depositAddress, amountUnits);
+        db.updateTransactionStatus(txId, "submitted", txHash);
+        await nearIntents.submitDeposit(txHash, quote.depositAddress);
+
+        nearIntents.watchSwap(quote.depositAddress, (status) => {
+          const done = status.status === "SUCCESS";
+          db.updateTransactionStatus(txId, done ? "confirmed" : "failed");
+          notifyUser(userId, done
+            ? `✅ Delivered: ${status.swapDetails?.amountOutFormatted || quote.amountOutFormatted} ${symbol} reached ${recipient.slice(0, 10)}...`
+            : status.status === "REFUNDED"
+              ? `↩️ Your ${fx.formatNaira(ngn)} send to ${recipient.slice(0, 10)}... was refunded to your ${settlementLabel()}.`
+              : `⚠️ Your send to ${recipient.slice(0, 10)}... is taking longer than expected. Deposit ref: ${quote.depositAddress}`);
+        });
+
+        try { db.awardPoints(userId, POINTS.sendout, "sendout", `Sent ${fx.formatNaira(ngn)} as ${symbol}`); } catch (err) {
+          console.error("[points_award_intents_send]", err);
+        }
+        return ctx.reply(
+          `🚀 On its way!\n──────────────────────────\n` +
+          `${fx.formatDual(usd, state.data.rate)} → ~${quote.amountOutFormatted} ${symbol} on ${nearIntents.chainLabel(chain)}\n` +
+          `Tx: ${txHash}\n\nI'll message you when it lands.`,
+          afterPaymentButtons
+        );
+      } catch (err) {
+        console.error("[near_intents_send]", err);
+        if (txId) db.updateTransactionStatus(txId, "failed");
+        return ctx.reply(`❌ Send failed: ${err.shortMessage || err.message}`, backToMenu);
+      }
+    }
+
+    if (state.type === "await_nit_recv_amount") {
+      const parsed = fx.parseMoneyInput(text, { defaultCurrency: "NGN" });
+      if (!parsed || parsed.currency === "EUR") return ctx.reply("Enter an amount like ₦20,000 or $50:", cancelButton);
+      const { usd, ngn, rate } = await fx.resolveAmount(parsed);
+      if (usd < 1) return ctx.reply(`The minimum is $1 (≈ ${fx.formatNaira(rate)}).`, cancelButton);
+      const next = { ...state.data, usd, ngn, rate };
+
+      // Refunds go back on the payer's chain. On EVM chains the user's own address works there too.
+      if (!nearIntents.isEvmChain(state.data.chain)) {
+        convState.setState(userId, "await_nit_recv_refund", next, state.context);
+        return ctx.reply(
+          `Last step: paste the payer's ${nearIntents.chainLabel(state.data.chain)} address.\n` +
+          `If anything goes wrong, their ${state.data.symbol} is refunded there.`,
+          cancelButton
+        );
+      }
+      return createNitReceive(ctx, next);
+    }
+
+    if (state.type === "await_nit_recv_refund") {
+      const refundTo = text.trim();
+      if (!nearIntents.isValidRecipient(state.data.chain, refundTo)) {
+        return ctx.reply(`That doesn't look like a valid ${nearIntents.chainLabel(state.data.chain)} address. Paste it again, or type cancel.`, cancelButton);
+      }
+      return createNitReceive(ctx, { ...state.data, refundTo });
+    }
 
     if (state.type === "await_yield_amount") {
       const amount = parseFloat(text);
@@ -3635,9 +4040,7 @@ bot.on("text", async (ctx) => {
           prev.params.recipients[0]._resolved = true;
           const missingNow = getMissingQuestion(prev);
           if (missingNow) return ctx.reply(missingNow, Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
-          convState.setState(userId, 'confirm_intent_pin', { classified: prev }, getContext(userId));
-          const confirmText = buildConfirmationText(prev, prev.params.recipients);
-          return ctx.reply(`${confirmText}\n\nEnter your PIN to confirm:`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]) });
+          return askIntentPin(ctx, userId, prev, getContext(userId));
         }
       }
 
@@ -3650,9 +4053,7 @@ bot.on("text", async (ctx) => {
           prev.params.recipients[0].name_or_address = input;
           const missingNow = getMissingQuestion(prev);
           if (missingNow) return ctx.reply(missingNow, Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
-          convState.setState(userId, 'confirm_intent_pin', { classified: prev }, getContext(userId));
-          const confirmText = buildConfirmationText(prev, prev.params.recipients);
-          return ctx.reply(`${confirmText}\n\nEnter your PIN to confirm:`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]) });
+          return askIntentPin(ctx, userId, prev, getContext(userId));
         }
       }
 
@@ -3663,25 +4064,17 @@ bot.on("text", async (ctx) => {
     if (state.type === 'await_enter_amount') {
       convState.clearState(userId);
       const prev = state.data && state.data.classified ? state.data.classified : null;
-      const amtText = text.replace(/[,\s]/g, '');
-      let amount = null, currency = null;
-      const usMatch = amtText.match(/\$?([0-9]+(?:\.[0-9]+)?)/);
-      const ngMatch = amtText.match(/([0-9]+(?:\.[0-9]+)?)\s*(ngn|naira|₦)/i);
-      if (usMatch) { amount = parseFloat(usMatch[1]); currency = 'USDC'; }
-      else if (ngMatch) { amount = parseFloat(ngMatch[1]); currency = 'NGN'; }
-      else {
-        const justNum = parseFloat(amtText.replace(/[^0-9.]/g, ''));
-        if (!isNaN(justNum)) { amount = justNum; currency = 'USDC'; }
-      }
-      if (!amount || amount <= 0) return ctx.reply("Couldn't read that amount. Try: $50 or 5000 NGN", Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+      const parsedAmt = fx.parseMoneyInput(text, { defaultCurrency: 'NGN' });
+      const amount   = parsedAmt && parsedAmt.currency !== 'EUR' ? parsedAmt.amount : null;
+      const currency = parsedAmt && parsedAmt.currency === 'NGN' ? 'NGN' : 'USDC';
+      if (!amount || amount <= 0) return ctx.reply("Couldn't read that amount. Try: ₦20,000 or $50", Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
       if (prev && prev.params && prev.params.recipients && prev.params.recipients[0]) {
         prev.params.recipients[0].amount = amount;
+        delete prev.params.recipients[0].amount_ngn;
         prev.params.recipients[0].currency = currency || prev.params.recipients[0].currency || 'USDC';
         const missingNow = getMissingQuestion(prev);
         if (missingNow) return ctx.reply(missingNow, Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
-        convState.setState(userId, 'confirm_intent_pin', { classified: prev }, getContext(userId));
-        const confirmText = buildConfirmationText(prev, prev.params.recipients);
-        return ctx.reply(`${confirmText}\n\nEnter your PIN to confirm:`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]) });
+        return askIntentPin(ctx, userId, prev, getContext(userId));
       }
       return ctx.reply("Couldn't attach that amount to a pending instruction.", Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
     }
@@ -3701,9 +4094,7 @@ bot.on("text", async (ctx) => {
         prev.params.recipients[0].account_name = name;
         const missingNow = getMissingQuestion(prev);
         if (missingNow) return ctx.reply(missingNow, Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
-        convState.setState(userId, 'confirm_intent_pin', { classified: prev }, getContext(userId));
-        const confirmText = buildConfirmationText(prev, prev.params.recipients);
-        return ctx.reply(`${confirmText}\n\nEnter your PIN to confirm:`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]) });
+        return askIntentPin(ctx, userId, prev, getContext(userId));
       }
       return ctx.reply('Could not attach those bank details to a pending instruction.', Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
     }
@@ -3920,7 +4311,7 @@ bot.on("text", async (ctx) => {
 
       const user = db.getUser(userId);
       const context = state.context || "personal";
-      const classified = state.data.classified;
+      const classified = await normalizeIntentAmounts(state.data.classified);
       const plan = buildPlanFromClassifiedIntent(classified);
       convState.clearState(userId);
 
@@ -4227,13 +4618,7 @@ bot.on("text", async (ctx) => {
     case "offramp":
     case "scheduled": {
       // Build a plan from the classified intent
-      const confirmText = buildConfirmationText(classified, classified.params.recipients);
-      convState.setState(userId, "confirm_intent_pin", { classified }, context);
-      return ctx.reply(
-        `${confirmText}\n\nEnter your PIN to confirm:`,
-        { parse_mode: "Markdown",
-          ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]) }
-      );
+      return askIntentPin(ctx, userId, classified, context);
     }
 
     default:

@@ -27,6 +27,13 @@
 
 const { getJSONCompletion } = require("./ai_provider");
 const { resolvePayee }      = require("../src/payee_book");
+const { formatNaira }       = require("../src/fx");
+
+/** "₦20,000 (≈ $12.35)" once amounts are normalised, else the raw amount + currency. */
+function formatRecipientAmount(r) {
+  if (r.amount_ngn) return `${formatNaira(r.amount_ngn)} (≈ $${Number(r.amount).toFixed(2)})`;
+  return `${r.amount} ${r.currency || "USDC"}`;
+}
 
 // ─── Classification prompt ────────────────────────────────────────────────────
 
@@ -338,28 +345,31 @@ function buildConfirmationText(classified, resolvedRecipients) {
 
   if (intent === "transfer" || intent === "bulk_transfer") {
     lines.push("📤 Payment Summary\n──────────────────────────");
-    let total = 0;
+    let total = 0, totalNgn = 0;
     for (const r of resolvedRecipients) {
       const dest = r.wallet_address
         ? `\`${r.wallet_address.slice(0, 8)}...${r.wallet_address.slice(-6)}\``
         : r.name_or_address;
-      lines.push(`• ${r.name_or_address || dest}  →  ${r.amount} ${r.currency || "USDC"}`);
+      lines.push(`• ${r.name_or_address || dest}  →  ${formatRecipientAmount(r)}`);
       total += Number(r.amount) || 0;
+      totalNgn += Number(r.amount_ngn) || 0;
     }
     if (resolvedRecipients.length > 1) {
-      lines.push(`──────────────────────────\nTotal: ${total.toFixed(2)} ${resolvedRecipients[0]?.currency || "USDC"}`);
+      const totalText = totalNgn ? `${formatNaira(totalNgn)} (≈ $${total.toFixed(2)})` : `${total.toFixed(2)} ${resolvedRecipients[0]?.currency || "USDC"}`;
+      lines.push(`──────────────────────────\nTotal: ${totalText}`);
     }
   }
 
   if (intent === "offramp") {
     lines.push("💵 Cash Out Summary\n──────────────────────────");
     for (const r of resolvedRecipients) {
-      lines.push(`Amount: ${r.amount} USDC`);
+      lines.push(r.amount_ngn
+        ? `You receive: ~${formatNaira(r.amount_ngn)}\nFrom wallet: $${Number(r.amount).toFixed(2)}`
+        : `Amount: ${r.amount} USDC`);
       if (r.bank_name)      lines.push(`Bank: ${r.bank_name}`);
       if (r.account_number) lines.push(`Account: ${r.account_number}`);
       if (r.account_name)   lines.push(`Name: ${r.account_name}`);
     }
-    lines.push("(Naira rate shown at confirmation)");
   }
 
   if (intent === "scheduled") {
@@ -371,7 +381,7 @@ function buildConfirmationText(classified, resolvedRecipients) {
       : s.frequency || "on schedule";
     lines.push(`🔁 Scheduled Payment\n──────────────────────────`);
     for (const r of resolvedRecipients) {
-      lines.push(`• ${r.name_or_address}  →  ${r.amount} ${r.currency || "USDC"}`);
+      lines.push(`• ${r.name_or_address}  →  ${formatRecipientAmount(r)}`);
     }
     lines.push(`Runs: ${freq}${s.time ? " at " + s.time : ""}`);
   }

@@ -15,8 +15,9 @@ const PAJCASH_API_KEY  = process.env.PAJCASH_API_KEY  || "";
  * @param {number} telegramId - user's Telegram ID (for reference)
  * @param {bigint} amountMicro - amount in 18-decimal micro format
  * @param {object} bankDetails - { accountNumber, bankCode, accountName }
+ * @param {object} [nairaQuote] - { amountNgn, rate } the Naira figure the user was shown
  */
-async function requestOfframp(telegramId, amountMicro, bankDetails) {
+async function requestOfframp(telegramId, amountMicro, bankDetails, nairaQuote = {}) {
   const amountUsdc = parseFloat(walletLib.formatMicro(amountMicro));
 
   if (!PAJCASH_API_KEY) {
@@ -31,6 +32,8 @@ async function requestOfframp(telegramId, amountMicro, bankDetails) {
       amount: amountUsdc,
       currency: "USDC",
       destinationCurrency: "NGN",
+      ...(nairaQuote.amountNgn ? { expectedDestinationAmount: Math.round(nairaQuote.amountNgn) } : {}),
+      ...(nairaQuote.rate      ? { quotedRate: nairaQuote.rate } : {}),
       bankDetails,
       reference: `PAYIT-${telegramId}-${Date.now()}`,
     },

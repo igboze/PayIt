@@ -31,6 +31,11 @@ const tokens    = require("../src/tokens");
  * @returns {Promise<object>}   — { success, txHash?, amount, to, label, error? }
  */
 async function executeOnchainPayment(userWallet, toAddress, amountUsdc, telegramId, label, currency = "USDC") {
+  // Naira (or anything else) must be converted to USDC before it reaches here —
+  // otherwise "20000 NGN" would go out as 20,000 dollars.
+  if (currency !== "USDC" && currency !== "EURC") {
+    return { success: false, error: `Can't send ${currency} directly — amount wasn't converted to USDC.`, label, amount: amountUsdc, to: toAddress };
+  }
   let amountMicro;
   try {
     amountMicro = walletLib.parseToMicro(amountUsdc.toString());
@@ -89,10 +94,10 @@ async function executeOnchainPayment(userWallet, toAddress, amountUsdc, telegram
  * @param {string} label
  * @returns {Promise<object>}
  */
-async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, label = "Cash Out") {
+async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, label = "Cash Out", nairaQuote = {}) {
   let amountMicro;
   try {
-    amountMicro = walletLib.parseToMicro(amountUsdc.toString());
+    amountMicro = walletLib.parseToMicro(Number(amountUsdc).toFixed(6));
   } catch (err) {
     return { success: false, error: "Invalid amount: " + err.message, label, amount: amountUsdc };
   }
@@ -135,7 +140,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
       accountNumber: bankDetails.accountNumber || "0000000000",
       bankCode:      bankDetails.bankCode      || "000",
       accountName:   bankDetails.accountName   || "PayIT User",
-    });
+    }, nairaQuote);
     db.updateTransactionStatus(txId, "submitted");
     return {
       success: true,
@@ -204,7 +209,8 @@ async function executePlan(plan, pin, user, context = "personal") {
           accountName:   payment.account_name,
         },
         user.telegram_id,
-        payment.label || "Cash Out"
+        payment.label || "Cash Out",
+        { amountNgn: payment.amount_ngn }
       );
       results.push(result);
       continue;
