@@ -227,3 +227,52 @@ test("P2P Telegram Flow: Escrow Cancellation and Refund to Sender", async () => 
     /already been claimed/
   );
 });
+
+test("P2P Telegram Flow: Debug regressions (parsing, token extraction, t.me links, username sync, UX)", () => {
+  // 1. Extended natural language & slash commands
+  assert.deepEqual(socialTransfers.parseTransferInstruction("/send @chidi 25"), { username: "chidi", amount: 25 });
+  assert.deepEqual(socialTransfers.parseTransferInstruction("/pay @chidi $10"), { username: "chidi", amount: 10 });
+  assert.deepEqual(socialTransfers.parseTransferInstruction("/send $25 to @chidi"), { username: "chidi", amount: 25 });
+  assert.deepEqual(socialTransfers.parseTransferInstruction("send 10 usdc to @alice"), { username: "alice", amount: 10 });
+  assert.deepEqual(socialTransfers.parseTransferInstruction("tip @bob $5"), { username: "bob", amount: 5 });
+  assert.deepEqual(socialTransfers.parseTransferInstruction("send to @alice"), { username: "alice", amount: null });
+  assert.deepEqual(socialTransfers.parseTransferInstruction("gift @dave 15 dollars"), { username: "dave", amount: 15 });
+
+  // 2. extractClaimToken preserves clm_ prefix in both formats
+  assert.equal(socialTransfers.extractClaimToken("claim_clm_abcdef123456"), "clm_abcdef123456");
+  assert.equal(socialTransfers.extractClaimToken("clm_abcdef123456"), "clm_abcdef123456");
+  assert.equal(socialTransfers.extractClaimToken("ref_12345"), null);
+
+  // 3. normalizeTelegramHandle supports t.me URLs & @handles
+  assert.equal(socialTransfers.normalizeTelegramHandle("@Chidi"), "chidi");
+  assert.equal(socialTransfers.normalizeTelegramHandle("https://t.me/Chidi_Dev/"), "chidi_dev");
+  assert.equal(socialTransfers.normalizeTelegramHandle("t.me/alice?start=1"), "alice");
+  assert.equal(socialTransfers.normalizeTelegramHandle("a"), null);
+
+  // 4. buildGiftShareLinks does not duplicate claimUrl in shareText
+  const links = socialTransfers.buildGiftShareLinks({
+    targetUsername: "chidi",
+    amountUsdc: 12.5,
+    claimToken: "clm_test123",
+  });
+  assert.ok(links.claimUrl.includes("start=claim_clm_test123"));
+  assert.ok(!links.shareText.includes(links.claimUrl), "shareText must not duplicate claimUrl");
+
+  // 5. db.syncUsername updates handle so findUserByUsername finds renamed user
+  const syncUserId = 999555;
+  const syncWallet = walletLib.generateUserWallet();
+  db.createUserWithWallet(syncUserId, "old_handle", syncWallet.address, syncWallet.privateKey, "1234");
+  assert.ok(db.findUserByUsername("old_handle"));
+  db.syncUsername(syncUserId, "new_handle");
+  assert.equal(db.findUserByUsername("old_handle"), null);
+  assert.ok(db.findUserByUsername("new_handle"));
+
+  // 6. bot.js uses parsed.username (not broken parsed.targetUsername) and includes UX handlers
+  const botCode = fs.readFileSync(path.join(__dirname, "../bot.js"), "utf8");
+  assert.ok(!botCode.includes("parsed.targetUsername"), "Must not use broken parsed.targetUsername property");
+  assert.ok(!botCode.includes("socialInstruction.targetUsername"), "Must not use broken socialInstruction.targetUsername property");
+  assert.ok(botCode.includes('bot.action("action_pending_social_gifts"'), "Must include Pending Gifts management");
+  assert.ok(botCode.includes('bot.command("pay"'), "Must register /pay command");
+  assert.ok(botCode.includes("replyInsufficientP2PBalance"), "Must include vault-aware insufficient balance helper");
+  assert.ok(botCode.includes("socialTransfers.extractClaimToken"), "Must use extractClaimToken in bot.start");
+});

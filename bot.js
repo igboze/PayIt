@@ -192,6 +192,9 @@ bot.use(async (ctx, next) => {
   if (!userId) return next();
 
   const user = db.getUser(userId);
+  if (user && ctx.from?.username && (!user.username || user.username.toLowerCase() !== ctx.from.username.toLowerCase())) {
+    db.syncUsername(userId, ctx.from.username);
+  }
   if (!user || !user.is_blocked) return next();
 
   const text = ctx.message?.text?.trim();
@@ -475,33 +478,58 @@ const afterPaymentButtons = Markup.inlineKeyboard([
 
 bot.start(async (ctx) => {
   const startPayload = String(ctx.startPayload || ctx.message?.text?.split(" ")[1] || "").trim();
+  const claimTokenFromStart = socialTransfers.extractClaimToken(startPayload);
   const existing = db.getUser(ctx.from.id);
   if (existing) {
     if (existing.is_blocked) {
       return ctx.reply("⚠️ Your Proxim account is locked. Send /unlock to restore access.");
     }
 
-    if (startPayload && (startPayload.startsWith("claim_") || startPayload.startsWith("clm_"))) {
-      const claimToken = startPayload.replace(/^(claim_|clm_)/, "");
+    if (claimTokenFromStart) {
+      const pendingEscrow = db.getSocialEscrowByToken(claimTokenFromStart);
+      if (pendingEscrow && String(pendingEscrow.sender_id) === String(ctx.from.id) && pendingEscrow.status === "pending") {
+        const links = socialTransfers.buildGiftShareLinks({
+          targetUsername: pendingEscrow.target_handle,
+          amountUsdc: pendingEscrow.amount_usdc,
+          claimToken: claimTokenFromStart,
+        });
+        return ctx.reply(
+          `🎁 <b>Your Pending Gift for @${pendingEscrow.target_handle}</b>\n──────────────────────────\n` +
+          `• <b>Amount:</b> $${Number(pendingEscrow.amount_usdc).toFixed(2)}\n` +
+          `• <b>Status:</b> Waiting for @${pendingEscrow.target_handle} to claim\n\n` +
+          `Share this link with them, or cancel below to get an instant refund:`,
+          {
+            parse_mode: "HTML",
+            ...Markup.inlineKeyboard([
+              [Markup.button.url(`🚀 Share Gift with @${pendingEscrow.target_handle}`, links.shareUrl)],
+              [Markup.button.callback("↩️ Cancel & Get Refund", `action_cancel_escrow_${claimTokenFromStart}`)],
+              [Markup.button.callback("🏠 Main Menu", "main_menu")],
+            ]),
+          }
+        );
+      }
+
       try {
         const recipientAddr = getActiveWallet(existing);
         const claimRes = await socialTransfers.releaseEscrowToRecipient({
-          claimToken,
+          claimToken: claimTokenFromStart,
           claimantTelegramId: ctx.from.id,
           recipientAddress: recipientAddr,
         });
         if (claimRes && claimRes.success) {
+          const senderUser = db.getUser(claimRes.escrow.sender_id);
+          const fromLabel = senderUser?.username ? `@${senderUser.username}` : "a friend";
           await ctx.reply(
-            `🎁 <b>Gift Claimed!</b>\n──────────────────────────\n` +
-            `You received <b>$${Number(claimRes.escrow.amount_usdc).toFixed(2)} USDC</b>!\n` +
-            `The funds have been credited directly to your Proxim wallet.`,
+            `🎉 <b>You Claimed $${Number(claimRes.escrow.amount_usdc).toFixed(2)}!</b>\n──────────────────────────\n` +
+            `From: <b>${fromLabel}</b>\n` +
+            `The money is now in your Proxim wallet and ready to spend or cash out.`,
             { parse_mode: "HTML" }
           );
           try {
             await bot.telegram.sendMessage(
               claimRes.escrow.sender_id,
               `🎉 <b>Gift Claimed!</b>\n\n` +
-              `@${ctx.from.username || "Your friend"} has claimed your gift of <b>$${Number(claimRes.escrow.amount_usdc).toFixed(2)} USDC</b>!`,
+              `@${ctx.from.username || ctx.from.first_name || "Your friend"} just claimed your <b>$${Number(claimRes.escrow.amount_usdc).toFixed(2)}</b> gift!`,
               { parse_mode: "HTML" }
             );
           } catch (_) {}
@@ -535,29 +563,49 @@ bot.start(async (ctx) => {
   }
 
   let pendingClaimToken = null;
-  let giftGreeting = "";
-  if (startPayload && (startPayload.startsWith("claim_") || startPayload.startsWith("clm_"))) {
-    const token = startPayload.replace(/^(claim_|clm_)/, "");
-    const escrow = db.getSocialEscrowByToken(token);
+  let pendingGiftAmount = null;
+  let pendingGiftSender = null;
+  if (claimTokenFromStart) {
+    try { db.expireStaleSocialEscrows(); } catch (_) {}
+    const escrow = db.getSocialEscrowByToken(claimTokenFromStart);
     if (escrow && escrow.status === "pending") {
-      pendingClaimToken = token;
-      giftGreeting = `🎁 <b>You've received a gift of $${Number(escrow.amount_usdc).toFixed(2)} USDC!</b>\n` +
-        `Complete your free 10-second setup below to claim your funds.\n\n`;
+      pendingClaimToken = claimTokenFromStart;
+      pendingGiftAmount = Number(escrow.amount_usdc);
+      const senderUser = db.getUser(escrow.sender_id);
+      pendingGiftSender = senderUser?.username ? `@${senderUser.username}` : "A friend";
+    } else {
+      await ctx.reply("⚠️ This gift link has expired or has already been claimed. You can still set up your free Proxim account below!");
     }
   }
 
-  const referrer = startPayload && !pendingClaimToken ? db.getUserByReferralCode(startPayload) : null;
+  if (pendingClaimToken) {
+    convState.setState(ctx.from.id, "pending_claim", { pendingClaimToken }, "personal");
+    return ctx.reply(
+      `🎁 <b>${pendingGiftSender} sent you $${pendingGiftAmount.toFixed(2)}!</b>\n` +
+      `──────────────────────────\n` +
+      `Your money is waiting for you on <b>Proxim</b>.\n\n` +
+      `Set up your free wallet in <b>10 seconds</b> (just pick a 4-digit PIN) and your <b>$${pendingGiftAmount.toFixed(2)}</b> will land in your balance immediately.\n\n` +
+      `💵 Spend, save in dollars, or cash out to your bank anytime.`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [btnSuccess(`🎉 Claim $${pendingGiftAmount.toFixed(2)} Now`, "onboard_personal")],
+          [Markup.button.callback("💼 Claim to a Business Account", "onboard_business")],
+        ]),
+      }
+    );
+  }
+
+  const referrer = startPayload ? db.getUserByReferralCode(startPayload) : null;
   let referralGreeting = "";
   if (referrer && referrer.telegram_id !== ctx.from.id) {
     convState.setState(ctx.from.id, "pending_referral", { referrerId: referrer.telegram_id }, "personal");
     const inviterName = referrer.username ? `@${referrer.username}` : "a friend";
     referralGreeting = `🎁 You were invited by ${inviterName}!\nComplete setup and your first transaction to unlock bonus rewards.\n\n`;
-  } else if (pendingClaimToken) {
-    convState.setState(ctx.from.id, "pending_claim", { pendingClaimToken }, "personal");
   }
 
   return ctx.reply(
-    `${giftGreeting}${referralGreeting}` +
+    `${referralGreeting}` +
     `👋 <b>Welcome to Proxim</b>\n` +
     `──────────────────────────\n` +
     `Your non-custodial neobank living right inside Telegram.\n\n` +
@@ -2460,8 +2508,8 @@ async function showSendMoneyMenu(ctx) {
     `Available Balance: <b>${balDisplay}</b>\n\n` +
     `Where would you like to send or withdraw funds?\n\n` +
     `✈️ <b>Send to Telegram User (@username)</b>\n` +
-    `• Instant transfer to any Telegram user using @handle\n` +
-    `• Instant credit for registered users, or claimable gift link if new\n\n` +
+    `• Send dollars to any Telegram @username — free & instant\n` +
+    `• Not on Proxim yet? We create a 1-tap gift link for them\n\n` +
     `🇳🇬 <b>Bank Transfer (Cash Out to Naira)</b>\n` +
     `• Instant payout to 100+ Nigerian commercial banks & neobanks\n` +
     `• Direct NIBSS settlement into bank accounts in under 35 seconds\n\n` +
@@ -2487,20 +2535,108 @@ bot.action("action_send_menu", async (ctx) => {
   return showSendMoneyMenu(ctx);
 });
 
+async function replyInsufficientP2PBalance(ctx, userId, requestedAmount, availableBalance, context = "personal") {
+  const position = db.getOpenYieldPosition(userId, context) || db.getOpenYieldPosition(userId);
+  if (position && (availableBalance + position.amount_usdc) >= requestedAmount) {
+    const grossProfit = savings.calcAccruedYield(position);
+    const netProfit = grossProfit * (1 - savings.PAYIT_FEE_FRACTION);
+    return ctx.reply(
+      `⚠️ <b>Not Enough Spendable Balance</b>\n──────────────────────────\n` +
+      `You have <b>$${availableBalance.toFixed(2)}</b> available, plus <b>$${position.amount_usdc.toFixed(2)}</b> (+$${netProfit.toFixed(2)} profit) in your Savings Vault.\n\n` +
+      `Withdraw from savings first, or send a smaller amount:`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [btnSuccess("💵 Withdraw from Savings", "yield_withdraw_start")],
+          [Markup.button.callback("📥 Add Money", "action_receive")],
+          [Markup.button.callback("❌ Cancel", "action_send_menu")],
+        ]),
+      }
+    );
+  }
+  return ctx.reply(
+    `⚠️ <b>Not Enough Balance</b>\n──────────────────────────\n` +
+    `You tried to send <b>$${requestedAmount.toFixed(2)}</b>, but your available balance is <b>$${availableBalance.toFixed(2)}</b>.\n\n` +
+    `Add money to your wallet or type a smaller amount:`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [btnSuccess("📥 Add Money", "action_receive")],
+        [Markup.button.callback("❌ Cancel", "action_send_menu")],
+      ]),
+    }
+  );
+}
+
 bot.action("action_send_telegram_user", async (ctx) => {
   ctx.answerCbQuery().catch(() => {});
   const user = requireUser(ctx);
   if (!user) return;
+  try { db.expireStaleSocialEscrows(); } catch (_) {}
+  const pendingGifts = db.getPendingSocialEscrowsBySender(ctx.from.id) || [];
   convState.setState(ctx.from.id, "await_p2p_username", {}, getContext(ctx.from.id));
+
+  const buttons = [];
+  if (pendingGifts.length > 0) {
+    buttons.push([btnPrimary(`🎁 My Pending Gifts (${pendingGifts.length})`, "action_pending_social_gifts")]);
+  }
+  buttons.push([Markup.button.callback("❌ Cancel", "action_send_menu")]);
+
   return ctx.reply(
-    `✈️ <b>Send to Telegram User</b>\n──────────────────────────\n` +
-    `Enter the Telegram @username of the person you want to send money to.\n\n` +
-    `💬 <i>Example: type <b>@chidi</b> or <b>chidi</b></i>`,
+    `✈️ <b>Send Money on Telegram</b>\n──────────────────────────\n` +
+    `Who are you sending to?\n\n` +
+    `Type their Telegram <b>@username</b> (or paste their t.me link):\n` +
+    `💬 <i>Example: <b>@chidi</b></i>\n\n` +
+    `💡 <i>Shortcut: You can also type <b>send $10 to @chidi</b> directly in chat anytime!</i>`,
     {
       parse_mode: "HTML",
-      ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_send_menu")]])
+      ...Markup.inlineKeyboard(buttons),
     }
   );
+});
+
+bot.action("action_pending_social_gifts", async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const user = requireUser(ctx);
+  if (!user) return;
+  try { db.expireStaleSocialEscrows(); } catch (_) {}
+  const pending = db.getPendingSocialEscrowsBySender(ctx.from.id) || [];
+
+  if (!pending.length) {
+    return ctx.reply(
+      `🎁 <b>No Pending Gifts</b>\n\nAll your sent gifts have either been claimed or refunded.`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [btnSuccess("✈️ Send to @username", "action_send_telegram_user")],
+          [Markup.button.callback("🏠 Main Menu", "main_menu")],
+        ]),
+      }
+    );
+  }
+
+  let msg = `🎁 <b>Your Pending Gifts (${pending.length})</b>\n──────────────────────────\n`;
+  msg += `Tap a button below to resend a gift link or cancel for an instant refund:\n\n`;
+  const rows = [];
+  for (const g of pending.slice(0, 6)) {
+    const amt = Number(g.amount_usdc).toFixed(2);
+    const links = socialTransfers.buildGiftShareLinks({
+      targetUsername: g.target_handle,
+      amountUsdc: g.amount_usdc,
+      claimToken: g.claim_token,
+    });
+    msg += `• <b>@${g.target_handle}</b> — <b>$${amt}</b> (unclaimed)\n`;
+    rows.push([
+      Markup.button.url(`🚀 Share $${amt} → @${g.target_handle}`, links.shareUrl),
+      Markup.button.callback(`↩️ Refund`, `action_cancel_escrow_${g.claim_token}`),
+    ]);
+  }
+  rows.push([Markup.button.callback("« Back", "action_send_telegram_user")]);
+
+  return ctx.reply(msg, {
+    parse_mode: "HTML",
+    ...Markup.inlineKeyboard(rows),
+  });
 });
 
 function buildP2PAmountKeyboard(balance = 0) {
@@ -2530,17 +2666,27 @@ function promptP2PConfirmation(ctx, data) {
     amountUsdc
   }, context || "personal");
 
-  const note = isRegistered
-    ? "• <b>Settlement:</b> Direct transfer to their Proxim wallet on Arc\n"
-    : "• <b>Settlement:</b> 48-Hour Claim Escrow Link\n• <i>Recipient gets a 1-tap claim link. If unclaimed, you can cancel & refund anytime.</i>\n";
+  if (isRegistered) {
+    return ctx.reply(
+      `📤 <b>Confirm Transfer</b>\n──────────────────────────\n` +
+      `• <b>To:</b> @${targetUsername} (Proxim User ✅)\n` +
+      `• <b>Amount:</b> <b>$${amountUsdc.toFixed(2)}</b>\n` +
+      `• <b>Fee:</b> Free ($0.00) · Instant ⚡\n\n` +
+      `🔐 <i>Enter your 4-digit PIN to send:</i>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_send_menu")]])
+      }
+    );
+  }
 
   return ctx.reply(
-    `📤 <b>Confirm Transfer to @${targetUsername}</b>\n──────────────────────────\n` +
-    `• <b>Recipient:</b> @${targetUsername} ${isRegistered ? "(Registered Proxim User ✅)" : "(Unregistered 🎁)"}\n` +
-    `• <b>Amount:</b> <b>$${amountUsdc.toFixed(2)} USDC</b>\n` +
-    `• <b>Network:</b> Arc (Gas Sponsored ⛽)\n` +
-    note + `\n` +
-    `💬 <i>Send your 4-digit PIN into the chat (e.g. <b>1234</b>) to confirm:</i>`,
+    `🎁 <b>Confirm Gift Link</b>\n──────────────────────────\n` +
+    `• <b>For:</b> @${targetUsername} (Not on Proxim yet)\n` +
+    `• <b>Amount:</b> <b>$${amountUsdc.toFixed(2)}</b>\n` +
+    `• <b>Fee:</b> Free ($0.00)\n\n` +
+    `<i>You'll get a 1-tap link to share with @${targetUsername}. If unclaimed after 48 hours, or if you cancel, you get a full refund.</i>\n\n` +
+    `🔐 <i>Enter your 4-digit PIN to create gift:</i>`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_send_menu")]])
@@ -2575,10 +2721,7 @@ async function initiateP2PTransfer(ctx, targetUsername, amount = null) {
 
   if (prep.amountUsdc !== null && prep.amountUsdc > 0) {
     if (balNum < prep.amountUsdc) {
-      return ctx.reply(
-        `⚠️ Insufficient balance.\nYou want to send <b>$${prep.amountUsdc.toFixed(2)} USDC</b>, but your available balance is <b>${balDisplay}</b>.`,
-        { parse_mode: "HTML", ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_send_menu")]]) }
-      );
+      return replyInsufficientP2PBalance(ctx, ctx.from.id, prep.amountUsdc, balNum, context);
     }
     return promptP2PConfirmation(ctx, {
       ...prep,
@@ -2596,15 +2739,15 @@ async function initiateP2PTransfer(ctx, targetUsername, amount = null) {
   }, context);
 
   const recipientStatus = prep.isRegistered
-    ? "✅ <b>Registered Proxim Member</b> (Instant wallet transfer)"
-    : "🎁 <b>New to Proxim</b> (48h Claimable Gift Escrow Link)";
+    ? "✅ <b>On Proxim</b> — lands in their wallet instantly"
+    : "🎁 <b>New to Proxim</b> — we'll create a 1-tap gift link for them";
 
   return ctx.reply(
     `✈️ <b>Send to @${prep.targetUsername}</b>\n──────────────────────────\n` +
-    `• Status: ${recipientStatus}\n` +
-    `• Available Balance: <b>${balDisplay}</b>\n\n` +
-    `How much USD would you like to send?\n` +
-    `👉 <b>Tap a quick amount below</b>, or type your amount into the chat:`,
+    `• ${recipientStatus}\n` +
+    `• Your Balance: <b>${balDisplay}</b>\n\n` +
+    `How much would you like to send?\n` +
+    `👉 <b>Tap an amount below</b>, or type any amount in USD:`,
     {
       parse_mode: "HTML",
       ...buildP2PAmountKeyboard(balNum)
@@ -2617,7 +2760,7 @@ bot.action(/^p2p_amt_(\d+(?:\.\d+)?|max)$/, async (ctx) => {
   const userId = ctx.from.id;
   const state = convState.getState(userId);
   if (!state || state.type !== "await_p2p_amount") {
-    return ctx.reply("Session expired. Please start transfer again.", backToMenu);
+    return ctx.reply("Session expired. Tap Send Money to start again.", backToMenu);
   }
   const user = requireUser(ctx);
   if (!user) return;
@@ -2636,10 +2779,10 @@ bot.action(/^p2p_amt_(\d+(?:\.\d+)?|max)$/, async (ctx) => {
   }
 
   if (amount <= 0 || isNaN(amount)) {
-    return ctx.reply("Please enter or select a valid positive amount.");
+    return replyInsufficientP2PBalance(ctx, userId, 1, balNum, state.context);
   }
   if (amount > balNum) {
-    return ctx.reply(`⚠️ Insufficient balance. You have $${balNum.toFixed(2)} USDC.`);
+    return replyInsufficientP2PBalance(ctx, userId, amount, balNum, state.context);
   }
 
   return promptP2PConfirmation(ctx, {
@@ -2666,7 +2809,7 @@ bot.action(/^action_cancel_escrow_([a-zA-Z0-9_]+)$/, async (ctx) => {
     });
     return ctx.reply(
       `✅ <b>Gift Cancelled & Refunded</b>\n──────────────────────────\n` +
-      `Your escrow gift of <b>$${Number(refundRes.escrow.amount_usdc).toFixed(2)} USDC</b> for @${refundRes.escrow.target_handle} has been refunded to your wallet.`,
+      `Your <b>$${Number(refundRes.escrow.amount_usdc).toFixed(2)}</b> gift for <b>@${refundRes.escrow.target_handle}</b> has been returned to your wallet.`,
       { parse_mode: "HTML", ...backToMenu }
     );
   } catch (err) {
@@ -5462,8 +5605,16 @@ bot.command("autopay",  showAutoPay);
 bot.command(["send", "withdraw", "cashout"], async (ctx) => {
   const text = ctx.message?.text?.trim() || "";
   const parsed = socialTransfers.parseTransferInstruction(text);
-  if (parsed && parsed.targetUsername) {
-    return initiateP2PTransfer(ctx, parsed.targetUsername, parsed.amountUsdc);
+  if (parsed && parsed.username) {
+    return initiateP2PTransfer(ctx, parsed.username, parsed.amount);
+  }
+  return showSendMoneyMenu(ctx);
+});
+bot.command("pay", async (ctx) => {
+  const text = ctx.message?.text?.trim() || "";
+  const parsed = socialTransfers.parseTransferInstruction(text);
+  if (parsed && parsed.username) {
+    return initiateP2PTransfer(ctx, parsed.username, parsed.amount);
   }
   return showSendMoneyMenu(ctx);
 });
@@ -6327,23 +6478,28 @@ bot.on("text", async (ctx) => {
 
       if (state.data?.pendingClaimToken) {
         try {
+          const targetWalletAddr = (isBusiness && state.data.businessAddress)
+            ? state.data.businessAddress
+            : state.data.address;
           const claimRes = await socialTransfers.releaseEscrowToRecipient({
             claimToken: state.data.pendingClaimToken,
             claimantTelegramId: userId,
-            recipientAddress: state.data.address
+            recipientAddress: targetWalletAddr
           });
           if (claimRes && claimRes.success) {
+            const senderUser = db.getUser(claimRes.escrow.sender_id);
+            const fromLabel = senderUser?.username ? `@${senderUser.username}` : "a friend";
             await ctx.reply(
-              `🎁 <b>Gift Claimed!</b>\n──────────────────────────\n` +
-              `You received <b>$${Number(claimRes.escrow.amount_usdc).toFixed(2)} USDC</b>!\n` +
-              `The funds have been credited to your new Proxim wallet.`,
+              `🎉 <b>You Claimed $${Number(claimRes.escrow.amount_usdc).toFixed(2)}!</b>\n──────────────────────────\n` +
+              `From: <b>${fromLabel}</b>\n` +
+              `The money is now in your new Proxim wallet and ready to use.`,
               { parse_mode: "HTML" }
             );
             try {
               await bot.telegram.sendMessage(
                 claimRes.escrow.sender_id,
                 `🎉 <b>Gift Claimed!</b>\n\n` +
-                `@${ctx.from.username || "Your friend"} has joined Proxim and claimed your gift of <b>$${Number(claimRes.escrow.amount_usdc).toFixed(2)} USDC</b>!`,
+                `@${ctx.from.username || ctx.from.first_name || "Your friend"} just joined Proxim and claimed your <b>$${Number(claimRes.escrow.amount_usdc).toFixed(2)}</b> gift!`,
                 { parse_mode: "HTML" }
               );
             } catch (_) {}
@@ -7595,9 +7751,12 @@ function formatCustomerFriendlyOfframpError(rawError) {
 
     // ── Telegram P2P username ────────────────────────────────────────────────
     if (state.type === "await_p2p_username") {
-      const cleanTarget = text.trim().replace(/^@+/, "");
-      if (!cleanTarget || cleanTarget.length < 3) {
-        return ctx.reply("Please enter a valid Telegram username (e.g. @chidi):");
+      const cleanTarget = socialTransfers.normalizeTelegramHandle(text);
+      if (!cleanTarget) {
+        return ctx.reply(
+          "Please enter a valid Telegram username (e.g. <b>@chidi</b> or <b>t.me/chidi</b>):",
+          { parse_mode: "HTML", ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_send_menu")]]) }
+        );
       }
       return initiateP2PTransfer(ctx, cleanTarget, null);
     }
@@ -7606,7 +7765,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
     if (state.type === "await_p2p_amount") {
       const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
       if (isNaN(amount) || amount <= 0) {
-        return ctx.reply("Enter a valid amount in USD (e.g. 15):");
+        return ctx.reply("Please enter a valid dollar amount (e.g. <b>15</b>):", { parse_mode: "HTML" });
       }
       const user = requireUser(ctx);
       if (!user) return;
@@ -7618,7 +7777,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
       } catch (_) {}
 
       if (amount > balNum) {
-        return ctx.reply(`⚠️ Insufficient balance. You have $${balNum.toFixed(2)} USDC.`);
+        return replyInsufficientP2PBalance(ctx, userId, amount, balNum, state.context);
       }
 
       return promptP2PConfirmation(ctx, {
@@ -7634,16 +7793,28 @@ function formatCustomerFriendlyOfframpError(rawError) {
     // ── Telegram P2P PIN confirmation ────────────────────────────────────────
     if (state.type === "confirm_p2p_send") {
       await deleteSensitiveMessage(ctx);
-      if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
-      if (!db.verifyPin(userId, text)) {
-        convState.clearState(userId);
-        return ctx.reply("❌ Incorrect PIN. Transfer cancelled.");
+      if (!/^\d{4}$/.test(text)) {
+        return ctx.reply(
+          "Please enter your 4-digit PIN (e.g. 1234):",
+          Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_send_menu")]])
+        );
+      }
+      const pinStatus = db.verifyPinWithStatus(userId, text);
+      if (!pinStatus.valid) {
+        if (pinStatus.locked) {
+          convState.clearState(userId);
+          return ctx.reply("🔒 Account locked due to too many wrong PIN attempts. Please try again later.", backToMenu);
+        }
+        return ctx.reply(
+          `❌ Incorrect PIN (${pinStatus.remainingAttempts} attempt(s) left). Try again:`,
+          Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_send_menu")]])
+        );
       }
       const user = db.getUser(userId);
       const context = state.context || "personal";
       const { targetUsername, isRegistered, targetUser, targetAddress, amountUsdc } = state.data;
       convState.clearState(userId);
-      await ctx.reply("⏳ Authorizing and sending transfer...");
+      await ctx.reply(isRegistered ? `⏳ Sending $${amountUsdc.toFixed(2)} to @${targetUsername}...` : `⏳ Creating your $${amountUsdc.toFixed(2)} gift link...`);
 
       if (isRegistered && targetAddress) {
         // Direct Arc transfer to user wallet
@@ -7678,18 +7849,17 @@ function formatCustomerFriendlyOfframpError(rawError) {
             await ctx.replyWithPhoto(
               { source: receiptPath },
               {
-                caption: `✅ <b>Transfer Complete!</b>\n\nSent <b>$${amountUsdc.toFixed(2)} USDC</b> to <b>@${targetUsername}</b>.\nFunds have been deposited in their Proxim wallet.`,
+                caption: `✅ <b>Sent $${amountUsdc.toFixed(2)} to @${targetUsername}!</b>\nIt's already in their Proxim wallet.`,
                 parse_mode: "HTML",
                 ...afterPaymentButtons
               }
             );
           } catch {
             await ctx.reply(
-              `✅ <b>Transfer Complete!</b>\n──────────────────────────\n` +
-              `• <b>Sent:</b> $${amountUsdc.toFixed(2)} USDC\n` +
+              `✅ <b>Sent $${amountUsdc.toFixed(2)} to @${targetUsername}!</b>\n──────────────────────────\n` +
+              `• <b>Amount:</b> $${amountUsdc.toFixed(2)}\n` +
               `• <b>To:</b> @${targetUsername}\n` +
-              `• <b>Tx:</b> <code>${results[0].txHash || "Confirmed"}</code>\n\n` +
-              `Funds are in @${targetUsername}'s Proxim wallet immediately.`,
+              `• <b>Status:</b> Delivered instantly ⚡`,
               { parse_mode: "HTML", ...afterPaymentButtons }
             );
           }
@@ -7698,9 +7868,9 @@ function formatCustomerFriendlyOfframpError(rawError) {
           try {
             await bot.telegram.sendMessage(
               targetUser.telegram_id,
-              `🎉 <b>You received money!</b>\n──────────────────────────\n` +
-              `<b>@${user.username || "A Proxim friend"}</b> just sent you <b>$${amountUsdc.toFixed(2)} USDC</b>!\n\n` +
-              `The funds are available in your Proxim wallet right now.`,
+              `🎉 <b>You received $${amountUsdc.toFixed(2)}!</b>\n──────────────────────────\n` +
+              `<b>@${user.username || "A friend"}</b> just sent you <b>$${amountUsdc.toFixed(2)}</b>.\n\n` +
+              `It's in your Proxim wallet and ready to use right now.`,
               { parse_mode: "HTML" }
             );
           } catch (notifErr) {
@@ -7716,7 +7886,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
           payments: [{
             to: escrowHolder,
             amount: amountUsdc,
-            label: `Escrow gift for @${targetUsername}`,
+            label: `Gift link for @${targetUsername}`,
             currency: "USDC"
           }]
         };
@@ -7731,19 +7901,18 @@ function formatCustomerFriendlyOfframpError(rawError) {
           });
 
           const giftKeyboard = Markup.inlineKeyboard([
-            [Markup.button.url("🚀 Send Gift Link to @" + targetUsername, gift.shareUrl)],
-            [Markup.button.callback("❌ Cancel & Refund Escrow", `action_cancel_escrow_${gift.claimToken}`)],
+            [Markup.button.url(`🚀 Share Gift with @${targetUsername}`, gift.shareUrl)],
+            [Markup.button.callback("↩️ Cancel & Get Refund", `action_cancel_escrow_${gift.claimToken}`)],
             [Markup.button.callback("🏠 Main Menu", "main_menu")]
           ]);
 
           await ctx.reply(
-            `🎁 <b>Gift Created Successfully!</b>\n──────────────────────────\n` +
-            `• <b>Amount:</b> $${amountUsdc.toFixed(2)} USDC\n` +
-            `• <b>Recipient:</b> @${targetUsername}\n` +
-            `• <b>Escrow Status:</b> 🟢 Reserved for 48 Hours\n\n` +
-            `Because @${targetUsername} hasn't joined Proxim yet, tap the button below to send them their claim link via Telegram:\n\n` +
-            `🔗 <code>${gift.claimUrl}</code>\n\n` +
-            `<i>They will get their funds instantly upon setting up their free Proxim wallet. If unclaimed after 48 hours, or if you cancel below, your funds will be fully refunded.</i>`,
+            `🎁 <b>Your $${amountUsdc.toFixed(2)} Gift Link is Ready!</b>\n──────────────────────────\n` +
+            `• <b>For:</b> @${targetUsername}\n` +
+            `• <b>Amount:</b> $${amountUsdc.toFixed(2)}\n` +
+            `• <b>Valid for:</b> 48 hours (full refund if unclaimed)\n\n` +
+            `👉 Tap <b>Share Gift</b> below to send it to @${targetUsername} on Telegram, or copy this link:\n` +
+            `<code>${gift.claimUrl}</code>`,
             { parse_mode: "HTML", ...giftKeyboard }
           );
         } else {
@@ -9171,8 +9340,8 @@ function formatCustomerFriendlyOfframpError(rawError) {
   }
 
   const socialInstruction = socialTransfers.parseTransferInstruction(text);
-  if (socialInstruction && socialInstruction.targetUsername) {
-    return initiateP2PTransfer(ctx, socialInstruction.targetUsername, socialInstruction.amountUsdc);
+  if (socialInstruction && socialInstruction.username) {
+    return initiateP2PTransfer(ctx, socialInstruction.username, socialInstruction.amount);
   }
 
   await ctx.reply("⏳ On it...");

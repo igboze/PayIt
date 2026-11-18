@@ -510,6 +510,16 @@ function findUserByUsername(username) {
   return db.prepare("SELECT * FROM users WHERE LOWER(username) = ?").get(clean) || null;
 }
 
+function syncUsername(telegramId, username) {
+  if (!telegramId || !username) return;
+  const clean = String(username).replace(/^@/, "").trim();
+  if (!clean) return;
+  try {
+    db.prepare("UPDATE users SET username = ? WHERE telegram_id = ? AND (username IS NULL OR LOWER(username) != LOWER(?))")
+      .run(clean, telegramId, clean);
+  } catch (_) {}
+}
+
 function getUser(telegramId) {
   return db.prepare("SELECT * FROM users WHERE telegram_id = ?").get(telegramId) || null;
 }
@@ -2644,6 +2654,7 @@ module.exports = {
   getUser,
   getUserByTelegramId: getUser,
   findUserByUsername,
+  syncUsername,
   getAllUsers,
   getUserByDepositAddress,
   getSystemDecryptedPrivateKey,
