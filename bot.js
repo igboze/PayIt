@@ -7816,108 +7816,121 @@ function formatCustomerFriendlyOfframpError(rawError) {
       convState.clearState(userId);
       await ctx.reply(isRegistered ? `⏳ Sending $${amountUsdc.toFixed(2)} to @${targetUsername}...` : `⏳ Creating your $${amountUsdc.toFixed(2)} gift link...`);
 
-      if (isRegistered && targetAddress) {
-        // Direct Arc transfer to user wallet
-        const plan = {
-          payments: [{
-            to: targetAddress,
-            amount: amountUsdc,
-            label: `Transfer to @${targetUsername}`,
-            currency: "USDC"
-          }]
-        };
-        const results = await executePlan(plan, text, user, context);
-        if (results[0]?.success) {
-          try {
-            db.awardPoints(userId, POINTS.sendout || 10, "p2p_send", `Sent $${amountUsdc.toFixed(2)} to @${targetUsername}`);
-          } catch (_) {}
+      try {
+        if (isRegistered && targetAddress) {
+          // Direct Arc transfer to user wallet
+          const plan = {
+            payments: [{
+              to: targetAddress,
+              amount: amountUsdc,
+              label: `Transfer to @${targetUsername}`,
+              currency: "USDC",
+              idempotency_key: `p2p_direct_${userId}_${targetUsername}_${Date.now()}`,
+            }]
+          };
+          const results = await executePlan(plan, text, user, context);
+          if (results[0]?.success) {
+            try {
+              db.awardPoints(userId, POINTS.sendout || 10, "p2p_send", `Sent $${amountUsdc.toFixed(2)} to @${targetUsername}`);
+            } catch (_) {}
 
-          try {
-            const receiptPath = await generateReceiptPNG({
-              receiptId: results[0].txHash?.slice(0, 10) || `TX-${Date.now()}`,
-              senderName: user.username ? `@${user.username}` : "Proxim Wallet",
-              senderAddress: getActiveWallet(user),
-              recipientName: `@${targetUsername}`,
-              recipientAddress: targetAddress,
-              amountUsdc: amountUsdc,
-              token: "USDC",
-              type: "P2P Payment",
-              timestamp: new Date().toISOString(),
-              status: "Confirmed",
-              txHash: results[0].txHash,
+            try {
+              const receiptPath = await generateReceiptPNG({
+                receiptId: results[0].txHash?.slice(0, 10) || `TX-${Date.now()}`,
+                senderName: user.username ? `@${user.username}` : "Proxim Wallet",
+                senderAddress: getActiveWallet(user),
+                recipientName: `@${targetUsername}`,
+                recipientAddress: targetAddress,
+                amountUsdc: amountUsdc,
+                token: "USDC",
+                type: "P2P Payment",
+                timestamp: new Date().toISOString(),
+                status: "Confirmed",
+                txHash: results[0].txHash,
+              });
+              await ctx.replyWithPhoto(
+                { source: receiptPath },
+                {
+                  caption: `✅ <b>Sent $${amountUsdc.toFixed(2)} to @${targetUsername}!</b>\nIt's already in their Proxim wallet.`,
+                  parse_mode: "HTML",
+                  ...afterPaymentButtons
+                }
+              );
+            } catch {
+              await ctx.reply(
+                `✅ <b>Sent $${amountUsdc.toFixed(2)} to @${targetUsername}!</b>\n──────────────────────────\n` +
+                `• <b>Amount:</b> $${amountUsdc.toFixed(2)}\n` +
+                `• <b>To:</b> @${targetUsername}\n` +
+                `• <b>Status:</b> Delivered instantly ⚡`,
+                { parse_mode: "HTML", ...afterPaymentButtons }
+              );
+            }
+
+            // Notify recipient
+            try {
+              await bot.telegram.sendMessage(
+                targetUser.telegram_id,
+                `🎉 <b>You received $${amountUsdc.toFixed(2)}!</b>\n──────────────────────────\n` +
+                `<b>@${user.username || "A friend"}</b> just sent you <b>$${amountUsdc.toFixed(2)}</b>.\n\n` +
+                `It's in your Proxim wallet and ready to use right now.`,
+                { parse_mode: "HTML" }
+              );
+            } catch (notifErr) {
+              console.warn("[p2p_notify_recipient]", notifErr.message);
+            }
+          } else {
+            await safeReplyFormattedResults(ctx, results, backToMenu);
+          }
+        } else {
+          // Unregistered user -> Lock funds into escrow address
+          const escrowHolder = socialTransfers.getEscrowHolderAddress();
+          const plan = {
+            payments: [{
+              to: escrowHolder,
+              amount: amountUsdc,
+              label: `Gift link for @${targetUsername}`,
+              currency: "USDC",
+              idempotency_key: `p2p_gift_${userId}_${targetUsername}_${Date.now()}`,
+            }]
+          };
+          const results = await executePlan(plan, text, user, context);
+          if (results[0]?.success) {
+            const gift = socialTransfers.createGiftEscrow({
+              senderId: userId,
+              senderAccountType: context,
+              targetUsername,
+              amountUsdc,
+              expiresHours: 48
             });
-            await ctx.replyWithPhoto(
-              { source: receiptPath },
-              {
-                caption: `✅ <b>Sent $${amountUsdc.toFixed(2)} to @${targetUsername}!</b>\nIt's already in their Proxim wallet.`,
-                parse_mode: "HTML",
-                ...afterPaymentButtons
-              }
-            );
-          } catch {
+
+            const giftKeyboard = Markup.inlineKeyboard([
+              [Markup.button.url(`🚀 Share Gift with @${targetUsername}`, gift.shareUrl)],
+              [Markup.button.callback("↩️ Cancel & Get Refund", `action_cancel_escrow_${gift.claimToken}`)],
+              [Markup.button.callback("🏠 Main Menu", "main_menu")]
+            ]);
+
             await ctx.reply(
-              `✅ <b>Sent $${amountUsdc.toFixed(2)} to @${targetUsername}!</b>\n──────────────────────────\n` +
+              `🎁 <b>Your $${amountUsdc.toFixed(2)} Gift Link is Ready!</b>\n──────────────────────────\n` +
+              `• <b>For:</b> @${targetUsername}\n` +
               `• <b>Amount:</b> $${amountUsdc.toFixed(2)}\n` +
-              `• <b>To:</b> @${targetUsername}\n` +
-              `• <b>Status:</b> Delivered instantly ⚡`,
-              { parse_mode: "HTML", ...afterPaymentButtons }
+              `• <b>Valid for:</b> 48 hours (full refund if unclaimed)\n\n` +
+              `👉 Tap <b>Share Gift</b> below to send it to @${targetUsername} on Telegram, or copy this link:\n` +
+              `<code>${gift.claimUrl}</code>`,
+              { parse_mode: "HTML", ...giftKeyboard }
             );
+          } else {
+            await safeReplyFormattedResults(ctx, results, backToMenu);
           }
-
-          // Notify recipient
-          try {
-            await bot.telegram.sendMessage(
-              targetUser.telegram_id,
-              `🎉 <b>You received $${amountUsdc.toFixed(2)}!</b>\n──────────────────────────\n` +
-              `<b>@${user.username || "A friend"}</b> just sent you <b>$${amountUsdc.toFixed(2)}</b>.\n\n` +
-              `It's in your Proxim wallet and ready to use right now.`,
-              { parse_mode: "HTML" }
-            );
-          } catch (notifErr) {
-            console.warn("[p2p_notify_recipient]", notifErr.message);
-          }
-        } else {
-          await safeReplyFormattedResults(ctx, results, backToMenu);
         }
-      } else {
-        // Unregistered user -> Lock funds into escrow address
-        const escrowHolder = socialTransfers.getEscrowHolderAddress();
-        const plan = {
-          payments: [{
-            to: escrowHolder,
-            amount: amountUsdc,
-            label: `Gift link for @${targetUsername}`,
-            currency: "USDC"
-          }]
-        };
-        const results = await executePlan(plan, text, user, context);
-        if (results[0]?.success) {
-          const gift = socialTransfers.createGiftEscrow({
-            senderId: userId,
-            senderAccountType: context,
-            targetUsername,
-            amountUsdc,
-            expiresHours: 48
-          });
-
-          const giftKeyboard = Markup.inlineKeyboard([
-            [Markup.button.url(`🚀 Share Gift with @${targetUsername}`, gift.shareUrl)],
-            [Markup.button.callback("↩️ Cancel & Get Refund", `action_cancel_escrow_${gift.claimToken}`)],
-            [Markup.button.callback("🏠 Main Menu", "main_menu")]
-          ]);
-
-          await ctx.reply(
-            `🎁 <b>Your $${amountUsdc.toFixed(2)} Gift Link is Ready!</b>\n──────────────────────────\n` +
-            `• <b>For:</b> @${targetUsername}\n` +
-            `• <b>Amount:</b> $${amountUsdc.toFixed(2)}\n` +
-            `• <b>Valid for:</b> 48 hours (full refund if unclaimed)\n\n` +
-            `👉 Tap <b>Share Gift</b> below to send it to @${targetUsername} on Telegram, or copy this link:\n` +
-            `<code>${gift.claimUrl}</code>`,
-            { parse_mode: "HTML", ...giftKeyboard }
-          );
-        } else {
-          await safeReplyFormattedResults(ctx, results, backToMenu);
-        }
+      } catch (err) {
+        console.error("[bot:confirm_p2p_send:error]", err);
+        await safeReplyHtml(
+          ctx,
+          `❌ <b>Transfer Failed</b>\n──────────────────────────\n` +
+          `⚠️ <b>Reason:</b> ${escapeHtml(err.message || "Unexpected error")}\n\n` +
+          `🔒 <b>Status:</b> Your balance is safe. Please try again.`,
+          backToMenu
+        );
       }
       return;
     }

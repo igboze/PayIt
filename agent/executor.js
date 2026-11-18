@@ -15,6 +15,7 @@ require("dotenv").config();
 const db           = require("../src/db");
 const walletLib    = require("../src/wallet");
 const offramp      = require("../src/offramp");
+const nearLib      = require("../src/near");
 const tokens       = require("../src/tokens");
 const paj          = require("../src/paj");
 const multichain   = require("../src/multichain");
