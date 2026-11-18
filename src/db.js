@@ -2620,11 +2620,14 @@ function claimSocialEscrow(claimToken, claimantTelegramId) {
     return { success: false, reason: "expired" };
   }
 
-  db.prepare(`
+  const info = db.prepare(`
     UPDATE social_escrows
     SET status = 'claimed', claimed_by_telegram_id = ?, claimed_at = datetime('now')
     WHERE claim_token = ? AND status = 'pending'
   `).run(claimantTelegramId, claimToken);
+  if (!info || info.changes !== 1) {
+    return { success: false, reason: "already_claimed" };
+  }
   return { success: true, escrow: getSocialEscrowByToken(claimToken) };
 }
 

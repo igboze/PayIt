@@ -514,6 +514,7 @@ bot.start(async (ctx) => {
         const claimRes = await socialTransfers.releaseEscrowToRecipient({
           claimToken: claimTokenFromStart,
           claimantTelegramId: ctx.from.id,
+          claimantUsername: ctx.from.username || existing.username || null,
           recipientAddress: recipientAddr,
         });
         if (claimRes && claimRes.success) {
@@ -569,10 +570,15 @@ bot.start(async (ctx) => {
     try { db.expireStaleSocialEscrows(); } catch (_) {}
     const escrow = db.getSocialEscrowByToken(claimTokenFromStart);
     if (escrow && escrow.status === "pending") {
-      pendingClaimToken = claimTokenFromStart;
-      pendingGiftAmount = Number(escrow.amount_usdc);
-      const senderUser = db.getUser(escrow.sender_id);
-      pendingGiftSender = senderUser?.username ? `@${senderUser.username}` : "A friend";
+      try {
+        socialTransfers.verifyEscrowRecipient(escrow, ctx.from.username);
+        pendingClaimToken = claimTokenFromStart;
+        pendingGiftAmount = Number(escrow.amount_usdc);
+        const senderUser = db.getUser(escrow.sender_id);
+        pendingGiftSender = senderUser?.username ? `@${senderUser.username}` : "A friend";
+      } catch (verifyErr) {
+        await ctx.reply(`🔒 ${verifyErr.message}\n\nYou can still set up your own free Proxim wallet below!`);
+      }
     } else {
       await ctx.reply("⚠️ This gift link has expired or has already been claimed. You can still set up your free Proxim account below!");
     }
@@ -6484,6 +6490,7 @@ bot.on("text", async (ctx) => {
           const claimRes = await socialTransfers.releaseEscrowToRecipient({
             claimToken: state.data.pendingClaimToken,
             claimantTelegramId: userId,
+            claimantUsername: ctx.from.username || state.data.username || null,
             recipientAddress: targetWalletAddr
           });
           if (claimRes && claimRes.success) {

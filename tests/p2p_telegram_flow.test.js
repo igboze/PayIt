@@ -154,6 +154,35 @@ test("P2P Telegram Flow: Unregistered User Viral Escrow Lifecycle & Claim on /st
   assert.equal(Number(escrowRow.amount_usdc), 15.0);
   assert.equal(escrowRow.target_handle, "unregistered_dave");
 
+  // Unauthorized user tries to claim Dave's gift — must be blocked!
+  await assert.rejects(
+    async () => {
+      await socialTransfers.releaseEscrowToRecipient({
+        claimToken: gift.claimToken,
+        claimantTelegramId: 888999,
+        claimantUsername: "wrong_person",
+        recipientAddress: "0x9999999999999999999999999999999999999999",
+      });
+    },
+    /exclusively for @unregistered_dave/
+  );
+
+  // User with no Telegram username tries to claim — must be blocked!
+  await assert.rejects(
+    async () => {
+      await socialTransfers.releaseEscrowToRecipient({
+        claimToken: gift.claimToken,
+        claimantTelegramId: 888998,
+        claimantUsername: null,
+        recipientAddress: "0x8888888888888888888888888888888888888888",
+      });
+    },
+    /exclusively for @unregistered_dave/
+  );
+
+  // Escrow must still be pending for the intended recipient
+  assert.equal(db.getSocialEscrowByToken(gift.claimToken).status, "pending");
+
   // Recipient Dave now registers and sets PIN
   const daveId = 888002;
   const daveWallet = walletLib.generateUserWallet();
@@ -168,6 +197,7 @@ test("P2P Telegram Flow: Unregistered User Viral Escrow Lifecycle & Claim on /st
   const claimRes = await socialTransfers.releaseEscrowToRecipient({
     claimToken: gift.claimToken,
     claimantTelegramId: daveId,
+    claimantUsername: "unregistered_dave",
     recipientAddress: daveWallet.address,
   });
 

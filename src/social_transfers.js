@@ -245,9 +245,31 @@ function createGiftEscrow({
 }
 
 /**
+ * Verify that the claimant's Telegram username matches the gift's intended recipient.
+ * Throws a user-friendly error if mismatched or missing.
+ */
+function verifyEscrowRecipient(escrow, claimantUsername) {
+  const targetHandle = normalizeTelegramHandle(escrow?.target_handle);
+  if (!targetHandle) return true; // open gift (if ever supported)
+
+  const cleanClaimant = normalizeTelegramHandle(claimantUsername);
+  if (!cleanClaimant) {
+    throw new Error(
+      `This gift is exclusively for @${targetHandle}. Your Telegram account doesn't have a matching username set.`
+    );
+  }
+  if (cleanClaimant !== targetHandle) {
+    throw new Error(
+      `This gift is exclusively for @${targetHandle} and cannot be claimed by @${cleanClaimant}.`
+    );
+  }
+  return true;
+}
+
+/**
  * Release escrowed funds to claimant's address and mark claimed in DB.
  */
-async function releaseEscrowToRecipient({ claimToken, claimantTelegramId, recipientAddress }) {
+async function releaseEscrowToRecipient({ claimToken, claimantTelegramId, claimantUsername = null, recipientAddress }) {
   try { db.expireStaleSocialEscrows(); } catch (_) {}
 
   const escrow = db.getSocialEscrowByToken(claimToken);
@@ -257,6 +279,10 @@ async function releaseEscrowToRecipient({ claimToken, claimantTelegramId, recipi
   if (String(escrow.sender_id) === String(claimantTelegramId)) {
     throw new Error("You cannot claim your own gift link.");
   }
+
+  // Enforce strict recipient-only claiming by Telegram username
+  const resolvedClaimantUsername = claimantUsername || db.getUser(claimantTelegramId)?.username || null;
+  verifyEscrowRecipient(escrow, resolvedClaimantUsername);
 
   const claimRes = db.claimSocialEscrow(claimToken, claimantTelegramId);
   if (!claimRes.success) {
@@ -352,6 +378,7 @@ module.exports = {
   parseTransferInstruction,
   prepareSocialTransfer,
   createGiftEscrow,
+  verifyEscrowRecipient,
   releaseEscrowToRecipient,
   refundEscrowToSender,
 };
