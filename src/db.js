@@ -2534,6 +2534,110 @@ function recordApiKeyUsage(keyId) {
   } catch (_) {}
 }
 
+// ─── Social Escrows & P2P Gifts ──────────────────────────────────────────────
+
+function ensureSocialEscrowsSchema() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS social_escrows (
+        id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender_id               INTEGER NOT NULL,
+        sender_account_type     TEXT NOT NULL DEFAULT 'personal',
+        platform                TEXT NOT NULL DEFAULT 'telegram',
+        target_handle           TEXT NOT NULL,
+        amount_usdc             REAL NOT NULL,
+        claim_token             TEXT UNIQUE NOT NULL,
+        status                  TEXT NOT NULL DEFAULT 'pending',
+        claimed_by_telegram_id  INTEGER,
+        claimed_at              TEXT,
+        expires_at              TEXT NOT NULL,
+        created_at              TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_social_escrows_token ON social_escrows(claim_token);
+      CREATE INDEX IF NOT EXISTS idx_social_escrows_sender ON social_escrows(sender_id, status);
+    `);
+  } catch (err) {
+    console.warn("[db] ensureSocialEscrowsSchema note:", err.message);
+  }
+}
+
+try {
+  ensureSocialEscrowsSchema();
+} catch (_) {}
+
+function createSocialEscrow({
+  senderId,
+  senderAccountType = "personal",
+  platform = "telegram",
+  targetHandle,
+  amountUsdc,
+  claimToken,
+  expiresHours = 48,
+}) {
+  ensureSocialEscrowsSchema();
+  const cleanHandle = String(targetHandle).replace(/^@/, "").trim().toLowerCase();
+  const info = db.prepare(`
+    INSERT INTO social_escrows (sender_id, sender_account_type, platform, target_handle, amount_usdc, claim_token, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, datetime('now', '+' || ? || ' hours'))
+  `).run(senderId, senderAccountType, platform, cleanHandle, Number(amountUsdc), claimToken, expiresHours);
+  return getSocialEscrowById(info.lastInsertRowid);
+}
+
+function getSocialEscrowById(id) {
+  ensureSocialEscrowsSchema();
+  return db.prepare("SELECT * FROM social_escrows WHERE id = ?").get(id) || null;
+}
+
+function getSocialEscrowByToken(claimToken) {
+  ensureSocialEscrowsSchema();
+  if (!claimToken) return null;
+  return db.prepare("SELECT * FROM social_escrows WHERE claim_token = ?").get(claimToken) || null;
+}
+
+function getPendingSocialEscrowsBySender(senderId) {
+  ensureSocialEscrowsSchema();
+  return db.prepare("SELECT * FROM social_escrows WHERE sender_id = ? AND status = 'pending' ORDER BY id DESC").all(senderId) || [];
+}
+
+function claimSocialEscrow(claimToken, claimantTelegramId) {
+  ensureSocialEscrowsSchema();
+  const row = getSocialEscrowByToken(claimToken);
+  if (!row || row.status !== "pending") return { success: false, reason: "invalid_or_claimed" };
+
+  const expired = db.prepare("SELECT datetime('now') > datetime(expires_at) as is_expired FROM social_escrows WHERE claim_token = ?").get(claimToken);
+  if (expired?.is_expired) {
+    db.prepare("UPDATE social_escrows SET status = 'expired' WHERE claim_token = ?").run(claimToken);
+    return { success: false, reason: "expired" };
+  }
+
+  db.prepare(`
+    UPDATE social_escrows
+    SET status = 'claimed', claimed_by_telegram_id = ?, claimed_at = datetime('now')
+    WHERE claim_token = ? AND status = 'pending'
+  `).run(claimantTelegramId, claimToken);
+  return { success: true, escrow: getSocialEscrowByToken(claimToken) };
+}
+
+function cancelSocialEscrow(claimToken, senderId) {
+  ensureSocialEscrowsSchema();
+  const row = getSocialEscrowByToken(claimToken);
+  if (!row) return { success: false, reason: "not_found" };
+  if (row.sender_id !== senderId) return { success: false, reason: "unauthorized" };
+  if (row.status !== "pending") return { success: false, reason: `already_${row.status}` };
+
+  db.prepare("UPDATE social_escrows SET status = 'cancelled' WHERE claim_token = ?").run(claimToken);
+  return { success: true, escrow: getSocialEscrowByToken(claimToken) };
+}
+
+function expireStaleSocialEscrows() {
+  ensureSocialEscrowsSchema();
+  return db.prepare(`
+    UPDATE social_escrows
+    SET status = 'expired'
+    WHERE status = 'pending' AND datetime('now') > datetime(expires_at)
+  `).run();
+}
+
 module.exports = {
   db,
   resolveDbPath,
@@ -2638,6 +2742,14 @@ module.exports = {
   updateApiKey,
   revokeApiKey,
   recordApiKeyUsage,
+  ensureSocialEscrowsSchema,
+  createSocialEscrow,
+  getSocialEscrowById,
+  getSocialEscrowByToken,
+  getPendingSocialEscrowsBySender,
+  claimSocialEscrow,
+  cancelSocialEscrow,
+  expireStaleSocialEscrows,
   _db: db,
   db: db,
   prepare: (...args) => db.prepare(...args),
