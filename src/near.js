@@ -946,6 +946,47 @@ function deriveNearAddress(evmPrivateKey) {
 }
 
 /**
+ * Query NEAR Mainnet RPC for on-chain account balance of a NEAR address.
+ * Unfunded implicit accounts return exists: false (they exist in cryptographic keys,
+ * but state is created on first inbound transfer).
+ *
+ * @param {string} nearAddress
+ * @returns {Promise<{ exists: boolean, balanceNear: number, raw: string }>}
+ */
+async function getNearAccountBalance(nearAddress) {
+  if (!nearAddress) return { exists: false, balanceNear: 0, raw: "0" };
+  try {
+    const axios = require("axios");
+    const rpcUrl = process.env.NEAR_RPC_URL || "https://rpc.mainnet.near.org";
+    const res = await axios.post(
+      rpcUrl,
+      {
+        jsonrpc: "2.0",
+        id: "balance_check",
+        method: "query",
+        params: {
+          request_type: "view_account",
+          finality: "final",
+          account_id: nearAddress,
+        },
+      },
+      { timeout: 6000 }
+    );
+    if (res.data?.result?.amount) {
+      const raw = String(res.data.result.amount);
+      const whole = raw.length > 24 ? raw.slice(0, raw.length - 24) : "0";
+      const frac = raw.length > 24 ? raw.slice(raw.length - 24, raw.length - 20) : raw.padStart(24, "0").slice(0, 4);
+      return { exists: true, balanceNear: Number(whole + "." + frac), raw };
+    }
+  } catch (err) {
+    if (err.response?.data?.error?.data?.includes("does not exist")) {
+      return { exists: false, balanceNear: 0, raw: "0" };
+    }
+  }
+  return { exists: false, balanceNear: 0, raw: "0" };
+}
+
+/**
  * Derive the user's Starknet address from their EVM private key.
  * Uses HMAC-SHA512 with domain-separated salt "Proxim-Starknet-Intent-Bridge-Salt"
  * and returns a standard 0x-prefixed 32-byte hex string (66 chars).
@@ -1144,6 +1185,29 @@ async function pollPendingNearDeposits(bot = null) {
       db.updateNearDeposit(row.id, { status });
       updated++;
 
+      if (status === "INCOMPLETE_DEPOSIT" && bot && row.telegram_id) {
+        const inAmount = row.amount_token !== undefined && row.amount_token !== null ? Number(row.amount_token) : Number(row.amount_usdc);
+        const inSymbol = row.origin_symbol || (row.origin_asset?.includes("usdc") ? "USDC" : "tokens");
+        const isHood = row.origin_asset && (row.origin_asset.includes("hood-") || row.origin_asset.includes("hood."));
+        const isSol = row.origin_asset && row.origin_asset.includes("sol-");
+        const isStark = row.origin_asset && (row.origin_asset.includes("starknet") || row.origin_asset.includes("strk") || row.origin_symbol === "STRK");
+        const chainName = isHood ? "Robinhood Chain" : (isSol ? "Solana" : (isStark ? "Starknet" : "NEAR Protocol"));
+        const refundChainName = isHood ? "Robinhood/EVM" : (isSol ? "Solana" : (isStark ? "Starknet" : "NEAR Mainnet"));
+        await bot.telegram.sendMessage(
+          row.telegram_id,
+          `⚠️ <b>${chainName} Deposit Amount Mismatch Detected</b>\n` +
+          `──────────────────────────\n` +
+          `The amount received did not match your exact quote.\n` +
+          `1Click Defuse solvers cannot fulfill an incomplete amount and are issuing an automatic refund to your ${refundChainName} address:\n` +
+          `<code>${row.refund_to}</code>\n\n` +
+          `🔑 <b>Your Funds Are Safe & In Your Control:</b>\n` +
+          `1. Go to <b>Settings & Help → Export Private Keys</b> (or /export_keys).\n` +
+          `2. Enter your PIN to view your <code>ed25519:...</code> NEAR Private Key.\n` +
+          `3. Import into Meteor Wallet (wallet.meteorwallet.app) or HERE Wallet on NEAR Mainnet.`,
+          { parse_mode: "HTML" }
+        ).catch(() => {});
+      }
+
       if (TERMINAL_STATUSES.has(status)) {
         terminal++;
         if (bot && row.telegram_id) {
@@ -1162,7 +1226,7 @@ async function pollPendingNearDeposits(bot = null) {
               : (isStark
                 ? "Starknet → NEAR Intents (1Click) → Base USDC"
                 : "NEAR Intents (1Click) → Base USDC"));
-          const refundChainName = isHood ? "Robinhood/EVM" : (isSol ? "Solana" : (isStark ? "Starknet" : "NEAR"));
+          const refundChainName = isHood ? "Robinhood/EVM" : (isSol ? "Solana" : (isStark ? "Starknet" : "NEAR Mainnet"));
 
           if (status === "SUCCESS") {
             const out = row.amount_out ? `$${row.amount_out.toFixed(2)}` : "your USDC";
@@ -1190,9 +1254,13 @@ async function pollPendingNearDeposits(bot = null) {
               row.telegram_id,
               `↩️ <b>${chainName} Deposit Refunded</b>\n` +
               `──────────────────────────\n` +
-              `Your deposit of ${inAmount} ${inSymbol} was refunded to your ${refundChainName} refund address:\n` +
+              `Your deposit of ${inAmount} ${inSymbol} has been refunded to your ${refundChainName} address:\n` +
               `<code>${row.refund_to}</code>\n\n` +
-              `<i>Contact support if you need help moving it back.</i>`,
+              `🔑 <b>Access Your Funds on NEAR Mainnet:</b>\n` +
+              `1. Go to <b>Settings & Help → Export Private Keys</b> (or /export_keys).\n` +
+              `2. Enter your 4-digit PIN to copy your <code>ed25519:...</code> NEAR Private Key.\n` +
+              `3. Import into Meteor Wallet (wallet.meteorwallet.app) or HERE Wallet on NEAR Mainnet.\n\n` +
+              `<i>Your funds are fully non-custodial and under your control.</i>`,
               { parse_mode: "HTML" }
             ).catch(() => {});
           } else {
@@ -1484,6 +1552,7 @@ module.exports = {
   isNearAddress,
   deriveNearAddress,
   deriveStarknetAddress,
+  getNearAccountBalance,
   getQuote,
   getExecutionStatus,
   createNearDeposit,

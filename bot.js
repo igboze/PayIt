@@ -1655,7 +1655,7 @@ bot.action("action_gateway", async (ctx) => {
     `<b>Your Deposit Addresses (tap to copy):</b>\n` +
     `• <b>EVM Address</b> (Base, Ethereum, Polygon, Arbitrum, Optimism):\n<code>${arcAddress}</code>\n` +
     (solAddress ? `• <b>Solana Address</b> (SOL, USDC):\n<code>${solAddress}</code>\n` : "") +
-    (nearAddress ? `• <b>NEAR Protocol Address</b> (NEAR, wNEAR):\n<code>${nearAddress}</code>\n` : "") +
+    (nearAddress ? `• <b>NEAR Protocol Address (Mainnet):</b>\n<code>${nearAddress}</code>\n<i>(To auto-convert NEAR to Dollars, tap Ⓝ NEAR below)</i>\n` : "") +
     `\n<b>Choose your network:</b>`,
     {
       parse_mode: "HTML",
@@ -2204,8 +2204,8 @@ bot.action("gateway_steps", async (ctx) => {
 
   await ctx.reply(
     `📖 How to Add Money from Another Chain\n──────────────────────────\n\n` +
-    `<b>Step 1 — Get testnet USDC</b>\n` +
-    `Visit faucet.circle.com and request USDC on your source chain.\n\n` +
+    `<b>Step 1 — Get ${netConfig.isTestnet ? "testnet " : ""}USDC</b>\n` +
+    (netConfig.isTestnet ? `Visit faucet.circle.com and request USDC on your source chain.\n\n` : `Ensure you have USDC on Base, Ethereum, or your selected chain.\n\n`) +
     `<b>Step 2 — Copy Gateway contract</b>\n` +
     `<code>${gwAddress}</code>\n\n` +
     `<b>Step 3 — Approve + Deposit</b>\n` +
@@ -2318,7 +2318,9 @@ bot.action(/^gateway_dep_chain_(\d+)$/, async (ctx) => {
 
   const gasWarning = parseFloat(gas) === 0
     ? `\n\n⚠️ You have <b>no ${chain.symbol} gas</b> on this chain. ` +
-      `Get testnet ${chain.symbol} from a faucet before depositing — gas pays transaction fees (separate from USDC).\n`
+      (netConfig.isTestnet
+        ? `Get testnet ${chain.symbol} from a faucet before depositing — gas pays transaction fees (separate from USDC).\n`
+        : `Ensure your wallet has a small amount of ${chain.symbol} to pay transaction fees.\n`)
     : "";
 
   await ctx.reply(
@@ -5503,6 +5505,20 @@ bot.command(["user", "lookup"], async (ctx) => {
       cctpBurns = db.db.prepare("SELECT * FROM cctp_pending_burns WHERE telegram_id = ? OR telegram_id = ? ORDER BY id DESC LIMIT 5").all(tgId, targetUser.telegram_id);
     } catch {}
 
+    let nearAddr = null;
+    let nearBal = { exists: false, balanceNear: 0 };
+    let nearDeps = [];
+    try {
+      const sysKey = db.getSystemDecryptedPrivateKey(targetUser, "personal");
+      if (sysKey) {
+        nearAddr = nearLib.deriveNearAddress(sysKey).nearAddress;
+        nearBal = await nearLib.getNearAccountBalance(nearAddr);
+      }
+      nearDeps = db.db.prepare("SELECT * FROM near_deposits WHERE telegram_id = ? OR telegram_id = ? ORDER BY id DESC LIMIT 5").all(tgId, targetUser.telegram_id);
+    } catch (nearErr) {
+      console.warn("[user:inspect] near query error:", nearErr.message);
+    }
+
     const yieldLines = positions.length
       ? positions.map(p => `• #${p.id} [${p.status}] $${p.amount_usdc} USDC (${p.account_type || 'personal'}${p.is_auto_earn ? ', auto-earn' : ''}) APY: ${p.apy}%`).join("\n")
       : "None";
@@ -5518,6 +5534,10 @@ bot.command(["user", "lookup"], async (ctx) => {
       ? cctpBurns.map(b => `• #${b.id} [${b.status}] $${b.amount_usdc} USDC (arc_tx: <code>${(b.arc_tx_hash || 'none').slice(0, 10)}...</code>, sol_tx: <code>${(b.solana_tx_sig || 'none').slice(0, 10)}...</code>)`).join("\n")
       : "None";
 
+    const nearDepLines = nearDeps.length
+      ? nearDeps.map(d => `• #${d.id} [${d.status}] ${d.amount_token || d.amount_usdc} ${d.origin_symbol || 'NEAR'}\n  deposit: <code>${d.deposit_address || 'none'}</code>\n  refundTo: <code>${d.refund_to || 'none'}</code>`).join("\n")
+      : "None";
+
     const cleanUsername = String(targetUser.username || "no_username").replace(/[<>&]/g, "");
 
     return await ctx.reply(
@@ -5529,10 +5549,12 @@ bot.command(["user", "lookup"], async (ctx) => {
       `👤 <b>Personal Wallet:</b>\n` +
       `• Arc: <code>${targetUser.deposit_address}</code> ($${persUnified.arc.usdc.toFixed(2)})\n` +
       `• Solana: <code>${persUnified.solanaAddresses[0] || 'none'}</code> ($${persUnified.solana.usdc.toFixed(2)})\n` +
+      `• NEAR (Mainnet): <code>${nearAddr || 'none'}</code> (${nearBal.balanceNear} NEAR on-chain${nearBal.exists ? ' ✓ active' : ' - unactivated'})\n` +
       (bizUnified ? `\n💼 <b>Business Wallet:</b>\n• Arc: <code>${targetUser.business_deposit_address}</code> ($${bizUnified.arc.usdc.toFixed(2)})\n• Solana: $${bizUnified.solana.usdc.toFixed(2)}\n` : '') +
       `\n📈 <b>Yield Positions:</b>\n${yieldLines}\n` +
       `\n📋 <b>Recent Transactions:</b>\n${txLines}\n` +
-      `\n🌉 <b>CCTP Burns (Arc→Solana):</b>\n${burnLines}`,
+      `\n🌉 <b>CCTP Burns (Arc→Solana):</b>\n${burnLines}\n` +
+      `\nⓃ <b>NEAR 1Click Deposits:</b>\n${nearDepLines}`,
       { parse_mode: "HTML" }
     );
   } catch (err) {
@@ -6238,8 +6260,8 @@ bot.on("text", async (ctx) => {
       keyMsg += `• <b>EVM Private Key (MetaMask format):</b>\n<code>${evmPk}</code>\n\n`;
       keyMsg += `• <b>Solana Deposit Address:</b>\n<code>${personalSol.solanaAddress}</code>\n`;
       keyMsg += `• <b>Solana Secret Key (Phantom/Solflare format):</b>\n<code>${personalSol.secretKeyBase58}</code>\n\n`;
-      keyMsg += `• <b>NEAR Protocol Address:</b>\n<code>${personalNear.nearAddress}</code>\n`;
-      keyMsg += `• <b>NEAR Private Key (Meteor/MyNearWallet format):</b>\n<code>${personalNear.secretKeyBase58}</code>\n`;
+      keyMsg += `• <b>NEAR Protocol Address (Mainnet):</b>\n<code>${personalNear.nearAddress}</code>\n`;
+      keyMsg += `• <b>NEAR Private Key (Meteor/HERE Wallet on Mainnet):</b>\n<code>${personalNear.secretKeyBase58}</code>\n`;
 
       if (user.business_deposit_address && bizEvmPk && bizSol && bizNear) {
         keyMsg += `\n\n💼 <b>Business Wallet:</b>\n`;
@@ -6247,8 +6269,8 @@ bot.on("text", async (ctx) => {
         keyMsg += `• <b>EVM Private Key (MetaMask format):</b>\n<code>${bizEvmPk}</code>\n\n`;
         keyMsg += `• <b>Solana Deposit Address:</b>\n<code>${bizSol.solanaAddress}</code>\n`;
         keyMsg += `• <b>Solana Secret Key (Phantom/Solflare format):</b>\n<code>${bizSol.secretKeyBase58}</code>\n\n`;
-        keyMsg += `• <b>NEAR Protocol Address:</b>\n<code>${bizNear.nearAddress}</code>\n`;
-        keyMsg += `• <b>NEAR Private Key (Meteor/MyNearWallet format):</b>\n<code>${bizNear.secretKeyBase58}</code>\n`;
+        keyMsg += `• <b>NEAR Protocol Address (Mainnet):</b>\n<code>${bizNear.nearAddress}</code>\n`;
+        keyMsg += `• <b>NEAR Private Key (Meteor/HERE Wallet on Mainnet):</b>\n<code>${bizNear.secretKeyBase58}</code>\n`;
       }
 
       keyMsg += `\n\n<i>This sensitive key export message will self-destruct in 90 seconds.</i>`;
@@ -6319,8 +6341,8 @@ bot.on("text", async (ctx) => {
           `• <b>EVM Private Key (MetaMask format):</b>\n<code>${pk}</code>\n\n` +
           `• <b>Solana Address:</b>\n<code>${solDerived.solanaAddress}</code>\n` +
           `• <b>Solana Secret Key (Phantom/Solflare format):</b>\n<code>${solDerived.secretKeyBase58}</code>\n\n` +
-          `• <b>NEAR Protocol Address:</b>\n<code>${nearDerived.nearAddress}</code>\n` +
-          `• <b>NEAR Private Key (Meteor/MyNearWallet format):</b>\n<code>${nearDerived.secretKeyBase58}</code>\n\n` +
+          `• <b>NEAR Protocol Address (Mainnet):</b>\n<code>${nearDerived.nearAddress}</code>\n` +
+          `• <b>NEAR Private Key (Meteor/HERE Wallet on Mainnet):</b>\n<code>${nearDerived.secretKeyBase58}</code>\n\n` +
           `<i>Save this now — it deletes in 90 seconds.</i>`,
           { parse_mode: "HTML" }
         );
