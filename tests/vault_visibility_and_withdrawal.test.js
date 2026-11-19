@@ -92,3 +92,27 @@ test("Vault DB: open, read, and close yield position tracks principal and payout
   const closedPos = db.getOpenYieldPosition(tgId, "personal");
   assert.equal(closedPos, null, "Closed position should no longer be active");
 });
+
+test("Vault Safety Filter: excludes dust TVL, unnamed, low_liquidity, and outlier APY vaults on mainnet", () => {
+  const sampleVaults = [
+    { name: "Outlier Spike USDC", asset: "USDC", status: "active", currentApy: 1.70, totalDeposits: "180000" },
+    { name: "", asset: "USDC", status: "active", currentApy: 1.40, totalDeposits: "0.21" },
+    { name: "Dust Vault USDC", asset: "USDC", status: "active", currentApy: 0.08, totalDeposits: "16.50" },
+    { name: "Low Liq USDC", asset: "USDC", status: "low_liquidity", currentApy: 0.09, totalDeposits: "250000" },
+    { name: "Steakhouse High Yield USDC", asset: "USDC", status: "active", currentApy: 0.098, totalDeposits: "246740" },
+    { name: "Clearstar Core USDC", asset: "USDC", status: "active", currentApy: 0.091, totalDeposits: "337097" },
+    { name: "Galaxy USDC", asset: "USDC", status: "active", currentApy: 0.030, totalDeposits: "92744981" },
+  ];
+
+  const safe = savings.filterSafeVaults(sampleVaults, { isTestnet: false });
+  assert.equal(safe.length, 3);
+  assert.deepEqual(
+    safe.map(v => v.name),
+    ["Steakhouse High Yield USDC", "Clearstar Core USDC", "Galaxy USDC"]
+  );
+
+  // Compact TVL formatting
+  assert.equal(savings.formatCompactTvl("92744981"), "$92.7M");
+  assert.equal(savings.formatCompactTvl("246740"), "$247K");
+  assert.equal(savings.formatCompactTvl("0"), "");
+});

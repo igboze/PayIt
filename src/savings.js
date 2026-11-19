@@ -11,11 +11,47 @@ const walletLib = require("./wallet");
 
 const PAYIT_FEE_FRACTION = 0.10; // Proxim keeps 10% of APY profit on withdrawal
 const DEMO_SPEED = parseFloat(process.env.SAVINGS_DEMO_SPEED || "1");
+const MIN_VAULT_TVL_USD = parseFloat(process.env.SAVINGS_MIN_VAULT_TVL || "10000");
+const MAX_REALISTIC_APY_PCT = parseFloat(process.env.SAVINGS_MAX_VAULT_APY || "35");
 
 let _earnKit = null;
 function getEarnKit() {
   if (!_earnKit) _earnKit = new EarnKit();
   return _earnKit;
+}
+
+/**
+ * Format TVL number compactly for Telegram UI (e.g. $247K, $92.7M).
+ */
+function formatCompactTvl(tvl) {
+  const n = Number(tvl) || 0;
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `$${Math.round(n / 1_000)}K`;
+  if (n > 0) return `$${Math.round(n)}`;
+  return "";
+}
+
+/**
+ * Filter raw EarnKit vaults to exclude dust/unnamed vaults, low-liquidity vaults,
+ * and abnormal APY outlier spikes on mainnet.
+ */
+function filterSafeVaults(vaults, { isTestnet = false, minTvl = MIN_VAULT_TVL_USD, maxApyPct = MAX_REALISTIC_APY_PCT } = {}) {
+  const active = (vaults || []).filter(
+    v => v && v.status === "active" && (v.asset === "USDC" || v.asset === "EURC")
+  );
+  if (isTestnet) return active;
+
+  const safe = active.filter(v => {
+    const hasName = Boolean(v.name && String(v.name).trim().length > 0);
+    const tvl = parseFloat(v.totalDeposits || "0");
+    const rawApyPct = (v.currentApy || v.nativeApy || 0) * 100;
+    return hasName && tvl >= minTvl && rawApyPct > 0 && rawApyPct <= maxApyPct;
+  });
+
+  // Fallback to TVL-only filter if APY cap ever excludes everything, or active if empty
+  if (safe.length > 0) return safe;
+  const tvlOnly = active.filter(v => Boolean(v.name && String(v.name).trim()) && parseFloat(v.totalDeposits || "0") >= minTvl);
+  return tvlOnly.length > 0 ? tvlOnly : active;
 }
 
 // Standard ERC-4626 Vault ABI for direct Arc EVM Morpho calls
@@ -49,8 +85,7 @@ async function getYieldPools() {
     });
 
     if (res?.vaults && res.vaults.length > 0) {
-      const activeVaults = res.vaults
-        .filter(v => v.status === "active" && (v.asset === "USDC" || v.asset === "EURC"))
+      const activeVaults = filterSafeVaults(res.vaults, { isTestnet: net.isTestnet })
         .slice(0, 5);
 
       if (activeVaults.length > 0) {
@@ -111,18 +146,20 @@ async function getYieldPools() {
  */
 function formatYieldList(pools) {
   const net = getNetworkConfig();
-  const lines = pools.map((p, i) =>
-    `${i + 1}. <b>${p.project}</b> (${p.symbol})\n` +
-    `   Est. APY: <b>${p.userApy}%</b> (Vault: <code>${p.vaultAddress?.slice(0, 6)}...${p.vaultAddress?.slice(-4)}</code>)`
-  ).join("\n\n");
+  const lines = pools.map((p, i) => {
+    const tvlStr = formatCompactTvl(p.totalDeposits);
+    const meta = tvlStr ? ` · ${tvlStr} TVL` : "";
+    return `${i + 1}. <b>${p.project}</b> (${p.symbol})\n` +
+      `   Est. APY: <b>${p.userApy}%</b>${meta}`;
+  }).join("\n\n");
 
   return (
     `📈 <b>Arc Earn Vaults (${net.name})</b>\n──────────────────────────\n` +
     `${lines}\n\n` +
-    `Vaults are powered by Circle EarnKit and Morpho Protocol on Arc.\n` +
-    `• Instant deposits & withdrawals anytime (no lockups).\n` +
-    `• Funds idle > 2 hours can earn automatically.\n\n` +
-    `Tap <b>Start Saving</b> to deposit funds into a vault.`
+    `Powered by Circle EarnKit &amp; Morpho Protocol.\n` +
+    `• Instant deposits &amp; withdrawals anytime (no lockups).\n` +
+    `• Only verified, liquid vaults (≥ $10K TVL) are shown.\n\n` +
+    `Tap <b>Start Saving</b> to earn interest on your dollars.`
   );
 }
 
@@ -552,6 +589,8 @@ async function syncOnChainVaultPositions(user, context = "personal") {
 module.exports = {
   getEarnKit,
   getYieldPools,
+  filterSafeVaults,
+  formatCompactTvl,
   formatYieldList,
   openYieldPosition,
   calcAccruedYield,
