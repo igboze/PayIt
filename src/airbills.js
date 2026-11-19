@@ -87,30 +87,57 @@ function parseAirbillsError(resData, fallback = "Airbills request failed") {
   return msg;
 }
 
-async function apiGet(path, params = undefined) {
-  const res = await axios.get(`${getBaseUrl()}${path}`, {
-    headers: getHeaders(),
-    params,
-    timeout: 30000,
-  });
-  const body = res.data;
-  if (body?.status && body.status !== "00") {
-    throw new Error(parseAirbillsError(body));
+const CATALOG_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const _catalogCache = new Map();
+
+async function apiGet(path, params = undefined, { cacheKey = null } = {}) {
+  if (cacheKey) {
+    const cached = _catalogCache.get(cacheKey);
+    if (cached && Date.now() - cached.fetchedAt < CATALOG_CACHE_TTL_MS) {
+      return cached.data;
+    }
   }
-  return body?.data !== undefined ? body.data : body;
+  try {
+    const res = await axios.get(`${getBaseUrl()}${path}`, {
+      headers: getHeaders(),
+      params,
+      timeout: 30000,
+    });
+    const body = res.data;
+    if (body?.status && body.status !== "00") {
+      throw new Error(parseAirbillsError(body));
+    }
+    const result = body?.data !== undefined ? body.data : body;
+    if (cacheKey) {
+      _catalogCache.set(cacheKey, { data: result, fetchedAt: Date.now() });
+    }
+    return result;
+  } catch (err) {
+    if (err.response?.data) {
+      throw new Error(parseAirbillsError(err.response.data, err.message));
+    }
+    throw err;
+  }
 }
 
 async function apiPost(path, payload) {
-  const res = await axios.post(`${getBaseUrl()}${path}`, payload, {
-    headers: getHeaders(),
-    timeout: 30000,
-  });
-  const body = res.data;
-  // "00" = success, "06" = already processed (idempotent success on /transact/process)
-  if (body?.status && body.status !== "00" && body.status !== "06") {
-    throw new Error(parseAirbillsError(body));
+  try {
+    const res = await axios.post(`${getBaseUrl()}${path}`, payload, {
+      headers: getHeaders(),
+      timeout: 30000,
+    });
+    const body = res.data;
+    // "00" = success, "06" = already processed (idempotent success on /transact/process)
+    if (body?.status && body.status !== "00" && body.status !== "06") {
+      throw new Error(parseAirbillsError(body));
+    }
+    return body;
+  } catch (err) {
+    if (err.response?.data) {
+      throw new Error(parseAirbillsError(err.response.data, err.message));
+    }
+    throw err;
   }
-  return body;
 }
 
 // ─── Catalog & Validation Endpoints ───────────────────────────────────────────
@@ -169,7 +196,7 @@ function isValidNigerianPhone(input) {
 }
 
 async function listElectricityProviders() {
-  const data = await apiGet("/list/elect");
+  const data = await apiGet("/list/elect", undefined, { cacheKey: "list_elect" });
   const raw = Array.isArray(data)
     ? data
     : Array.isArray(data?.ELECTRIC_COMPANY)
@@ -191,7 +218,7 @@ async function validateMeter(meterNo, electId) {
 }
 
 async function listDataPlans(networkId = null) {
-  const data = await apiGet("/list/internet");
+  const data = await apiGet("/list/internet", undefined, { cacheKey: "list_internet" });
   let raw = [];
   if (Array.isArray(data)) {
     raw = data;
@@ -211,7 +238,7 @@ async function listDataPlans(networkId = null) {
 }
 
 async function listBettingPlatforms() {
-  const data = await apiGet("/list/bet");
+  const data = await apiGet("/list/bet", undefined, { cacheKey: "list_bet" });
   const raw = Array.isArray(data)
     ? data
     : Array.isArray(data?.bettingCompany)
@@ -224,7 +251,7 @@ async function listBettingPlatforms() {
 }
 
 async function listCablePackages(provider = null) {
-  const data = await apiGet("/list/cable");
+  const data = await apiGet("/list/cable", undefined, { cacheKey: "list_cable" });
   let raw = [];
   if (Array.isArray(data)) {
     raw = data;
@@ -249,7 +276,7 @@ async function listCablePackages(provider = null) {
 }
 
 async function listTransportServices() {
-  const data = await apiGet("/list/transport");
+  const data = await apiGet("/list/transport", undefined, { cacheKey: "list_transport" });
   const raw = Array.isArray(data) ? data : [];
   return raw.map(s => ({
     prodId: String(s.prodId || s.code || s.id || ""),
