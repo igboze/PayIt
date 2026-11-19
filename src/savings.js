@@ -4,7 +4,7 @@
 
 const { EarnKit, KitError } = require("@circle-fin/earn-kit");
 const { createEthersAdapterFromPrivateKey } = require("@circle-fin/adapter-ethers-v6");
-const { Contract, JsonRpcProvider } = require("ethers");
+const { Contract, JsonRpcProvider, parseUnits, formatUnits } = require("ethers");
 const { getNetworkConfig } = require("./network");
 const db = require("./db");
 const walletLib = require("./wallet");
@@ -261,26 +261,31 @@ async function depositIntoVault(privateKey, vaultAddress, amountUsdc) {
     console.warn("[savings:deposit] EarnKit deposit fallback to direct ERC-4626:", kitErr.message);
   }
 
-  // Direct ERC-4626 fallback on Arc
+  // Direct ERC-4626 fallback on Arc (uses vault asset's real ERC-20 decimals, e.g. 6 for USDC)
   try {
-    const provider = new JsonRpcProvider(net.rpcUrl, net.chainId, { staticNetwork: true });
     const userWallet = walletLib.walletFromPrivateKey(privateKey);
-    const amountMicro = walletLib.parseToMicro(amountUsdc.toString());
     const vaultContract = new Contract(vaultAddress, ERC4626_ABI, userWallet);
 
     const assetAddress = await vaultContract.asset();
     const erc20Abi = [
+      "function decimals() view returns (uint8)",
       "function allowance(address owner, address spender) view returns (uint256)",
       "function approve(address spender, uint256 amount) returns (bool)",
     ];
     const assetContract = new Contract(assetAddress, erc20Abi, userWallet);
+    let assetDecimals = 6;
+    try {
+      assetDecimals = Number(await assetContract.decimals());
+    } catch (_) {}
+    const amountAssets = parseUnits(Number(amountUsdc).toFixed(Math.min(assetDecimals, 6)), assetDecimals);
+
     const allowance = await assetContract.allowance(userWallet.address, vaultAddress);
-    if (allowance < amountMicro) {
-      const approveTx = await assetContract.approve(vaultAddress, amountMicro);
+    if (allowance < amountAssets) {
+      const approveTx = await assetContract.approve(vaultAddress, amountAssets);
       await approveTx.wait();
     }
 
-    const tx = await vaultContract.deposit(amountMicro, userWallet.address);
+    const tx = await vaultContract.deposit(amountAssets, userWallet.address);
     const receipt = await tx.wait();
     return {
       success: true,
@@ -291,11 +296,10 @@ async function depositIntoVault(privateKey, vaultAddress, amountUsdc) {
     };
   } catch (contractErr) {
     console.warn("[savings:deposit] Direct ERC-4626 deposit note:", contractErr.message);
-    const isSimulated = process.env.NODE_ENV === "test" ||
+    const isTestMock = process.env.NODE_ENV === "test" ||
       process.env.MOCK_SAVINGS === "true" ||
-      process.env.PAYIT_TEST_MODE === "true" ||
-      /insufficient funds|panic|revert|call_exception|gas|nonces|bad_data|could not decode/i.test(contractErr.message);
-    if (isSimulated) {
+      process.env.PAYIT_TEST_MODE === "true";
+    if (isTestMock) {
       return {
         success: true,
         hash: "0xsimulated_deposit_tx_hash",
@@ -317,23 +321,46 @@ async function depositIntoVault(privateKey, vaultAddress, amountUsdc) {
 
 /**
  * Execute on-chain withdrawal from an Arc Earn vault.
+ * When options.redeemAll is true, redeems all vault shares (principal + accrued interest)
+ * so zero on-chain interest is left stranded in the vault.
  */
-async function withdrawFromVault(privateKey, vaultAddress, amountUsdc) {
+async function withdrawFromVault(privateKey, vaultAddress, amountUsdc, options = {}) {
   const net = getNetworkConfig();
   const chain = net.isTestnet ? "Arc_Testnet" : "Arc";
   const apiKey = process.env.CIRCLE_KIT_KEY || process.env.ARC_API_KEY;
   const adapter = createEthersAdapterFromPrivateKey({ privateKey });
   const kit = getEarnKit();
+  const userWallet = walletLib.walletFromPrivateKey(privateKey);
+  const vaultContract = new Contract(vaultAddress, ERC4626_ABI, userWallet);
+
+  // Resolve real ERC-20 asset decimals (6 for Arc ERC-20 USDC) and full withdrawable amount
+  let assetDecimals = 6;
+  let withdrawAmountStr = String(amountUsdc);
+  let onChainShares = 0n;
+  try {
+    const assetAddress = await vaultContract.asset();
+    const assetContract = new Contract(assetAddress, ["function decimals() view returns (uint8)"], userWallet);
+    assetDecimals = Number(await assetContract.decimals());
+    onChainShares = await vaultContract.balanceOf(userWallet.address);
+    if (options.redeemAll && onChainShares > 0n) {
+      const maxWithdrawable = await vaultContract.maxWithdraw(userWallet.address);
+      if (maxWithdrawable > 0n) {
+        withdrawAmountStr = formatUnits(maxWithdrawable, assetDecimals);
+      }
+    }
+  } catch (_) {}
+
+  const timeoutMs = (process.env.NODE_ENV === "test" || process.env.PAYIT_TEST_MODE === "true") ? 4000 : 30000;
 
   try {
     const kitPromise = kit.withdraw({
       from: { adapter, chain },
       vaultAddress,
-      amount: String(amountUsdc),
+      amount: withdrawAmountStr,
       ...(apiKey ? { config: { apiKey } } : {}),
     });
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("EarnKit withdraw timeout")), 4000)
+      setTimeout(() => reject(new Error("EarnKit withdraw timeout")), timeoutMs)
     );
     const res = await Promise.race([kitPromise, timeoutPromise]);
     return {
@@ -341,27 +368,29 @@ async function withdrawFromVault(privateKey, vaultAddress, amountUsdc) {
       hash: res?.hash || res?.txHash || null,
       txHash: res?.hash || res?.txHash || null,
       vaultAddress,
-      amountUsdc,
+      amountUsdc: parseFloat(res?.amount || withdrawAmountStr) || amountUsdc,
     };
   } catch (kitErr) {
     console.warn("[savings:withdraw] EarnKit withdraw fallback to direct ERC-4626:", kitErr.message);
   }
 
-  // Direct ERC-4626 fallback on Arc
+  // Direct ERC-4626 fallback on Arc (uses real assetDecimals, e.g. 6 for USDC)
   try {
-    const userWallet = walletLib.walletFromPrivateKey(privateKey);
-    const amountMicro = walletLib.parseToMicro(amountUsdc.toString());
-    const vaultContract = new Contract(vaultAddress, ERC4626_ABI, userWallet);
+    const amountAssets = parseUnits(Number(withdrawAmountStr).toFixed(Math.min(assetDecimals, 6)), assetDecimals);
 
     let tx;
-    try {
-      tx = await vaultContract.withdraw(amountMicro, userWallet.address, userWallet.address);
-    } catch (withdrawErr) {
-      const shares = await vaultContract.balanceOf(userWallet.address);
-      if (shares > 0) {
-        tx = await vaultContract.redeem(shares, userWallet.address, userWallet.address);
-      } else {
-        throw withdrawErr;
+    if (options.redeemAll && onChainShares > 0n) {
+      tx = await vaultContract.redeem(onChainShares, userWallet.address, userWallet.address);
+    } else {
+      try {
+        tx = await vaultContract.withdraw(amountAssets, userWallet.address, userWallet.address);
+      } catch (withdrawErr) {
+        const shares = onChainShares > 0n ? onChainShares : await vaultContract.balanceOf(userWallet.address);
+        if (shares > 0n) {
+          tx = await vaultContract.redeem(shares, userWallet.address, userWallet.address);
+        } else {
+          throw withdrawErr;
+        }
       }
     }
     const receipt = await tx.wait();
@@ -370,7 +399,7 @@ async function withdrawFromVault(privateKey, vaultAddress, amountUsdc) {
       hash: receipt?.hash || tx.hash,
       txHash: receipt?.hash || tx.hash,
       vaultAddress,
-      amountUsdc,
+      amountUsdc: parseFloat(withdrawAmountStr) || amountUsdc,
     };
   } catch (contractErr) {
     console.warn("[savings:withdraw] Direct ERC-4626 withdraw note:", contractErr.message);
@@ -413,10 +442,10 @@ async function withdrawFromVaultWithFee({ userWallet, position, feeRecipientAddr
   const netYield = parseFloat((grossYield - devFee).toFixed(6));
   const totalUserPayout = parseFloat((principal + netYield).toFixed(6));
 
-  // 1. Withdraw principal + gross yield from vault back to user's wallet
+  // 1. Withdraw principal + gross yield from vault back to user's wallet (redeem all shares)
   let withdrawRes = null;
   try {
-    withdrawRes = await withdrawFromVault(userWallet.privateKey, vaultAddress, principal);
+    withdrawRes = await withdrawFromVault(userWallet.privateKey, vaultAddress, principal, { redeemAll: true });
   } catch (err) {
     console.warn(`[savings:withdraw] Vault withdrawal exception: ${err.message}`);
     withdrawRes = {
