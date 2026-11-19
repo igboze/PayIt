@@ -47,6 +47,7 @@ const settlementDaemon  = require("./src/settlement_daemon");
 const chains            = require("./src/chains");
 const flowsMultichain   = require("./src/flows_multichain");
 const flowsDeveloper     = require("./src/flows_developer");
+const flowsBills        = require("./src/flows_bills");
 const autoEarn = require("./src/auto_earn");
 const cashflow = require("./src/cashflow");
 const socialTransfers = require("./src/social_transfers");
@@ -2501,6 +2502,7 @@ async function showSendMoneyMenu(ctx) {
 
   const keyboard = Markup.inlineKeyboard([
     [btnSuccess("✈️ Send to Telegram User (@username)", "action_send_telegram_user")],
+    [btnSuccess("💡 Pay Bills (Airtime, Data, Electricity...)", "action_bills_menu")],
     [btnSuccess("🇳🇬 Bank Transfer (Cash Out to Naira)", "action_withdraw_menu")],
     [btnPrimary("🌐 Withdraw Crypto (10+ Chains)",        "action_crosschain_withdraw")],
     [btnPrimary("👛 Send to Wallet Address",              "action_sendout_menu")],
@@ -3081,6 +3083,19 @@ flowsDeveloper.registerDeveloperFlows(bot, {
   requireUser,
   getContext,
   backToMenu,
+});
+
+const billsFlow = flowsBills.registerBillsFlows(bot, {
+  requireUser,
+  getContext,
+  getActiveWallet,
+  safeGetBalance,
+  deleteSensitiveMessage,
+  btnPrimary,
+  btnSuccess,
+  btnDefault,
+  backToMenu,
+  afterPaymentButtons,
 });
 
 // ─── Withdraw / Cash Out (Naira-first UX) ────────────────────────────────────
@@ -7216,6 +7231,11 @@ bot.on("text", async (ctx) => {
       return flowsDeveloper.handleDeveloperState(bot, ctx, state, text, userId);
     }
 
+    if (state.type.startsWith("bill_")) {
+      const handled = await billsFlow.handleBillsTextState(ctx, state, text);
+      if (handled) return;
+    }
+
     // ── Naira-first Cash Out: free-text Naira amount ─────────────────────────
     if (state.type === "await_withdraw_ngn_amount") {
       const ngnAmount = parseFloat(text.replace(/[^0-9.]/g, ""));
@@ -9362,6 +9382,10 @@ function formatCustomerFriendlyOfframpError(rawError) {
   const socialInstruction = socialTransfers.parseTransferInstruction(text);
   if (socialInstruction && socialInstruction.username) {
     return initiateP2PTransfer(ctx, socialInstruction.username, socialInstruction.amount);
+  }
+
+  if (/^(?:pay\s*bills?|bills?|buy\s*airtime|buy\s*data|pay\s*electricity|cable\s*tv|airbills)$/i.test(lowerText)) {
+    return billsFlow.showBillsMenu(ctx);
   }
 
   await ctx.reply("⏳ On it...");

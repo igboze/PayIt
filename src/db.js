@@ -300,9 +300,9 @@ function ensureUserSchema() {
     for (const r of unassigned) {
       try {
         db.prepare("UPDATE users SET referral_code = ? WHERE telegram_id = ?").run(`ref${r.telegram_id}`, r.telegram_id);
-      } catch {}
+      } catch { }
     }
-  } catch (err) {}
+  } catch (err) { }
   if (!columns.includes("referred_at")) {
     db.exec("ALTER TABLE users ADD COLUMN referred_at TEXT");
   }
@@ -363,8 +363,8 @@ function ensureYieldPositionsSchema() {
   if (!cols.includes("account_type")) db.exec("ALTER TABLE yield_positions ADD COLUMN account_type TEXT DEFAULT 'personal'");
   if (!cols.includes("user_apy")) db.exec("ALTER TABLE yield_positions ADD COLUMN user_apy REAL DEFAULT 0");
   if (!cols.includes("payit_fee_apy")) db.exec("ALTER TABLE yield_positions ADD COLUMN payit_fee_apy REAL DEFAULT 0");
-  try { db.exec("UPDATE yield_positions SET status = 'active' WHERE status IS NULL"); } catch {}
-  try { db.exec("UPDATE yield_positions SET payit_fee_apy = 0 WHERE payit_fee_apy IS NULL"); } catch {}
+  try { db.exec("UPDATE yield_positions SET status = 'active' WHERE status IS NULL"); } catch { }
+  try { db.exec("UPDATE yield_positions SET payit_fee_apy = 0 WHERE payit_fee_apy IS NULL"); } catch { }
 }
 
 function ensureInvoicesSchema() {
@@ -517,7 +517,7 @@ function syncUsername(telegramId, username) {
   try {
     db.prepare("UPDATE users SET username = ? WHERE telegram_id = ? AND (username IS NULL OR LOWER(username) != LOWER(?))")
       .run(clean, telegramId, clean);
-  } catch (_) {}
+  } catch (_) { }
 }
 
 function getUser(telegramId) {
@@ -550,7 +550,7 @@ function getUserByReferralCode(code) {
         try {
           db.prepare("UPDATE users SET referral_code = ? WHERE telegram_id = ?").run(standardCode, candidateId);
           user.referral_code = standardCode;
-        } catch {}
+        } catch { }
       }
       return user;
     }
@@ -1047,18 +1047,18 @@ function recoverUncreditedYieldPosition(telegramId, accountType = null) {
     const isPersonal = !accountType || String(accountType).toLowerCase() === "personal";
     const latestClosed = accountType
       ? db.prepare(
-          `SELECT * FROM yield_positions
+        `SELECT * FROM yield_positions
            WHERE (telegram_id = ? OR telegram_id = ? OR telegram_id = ? OR telegram_id = ?)
              AND (LOWER(account_type) = LOWER(?) ${isPersonal ? "OR account_type IS NULL" : ""})
              AND status = 'closed'
            ORDER BY id DESC LIMIT 1`
-        ).get(numId, rawId, strId, floatStrId, accountType)
+      ).get(numId, rawId, strId, floatStrId, accountType)
       : db.prepare(
-          `SELECT * FROM yield_positions
+        `SELECT * FROM yield_positions
            WHERE (telegram_id = ? OR telegram_id = ? OR telegram_id = ? OR telegram_id = ?)
              AND status = 'closed'
            ORDER BY id DESC LIMIT 1`
-        ).get(numId, rawId, strId, floatStrId);
+      ).get(numId, rawId, strId, floatStrId);
 
     if (latestClosed && (latestClosed.withdraw_tx_hash === "0xsimulated_withdraw_tx_hash" || !latestClosed.withdraw_tx_hash)) {
       const hasTx = db.prepare(
@@ -1080,7 +1080,7 @@ function recoverUncreditedYieldPosition(telegramId, accountType = null) {
         return latestClosed;
       }
     }
-  } catch (_) {}
+  } catch (_) { }
 
   return null;
 }
@@ -1188,7 +1188,7 @@ function closeYieldPosition(telegramId, payout, options = {}) {
 function updateUserLastActivity(telegramId) {
   try {
     db.prepare("UPDATE users SET last_activity_at = datetime('now') WHERE telegram_id = ?").run(telegramId);
-  } catch {}
+  } catch { }
 }
 
 function updateAutoEarnSetting(telegramId, enabled) {
@@ -1487,20 +1487,20 @@ function getVolumeStats() {
 
   function txBreakdown(types) {
     return {
-      today:    sumForTypes(types, "-1 day"),
-      week:     sumForTypes(types, "-7 days"),
-      month:    sumForTypes(types, "-30 days"),
-      allTime:  sumForTypes(types, null),
+      today: sumForTypes(types, "-1 day"),
+      week: sumForTypes(types, "-7 days"),
+      month: sumForTypes(types, "-30 days"),
+      allTime: sumForTypes(types, null),
     };
   }
 
-  const onramp   = txBreakdown(["deposit_naira", "onramp", "paj_onramp"]);
-  const crypto   = txBreakdown(["deposit_crosschain", "crypto_deposit"]);
-  const offramp  = txBreakdown(["offramp", "offramp_request", "payout"]);
-  const sends    = txBreakdown(["send_usdc", "send_eurc", "autopay", "payment"]);
-  const savings  = txBreakdown(["yield_deposit", "yield_withdraw", "auto_earn_liquidate", "auto_earn_deposit"]);
+  const onramp = txBreakdown(["deposit_naira", "onramp", "paj_onramp"]);
+  const crypto = txBreakdown(["deposit_crosschain", "crypto_deposit"]);
+  const offramp = txBreakdown(["offramp", "offramp_request", "payout"]);
+  const sends = txBreakdown(["send_usdc", "send_eurc", "autopay", "payment"]);
+  const savings = txBreakdown(["yield_deposit", "yield_withdraw", "auto_earn_liquidate", "auto_earn_deposit"]);
   const invoices = txBreakdown(["invoice_payment", "invoice"]);
-  const swaps    = txBreakdown(["swap_usdc_eurc", "swap_eurc_usdc"]);
+  const swaps = txBreakdown(["swap_usdc_eurc", "swap_eurc_usdc"]);
 
   // All-time totals across every confirmed tx (any type)
   const totalAllRow = db.prepare(`
@@ -1580,7 +1580,7 @@ function reconcileLiveProductVolume() {
         const scaled = (BigInt(row.amount_micro) * 1_000_000_000_000n).toString();
         db.prepare("UPDATE transactions SET amount_micro = ?, decimals = 18 WHERE id = ?").run(scaled, row.id);
         fixedScale++;
-      } catch {}
+      } catch { }
     }
 
     // 2. Backfill paid invoices from invoices table
@@ -1618,7 +1618,7 @@ function reconcileLiveProductVolume() {
           backfilledInvoices++;
         }
       }
-    } catch {}
+    } catch { }
 
     // 4. Backfill completed universal_idempotency payments and offramps
     try {
@@ -1636,7 +1636,7 @@ function reconcileLiveProductVolume() {
           backfilledPayments++;
         }
       }
-    } catch {}
+    } catch { }
 
     // 5. Backfill savings positions from yield_positions
     try {
@@ -1653,7 +1653,7 @@ function reconcileLiveProductVolume() {
           backfilledYield++;
         }
       }
-    } catch {}
+    } catch { }
 
     // 6. Backfill onramp events from processed_webhook_events if not already recorded
     try {
@@ -1685,7 +1685,7 @@ function reconcileLiveProductVolume() {
           }
         }
       }
-    } catch {}
+    } catch { }
 
     // 7. Deduplicate repeating synthetic sweep deposits created by background monitor loops
     try {
@@ -2461,7 +2461,7 @@ function ensureApiKeysSchema() {
 
 try {
   ensureApiKeysSchema();
-} catch (_) {}
+} catch (_) { }
 
 function createApiKey({
   keyId,
@@ -2541,7 +2541,7 @@ function recordApiKeyUsage(keyId) {
   try {
     ensureApiKeysSchema();
     db.prepare("UPDATE api_keys SET last_used_at = datetime('now') WHERE key_id = ?").run(keyId);
-  } catch (_) {}
+  } catch (_) { }
 }
 
 // ─── Social Escrows & P2P Gifts ──────────────────────────────────────────────
@@ -2573,7 +2573,7 @@ function ensureSocialEscrowsSchema() {
 
 try {
   ensureSocialEscrowsSchema();
-} catch (_) {}
+} catch (_) { }
 
 function createSocialEscrow({
   senderId,
@@ -2649,6 +2649,103 @@ function expireStaleSocialEscrows() {
     SET status = 'expired'
     WHERE status = 'pending' AND datetime('now') > datetime(expires_at)
   `).run();
+}
+
+// ─── Airbills Utility Bill Payments ───────────────────────────────────────────
+
+function ensureBillPaymentsSchema() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS bill_payments (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id      INTEGER NOT NULL,
+        account_type     TEXT    NOT NULL DEFAULT 'personal',
+        product_code     TEXT    NOT NULL,
+        category         TEXT    NOT NULL,
+        provider_name    TEXT,
+        recipient        TEXT    NOT NULL,
+        amount_ngn       REAL    NOT NULL,
+        amount_usdc      REAL    NOT NULL DEFAULT 0,
+        airbills_tx_id   TEXT,
+        arc_tx_hash      TEXT,
+        solana_tx_sig    TEXT,
+        meter_token      TEXT,
+        status           TEXT    NOT NULL DEFAULT 'pending',
+        error_message    TEXT,
+        created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_bill_payments_user ON bill_payments(telegram_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_bill_payments_airbills ON bill_payments(airbills_tx_id);
+    `);
+  } catch (err) {
+    console.warn("[db] ensureBillPaymentsSchema note:", err.message);
+  }
+}
+
+try {
+  ensureBillPaymentsSchema();
+} catch (_) {}
+
+function createBillPayment({
+  telegramId,
+  accountType = "personal",
+  productCode,
+  category,
+  providerName = null,
+  recipient,
+  amountNgn,
+  amountUsdc = 0,
+  status = "pending",
+}) {
+  ensureBillPaymentsSchema();
+  const info = db.prepare(`
+    INSERT INTO bill_payments (telegram_id, account_type, product_code, category, provider_name, recipient, amount_ngn, amount_usdc, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(telegramId, accountType, String(productCode), String(category), providerName, String(recipient), Number(amountNgn), Number(amountUsdc), status);
+  return getBillPaymentById(info.lastInsertRowid);
+}
+
+function getBillPaymentById(id) {
+  ensureBillPaymentsSchema();
+  return db.prepare("SELECT * FROM bill_payments WHERE id = ?").get(id) || null;
+}
+
+function updateBillPayment(id, fields = {}) {
+  ensureBillPaymentsSchema();
+  const allowed = [
+    "amount_usdc",
+    "airbills_tx_id",
+    "arc_tx_hash",
+    "solana_tx_sig",
+    "meter_token",
+    "status",
+    "error_message",
+    "provider_name",
+  ];
+  const sets = [];
+  const vals = [];
+  for (const key of allowed) {
+    if (fields[key] !== undefined) {
+      sets.push(`${key} = ?`);
+      vals.push(fields[key]);
+    }
+  }
+  if (!sets.length) return getBillPaymentById(id);
+  sets.push("updated_at = datetime('now')");
+  vals.push(id);
+  db.prepare(`UPDATE bill_payments SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+  return getBillPaymentById(id);
+}
+
+function getUserBillPayments(telegramId, limit = 10) {
+  ensureBillPaymentsSchema();
+  return db.prepare(`
+    SELECT * FROM bill_payments
+    WHERE telegram_id = ?
+    ORDER BY id DESC
+    LIMIT ?
+  `).all(telegramId, limit) || [];
 }
 
 module.exports = {
@@ -2764,6 +2861,11 @@ module.exports = {
   claimSocialEscrow,
   cancelSocialEscrow,
   expireStaleSocialEscrows,
+  ensureBillPaymentsSchema,
+  createBillPayment,
+  getBillPaymentById,
+  updateBillPayment,
+  getUserBillPayments,
   _db: db,
   db: db,
   prepare: (...args) => db.prepare(...args),
@@ -2775,4 +2877,4 @@ try {
   reconcileLiveProductVolume();
 } catch (startupErr) {
   console.warn("[db] Volume reconciliation on startup warning:", startupErr.message);
-}
+}
