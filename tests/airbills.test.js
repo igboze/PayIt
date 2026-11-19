@@ -52,7 +52,7 @@ test("Airbills: ensureUserSolanaActivated skips when ATA and SOL already exist",
   const userKeypair = Keypair.generate();
   const mockConn = {
     getAccountInfo: async () => ({ lamports: 2039280, data: Buffer.alloc(165) }),
-    getBalance: async () => 500_000,
+    getBalance: async () => 1_000_000,
   };
 
   const res = await airbills.ensureUserSolanaActivated(userKeypair.publicKey, {

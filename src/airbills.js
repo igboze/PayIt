@@ -47,9 +47,10 @@ const NETWORKS = [
   { id: "04", name: "Airtel",  emoji: "🔴" },
 ];
 
-// One-time SOL gas drip so user's default Solana wallet can sign ~100 Airbills txs
-const USER_SOL_MIN_LAMPORTS  = 50_000;   // 0.00005 SOL threshold
-const USER_SOL_DRIP_LAMPORTS = 500_000;  // 0.0005 SOL (~$0.07)
+// Solana 0-byte account rent-exemption is 890,880 lamports (~0.000891 SOL).
+// Dripping 0.001 SOL (1,000,000 lamports) satisfies rent-exemption + leaves ~20+ tx fees.
+const USER_SOL_MIN_LAMPORTS  = 950_000;   // 0.00095 SOL threshold (rent-exempt + gas buffer)
+const USER_SOL_DRIP_LAMPORTS = 1_000_000; // 0.001 SOL (~$0.14) one-time top-up
 
 function getBaseUrl() {
   return (process.env.AIRBILLS_BASE_URL || "https://api.airbills.org/api/vendor/gateway").replace(/\/$/, "");
@@ -371,11 +372,12 @@ async function ensureUserSolanaActivated(userSolanaPubkey, options = {}) {
   }
 
   if (needsSol) {
+    const dripLamports = Math.max(100_000, USER_SOL_DRIP_LAMPORTS - solLamports);
     tx.add(
       SystemProgram.transfer({
         fromPubkey: feePayer.publicKey,
         toPubkey: userPubkey,
-        lamports: USER_SOL_DRIP_LAMPORTS,
+        lamports: dripLamports,
       })
     );
   }
@@ -385,17 +387,22 @@ async function ensureUserSolanaActivated(userSolanaPubkey, options = {}) {
   tx.feePayer = feePayer.publicKey;
   tx.sign(feePayer);
 
-  const sig = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: false });
-  await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
-
-  return {
-    activated: true,
-    alreadyReady: false,
-    createdAta: needsAta,
-    drippedSol: needsSol,
-    txSignature: sig,
-    ataAddress: userUsdcAta.toBase58(),
-  };
+  try {
+    const sig = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+    await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+    return {
+      activated: true,
+      alreadyReady: false,
+      createdAta: needsAta,
+      drippedSol: needsSol,
+      txSignature: sig,
+      ataAddress: userUsdcAta.toBase58(),
+    };
+  } catch (sendErr) {
+    const logs = typeof sendErr.getLogs === "function" ? await sendErr.getLogs(conn).catch(() => null) : sendErr.transactionLogs;
+    console.error("[airbills:activate] Solana activation failed:", sendErr.message, logs || "");
+    throw new Error(`Could not activate your Solana bill wallet: ${sendErr.message}`);
+  }
 }
 
 /**

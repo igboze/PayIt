@@ -383,14 +383,15 @@ function mainMenu(context) {
   if (context === "business") {
     return Markup.keyboard([
       ["💼 Business Balance", "📥 Add Money",    "📤 Send Money"],
-      ["🧾 New Invoice",      "👥 Pay Team",     "📋 My Invoices"],
-      ["📊 Cash Flow",        "🔁 Switch to Personal", "⚙️ Settings & Help"],
+      ["💡 Pay Bills",        "🧾 New Invoice",  "👥 Pay Team"],
+      ["📋 My Invoices",      "📊 Cash Flow",    "🔁 Switch to Personal"],
+      ["⚙️ Settings & Help"],
     ]).resize();
   }
   return Markup.keyboard([
-    ["💰 My Money",    "📥 Add Money",    "📤 Send Money"],
-    ["🧾 Invoice",      "📈 Save & Earn",  "📋 History"],
-    ["🔁 Switch Account","⚙️ Settings & Help"],
+    ["💰 My Money",       "📥 Add Money",     "📤 Send Money"],
+    ["💡 Pay Bills",      "📈 Save & Earn",   "🧾 Invoice"],
+    ["📋 History",        "🔁 Switch Account","⚙️ Settings & Help"],
   ]).resize();
 }
 
@@ -960,10 +961,11 @@ async function showBalance(ctx) {
     buttonRows.push(
       [btnSuccess("📥 Add Money",         "action_receive"),
        btnPrimary("📤 Send Money",        "action_send_menu")],
-      [btnSuccess("📈 Earn 15% Interest", "action_yields"),
-       btnDefault("📜 Activity History",  "action_history")],
-      [btnPrimary("⚡ Check for Deposits","action_sweep_deposits"),
-       btnPrimary("🔀 Move Funds",        "action_move_funds")],
+      [btnSuccess("💡 Pay Bills",         "action_bills_menu"),
+       btnSuccess("📈 Earn 15% Interest", "action_yields")],
+      [btnDefault("📜 Activity History",  "action_history"),
+       btnPrimary("⚡ Check for Deposits","action_sweep_deposits")],
+      [btnPrimary("🔀 Move Funds",        "action_move_funds")],
       [btnPrimary("🔐 Export Key",        "action_export_keys"),
        btnDefault("🛠️ Developer API",     "action_developer_menu")]
     );
@@ -1051,10 +1053,11 @@ async function showBizBalance(ctx) {
     buttonRows.push(
       [btnSuccess("📥 Add Money",     "action_receive"),
        btnPrimary("📤 Send Money",    "action_send_menu")],
-      [btnSuccess("🧾 New Invoice",   "action_new_biz_invoice"),
-       btnPrimary("👥 Pay Team",      "action_pay_team")],
-      [btnPrimary("📋 Invoices",      "action_list_biz_invoices"),
-       btnPrimary("📊 Cash Flow",     "action_cash_flow")],
+      [btnSuccess("💡 Pay Bills",     "action_bills_menu"),
+       btnSuccess("🧾 New Invoice",   "action_new_biz_invoice")],
+      [btnPrimary("👥 Pay Team",      "action_pay_team"),
+       btnPrimary("📋 Invoices",      "action_list_biz_invoices")],
+      [btnPrimary("📊 Cash Flow",     "action_cash_flow")],
       [btnPrimary("💸 Log Expense",   "action_log_expense"),
        btnPrimary("⚡ Check for Deposits", "action_sweep_deposits")],
       [btnPrimary("🔐 Export Keys",   "action_export_keys")],
@@ -2502,7 +2505,6 @@ async function showSendMoneyMenu(ctx) {
 
   const keyboard = Markup.inlineKeyboard([
     [btnSuccess("✈️ Send to Telegram User (@username)", "action_send_telegram_user")],
-    [btnSuccess("💡 Pay Bills (Airtime, Data, Electricity...)", "action_bills_menu")],
     [btnSuccess("🇳🇬 Bank Transfer (Cash Out to Naira)", "action_withdraw_menu")],
     [btnPrimary("🌐 Withdraw Crypto (10+ Chains)",        "action_crosschain_withdraw")],
     [btnPrimary("👛 Send to Wallet Address",              "action_sendout_menu")],
@@ -6207,6 +6209,11 @@ bot.on("text", async (ctx) => {
   if (/^(?:send(?:\s*(?:money|payment))?|cash\s*out(?:\s*\/\s*withdraw)?|withdraw(?:\s*funds)?)$/i.test(cleanNav)) {
     convState.clearState(userId);
     return showSendMoneyMenu(ctx);
+  }
+
+  if (/^(?:pay\s*bills?|bills?)$/i.test(cleanNav)) {
+    convState.clearState(userId);
+    return billsFlow.showBillsMenu(ctx);
   }
 
   if (/^(?:add\s*money|deposit)$/i.test(cleanNav)) {
