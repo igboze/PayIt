@@ -234,8 +234,22 @@ async function listDataPlans(networkId = null) {
     network: p.network || getNetworkName(p.networkId || p.network_id),
   })).filter(p => p.prodId && p.prodAmount > 0);
 
-  if (!networkId) return normalized;
-  return normalized.filter(p => String(p.networkId) === String(networkId));
+  // Guard against an Airbills backend quirk where duplicate prodIds across networks
+  // (e.g. prodId "500" on MTN=₦306 vs Glo=₦237 vs 9mobile=₦254) resolve to the first
+  // network's price and fail with "the amount not correct". Exclude colliding plans.
+  const firstPriceByProdId = new Map();
+  const safePlans = [];
+  for (const plan of normalized) {
+    if (!firstPriceByProdId.has(plan.prodId)) {
+      firstPriceByProdId.set(plan.prodId, plan.prodAmount);
+      safePlans.push(plan);
+    } else if (firstPriceByProdId.get(plan.prodId) === plan.prodAmount) {
+      safePlans.push(plan);
+    }
+  }
+
+  if (!networkId) return safePlans;
+  return safePlans.filter(p => String(p.networkId) === String(networkId));
 }
 
 async function listBettingPlatforms() {
