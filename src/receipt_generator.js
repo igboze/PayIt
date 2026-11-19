@@ -164,11 +164,18 @@ function buildReceiptSvg(opts = {}) {
     if (!detectedBank) detectedBank = bankMatch[2].trim();
   }
 
-  const isBankPayout = isCashOut || /^\d{7,12}$/.test(String(recipientAddress || "").trim());
+  const isBill =
+    typeLower.includes("bill") ||
+    typeLower.includes("airtime") ||
+    typeLower.includes("electricity") ||
+    typeLower.includes("cable") ||
+    typeLower.includes("betting") ||
+    typeLower.includes("transport");
+  const isBankPayout = !isBill && (isCashOut || /^\d{10}$/.test(String(recipientAddress || "").trim()));
   let shortRecip = "";
   if (recipientAddress) {
     const rawRecip = String(recipientAddress).trim();
-    if (isBankPayout || /^\d{7,12}$/.test(rawRecip)) {
+    if (isBankPayout) {
       shortRecip = `Acct: ${rawRecip}`;
     } else if (rawRecip.length > 18) {
       shortRecip = `${rawRecip.slice(0, 6)}...${rawRecip.slice(-4)}`;
@@ -207,11 +214,19 @@ function buildReceiptSvg(opts = {}) {
     cleanNaira = String(opts.amountPrimary).trim();
   }
 
-  const isNairaOnlyOfframp = Boolean(isCashOut && (cleanNaira || String(token).toUpperCase() === "NGN"));
+  const isNairaTx = Boolean(
+    cleanNaira ||
+    String(token).toUpperCase() === "NGN" ||
+    isCashOut ||
+    isBill ||
+    typeLower.includes("naira") ||
+    typeLower.includes("bank transfer")
+  );
+  const isNairaOnlyOfframp = Boolean(isCashOut && isNairaTx);
 
   let displayAmount = "0.00";
   let displayToken = token;
-  if (isNairaOnlyOfframp) {
+  if (isNairaTx) {
     if (cleanNaira) {
       const numericNaira = parseFloat(cleanNaira.replace(/[^0-9.]/g, ""));
       displayAmount = !isNaN(numericNaira)
@@ -239,7 +254,7 @@ function buildReceiptSvg(opts = {}) {
   const slipY = 24;
 
   const heroY = slipY + 68;
-  const heroH = (!isNairaOnlyOfframp && cleanNaira) ? 156 : 126;
+  const heroH = 126;
 
   const toY = heroY + heroH + 14;
   const toH = 68;
@@ -270,7 +285,7 @@ function buildReceiptSvg(opts = {}) {
     rows.push({
       label: isDeposit ? "Source" : "From",
       val: senderName,
-      sub: (!isNairaOnlyOfframp && shortSender && shortSender !== senderName) ? shortSender : null,
+      sub: (!isNairaTx && shortSender && shortSender !== senderName) ? shortSender : null,
     });
   }
   if (narration && String(narration).trim()) {
@@ -278,7 +293,7 @@ function buildReceiptSvg(opts = {}) {
   }
   rows.push({ label: "Date & time", val: dateStr });
   rows.push({ label: "Reference", val: receiptId, isMono: true });
-  if (shortHash && !isNairaOnlyOfframp) {
+  if (shortHash && !isNairaTx) {
     rows.push({ label: "Transaction ID", val: shortHash, isMono: true });
   }
   rows.push({
@@ -350,11 +365,9 @@ function buildReceiptSvg(opts = {}) {
   const figY = labelY + 38;
   const ngnY = figY + 24;
 
-  const nairaLine = (!isNairaOnlyOfframp && cleanNaira)
-    ? `<text x="${heroMidX}" y="${ngnY}" font-size="15" font-weight="800" fill="#FFFFFF" text-anchor="middle">
-        ${escape(cleanNaira)} <tspan font-size="12.5" font-weight="700" fill="#6EE7B7">NGN</tspan>
-      </text>`
-    : "";
+  // Naira-touching transactions display Naira only in the hero figure;
+  // crypto transactions display USDC/EURC only.
+  const nairaLine = "";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}" xmlns="http://www.w3.org/2000/svg">

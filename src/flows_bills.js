@@ -1022,7 +1022,7 @@ function registerBillsFlows(bot, helpers) {
           `──────────────────────────\n` +
           `• <b>Service:</b> ${escapeHtml(data.providerName)} (${escapeHtml(data.label)})\n` +
           `• <b>Recipient:</b> <code>${escapeHtml(data.recipient)}</code>\n` +
-          `• <b>Amount:</b> ₦${Number(res.amountNgn).toLocaleString()} ($${Number(res.amountUsdc).toFixed(2)})\n` +
+          `• <b>Amount:</b> ₦${Number(res.amountNgn).toLocaleString()}\n` +
           tokenBlock +
           `• <b>Ref:</b> <code>${escapeHtml(res.airbillsTxId)}</code>`;
 
@@ -1035,7 +1035,8 @@ function registerBillsFlows(bot, helpers) {
             recipientAddress: data.recipient,
             amountUsdc:       res.amountUsdc,
             amountNgn:        res.amountNgn,
-            token:            "USDC",
+            nairaEquiv:       res.amountNgn,
+            token:            "NGN",
             type:             `${data.label} Bill`,
             narration:        res.meterToken ? `Meter Token: ${res.meterToken}` : (data.description || `${data.label} payment`),
             timestamp:        new Date().toISOString(),
