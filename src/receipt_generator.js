@@ -193,11 +193,14 @@ function buildReceiptSvg(opts = {}) {
     : (cleanRecipientName || detectedBank || "Recipient");
 
   let cleanNaira = null;
-  if (nairaEquiv !== null && nairaEquiv !== undefined && nairaEquiv !== "") {
-    if (typeof nairaEquiv === "number") {
-      cleanNaira = `₦${nairaEquiv.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const rawNairaInput = (nairaEquiv !== null && nairaEquiv !== undefined && nairaEquiv !== "")
+    ? nairaEquiv
+    : (opts.amountNgn !== null && opts.amountNgn !== undefined && opts.amountNgn !== "" ? opts.amountNgn : null);
+  if (rawNairaInput !== null) {
+    if (typeof rawNairaInput === "number") {
+      cleanNaira = `₦${rawNairaInput.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     } else {
-      const s = String(nairaEquiv).trim();
+      const s = String(rawNairaInput).trim();
       cleanNaira = s.startsWith("₦") ? s : `₦${s}`;
     }
   } else if (opts.amountPrimary && String(opts.amountPrimary).includes("₦")) {
@@ -243,7 +246,7 @@ function buildReceiptSvg(opts = {}) {
 
   // Key-value rows
   let statusDisplay = "✓ Completed";
-  let statusFill = "#08B766";
+  let statusFill = "#059669";
   if (isFailed) {
     statusDisplay = "✕ Failed";
     statusFill = "#DC2626";
@@ -303,18 +306,18 @@ function buildReceiptSvg(opts = {}) {
     const currRowY = dlY + idx * rowHeight;
     const isLast = idx === rows.length - 1;
     const divider = !isLast
-      ? `<line x1="${slipX + 22}" y1="${currRowY + 28}" x2="${slipX + slipW - 22}" y2="${currRowY + 28}" stroke="#E4EBE7" stroke-width="1"/>`
+      ? `<line x1="${slipX + 22}" y1="${currRowY + 29}" x2="${slipX + slipW - 22}" y2="${currRowY + 29}" stroke="#CBD5E1" stroke-width="1"/>`
       : "";
 
-    let valFill = "#0B2A22";
-    let valWeight = "700";
+    let valFill = "#020617";
+    let valWeight = "800";
     let fontFam = "'DejaVu Sans', sans-serif";
 
     if (r.isMono) {
-      valFill = "#0F5540";
+      valFill = "#047857";
       fontFam = "'DejaVu Sans Mono', monospace";
     } else if (r.isStatus) {
-      valFill = r.customFill || (isConfirmed ? "#08B766" : "#D97706");
+      valFill = r.customFill || (isConfirmed ? "#059669" : "#D97706");
       valWeight = "800";
     }
 
@@ -324,7 +327,7 @@ function buildReceiptSvg(opts = {}) {
       if (displayVal.length > 18) {
         displayVal = `${displayVal.slice(0, 16)}...`;
       }
-      subText = ` <tspan font-size="10.5" font-weight="500" fill="#5F766E" font-family="'DejaVu Sans Mono', monospace">(${escape(r.sub)})</tspan>`;
+      subText = ` <tspan font-size="11" font-weight="600" fill="#334155" font-family="'DejaVu Sans Mono', monospace">(${escape(r.sub)})</tspan>`;
     } else if (r.label === "Narration") {
       if (displayVal.length > 36) {
         displayVal = `${displayVal.slice(0, 34)}...`;
@@ -334,8 +337,8 @@ function buildReceiptSvg(opts = {}) {
     }
 
     rowsSvg += `
-    <text x="${slipX + 22}" y="${currRowY + 18}" font-size="13" font-weight="500" fill="#5F766E">${escape(r.label)}</text>
-    <text x="${slipX + slipW - 22}" y="${currRowY + 18}" font-size="13" font-weight="${valWeight}" fill="${valFill}" font-family="${fontFam}" text-anchor="end">${escape(displayVal)}${subText}</text>
+    <text x="${slipX + 22}" y="${currRowY + 19}" font-size="13.5" font-weight="600" fill="#334155">${escape(r.label)}</text>
+    <text x="${slipX + slipW - 22}" y="${currRowY + 19}" font-size="13.5" font-weight="${valWeight}" fill="${valFill}" font-family="${fontFam}" text-anchor="end">${escape(displayVal)}${subText}</text>
     ${divider}`;
   });
 
@@ -348,8 +351,8 @@ function buildReceiptSvg(opts = {}) {
   const ngnY = figY + 24;
 
   const nairaLine = (!isNairaOnlyOfframp && cleanNaira)
-    ? `<text x="${heroMidX}" y="${ngnY}" font-size="14.5" font-weight="700" fill="#ffffff" text-anchor="middle">
-        ${escape(cleanNaira)} <tspan font-size="12" font-weight="500" fill="#A9C9BC">NGN</tspan>
+    ? `<text x="${heroMidX}" y="${ngnY}" font-size="15" font-weight="800" fill="#FFFFFF" text-anchor="middle">
+        ${escape(cleanNaira)} <tspan font-size="12.5" font-weight="700" fill="#6EE7B7">NGN</tspan>
       </text>`
     : "";
 
@@ -360,81 +363,81 @@ function buildReceiptSvg(opts = {}) {
       ${getFontCss()}
     </style>
     <filter id="slipShadow" x="-10%" y="-5%" width="120%" height="115%">
-      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#05231E" flood-opacity="0.18"/>
-      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#05231E" flood-opacity="0.08"/>
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#022C22" flood-opacity="0.24"/>
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#022C22" flood-opacity="0.12"/>
     </filter>
     <linearGradient id="forestGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#0F5540"/>
-      <stop offset="100%" stop-color="#0A3E30"/>
+      <stop offset="0%" stop-color="#065F46"/>
+      <stop offset="100%" stop-color="#022C22"/>
     </linearGradient>
   </defs>
 
   <!-- Stage Canvas Background -->
-  <rect width="${canvasW}" height="${canvasH}" fill="#E7EEEA"/>
+  <rect width="${canvasW}" height="${canvasH}" fill="#D1DFD8"/>
 
   <!-- Receipt Slip (With Serrated Bottom & Drop Shadow) -->
-  <path d="${slipPath}" fill="#ffffff" filter="url(#slipShadow)"/>
+  <path d="${slipPath}" fill="#FFFFFF" filter="url(#slipShadow)"/>
 
   <!-- ==================== HEADER (.top) ==================== -->
   <g transform="translate(${slipX + 22}, ${slipY + 16})">
     <!-- Proxim Logo (40x40) -->
     ${PROXIM_LOGO_DATA_URI
       ? `<image href="${PROXIM_LOGO_DATA_URI}" x="0" y="0" width="40" height="40"/>`
-      : `<rect width="40" height="40" rx="12" fill="#0A3E30"/>`
+      : `<rect width="40" height="40" rx="12" fill="#065F46"/>`
     }
 
     <!-- Brand Name -->
-    <text x="50" y="26" font-size="18" font-weight="800" fill="#0B2A22" letter-spacing="-0.3">Proxim</text>
+    <text x="50" y="26" font-size="19" font-weight="800" fill="#020617" letter-spacing="-0.3">Proxim</text>
 
     <!-- Subtitle / Receipt Badge -->
-    <text x="${slipW - 44}" y="25" font-size="12" font-weight="600" fill="#5F766E" text-anchor="end">${escape(receiptId)}</text>
+    <text x="${slipW - 44}" y="25" font-size="12.5" font-weight="700" fill="#334155" font-family="'DejaVu Sans Mono', monospace" text-anchor="end">${escape(receiptId)}</text>
   </g>
 
   <!-- ==================== HERO BOX (.hero) ==================== -->
-  <rect x="${slipX + 14}" y="${heroY}" width="${slipW - 28}" height="${heroH}" rx="14" fill="#0A3E30"/>
+  <rect x="${slipX + 14}" y="${heroY}" width="${slipW - 28}" height="${heroH}" rx="14" fill="url(#forestGrad)"/>
 
   <!-- Tick Badge Circle -->
-  <circle cx="${heroMidX}" cy="${tickY}" r="${tickR}" fill="${isConfirmed ? '#08B766' : (isFailed ? '#DC2626' : '#F59E0B')}"/>
+  <circle cx="${heroMidX}" cy="${tickY}" r="${tickR}" fill="${isConfirmed ? '#10B981' : (isFailed ? '#DC2626' : '#F59E0B')}"/>
   ${
     isConfirmed
       ? `<!-- Checkmark -->
   <path d="M ${heroMidX - 7} ${tickY} L ${heroMidX - 2} ${tickY + 5} L ${heroMidX + 8} ${tickY - 5}" 
-        fill="none" stroke="#05231E" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>`
+        fill="none" stroke="#FFFFFF" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>`
       : (isFailed
           ? `<!-- Cross / Failed Icon -->
   <path d="M ${heroMidX - 5} ${tickY - 5} L ${heroMidX + 5} ${tickY + 5} M ${heroMidX + 5} ${tickY - 5} L ${heroMidX - 5} ${tickY + 5}" 
-        fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round"/>`
+        fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round"/>`
           : `<!-- Clock / Pending Icon -->
-  <circle cx="${heroMidX}" cy="${tickY}" r="7" fill="none" stroke="#05231E" stroke-width="2.2"/>
+  <circle cx="${heroMidX}" cy="${tickY}" r="7" fill="none" stroke="#FFFFFF" stroke-width="2.6"/>
   <path d="M ${heroMidX} ${tickY - 4} L ${heroMidX} ${tickY} L ${heroMidX + 3} ${tickY + 2}" 
-        fill="none" stroke="#05231E" stroke-width="2.2" stroke-linecap="round"/>`
+        fill="none" stroke="#FFFFFF" stroke-width="2.6" stroke-linecap="round"/>`
         )
   }
 
   <!-- Hero Label -->
-  <text x="${heroMidX}" y="${labelY}" font-size="13" font-weight="600" fill="#A9C9BC" text-anchor="middle">${escape(heroLabel)}</text>
+  <text x="${heroMidX}" y="${labelY}" font-size="13.5" font-weight="700" fill="#D1FAE5" text-anchor="middle">${escape(heroLabel)}</text>
 
   <!-- Figure: Amount + Token -->
   <text x="${heroMidX}" y="${figY}" text-anchor="middle">
-    <tspan font-size="${amtFontSize}" font-weight="800" fill="#ffffff" letter-spacing="-1">${escape(displayAmount)}</tspan>
-    <tspan dx="6" font-size="16" font-weight="700" fill="#A9C9BC">${escape(displayToken)}</tspan>
+    <tspan font-size="${amtFontSize}" font-weight="800" fill="#FFFFFF" letter-spacing="-1">${escape(displayAmount)}</tspan>
+    <tspan dx="6" font-size="16.5" font-weight="800" fill="#6EE7B7">${escape(displayToken)}</tspan>
   </text>
 
   <!-- NGN Equivalent -->
   ${nairaLine}
 
   <!-- ==================== DESTINATION / RECIPIENT CARD (.to) ==================== -->
-  <rect x="${slipX + 14}" y="${toY}" width="${slipW - 28}" height="${toH}" rx="14" fill="#F2F6F4"/>
+  <rect x="${slipX + 14}" y="${toY}" width="${slipW - 28}" height="${toH}" rx="14" fill="#ECFDF5" stroke="#A7F3D0" stroke-width="1.5"/>
 
   <!-- Avatar -->
-  <circle cx="${slipX + 14 + 32}" cy="${toY + toH / 2}" r="19" fill="#0F5540"/>
-  <text x="${slipX + 14 + 32}" y="${toY + toH / 2 + 5}" font-size="13" font-weight="800" fill="#ffffff" text-anchor="middle">${escape(initials)}</text>
+  <circle cx="${slipX + 14 + 32}" cy="${toY + toH / 2}" r="19" fill="#065F46"/>
+  <text x="${slipX + 14 + 32}" y="${toY + toH / 2 + 5}" font-size="13.5" font-weight="800" fill="#FFFFFF" text-anchor="middle">${escape(initials)}</text>
 
   <!-- Destination Text -->
   <g transform="translate(${slipX + 14 + 60}, ${toY + 18})">
-    <text x="0" y="0" font-size="11" font-weight="500" fill="#5F766E">${escape(destSubtitle)}</text>
-    <text x="0" y="18" font-size="14" font-weight="800" fill="#0B2A22">${escape(displayRecipientName)}</text>
-    ${destSubinfo ? `<text x="0" y="34" font-size="12" font-weight="600" fill="#5F766E">${escape(destSubinfo)}</text>` : ""}
+    <text x="0" y="0" font-size="11.5" font-weight="700" fill="#047857">${escape(destSubtitle)}</text>
+    <text x="0" y="18" font-size="14.5" font-weight="800" fill="#020617">${escape(displayRecipientName)}</text>
+    ${destSubinfo ? `<text x="0" y="34" font-size="12.5" font-weight="700" fill="#1E293B">${escape(destSubinfo)}</text>` : ""}
   </g>
 
   <!-- ==================== DETAILS LIST (dl / .row) ==================== -->
@@ -442,9 +445,9 @@ function buildReceiptSvg(opts = {}) {
 
   <!-- ==================== FOOTER (.foot) ==================== -->
   <g transform="translate(0, ${footY})">
-    <line x1="${slipX + 22}" y1="0" x2="${slipX + slipW - 22}" y2="0" stroke="#CBD8D2" stroke-width="1.5" stroke-dasharray="4 4"/>
-    <text x="${heroMidX}" y="24" font-size="13.5" font-weight="800" fill="#0F5540" text-anchor="middle">Proxim</text>
-    <text x="${heroMidX}" y="42" font-size="11.5" font-weight="500" fill="#5F766E" text-anchor="middle">${isNairaOnlyOfframp ? "Instant bank transfers via Proxim." : "Save in dollars. Spend in Naira."}</text>
+    <line x1="${slipX + 22}" y1="0" x2="${slipX + slipW - 22}" y2="0" stroke="#94A3B8" stroke-width="1.5" stroke-dasharray="4 4"/>
+    <text x="${heroMidX}" y="24" font-size="14" font-weight="800" fill="#065F46" text-anchor="middle">Proxim</text>
+    <text x="${heroMidX}" y="42" font-size="12" font-weight="600" fill="#334155" text-anchor="middle">${isNairaOnlyOfframp ? "Instant bank transfers via Proxim." : "Save in dollars. Spend in Naira."}</text>
   </g>
 </svg>`;
 }

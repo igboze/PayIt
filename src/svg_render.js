@@ -23,9 +23,13 @@ const RESVG_OPTS = {
   },
 };
 
-/** Write an SVG string to a PNG file. */
-function renderSvgToPngFile(svg, outPath) {
-  const resvg    = new Resvg(svg, RESVG_OPTS);
+/** Write an SVG string to a high-DPI (3x Retina) PNG file. */
+function renderSvgToPngFile(svg, outPath, options = {}) {
+  const zoom = Number(options.zoom) || 3;
+  const resvg = new Resvg(svg, {
+    ...RESVG_OPTS,
+    fitTo: { mode: "zoom", value: zoom },
+  });
   const rendered = resvg.render();
   fs.writeFileSync(outPath, rendered.asPng());
 }
