@@ -569,7 +569,7 @@ async function executeBillPayment({
       }
       db.updateBillPayment(billRecord.id, { status: "bridging" });
 
-      const bridgeRes = await cctpBridge.bridgeArcToSolana({
+      const bridgeRes = await cctpBridge.executeArcToSolanaCctpBurn({
         userWallet: userArcWallet,
         amountUsdc: neededUsdc,
         recipientSolanaAddress: userSolanaAddress,
