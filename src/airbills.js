@@ -91,7 +91,7 @@ async function apiGet(path, params = undefined) {
   const res = await axios.get(`${getBaseUrl()}${path}`, {
     headers: getHeaders(),
     params,
-    timeout: 20000,
+    timeout: 30000,
   });
   const body = res.data;
   if (body?.status && body.status !== "00") {
@@ -115,12 +115,37 @@ async function apiPost(path, payload) {
 
 // ─── Catalog & Validation Endpoints ───────────────────────────────────────────
 
+let _cachedUsdcNgnRate = { rate: null, fetchedAt: 0 };
+
+async function getAirbillsTokens() {
+  const data = await apiGet("/tokens");
+  return Array.isArray(data) ? data : [];
+}
+
+async function getAirbillsUsdcRate() {
+  const now = Date.now();
+  if (_cachedUsdcNgnRate.rate && now - _cachedUsdcNgnRate.fetchedAt < 5 * 60 * 1000) {
+    return _cachedUsdcNgnRate.rate;
+  }
+  try {
+    const tokens = await getAirbillsTokens();
+    const usdc = tokens.find(t => String(t.token || "").toUpperCase() === "USDC");
+    const ngnRate = Number(usdc?.ngn);
+    if (ngnRate && ngnRate > 0) {
+      _cachedUsdcNgnRate = { rate: ngnRate, fetchedAt: now };
+      return ngnRate;
+    }
+  } catch (_) {}
+  return null;
+}
+
 async function detectNetwork(phoneNumber) {
   const cleanPhone = normalizeNigerianPhone(phoneNumber);
   try {
     const data = await apiGet("/network-checker", { phone: cleanPhone });
-    if (data?.networkId) {
-      return { networkId: String(data.networkId), network: data.network || getNetworkName(data.networkId) };
+    const netId = data?.network_id || data?.networkId;
+    if (netId) {
+      return { networkId: String(netId), network: data.network || getNetworkName(netId) };
     }
   } catch (_) {}
   return null;
@@ -144,8 +169,17 @@ function isValidNigerianPhone(input) {
 }
 
 async function listElectricityProviders() {
-  const list = await apiGet("/list/elect");
-  return Array.isArray(list) ? list : [];
+  const data = await apiGet("/list/elect");
+  const raw = Array.isArray(data)
+    ? data
+    : Array.isArray(data?.ELECTRIC_COMPANY)
+      ? data.ELECTRIC_COMPANY
+      : [];
+  return raw.map(item => ({
+    electId: String(item.electId || item.id || ""),
+    name: item.electName || item.name || String(item.electId),
+    prodId: item.prodId ? String(item.prodId) : null,
+  }));
 }
 
 async function validateMeter(meterNo, electId) {
@@ -157,30 +191,72 @@ async function validateMeter(meterNo, electId) {
 }
 
 async function listDataPlans(networkId = null) {
-  const list = await apiGet("/list/internet");
-  const all = Array.isArray(list) ? list : [];
-  if (!networkId) return all;
-  return all.filter(p => String(p.networkId) === String(networkId));
+  const data = await apiGet("/list/internet");
+  let raw = [];
+  if (Array.isArray(data)) {
+    raw = data;
+  } else if (data?.dataPlan && typeof data.dataPlan === "object") {
+    raw = Object.values(data.dataPlan).flat();
+  }
+  const normalized = raw.map(p => ({
+    prodId: String(p.prodId || p.prodCode || ""),
+    prodAmount: Number(p.prodAmount || p.amount || 0),
+    description: p.prodName || p.description || String(p.prodId),
+    networkId: String(p.networkId || p.network_id || ""),
+    network: p.network || getNetworkName(p.networkId || p.network_id),
+  })).filter(p => p.prodId && p.prodAmount > 0);
+
+  if (!networkId) return normalized;
+  return normalized.filter(p => String(p.networkId) === String(networkId));
 }
 
 async function listBettingPlatforms() {
-  const list = await apiGet("/list/bet");
-  return Array.isArray(list) ? list : [];
+  const data = await apiGet("/list/bet");
+  const raw = Array.isArray(data)
+    ? data
+    : Array.isArray(data?.bettingCompany)
+      ? data.bettingCompany
+      : [];
+  return raw.map(p => ({
+    prodId: String(p.prodId || p.id || ""),
+    name: p.prodName || p.name || String(p.prodId),
+  }));
 }
 
 async function listCablePackages(provider = null) {
-  const list = await apiGet("/list/cable");
-  const all = Array.isArray(list) ? list : [];
-  if (!provider) return all;
+  const data = await apiGet("/list/cable");
+  let raw = [];
+  if (Array.isArray(data)) {
+    raw = data;
+  } else if (data?.CableTv && typeof data.CableTv === "object") {
+    raw = Object.values(data.CableTv).flat();
+  }
+  const normalized = raw.map(p => ({
+    prodId: String(p.prodId || p.id || ""),
+    prodAmount: Number(p.prodAmount || p.amount || 0),
+    description: p.prodName || p.description || String(p.prodId),
+    provider: p.TvId || p.provider || "Cable TV",
+  })).filter(p => p.prodId && p.prodAmount > 0);
+
+  if (!provider) return normalized;
   const target = String(provider).toLowerCase();
-  return all.filter(p =>
-    String(p.provider || p.prodId || p.description || "").toLowerCase().includes(target)
+  const filtered = normalized.filter(p =>
+    String(p.provider || "").toLowerCase().includes(target) ||
+    String(p.description || "").toLowerCase().includes(target) ||
+    String(p.prodId || "").toLowerCase().includes(target)
   );
+  return filtered;
 }
 
 async function listTransportServices() {
-  const list = await apiGet("/list/transport");
-  return Array.isArray(list) ? list : [];
+  const data = await apiGet("/list/transport");
+  const raw = Array.isArray(data) ? data : [];
+  return raw.map(s => ({
+    prodId: String(s.prodId || s.code || s.id || ""),
+    prodAmount: Number(s.prodAmount || s.amount || 0),
+    name: s.name || s.description || String(s.prodId),
+    description: s.description || s.name || String(s.prodId),
+  }));
 }
 
 // ─── Airbills Two-Step Transaction Calls ──────────────────────────────────────
@@ -333,13 +409,19 @@ async function estimateBillUsdc(amountNgn) {
   const ngn = Number(amountNgn);
   if (!ngn || ngn <= 0) return 0;
   try {
+    const airbillsRate = await getAirbillsUsdcRate();
+    if (airbillsRate && airbillsRate > 0) {
+      return Number((ngn / airbillsRate).toFixed(4));
+    }
+  } catch (_) {}
+  try {
     const rate = await fx.getUsdToNgnRate();
     if (rate && rate > 0) {
       return Number((ngn / rate).toFixed(4));
     }
   } catch (_) {}
   // Conservative fallback if FX API unreachable
-  return Number((ngn / 1500).toFixed(4));
+  return Number((ngn / 1350).toFixed(4));
 }
 
 /**
@@ -567,6 +649,8 @@ module.exports = {
   normalizeNigerianPhone,
   isValidNigerianPhone,
   getNetworkName,
+  getAirbillsTokens,
+  getAirbillsUsdcRate,
   detectNetwork,
   listElectricityProviders,
   validateMeter,

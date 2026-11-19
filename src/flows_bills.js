@@ -319,27 +319,44 @@ function registerBillsFlows(bot, helpers) {
 
   // ── 3. ELECTRICITY (Product 101) ───────────────────────────────────────────
 
-  bot.action("bill_start_electricity", async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
-    const user = requireUser(ctx);
-    if (!user) return;
+  async function renderElectricityPage(ctx, page = 0) {
     try {
       const discos = await airbills.listElectricityProviders();
       if (!discos.length) {
         return ctx.reply("No electricity providers available right now.", Markup.inlineKeyboard([[btnDefault("« Back", "action_bills_menu")]]));
       }
+      const start = page * PAGE_SIZE;
+      const slice = discos.slice(start, start + PAGE_SIZE);
       convState.setState(ctx.from.id, "bill_elect_pick", { discos }, getContext(ctx.from.id));
-      const rows = discos.slice(0, 12).map((d, idx) => [
-        Markup.button.callback(`⚡ ${d.name || d.electId}`, `bill_elect_disco_${idx}`),
+      const rows = slice.map((d, idx) => [
+        Markup.button.callback(`⚡ ${d.name || d.electId}`, `bill_elect_disco_${start + idx}`),
       ]);
+      const nav = [];
+      if (page > 0) nav.push(Markup.button.callback("⬅️ Prev", `bill_elect_page_${page - 1}`));
+      if (start + PAGE_SIZE < discos.length) nav.push(Markup.button.callback("Next ➡️", `bill_elect_page_${page + 1}`));
+      if (nav.length) rows.push(nav);
       rows.push([Markup.button.callback("❌ Cancel", "action_bills_menu")]);
       return ctx.reply(
-        `⚡ <b>Pay Electricity Bill</b>\n──────────────────────────\nChoose your electricity provider (DISCO):`,
+        `⚡ <b>Pay Electricity Bill</b> (Page ${page + 1})\n──────────────────────────\nChoose your electricity provider (DISCO):`,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(rows) }
       );
     } catch (err) {
       return ctx.reply(`⚠️ Couldn't load electricity providers: ${err.message}`, Markup.inlineKeyboard([[btnDefault("« Back", "action_bills_menu")]]));
     }
+  }
+
+  bot.action("bill_start_electricity", async (ctx) => {
+    ctx.answerCbQuery().catch(() => {});
+    const user = requireUser(ctx);
+    if (!user) return;
+    return renderElectricityPage(ctx, 0);
+  });
+
+  bot.action(/^bill_elect_page_(\d+)$/, async (ctx) => {
+    ctx.answerCbQuery().catch(() => {});
+    const user = requireUser(ctx);
+    if (!user) return;
+    return renderElectricityPage(ctx, parseInt(ctx.match[1], 10) || 0);
   });
 
   bot.action(/^bill_elect_disco_(\d+)$/, async (ctx) => {
@@ -349,6 +366,18 @@ function registerBillsFlows(bot, helpers) {
     const disco = state?.data?.discos?.[parseInt(ctx.match[1], 10)];
     if (!state || !disco) {
       return ctx.reply("Session expired.", Markup.inlineKeyboard([[btnPrimary("⚡ Electricity", "bill_start_electricity")]]));
+    }
+    if (disco.prodId) {
+      convState.setState(userId, "bill_elect_meter", {
+        electId: disco.electId,
+        providerName: disco.name || disco.electId,
+        prodId: disco.prodId,
+      }, state.context);
+      return ctx.reply(
+        `⚡ <b>${escapeHtml(disco.name || disco.electId)}</b>\n──────────────────────────\n` +
+        `Enter your <b>meter number</b>:\n<i>We'll verify your account name before you pay.</i>`,
+        { parse_mode: "HTML", ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_bills_menu")]]) }
+      );
     }
     convState.setState(userId, "bill_elect_type", {
       electId: disco.electId,
@@ -562,12 +591,10 @@ function registerBillsFlows(bot, helpers) {
         return ctx.reply("No transport services available right now.", Markup.inlineKeyboard([[btnDefault("« Back", "action_bills_menu")]]));
       }
       convState.setState(ctx.from.id, "bill_trans_pick", { services }, getContext(ctx.from.id));
-      const rows = services.slice(0, 12).map((s, idx) => [
-        Markup.button.callback(
-          `🚌 ${s.description || s.prodId} — ₦${Number(s.prodAmount).toLocaleString()}`,
-          `bill_trans_svc_${idx}`
-        ),
-      ]);
+      const rows = services.slice(0, 12).map((s, idx) => {
+        const priceTag = s.prodAmount > 0 ? ` — ₦${Number(s.prodAmount).toLocaleString()}` : "";
+        return [Markup.button.callback(`🚌 ${s.description || s.prodId}${priceTag}`, `bill_trans_svc_${idx}`)];
+      });
       rows.push([Markup.button.callback("❌ Cancel", "action_bills_menu")]);
       return ctx.reply(
         `🚌 <b>Transport Tickets &amp; Top-Up</b>\n──────────────────────────\nChoose a service:`,
@@ -586,14 +613,55 @@ function registerBillsFlows(bot, helpers) {
     if (!state || !svc) {
       return ctx.reply("Session expired.", Markup.inlineKeyboard([[btnPrimary("🚌 Transport", "bill_start_transport")]]));
     }
+    if (!svc.prodAmount || svc.prodAmount <= 0) {
+      convState.setState(userId, "bill_trans_amount", {
+        prodId: svc.prodId,
+        providerName: svc.name || "Transport",
+        description: svc.description || svc.prodId,
+      }, state.context);
+      return ctx.reply(
+        `🚌 <b>${escapeHtml(svc.description || svc.prodId)} Top-Up</b>\n──────────────────────────\n` +
+        `How much (in Naira ₦) would you like to top up?`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback("₦500",   "bill_trans_amt_500"),
+              Markup.button.callback("₦1,000", "bill_trans_amt_1000"),
+            ],
+            [
+              Markup.button.callback("₦2,000", "bill_trans_amt_2000"),
+              Markup.button.callback("₦5,000", "bill_trans_amt_5000"),
+            ],
+            [Markup.button.callback("❌ Cancel", "action_bills_menu")],
+          ]),
+        }
+      );
+    }
     convState.setState(userId, "bill_trans_phone", {
       prodId: svc.prodId,
       amountNgn: Number(svc.prodAmount),
-      providerName: "Transport",
+      providerName: svc.name || "Transport",
       description: svc.description || svc.prodId,
     }, state.context);
     return ctx.reply(
       `🚌 <b>${escapeHtml(svc.description || svc.prodId)}</b> (₦${Number(svc.prodAmount).toLocaleString()})\n──────────────────────────\n` +
+      `Enter your phone number:\n💬 <i>Example: <b>08012345678</b></i>`,
+      { parse_mode: "HTML", ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_bills_menu")]]) }
+    );
+  });
+
+  bot.action(/^bill_trans_amt_(\d+)$/, async (ctx) => {
+    ctx.answerCbQuery().catch(() => {});
+    const userId = ctx.from.id;
+    const state = convState.getState(userId);
+    if (!state || state.type !== "bill_trans_amount") {
+      return ctx.reply("Session expired.", Markup.inlineKeyboard([[btnPrimary("🚌 Transport", "bill_start_transport")]]));
+    }
+    const amountNgn = parseInt(ctx.match[1], 10);
+    convState.setState(userId, "bill_trans_phone", { ...state.data, amountNgn }, state.context);
+    return ctx.reply(
+      `🚌 <b>${escapeHtml(state.data.description)} — ₦${amountNgn.toLocaleString()}</b>\n──────────────────────────\n` +
       `Enter your phone number:\n💬 <i>Example: <b>08012345678</b></i>`,
       { parse_mode: "HTML", ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_bills_menu")]]) }
     );
@@ -857,7 +925,23 @@ function registerBillsFlows(bot, helpers) {
       return true;
     }
 
-    // 11. Transport phone
+    // 11. Transport custom amount
+    if (state.type === "bill_trans_amount") {
+      const amountNgn = parseFloat(text.replace(/[^0-9.]/g, ""));
+      if (isNaN(amountNgn) || amountNgn < 100 || amountNgn > 100000) {
+        await ctx.reply("Enter a valid Naira amount between ₦100 and ₦100,000:");
+        return true;
+      }
+      convState.setState(userId, "bill_trans_phone", { ...state.data, amountNgn }, state.context);
+      await ctx.reply(
+        `🚌 <b>${escapeHtml(state.data.description)} — ₦${amountNgn.toLocaleString()}</b>\n──────────────────────────\n` +
+        `Enter your phone number:\n💬 <i>Example: <b>08012345678</b></i>`,
+        { parse_mode: "HTML", ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_bills_menu")]]) }
+      );
+      return true;
+    }
+
+    // 12. Transport phone
     if (state.type === "bill_trans_phone") {
       if (!airbills.isValidNigerianPhone(text)) {
         await ctx.reply("Please enter a valid 11-digit Nigerian phone number (e.g. 08012345678):");
