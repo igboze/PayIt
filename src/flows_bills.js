@@ -12,6 +12,7 @@ const { Markup } = require("telegraf");
 const db = require("./db");
 const convState = require("./conversation_state");
 const airbills = require("./airbills");
+const { generateReceiptPNG } = require("./receipt_generator");
 
 const PAGE_SIZE = 8;
 
@@ -1016,16 +1017,39 @@ function registerBillsFlows(bot, helpers) {
           ? `\n🔑 <b>Meter Token:</b> <code>${escapeHtml(res.meterToken)}</code>\n`
           : "";
 
-        await ctx.reply(
+        const successCaption =
           `✅ <b>Bill Paid Successfully!</b>\n` +
           `──────────────────────────\n` +
           `• <b>Service:</b> ${escapeHtml(data.providerName)} (${escapeHtml(data.label)})\n` +
           `• <b>Recipient:</b> <code>${escapeHtml(data.recipient)}</code>\n` +
           `• <b>Amount:</b> ₦${Number(res.amountNgn).toLocaleString()} ($${Number(res.amountUsdc).toFixed(2)})\n` +
           tokenBlock +
-          `• <b>Ref:</b> <code>${escapeHtml(res.airbillsTxId)}</code>`,
-          { parse_mode: "HTML", ...afterPaymentButtons }
-        );
+          `• <b>Ref:</b> <code>${escapeHtml(res.airbillsTxId)}</code>`;
+
+        try {
+          const receiptPath = await generateReceiptPNG({
+            receiptId:        `BILL-${String(res.airbillsTxId || Date.now()).slice(0, 10)}`,
+            senderName:       user.username ? `@${user.username}` : "Proxim Wallet",
+            senderAddress:    getActiveWallet(user),
+            recipientName:    `${data.providerName || data.label}${data.description ? ` — ${data.description}` : ""}`,
+            recipientAddress: data.recipient,
+            amountUsdc:       res.amountUsdc,
+            amountNgn:        res.amountNgn,
+            token:            "USDC",
+            type:             `${data.label} Bill`,
+            narration:        res.meterToken ? `Meter Token: ${res.meterToken}` : (data.description || `${data.label} payment`),
+            timestamp:        new Date().toISOString(),
+            status:           "Confirmed",
+            txHash:           res.solanaTxSig || res.airbillsTxId,
+          });
+          await ctx.replyWithPhoto(
+            { source: receiptPath },
+            { caption: successCaption, parse_mode: "HTML", ...afterPaymentButtons }
+          );
+        } catch (receiptErr) {
+          console.warn("[flows_bills:receipt_png]", receiptErr.message);
+          await ctx.reply(successCaption, { parse_mode: "HTML", ...afterPaymentButtons });
+        }
       } catch (err) {
         console.error("[flows_bills:execute:error]", err);
         await ctx.reply(
