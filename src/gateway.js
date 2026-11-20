@@ -310,6 +310,116 @@ async function buildSignedBurnIntent(signer, sourceChainName, amountUsdc, recipi
 }
 
 /**
+ * Build and EIP-712-sign a bidirectional Circle Gateway BurnIntent between any
+ * two supported Gateway domains (e.g. Base <-> Arc).
+ * Enables <500ms chain-abstracted spending without requiring native gas on destination chain.
+ */
+async function buildSignedBurnIntentBidirectional(signer, { sourceChain, destinationChain, amountUsdc, recipientAddress }) {
+  const resolveDomainAndToken = (chainName) => {
+    const clean = String(chainName || "").trim();
+    if (/^arc/i.test(clean)) {
+      return { domain: ARC_DOMAIN_ID, token: ARC_USDC_ADDRESS };
+    }
+    const found = SUPPORTED_CHAINS.find((c) => c.name.toLowerCase() === clean.toLowerCase()) ||
+      MAINNET_CHAINS.find((c) => c.name.toLowerCase() === clean.toLowerCase()) ||
+      TESTNET_CHAINS.find((c) => c.name.toLowerCase() === clean.toLowerCase());
+    if (!found) throw new Error(`Unsupported Gateway chain: ${chainName}`);
+    const token = USDC_ADDRESSES[found.name];
+    if (!token) throw new Error(`Missing Gateway USDC token for chain: ${found.name}`);
+    return { domain: found.domain, token };
+  };
+
+  const src = resolveDomainAndToken(sourceChain);
+  const dst = resolveDomainAndToken(destinationChain);
+  if (src.domain === dst.domain) {
+    throw new Error(`Source and destination Gateway domains must differ (${sourceChain} -> ${destinationChain})`);
+  }
+
+  const depositor = getAddress(await signer.getAddress());
+  const recipient = getAddress(recipientAddress);
+  const value = parseUnits(Number(amountUsdc).toFixed(6), 6);
+  const salt = "0x" + Buffer.from(randomBytes(32)).toString("hex");
+
+  const burnIntent = {
+    maxBlockHeight: MaxUint256,
+    maxFee: MAX_TRANSFER_FEE,
+    spec: {
+      version: 1,
+      sourceDomain: src.domain,
+      destinationDomain: dst.domain,
+      sourceContract: toBytes32(GATEWAY_WALLET_ADDRESS),
+      destinationContract: toBytes32(GATEWAY_MINTER_ADDRESS),
+      sourceToken: toBytes32(src.token),
+      destinationToken: toBytes32(dst.token),
+      sourceDepositor: toBytes32(depositor),
+      destinationRecipient: toBytes32(recipient),
+      sourceSigner: toBytes32(depositor),
+      destinationCaller: toBytes32(ZeroAddress),
+      value,
+      salt,
+      hookData: "0x",
+    },
+  };
+
+  const signature = await signer.signTypedData(EIP712_DOMAIN, BURN_INTENT_TYPES, burnIntent);
+  return { burnIntent, signature };
+}
+
+/**
+ * Transfer Gateway USDC between any two supported domains (e.g. Arc -> Base to fund Nuvion USC).
+ * Uses Circle's forwarder (enableForwarder=true) for <500ms cross-chain settlement.
+ */
+async function transferBetweenChains(privateKey, { sourceChain, destinationChain, amountUsdc, recipientAddress }) {
+  try {
+    const signer = new Wallet(privateKey);
+    const { burnIntent, signature } = await buildSignedBurnIntentBidirectional(signer, {
+      sourceChain,
+      destinationChain,
+      amountUsdc,
+      recipientAddress,
+    });
+    const res = await axios.post(
+      `${GATEWAY_API_BASE}/transfer?enableForwarder=true`,
+      jsonSafe([{ burnIntent, signature }]),
+      { headers: { "Content-Type": "application/json" }, timeout: 15000 }
+    );
+    return res.data;
+  } catch (err) {
+    const apiMsg = err?.response?.data?.message || err?.response?.data?.error;
+    if (apiMsg) throw new Error(typeof apiMsg === "string" ? apiMsg : JSON.stringify(apiMsg));
+    throw err;
+  }
+}
+
+/**
+ * Fast, non-blocking read of total available Circle Gateway USDC across Base + Arc.
+ * Returns 0 cleanly if offline or timed out so balance displays never stall.
+ */
+async function getUnifiedGatewayUsdc(depositorAddress) {
+  if (!depositorAddress || !GATEWAY_API_BASE) return 0;
+  try {
+    const domains = [DOMAIN_IDS["Base"], ARC_DOMAIN_ID].filter((d) => d !== undefined && d !== null);
+    const res = await axios.get(`${GATEWAY_API_BASE}/balances`, {
+      params: { depositor: getAddress(depositorAddress), domains: domains.join(",") },
+      timeout: 3000,
+    });
+    const balances = res.data?.balances || res.data?.data || (Array.isArray(res.data) ? res.data : []);
+    let sum = 0;
+    for (const item of balances) {
+      const raw = item?.balance ?? item?.available ?? item?.amount ?? 0;
+      const num = Number(raw);
+      if (Number.isFinite(num) && num > 0) {
+        // Circle Gateway API returns either decimal string ("12.50") or micro-units (>1e5 integer)
+        sum += String(raw).includes(".") ? num : (num >= 100000 ? num / 1e6 : num);
+      }
+    }
+    return Math.round((sum + Number.EPSILON) * 100) / 100;
+  } catch (_) {
+    return 0;
+  }
+}
+
+/**
  * Transfer Gateway USDC from a source chain to Arc (burn + mint via Circle API).
  * Uses enableForwarder so Circle submits the Arc mint automatically.
  */
@@ -432,7 +542,10 @@ module.exports = {
   getTransferStatus,
   executeDeposit,
   transferToArc,
+  transferBetweenChains,
   buildSignedBurnIntent,
+  buildSignedBurnIntentBidirectional,
+  getUnifiedGatewayUsdc,
   getSourceChainBalances,
   getSourceChainNativeBalance,
   getGatewayInfo,

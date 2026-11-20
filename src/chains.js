@@ -115,7 +115,7 @@ function deriveAddress(user, accountType, chainKey) {
   const chain = getChain(chainKey);
   if (!chain) return null;
 
-  if (chain.family === "evm" && chainKey === "arc") {
+  if (chain.family === "evm" && (chainKey === "arc" || chainKey === "base")) {
     return (isBiz ? user.business_deposit_address : null) || user.deposit_address || null;
   }
   if (chain.family === "solana") {
@@ -167,6 +167,8 @@ async function getUnifiedBalance(user, accountType = "personal") {
     arcAddress: null,
     solanaAddresses: [],
     arc: { usdc: 0, eurc: 0 },
+    base: { usdc: 0 },
+    gateway: { usdc: 0 },
     solana: { usdc: 0 },
     pendingNear: 0,
     byChain: { arc: 0, solana: 0 },
@@ -186,6 +188,29 @@ async function getUnifiedBalance(user, accountType = "personal") {
     try {
       result.arc.eurc = _round2(parseFloat(walletLib.formatMicro(await tokens.getEurcBalance(arcAddress))));
     } catch (_) {}
+
+    // Base USDC (Tier-1 Nuvion pass-through rail — same 0x address as Arc)
+    if (process.env.NODE_ENV !== "test" || process.env.ENABLE_BASE_BALANCE_READ === "true") {
+      try {
+        const baseBalStr = await Promise.race([
+          walletLib.getUsdcBalance(arcAddress, "Base"),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("base_rpc_timeout")), 3000)),
+        ]);
+        const baseVal = parseFloat(baseBalStr);
+        if (Number.isFinite(baseVal) && baseVal > 0) {
+          result.base.usdc = _round2(baseVal);
+        }
+      } catch (_) {}
+
+      // Circle Gateway unified USDC balance (Arc + Base)
+      try {
+        const gateway = require("./gateway");
+        const gwVal = await gateway.getUnifiedGatewayUsdc(arcAddress);
+        if (Number.isFinite(gwVal) && gwVal > 0) {
+          result.gateway.usdc = _round2(gwVal);
+        }
+      } catch (_) {}
+    }
   }
 
   // Solana (SPL USDC across derived + stored addresses)
@@ -215,7 +240,9 @@ async function getUnifiedBalance(user, accountType = "personal") {
   result.pendingNear = _round2(result.pendingNear);
 
   result.byChain = { arc: result.arc.usdc, solana: result.solana.usdc };
-  result.total = _round2(result.arc.usdc + result.solana.usdc);
+  if (result.base.usdc > 0) result.byChain.base = result.base.usdc;
+  if (result.gateway.usdc > 0) result.byChain.gateway = result.gateway.usdc;
+  result.total = _round2(result.arc.usdc + result.solana.usdc + result.base.usdc + result.gateway.usdc);
   return result;
 }
 

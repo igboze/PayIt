@@ -656,33 +656,51 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
       return { success: false, error: "Amount below minimum threshold ($0.50 USDC)" };
     }
 
-    // Record transaction with retry to guarantee user is credited
-    let recorded = false;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    // Detect if this Base USDC arrival was already recorded & receipted by Nuvion's fiat inbound orchestrator
+    let isNuvionSettled = Boolean(options?.silent);
+    if (!isNuvionSettled && Number(effectiveChainId) === 8453 && !isNative && targetTelegramId) {
       try {
-        const amountMicro = walletLib.parseToMicro(effectiveAmountUsdc.toFixed(6));
-        db.recordTransaction(
-          targetTelegramId,
-          "deposit_crosschain",
-          amountMicro,
-          "confirmed",
-          swapTxHash || txHash,
-          accountType
-        );
-        db.awardPoints(targetTelegramId, 5, "deposit", `Cross-chain deposit from ${chainName}`);
-        recorded = true;
-        break;
-      } catch (recErr) {
-        console.warn(`[evm_sweeper] Record tx attempt ${attempt + 1} failed:`, recErr.message);
-        if (attempt < 2) await new Promise((r) => setTimeout(r, 500));
-      }
-    }
-    if (!recorded) {
-      throw new Error(`CRITICAL: Failed to credit deposit ${effectiveAmountUsdc} USDC to user TG:${targetTelegramId}. Webhook will not be marked processed to allow retry.`);
+        const recentNuvion = db
+          .prepare(
+            `SELECT id FROM nuvion_jobs
+             WHERE telegram_id = ? AND account_type = ? AND job_type = 'inbound_fiat_sweep'
+               AND state = 'completed' AND updated_at >= datetime('now', '-20 minutes')
+             LIMIT 1`
+          )
+          .get(Number(targetTelegramId), accountType || "personal");
+        if (recentNuvion) isNuvionSettled = true;
+      } catch (_) {}
     }
 
-    // Notify user with image receipt
-    if (bot && targetTelegramId) {
+    // Record transaction with retry to guarantee user is credited (skip duplicate ledger row for Nuvion fiat settlements)
+    if (!isNuvionSettled) {
+      let recorded = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const amountMicro = walletLib.parseToMicro(effectiveAmountUsdc.toFixed(6));
+          db.recordTransaction(
+            targetTelegramId,
+            "deposit_crosschain",
+            amountMicro,
+            "confirmed",
+            swapTxHash || txHash,
+            accountType
+          );
+          db.awardPoints(targetTelegramId, 5, "deposit", `Cross-chain deposit from ${chainName}`);
+          recorded = true;
+          break;
+        } catch (recErr) {
+          console.warn(`[evm_sweeper] Record tx attempt ${attempt + 1} failed:`, recErr.message);
+          if (attempt < 2) await new Promise((r) => setTimeout(r, 500));
+        }
+      }
+      if (!recorded) {
+        throw new Error(`CRITICAL: Failed to credit deposit ${effectiveAmountUsdc} USDC to user TG:${targetTelegramId}. Webhook will not be marked processed to allow retry.`);
+      }
+    }
+
+    // Notify user with image receipt (skipped when already receipted cleanly by Nuvion fiat orchestrator)
+    if (!isNuvionSettled && bot && targetTelegramId) {
       try {
         const displayAmount = `${rawAmount} ${token}`;
         const feeNote = !isNative && networkFee > 0

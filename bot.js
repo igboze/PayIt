@@ -49,7 +49,10 @@ const flowsMultichain   = require("./src/flows_multichain");
 const flowsDeveloper     = require("./src/flows_developer");
 const flowsBills        = require("./src/flows_bills");
 const nuvion            = require("./src/nuvion");
+const nuvionOrchestrator = require("./src/nuvion_orchestrator");
+const nuvionPoller      = require("./src/nuvion_poller");
 const flowsNuvionKyc    = require("./src/flows_nuvion_kyc");
+const flowsGlobalAccounts = require("./src/flows_global_accounts");
 const autoEarn = require("./src/auto_earn");
 const cashflow = require("./src/cashflow");
 const socialTransfers = require("./src/social_transfers");
@@ -885,14 +888,12 @@ async function showBalance(ctx) {
   const label   = context === "business" ? "💼 Business" : "👤 Personal";
 
   try {
-    // Unified balance read path (Phase 4): Arc + Solana + pending NEAR in one call
+    // Unified balance read path: Arc + Base + Circle Gateway + Solana in one clean total
     const unified   = await chains.getUnifiedBalance(user, context);
-    const usdc      = unified.arc.usdc;
-    const solUsdc   = unified.solana.usdc;
     const eurc      = unified.arc.eurc;
     const rate      = await fx.getUsdToNgnRate();
 
-    const totalUsdc = usdc + solUsdc;
+    const totalUsdc = unified.total;
     const eurcLine  = eurc > 0 ? `\n• <b>Euro Balance:</b> €${eurc.toFixed(2)}` : "";
 
     // Savings and accrued interest
@@ -984,14 +985,12 @@ async function showBizBalance(ctx) {
     );
   }
   try {
-    // Unified balance read path (Phase 4)
+    // Unified balance read path: Arc + Base + Circle Gateway + Solana in one clean total
     const unified   = await chains.getUnifiedBalance(user, "business");
-    const usdc      = unified.arc.usdc;
-    const solUsdc   = unified.solana.usdc;
     const eurc      = unified.arc.eurc;
     const rate      = await fx.getUsdToNgnRate();
 
-    const totalUsdc = usdc + solUsdc;
+    const totalUsdc = unified.total;
     const eurcLine  = eurc > 0 ? `\n• <b>Euro Balance:</b> €${eurc.toFixed(2)}` : "";
     const pending   = bizDb.getPendingInvoiceCount(ctx.from.id);
     const expenses  = bizDb.getMonthExpenses(ctx.from.id);
@@ -1066,27 +1065,33 @@ async function showReceive(ctx) {
   const address = getActiveWallet(user);
   const label   = context === "business" ? "Business" : "Personal";
 
+  const pKey = context === "business" ? "biz" : "per";
+  const showGlobalAccountsBtn = nuvion.isUserAllowedNuvion(ctx.from.id);
+  const depositRows = [
+    [btnSuccess("🇳🇬 Bank Transfer (Naira)", "action_paj_onramp")],
+    ...(showGlobalAccountsBtn ? [[btnSuccess("🌍 Global Bank Accounts (USD/GBP/EUR/NGN)", `nuvion_accounts_menu_${pKey}`)]] : []),
+    [btnSuccess("🌐 Deposit Crypto (10+ Networks)", "action_gateway")],
+    [
+      btnPrimary("💳 Card / Apple Pay", "gateway_onramp"),
+      btnPrimary("⚡ Check for Deposits", "action_sweep_deposits"),
+    ],
+    [
+      btnPrimary("💰 View Balance", "action_balance"),
+      btnDefault("🏠 Main Menu",    "main_menu"),
+    ],
+  ];
+
   await ctx.reply(
     `📥 <b>Deposit — ${label}</b>\n──────────────────────────\n` +
     `Choose how you would like to deposit:\n\n` +
     `🇳🇬 <b>Bank Transfer (Naira)</b>\nPay in Naira from any bank or mobile app for instant Dollars.\n\n` +
+    (showGlobalAccountsBtn ? `🌍 <b>Global Bank Accounts</b>\nReceive USD, GBP, EUR, NGN, KES, GHS, AED or payment links straight into your balance.\n\n` : "") +
     `🌐 <b>Deposit Crypto (10+ Networks)</b>\nSend from Base, Solana, Ethereum, NEAR, Polygon, and more.\n\n` +
     `💳 <b>Card or Apple Pay</b>\nBuy Dollars directly with your debit or credit card.\n\n` +
     `📍 <b>Your Deposit Address (tap to copy):</b>\n<code>${address}</code>`,
     {
       parse_mode: "HTML",
-      ...Markup.inlineKeyboard([
-        [btnSuccess("🇳🇬 Bank Transfer (Naira)", "action_paj_onramp")],
-        [btnSuccess("🌐 Deposit Crypto (10+ Networks)", "action_gateway")],
-        [
-          btnPrimary("💳 Card / Apple Pay", "gateway_onramp"),
-          btnPrimary("⚡ Check for Deposits", "action_sweep_deposits"),
-        ],
-        [
-          btnPrimary("💰 View Balance", "action_balance"),
-          btnDefault("🏠 Main Menu",    "main_menu"),
-        ],
-      ]),
+      ...Markup.inlineKeyboard(depositRows),
     }
   );
 }
@@ -3083,6 +3088,14 @@ flowsNuvionKyc.registerNuvionKycFlows(bot, {
   downloadTelegramFile,
   backToMenu,
 });
+
+flowsGlobalAccounts.registerGlobalAccountsFlows(bot, {
+  requireUser,
+  getContext,
+  backToMenu,
+});
+
+nuvionOrchestrator.registerOrchestratorHooks();
 
 // ─── Withdraw / Cash Out (Naira-first UX) ────────────────────────────────────
 
@@ -7256,6 +7269,11 @@ bot.on("text", async (ctx) => {
       if (handled) return;
     }
 
+    if (flowsGlobalAccounts.handlesState(state.type)) {
+      const handled = await flowsGlobalAccounts.handleGlobalAccountsTextState(ctx, state, text, userId);
+      if (handled) return;
+    }
+
     // ── Naira-first Cash Out: free-text Naira amount ─────────────────────────
     if (state.type === "await_withdraw_ngn_amount") {
       const ngnAmount = parseFloat(text.replace(/[^0-9.]/g, ""));
@@ -9752,11 +9770,19 @@ async function startBot() {
   } catch (err) {
     console.warn("[bot] Settlement daemon notice:", err.message);
   }
+
+  // Nuvion Phase 2 poller: Interac CAD 3-min PATCH polling + stuck inbound sweep reconciler
+  try {
+    nuvionPoller.startNuvionPoller(bot);
+  } catch (err) {
+    console.warn("[bot] Nuvion poller notice:", err.message);
+  }
 }
 
 startBot();
 
 process.once("SIGINT", () => {
+  nuvionPoller.stopNuvionPoller();
   settlementDaemon.stopSettlementDaemon();
   autoEarn.stopAutoEarnWorker();
   cashflow.stopCashFlowScheduler();
@@ -9764,6 +9790,7 @@ process.once("SIGINT", () => {
   bot.stop("SIGINT");
 });
 process.once("SIGTERM", () => {
+  nuvionPoller.stopNuvionPoller();
   settlementDaemon.stopSettlementDaemon();
   autoEarn.stopAutoEarnWorker();
   cashflow.stopCashFlowScheduler();

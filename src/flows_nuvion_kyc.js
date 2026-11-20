@@ -151,6 +151,7 @@ async function showGlobalPortal(ctx, forcedContext = null) {
   if (status === "approved") {
     const bridgeReady = Boolean(entity.usc_base_address && entity.self_base_payment_detail_id);
     const fiatDetails = db.getNuvionAccountDetailsByEntity(entity.entity_id).filter((d) => d.asset_type === "fiat");
+    const p = accountType === "business" ? "biz" : "per";
 
     return ctx.reply(
       `🌍 <b>${label}</b>  ✅ <b>Verified</b>\n──────────────────────────\n` +
@@ -158,10 +159,12 @@ async function showGlobalPortal(ctx, forcedContext = null) {
       `• <b>Status:</b> Tier-1 Approved\n` +
       `• <b>Instant Settlement Bridge:</b> ${bridgeReady ? "✅ Active" : "⏳ Provisioning..."}\n` +
       `• <b>Global Receiving Accounts:</b> ${fiatDetails.length} active\n\n` +
-      `<i>Your Tier-1 profile is active and ready.</i>`,
+      `<i>All deposits received into your global bank accounts settle automatically into your main Proxim balance.</i>`,
       {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard([
+          [Markup.button.callback("🏦 Global Bank Accounts (USD/GBP/EUR/NGN)", `nuvion_accounts_menu_${p}`)],
+          [Markup.button.callback("🔗 Request Payment Link (UK/EU/CA/MoMo)", `nuvion_paylink_menu_${p}`)],
           [Markup.button.callback("🔄 Sync Bridge & Status", `nuvion_refresh_${accountType}`)],
           [Markup.button.callback("🏠 Main Menu", "main_menu")],
         ]),
