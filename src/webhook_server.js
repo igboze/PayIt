@@ -353,7 +353,9 @@ async function processPajEvent(payload, bot) {
           try {
             const user = db.getUser(parsedTgId);
             const userAddress = user ? (accountType === "business" ? (user.business_deposit_address || user.deposit_address) : user.deposit_address) : null;
+            const effectiveSenderName = trackedOfframp?.sender_name || data.senderName || db.resolveSenderName(parsedTgId, accountType);
             const effectiveNarration = trackedOfframp?.narration || data.narration || data.description || null;
+            const senderLine = effectiveSenderName ? `👤 <b>Sender:</b> ${escapeHtml(effectiveSenderName)}\n` : "";
             const narrationLine = effectiveNarration ? `💬 <b>Narration:</b> <i>${escapeHtml(effectiveNarration)}</i>\n` : "";
 
             const caption =
@@ -361,6 +363,7 @@ async function processPajEvent(payload, bot) {
               `──────────────────────────\n` +
               `💵 <b>Delivered:</b> ₦${Number(fiatAmount).toLocaleString()}\n` +
               `🏦 <b>Destination:</b> ${bankName} <code>${accountNumber}</code>\n` +
+              senderLine +
               narrationLine +
               (fiatAmount > 0 ? "" : `💰 <b>Amount:</b> $${amountUsdc.toFixed(2)} USDC\n`) +
               `💼 <b>Source:</b> ${accountLabel}\n` +
@@ -371,7 +374,7 @@ async function processPajEvent(payload, bot) {
             try {
               receiptPath = await generateReceiptPNG({
                 receiptId: effectiveOrderId ? `CO-${String(effectiveOrderId).slice(0, 10)}` : `CO-${Date.now()}`,
-                senderName: "Proxim Wallet",
+                senderName: effectiveSenderName || "Proxim",
                 senderAddress: userAddress || "Proxim Wallet",
                 recipientName: trackedOfframp?.account_name || bankName,
                 recipientAddress: accountNumber,

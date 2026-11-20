@@ -518,7 +518,7 @@ async function handleApiRequest(req, res, bot = null) {
 
       if (method === "POST" && pathname === "/api/v1/offramp/bank-transfer") {
         const body = await parseBody(req);
-        const { userId, pin, amountUsdc, bankCode, accountNumber, accountName, narration } = body;
+        const { userId, pin, amountUsdc, bankCode, accountNumber, accountName, narration, senderName } = body;
         const parsedUsdc = Number(amountUsdc);
         if (!Number.isFinite(parsedUsdc) || parsedUsdc <= 0 || !bankCode || !accountNumber) {
           return sendJson(res, 400, { success: false, error: "positive amountUsdc, bankCode, and accountNumber are required" });
@@ -531,12 +531,16 @@ async function handleApiRequest(req, res, bot = null) {
           if (!assertWalletAccess(apiKey, user.telegram_id, res)) return;
         }
 
+        const effectiveSenderName = senderName || body.sender_name || (user ? db.resolveSenderName(user.telegram_id, "personal") : undefined);
+        const effectiveNarration = narration || body.description || undefined;
+
         const order = await paj.createOfframpPayout({
           amountUsdc: parsedUsdc,
           bankCode,
           accountNumber,
           accountName,
-          description: narration || body.description || undefined,
+          narration: effectiveNarration,
+          senderName: effectiveSenderName,
         });
 
         const fundingAddress = order.address || null;
@@ -585,7 +589,8 @@ async function handleApiRequest(req, res, bot = null) {
             rate: order.rate || null,
             rail,
             txHash,
-            narration: narration || null,
+            narration: effectiveNarration || null,
+            senderName: effectiveSenderName || null,
             status: "submitted",
           });
           db.recordTransaction(

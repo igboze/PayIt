@@ -356,12 +356,29 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
     };
   }
 
-  const effectiveNarration = bankDetails.narration || options.narration || null;
+  const effectiveSenderName = paj.sanitizeSenderName(
+    bankDetails.senderName ||
+    options.senderName ||
+    db.resolveSenderName(telegramId, options.accountType || "personal")
+  );
+  const effectiveNarration = paj.sanitizeNarration(
+    bankDetails.narration || options.narration || null,
+    effectiveSenderName ? `Payment from ${effectiveSenderName}` : null
+  );
   const txId = db.recordTransaction(telegramId, "offramp", amountMicro, "pending", null, options.accountType || "personal", 18, rail, effectiveNarration);
 
-  // Step 1: Create or reuse existing offramp order via Paj v2 for the full netAmountUsdc (payout amount)
+  // Step 1: Create or reuse existing offramp order via Paj v2 for the full netAmountUsdc (payout amount).
+  // CRITICAL: Only reuse a pre-validation order if its narration & senderName ALREADY match the user's final choices.
+  // Otherwise, open a fresh Paj order with the final narration + senderName and fund THAT new order's address!
+  const canReusePreValidatedOrder = Boolean(
+    bankDetails &&
+    bankDetails.orderAddress &&
+    bankDetails.orderId &&
+    bankDetails.orderMatchesFinalMeta === true
+  );
+
   let result;
-  if (bankDetails && bankDetails.orderAddress && bankDetails.orderId) {
+  if (canReusePreValidatedOrder) {
     result = {
       success: true,
       reference: bankDetails.orderId,
@@ -388,7 +405,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
         chain:         railCfg.chain,
         mint:          railCfg.mint,
         narration:     effectiveNarration,
-        description:   effectiveNarration,
+        senderName:    effectiveSenderName,
       });
       if (!result.success) {
         db.updateTransactionStatus(txId, "failed");
@@ -523,6 +540,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
         txHash,
         feeTxHash,
         narration: effectiveNarration,
+        senderName: effectiveSenderName,
       });
     } catch (orderRecErr) {
       console.warn("[executor:offramp] recordOfframpOrder warning:", orderRecErr.message);
@@ -537,6 +555,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
       totalDebitUsdc,
       feeTxHash,
       narration: effectiveNarration,
+      senderName: effectiveSenderName,
     };
     idempotency.completeOperationIdempotency(idempKey, { txHash, responseData: responsePayload });
     return {
@@ -1186,6 +1205,7 @@ async function executePlan(plan, pin, user, context = "personal") {
           accountName:   payment.account_name,
           fiatAmount,
           narration:     payment.narration || payment.description || null,
+          senderName:    payment.senderName || db.resolveSenderName(user.telegram_id, context),
         },
         user.telegram_id,
         payment.label || "Cash Out",
@@ -1194,6 +1214,7 @@ async function executePlan(plan, pin, user, context = "personal") {
           idempotencyKey: idempKey,
           rail: payment.chain || payment.rail || "auto",
           narration: payment.narration || payment.description || null,
+          senderName: payment.senderName || db.resolveSenderName(user.telegram_id, context),
         }
       );
 

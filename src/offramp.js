@@ -24,15 +24,26 @@ async function requestOfframp(telegramId, amountMicro, bankDetails) {
       throw new Error("Valid 6-digit NIBSS bank code is required for cash out payout");
     }
 
+    const cleanSenderName = (bankDetails && (bankDetails.senderName || bankDetails.sender_name))
+      ? String(bankDetails.senderName || bankDetails.sender_name).trim().slice(0, 64)
+      : undefined;
+
+    const effectiveNarration = (bankDetails && (bankDetails.narration || bankDetails.description))
+      ? String(bankDetails.narration || bankDetails.description).trim().slice(0, 100)
+      : (cleanSenderName ? `Payment from ${cleanSenderName}`.slice(0, 100) : "Proxim Transfer");
+
     const payload = {
       accountNumber: String(bankDetails.accountNumber).trim(),
       bankCode: String(bankDetails.bankCode).trim(),
       currency: "NGN",
-      description: `Proxim Cash Out - TG:${telegramId}`,
+      narration: effectiveNarration,
+      ...(cleanSenderName ? { senderName: cleanSenderName } : {}),
       // Explicit settlement rail (defaults to Solana rail for backward compatibility).
       // Pass { rail: "arc", chain, mint } to cash out directly on Arc via Paj.
       ...(bankDetails.chain ? { chain: bankDetails.chain } : {}),
       ...(bankDetails.mint ? { mint: bankDetails.mint } : {}),
+      ...(bankDetails.customerId ? { customerId: bankDetails.customerId } : {}),
+      ...(bankDetails.bvn && !bankDetails.customerId ? { bvn: bankDetails.bvn } : {}),
     };
 
     if (bankDetails && typeof bankDetails.businessUSDCFee === "number") {
@@ -44,12 +55,6 @@ async function requestOfframp(telegramId, amountMicro, bankDetails) {
     } else {
       payload.amount = amountUsdc;
     }
-
-    const effectiveNarration = (bankDetails && (bankDetails.narration || bankDetails.description))
-      ? String(bankDetails.narration || bankDetails.description).trim()
-      : (telegramId ? `Proxim Cash Out - TG:${telegramId}` : "Proxim Cash Out");
-    payload.description = effectiveNarration;
-    payload.narration = effectiveNarration;
 
     const order = await paj.createOfframpOrder(payload);
     const orderData = order?.data || order;

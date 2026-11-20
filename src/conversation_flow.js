@@ -46,11 +46,19 @@ function shouldReprocessConversationState(stateType, text) {
     return isLikelyNewIntent(normalized) || isGeneralChat(normalized);
   }
 
+  // Free-text narration / sender name states: allow natural descriptions like "Invoice 1042" or "Pay rent"
+  // and only interrupt on explicit slash commands (bottom menu buttons are already intercepted upstream).
+  if (
+    stateType === "await_withdraw_narration" ||
+    stateType === "await_withdraw_sender_name"
+  ) {
+    return /^\/[a-z]/i.test(normalized);
+  }
+
   // Address or token identifier states
   if (
     stateType === "await_ccw_address" ||
-    stateType === "await_near_custom_token" ||
-    stateType === "await_withdraw_narration"
+    stateType === "await_near_custom_token"
   ) {
     // Detect valid Ethereum or NEAR addresses and do not reprocess
     const isEthereumAddress = /^0x[0-9a-fA-F]{40}$/.test(normalized);

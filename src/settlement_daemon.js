@@ -268,7 +268,9 @@ async function pollPendingOfframpOrders(bot) {
             const fiatAmount = Number(orderData.fiatAmount || order.fiat_amount || 0);
             const bankName = order.bank_name || orderData.bankName || "Bank";
             const accountNumber = String(order.account_number || orderData.accountNumber || "");
+            const effectiveSenderName = order.sender_name || orderData.senderName || db.resolveSenderName(order.telegram_id, order.account_type || "personal");
             const effectiveNarration = order.narration || orderData.narration || orderData.description || null;
+            const senderLine = effectiveSenderName ? `👤 <b>Sender:</b> ${escapeHtml(effectiveSenderName)}\n` : "";
             const narrationLine = effectiveNarration ? `💬 <b>Narration:</b> <i>${escapeHtml(effectiveNarration)}</i>\n` : "";
 
             const caption =
@@ -276,6 +278,7 @@ async function pollPendingOfframpOrders(bot) {
               `──────────────────────────\n` +
               `💵 <b>Delivered:</b> ₦${fiatAmount > 0 ? Number(fiatAmount).toLocaleString() : "..."}\n` +
               `🏦 <b>Destination:</b> ${bankName} <code>${accountNumber}</code>\n` +
+              senderLine +
               narrationLine +
               (fiatAmount > 0 ? "" : `💰 <b>Amount:</b> $${amountUsdc.toFixed(2)} USDC\n`) +
               `💼 <b>Source:</b> ${accountLabel}\n` +
@@ -287,7 +290,7 @@ async function pollPendingOfframpOrders(bot) {
             try {
               receiptPath = await generateReceiptPNG({
                 receiptId: `CO-${String(order.order_id).slice(0, 10)}`,
-                senderName: "Proxim Wallet",
+                senderName: effectiveSenderName || "Proxim",
                 senderAddress: userAddress || "Proxim Wallet",
                 recipientName: order.account_name || bankName,
                 recipientAddress: accountNumber,

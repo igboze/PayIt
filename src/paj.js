@@ -274,6 +274,38 @@ async function getTransaction(transactionId) {
 }
 
 /**
+ * Sanitize and enforce Paj v2 narration limit (max 100 chars per OpenAPI spec).
+ */
+function sanitizeNarration(raw, fallback = null) {
+  const cleaned = String(raw || "")
+    .replace(/[\r\n\t\x00-\x1F\x7F]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 100);
+  if (cleaned) return cleaned;
+  if (fallback) {
+    return String(fallback)
+      .replace(/[\r\n\t\x00-\x1F\x7F]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 100);
+  }
+  return undefined;
+}
+
+/**
+ * Sanitize and enforce Paj v2 senderName limit (max 64 chars per OpenAPI spec).
+ */
+function sanitizeSenderName(raw) {
+  const cleaned = String(raw || "")
+    .replace(/[\r\n\t\x00-\x1F\x7F]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 64);
+  return cleaned || undefined;
+}
+
+/**
  * 4. Create an Offramp Order (On-chain Token -> Naira Bank Payout).
  * Pre-validates bank account with NIBSS and returns dynamic one-time funding address.
  * @param {object} params
@@ -285,8 +317,10 @@ async function getTransaction(transactionId) {
  * @param {string} [params.mint="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"] - Token mint (default: Solana USDC)
  * @param {string} [params.chain="SOLANA"] - Settlement chain
  * @param {string} [params.webhookURL] - Callback URL
- * @param {number} [params.businessUSDCFee=0] - Business markup in USDC
- * @param {string} [params.description] - Payment note
+ * @param {number} [params.businessUSDCFee=0] - Business fee in USDC
+ * @param {string} [params.narration] - Bank statement description (max 100 chars; replaces deprecated description)
+ * @param {string} [params.senderName] - Sender name shown on recipient's bank alert (max 64 chars)
+ * @param {string} [params.customerId] - Verified Paj KYC customerId (cannot be combined with bvn)
  * @returns {Promise<{ id: string, address: string, amount: number, fiatAmount: number, accountName: string, rate: number, status: string }>}
  */
 async function createOfframpOrder(params) {
@@ -325,6 +359,12 @@ async function createOfframpOrder(params) {
     ? RAILS.solana.mint
     : (selectedChain === "ARC" ? RAILS.arc.mint : (isArcRailEnabled() ? RAILS.arc.mint : RAILS.solana.mint));
 
+  const cleanSenderName = sanitizeSenderName(params.senderName || params.sender_name);
+  const cleanNarration = sanitizeNarration(
+    params.narration || params.description,
+    cleanSenderName ? `Payment from ${cleanSenderName}` : "Proxim Transfer"
+  );
+
   const payload = {
     accountNumber: String(params.accountNumber).trim(),
     bankCode: cleanBankCode,
@@ -333,7 +373,8 @@ async function createOfframpOrder(params) {
     chain: params.chain || (selectedChain === "SOLANA" ? RAILS.solana.chain : (isArcRailEnabled() ? RAILS.arc.chain : RAILS.solana.chain)),
     webhookURL: params.webhookURL || process.env.PAJ_WEBHOOK_URL || undefined,
     businessUSDCFee: typeof params.businessUSDCFee === "number" ? params.businessUSDCFee : 0,
-    description: params.narration || params.description || "Proxim Cashout",
+    ...(cleanNarration ? { narration: cleanNarration } : {}),
+    ...(cleanSenderName ? { senderName: cleanSenderName } : {}),
   };
 
   if (params.amount !== undefined && params.amount !== null) {
@@ -344,8 +385,11 @@ async function createOfframpOrder(params) {
     throw new Error("Must provide either amount or fiatAmount for offramp order");
   }
 
-  if (params.bvn) {
-    payload.bvn = params.bvn;
+  // Paj v2 rule: send customerId OR deprecated bvn, never both
+  if (params.customerId) {
+    payload.customerId = String(params.customerId).trim();
+  } else if (params.bvn) {
+    payload.bvn = String(params.bvn).trim();
   }
 
   try {
@@ -361,13 +405,23 @@ async function createOfframpOrder(params) {
  * Payout helper for builder API / offramp endpoints.
  */
 async function createOfframpPayout(params) {
-  return createOfframpOrder({
+  const orderParams = {
     accountNumber: params.accountNumber,
     bankCode: params.bankCode,
-    amount: params.amountUsdc || params.amount,
     currency: params.currency || "NGN",
-    description: params.description || `Proxim Builder API Payout to ${params.accountName || params.accountNumber}`,
-  });
+    narration: params.narration || params.description || undefined,
+    senderName: params.senderName || params.sender_name || undefined,
+    ...(params.chain ? { chain: params.chain } : {}),
+    ...(params.mint ? { mint: params.mint } : {}),
+    ...(params.customerId ? { customerId: params.customerId } : {}),
+    ...(params.bvn ? { bvn: params.bvn } : {}),
+  };
+  if (params.fiatAmount !== undefined && params.fiatAmount !== null) {
+    orderParams.fiatAmount = Number(params.fiatAmount);
+  } else {
+    orderParams.amount = params.amountUsdc || params.amount;
+  }
+  return createOfframpOrder(orderParams);
 }
 
 /**
@@ -473,6 +527,8 @@ module.exports = {
   getOfframpOrder,
   getTransaction,
   triggerOnrampSweep,
+  sanitizeNarration,
+  sanitizeSenderName,
   createOfframpOrder,
   createOfframpPayout,
   registerPermanentBankAccount,

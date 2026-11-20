@@ -33,6 +33,7 @@ if (!process.env.PAYIT_DB_PATH) {
   console.log("PayIT database path:", DB_PATH);
 }
 const db = new DatabaseSync(DB_PATH);
+try { db.exec("PRAGMA busy_timeout = 5000"); } catch (_) {}
 const REFERRAL_BONUS_POINTS = 20;
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
@@ -331,6 +332,12 @@ function ensureUserSchema() {
     db.exec("ALTER TABLE users ADD COLUMN last_activity_at TEXT");
     db.exec("UPDATE users SET last_activity_at = datetime('now') WHERE last_activity_at IS NULL");
   }
+  if (!columns.includes("sender_name")) {
+    try { db.exec("ALTER TABLE users ADD COLUMN sender_name TEXT"); } catch (_) {}
+  }
+  if (!columns.includes("biz_sender_name")) {
+    try { db.exec("ALTER TABLE users ADD COLUMN biz_sender_name TEXT"); } catch (_) {}
+  }
 
   // SQLite does not allow adding a UNIQUE constraint directly on ALTER TABLE for an existing column,
   // so create a unique index if possible. If duplicates already exist, ignore the failure and keep
@@ -397,6 +404,9 @@ function ensurePajOrdersSchema() {
     const offrampCols = db.prepare("PRAGMA table_info(paj_offramp_orders)").all().map(c => c.name);
     if (!offrampCols.includes("narration")) {
       db.exec("ALTER TABLE paj_offramp_orders ADD COLUMN narration TEXT");
+    }
+    if (!offrampCols.includes("sender_name")) {
+      db.exec("ALTER TABLE paj_offramp_orders ADD COLUMN sender_name TEXT");
     }
   } catch (err) {
     console.warn("[db] ensurePajOrdersSchema offramp note:", err.message);
@@ -1910,6 +1920,7 @@ function recordOfframpOrder({
   txHash = null,
   feeTxHash = null,
   narration = null,
+  senderName = null,
   status = "pending",
 }) {
   try {
@@ -1918,8 +1929,8 @@ function recordOfframpOrder({
     db.prepare(`
       INSERT OR REPLACE INTO paj_offramp_orders
         (order_id, telegram_id, account_type, account_number, bank_code, bank_name, account_name,
-         amount_usdc, fee_usdc, net_amount_usdc, fiat_amount, rate, rail, status, tx_hash, fee_tx_hash, narration, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+         amount_usdc, fee_usdc, net_amount_usdc, fiat_amount, rate, rail, status, tx_hash, fee_tx_hash, narration, sender_name, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `).run(
       orderId,
       telegramId,
@@ -1937,7 +1948,8 @@ function recordOfframpOrder({
       status,
       txHash,
       feeTxHash,
-      narration || null
+      narration || null,
+      senderName || null
     );
   } catch (err) {
     console.warn("[db:offramp_order] recordOfframpOrder error:", err.message);
@@ -3252,11 +3264,72 @@ function getNuvionJobsByState(jobType, state) {
   });
 }
 
+function _cleanSenderName(raw) {
+  if (!raw) return "";
+  return String(raw)
+    .replace(/[\r\n\t\x00-\x1F\x7F]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 64);
+}
+
+/**
+ * Persist a user's preferred sender name (shown on recipient bank alerts via Paj senderName).
+ * Stored separately for personal (`sender_name`) and business (`biz_sender_name`).
+ */
+function setUserSenderName(telegramId, senderName, accountType = "personal") {
+  const clean = _cleanSenderName(senderName);
+  if (!clean) throw new Error("Sender name cannot be empty.");
+  const col = accountType === "business" ? "biz_sender_name" : "sender_name";
+  db.prepare(`UPDATE users SET ${col} = ? WHERE telegram_id = ?`).run(clean, Number(telegramId));
+  return clean;
+}
+
+/**
+ * Resolve the cleanest sender name (<= 64 chars) for bank payouts & receipts:
+ *  - Business: saved biz_sender_name -> approved Nuvion business legal_name -> Telegram full name -> username -> "Proxim"
+ *  - Personal: saved sender_name -> approved Nuvion personal legal_name -> Telegram full name -> username -> "Proxim"
+ */
+function resolveSenderName(telegramId, accountType = "personal", tgFrom = null) {
+  const isBiz = accountType === "business";
+  let user = null;
+  try {
+    user = telegramId ? getUser(telegramId) : null;
+  } catch (_) {}
+
+  const saved = _cleanSenderName(isBiz ? user?.biz_sender_name : user?.sender_name);
+  if (saved) return saved;
+
+  // Check verified Nuvion legal name if available
+  try {
+    if (telegramId) {
+      const entity = getNuvionEntityByUser(telegramId, isBiz ? "business" : "personal");
+      const legal = _cleanSenderName(entity?.legal_name);
+      if (legal) return legal;
+    }
+  } catch (_) {}
+
+  // Telegram live profile full name (first_name + last_name)
+  if (tgFrom) {
+    const tgFull = _cleanSenderName([tgFrom.first_name, tgFrom.last_name].filter(Boolean).join(" "));
+    if (tgFull) return tgFull;
+    const tgUser = _cleanSenderName(tgFrom.username);
+    if (tgUser) return tgUser;
+  }
+
+  const dbUsername = _cleanSenderName(user?.username);
+  if (dbUsername) return dbUsername;
+
+  return "Proxim";
+}
+
 module.exports = {
   db,
   resolveDbPath,
   getUser,
   getUserByTelegramId: getUser,
+  setUserSenderName,
+  resolveSenderName,
   findUserByUsername,
   syncUsername,
   getAllUsers,
