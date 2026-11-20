@@ -382,14 +382,14 @@ async function downloadTelegramFile(ctx, fileId) {
 function mainMenu(context) {
   if (context === "business") {
     return Markup.keyboard([
-      ["💼 Business Balance", "📥 Add Money",    "📤 Send Money"],
-      ["💡 Pay Bills",        "🧾 New Invoice",  "👥 Pay Team"],
-      ["📋 My Invoices",      "📊 Cash Flow",    "🔁 Switch to Personal"],
+      ["💼 Business Balance", "📥 Deposit",       "📤 Send Money"],
+      ["💡 Pay Bills",        "🧾 New Invoice",   "👥 Pay Team"],
+      ["📋 My Invoices",      "📊 Cash Flow",     "🔁 Switch to Personal"],
       ["⚙️ Settings & Help"],
     ]).resize();
   }
   return Markup.keyboard([
-    ["💰 My Money",       "📥 Add Money",     "📤 Send Money"],
+    ["💰 Balance",        "📥 Deposit",       "📤 Send Money"],
     ["💡 Pay Bills",      "📈 Save & Earn",   "🧾 Invoice"],
     ["📋 History",        "🔁 Switch Account","⚙️ Settings & Help"],
   ]).resize();
@@ -891,10 +891,9 @@ async function showBalance(ctx) {
     const rate      = await fx.getUsdToNgnRate();
 
     const totalUsdc = usdc + solUsdc;
-    const solDetail = solUsdc > 0 ? ` (Arc: $${usdc.toFixed(2)} | Solana: $${solUsdc.toFixed(2)})` : "";
-    const eurcLine  = eurc > 0 ? `\n€${eurc.toFixed(2)} euros` : "";
+    const eurcLine  = eurc > 0 ? `\n• <b>Euro Balance:</b> €${eurc.toFixed(2)}` : "";
 
-    // Vault savings and accrued yield
+    // Savings and accrued interest
     let position = db.getOpenYieldPosition(user.telegram_id, context);
     if (!position && db.recoverUncreditedYieldPosition) {
       position = db.recoverUncreditedYieldPosition(user.telegram_id, context);
@@ -923,33 +922,21 @@ async function showBalance(ctx) {
       const vaultTotal = position.amount_usdc + netProfit;
       effectiveTotalUsdc += vaultTotal;
 
-      const autoTag = position.is_auto_earn ? " <i>(🤖 Auto-Earn)</i>" : "";
       savingsSection =
-        `\n\n📈 <b>Vault Savings & Profit${autoTag}:</b>\n` +
-        `• <b>Principal Saved:</b> $${position.amount_usdc.toFixed(2)} USDC\n` +
-        `• <b>Profit Earned:</b> +$${netProfit.toFixed(4)} USDC (<b>${position.apy}% APY</b>)\n` +
-        `• <b>Total in Vault:</b> $${vaultTotal.toFixed(4)} USDC (${position.project || "Arc Morpho Vault"})\n` +
-        `<i>Funds in vault are 100% safe & withdrawable immediately anytime!</i>`;
+        `\n• <b>Savings:</b> $${vaultTotal.toFixed(2)} (+$${netProfit.toFixed(4)} earned · ${position.apy}% APY)`;
     } else if (otherPosition && otherPosition.amount_usdc > 0) {
-      const grossYield = savings.calcAccruedYield(otherPosition);
-      const devFee = grossYield * savings.PAYIT_FEE_FRACTION;
-      const netProfit = grossYield - devFee;
-      const otherLabel = otherContext === "business" ? "Business Treasury" : "Personal Wallet";
+      const otherLabel = otherContext === "business" ? "Business" : "Personal";
       savingsSection =
-        `\n\n💡 <i>You also have $${otherPosition.amount_usdc.toFixed(2)} USDC (+${netProfit.toFixed(4)} profit) in your ${otherLabel} savings vault.</i>`;
+        `\n\n💡 <i>You also have $${otherPosition.amount_usdc.toFixed(2)} saved in your ${otherLabel} account.</i>`;
     }
 
     const netWorthNaira = rate
       ? `≈ ${fx.formatNaira(effectiveTotalUsdc * rate)} at ₦${Math.round(rate).toLocaleString()}/$`
       : "";
 
-    const solanaLine = solAddress
-      ? `\n\n<b>Your Solana Deposit Address (tap to copy):</b>\n<code>${solAddress}</code>`
-      : "";
-
     const balanceHeader = hasSavings
-      ? `💰 ${label} Total Net Worth: <b>$${effectiveTotalUsdc.toFixed(2)} dollars</b>\n${netWorthNaira}\n──────────────────────────\n• <b>Spendable Wallet:</b> $${totalUsdc.toFixed(2)} USDC${solDetail}${eurcLine}`
-      : `💰 ${label} Balance\n──────────────────────────\n$${totalUsdc.toFixed(2)} dollars${solDetail}${eurcLine}\n${netWorthNaira}`;
+      ? `💰 <b>${label} Balance: $${effectiveTotalUsdc.toFixed(2)}</b>\n${netWorthNaira}\n──────────────────────────\n• <b>Available:</b> $${totalUsdc.toFixed(2)}${eurcLine}`
+      : `💰 <b>${label} Balance</b>\n──────────────────────────\n<b>$${totalUsdc.toFixed(2)}</b>${eurcLine}\n${netWorthNaira}`;
 
     const buttonRows = [];
     if (hasSavings) {
@@ -959,10 +946,10 @@ async function showBalance(ctx) {
       ]);
     }
     buttonRows.push(
-      [btnSuccess("📥 Add Money",         "action_receive"),
+      [btnSuccess("📥 Deposit",           "action_receive"),
        btnPrimary("📤 Send Money",        "action_send_menu")],
       [btnSuccess("💡 Pay Bills",         "action_bills_menu"),
-       btnSuccess("📈 Earn 15% Interest", "action_yields")],
+       btnSuccess("📈 Save & Earn",       "action_yields")],
       [btnDefault("📜 Activity History",  "action_history"),
        btnPrimary("⚡ Check for Deposits","action_sweep_deposits")],
       [btnPrimary("🔀 Move Funds",        "action_move_funds")],
@@ -971,9 +958,7 @@ async function showBalance(ctx) {
     );
 
     await ctx.reply(
-      `${balanceHeader}${savingsSection}\n\n` +
-      `<b>Your Proxim Account Number (EVM - tap to copy):</b>\n<code>${address}</code>` +
-      `${solanaLine}`,
+      `${balanceHeader}${savingsSection}`,
       {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard(buttonRows),
@@ -995,8 +980,6 @@ async function showBizBalance(ctx) {
     );
   }
   try {
-    const addr      = user.business_deposit_address;
-    const solAddress = getOrDeriveSolanaAddress(user);
     // Unified balance read path (Phase 4)
     const unified   = await chains.getUnifiedBalance(user, "business");
     const usdc      = unified.arc.usdc;
@@ -1005,12 +988,11 @@ async function showBizBalance(ctx) {
     const rate      = await fx.getUsdToNgnRate();
 
     const totalUsdc = usdc + solUsdc;
-    const solDetail = solUsdc > 0 ? ` (Arc: $${usdc.toFixed(2)} | Solana: $${solUsdc.toFixed(2)})` : "";
-    const eurcLine  = eurc > 0 ? `\n€${eurc.toFixed(2)} euros` : "";
+    const eurcLine  = eurc > 0 ? `\n• <b>Euro Balance:</b> €${eurc.toFixed(2)}` : "";
     const pending   = bizDb.getPendingInvoiceCount(ctx.from.id);
     const expenses  = bizDb.getMonthExpenses(ctx.from.id);
 
-    // Business Vault savings and accrued yield
+    // Business savings and accrued interest
     const position = db.getOpenYieldPosition(user.telegram_id, "business");
     let savingsSection = "";
     let effectiveTotalUsdc = totalUsdc;
@@ -1024,24 +1006,15 @@ async function showBizBalance(ctx) {
       const vaultTotal = position.amount_usdc + netProfit;
       effectiveTotalUsdc += vaultTotal;
 
-      const autoTag = position.is_auto_earn ? " <i>(🤖 Auto-Earn)</i>" : "";
       savingsSection =
-        `\n\n📈 <b>Treasury Vault Savings${autoTag}:</b>\n` +
-        `• <b>Principal Saved:</b> $${position.amount_usdc.toFixed(2)} USDC\n` +
-        `• <b>Profit Earned:</b> +$${netProfit.toFixed(4)} USDC (<b>${position.apy}% APY</b>)\n` +
-        `• <b>Current Vault Total:</b> $${vaultTotal.toFixed(4)} USDC (${position.project || "Arc Morpho Vault"})\n` +
-        `<i>Treasury funds in vault are 100% safe & withdrawable immediately anytime!</i>`;
+        `\n• <b>Savings:</b> $${vaultTotal.toFixed(2)} (+$${netProfit.toFixed(4)} earned · ${position.apy}% APY)`;
     }
 
     const netWorthNaira = rate ? `≈ ${fx.formatNaira(effectiveTotalUsdc * rate)} at ₦${Math.round(rate).toLocaleString()}/$` : "";
 
-    const solanaLine = solAddress
-      ? `\n\n<b>Solana Business Address (tap to copy):</b>\n<code>${solAddress}</code>`
-      : "";
-
     const balanceHeader = hasSavings
-      ? `💼 Business Total Net Worth: <b>$${effectiveTotalUsdc.toFixed(2)} dollars</b>\n${netWorthNaira}\n──────────────────────────\n• <b>Spendable Treasury:</b> $${totalUsdc.toFixed(2)} USDC${solDetail}${eurcLine}`
-      : `💼 Business Balance\n──────────────────────────\n$${totalUsdc.toFixed(2)} dollars${solDetail}${eurcLine}\n${netWorthNaira}`;
+      ? `💼 <b>Business Balance: $${effectiveTotalUsdc.toFixed(2)}</b>\n${netWorthNaira}\n──────────────────────────\n• <b>Available:</b> $${totalUsdc.toFixed(2)}${eurcLine}`
+      : `💼 <b>Business Balance</b>\n──────────────────────────\n<b>$${totalUsdc.toFixed(2)}</b>${eurcLine}\n${netWorthNaira}`;
 
     const buttonRows = [];
     if (hasSavings) {
@@ -1051,7 +1024,7 @@ async function showBizBalance(ctx) {
       ]);
     }
     buttonRows.push(
-      [btnSuccess("📥 Add Money",     "action_receive"),
+      [btnSuccess("📥 Deposit",       "action_receive"),
        btnPrimary("📤 Send Money",    "action_send_menu")],
       [btnSuccess("💡 Pay Bills",     "action_bills_menu"),
        btnSuccess("🧾 New Invoice",   "action_new_biz_invoice")],
@@ -1067,9 +1040,7 @@ async function showBizBalance(ctx) {
     await ctx.reply(
       `${balanceHeader}${savingsSection}\n\n` +
       `📬 Unpaid invoices: ${pending}\n` +
-      `📉 Expenses this month: $${expenses.toFixed(2)}\n\n` +
-      `<b>Account Number (EVM - tap to copy):</b>\n<code>${addr}</code>` +
-      `${solanaLine}`,
+      `📉 Expenses this month: $${expenses.toFixed(2)}`,
       {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard(buttonRows),
@@ -1091,7 +1062,7 @@ async function showReceive(ctx) {
   const label   = context === "business" ? "Business" : "Personal";
 
   await ctx.reply(
-    `📥 <b>Add Money — ${label}</b>\n──────────────────────────\n` +
+    `📥 <b>Deposit — ${label}</b>\n──────────────────────────\n` +
     `Choose how you would like to deposit:\n\n` +
     `🇳🇬 <b>Bank Transfer (Naira)</b>\nPay in Naira from any bank or mobile app for instant Dollars.\n\n` +
     `🌐 <b>Deposit Crypto (10+ Networks)</b>\nSend from Base, Solana, Ethereum, NEAR, Polygon, and more.\n\n` +
@@ -1455,8 +1426,8 @@ function showHelp(ctx) {
   }
   return ctx.reply(
     `📖 How to Use Proxim\n──────────────────────────\n` +
-    `💰 My Money — your dollar and euro balance\n` +
-    `📥 Add Money — your account number to receive\n` +
+    `💰 Balance — your dollar and savings balance\n` +
+    `📥 Deposit — add funds via Naira bank transfer or crypto\n` +
     `📤 Send Money — send to a saved contact or account number\n` +
     `📈 Save & Earn — earn interest on your dollars\n` +
     `🤖 Auto-Pay — set up recurring payments\n` +
@@ -1793,7 +1764,7 @@ bot.action("action_gateway", async (ctx) => {
           btnPrimary("💳 Buy with Card", "gateway_onramp"),
         ],
         [
-          btnDefault("« Back to Add Money", "action_receive"),
+          btnDefault("« Back to Deposit", "action_receive"),
           btnDefault("🏠 Main Menu",        "main_menu"),
         ],
       ]),
@@ -2558,7 +2529,7 @@ async function replyInsufficientP2PBalance(ctx, userId, requestedAmount, availab
         parse_mode: "HTML",
         ...Markup.inlineKeyboard([
           [btnSuccess("💵 Withdraw from Savings", "yield_withdraw_start")],
-          [Markup.button.callback("📥 Add Money", "action_receive")],
+          [Markup.button.callback("📥 Deposit", "action_receive")],
           [Markup.button.callback("❌ Cancel", "action_send_menu")],
         ]),
       }
@@ -2567,11 +2538,11 @@ async function replyInsufficientP2PBalance(ctx, userId, requestedAmount, availab
   return ctx.reply(
     `⚠️ <b>Not Enough Balance</b>\n──────────────────────────\n` +
     `You tried to send <b>$${requestedAmount.toFixed(2)}</b>, but your available balance is <b>$${availableBalance.toFixed(2)}</b>.\n\n` +
-    `Add money to your wallet or type a smaller amount:`,
+    `Deposit funds or type a smaller amount:`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
-        [btnSuccess("📥 Add Money", "action_receive")],
+        [btnSuccess("📥 Deposit", "action_receive")],
         [Markup.button.callback("❌ Cancel", "action_send_menu")],
       ]),
     }
@@ -4382,8 +4353,8 @@ bot.action("swap_start_usdc_eurc", async (ctx) => {
 
   if (usdcBal <= 0) {
     return ctx.reply(
-      "You don't have any dollars to convert yet. Add money first.",
-      Markup.inlineKeyboard([[Markup.button.callback("📥 Add Money", "action_receive")], [Markup.button.callback("🔄 Back", "action_swap")]])
+      "You don't have any dollars to convert yet. Deposit funds first.",
+      Markup.inlineKeyboard([[Markup.button.callback("📥 Deposit", "action_receive")], [Markup.button.callback("🔄 Back", "action_swap")]])
     );
   }
 
@@ -5310,9 +5281,9 @@ bot.on('audio', async (ctx) => {
 
 // ─── Keyboard hears ───────────────────────────────────────────────────────────
 
-bot.hears("💰 My Money",         (ctx) => showBalance(ctx));
+bot.hears(["💰 Balance", "💰 My Money"], (ctx) => showBalance(ctx));
 bot.hears("💼 Business Balance", (ctx) => showBizBalance(ctx));
-bot.hears("📥 Add Money",        (ctx) => showReceive(ctx));
+bot.hears(["📥 Deposit", "📥 Add Money"], (ctx) => showReceive(ctx));
 bot.hears("📋 History",          (ctx) => showHistory(ctx));
 bot.hears(/^(?:⚙️?|⚙)\s*settings$/i, (ctx) => { convState.clearState(ctx.from.id); return showSettings(ctx); });
 bot.hears(/^settings$/i,         (ctx) => { convState.clearState(ctx.from.id); return showSettings(ctx); });

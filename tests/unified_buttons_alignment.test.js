@@ -14,24 +14,40 @@ test("Fixed Bottom Keyboards: Unified Send and Cashout removal", () => {
   assert.ok(personalKeyboardMatch, "mainMenu function should exist in bot.js");
   const menuCode = personalKeyboardMatch[1];
 
-  // Must have 📤 Send Money in personal and business
+  // Must have standard finance labels on main menus
+  assert.ok(menuCode.includes('"💰 Balance"'), "Must include '💰 Balance' on personal mainMenu");
+  assert.ok(menuCode.includes('"📥 Deposit"'), "Must include '📥 Deposit' on main menus");
   assert.ok(menuCode.includes('"📤 Send Money"'), "Must include '📤 Send Money' on main menus");
+  assert.ok(menuCode.includes('"💡 Pay Bills"'), "Must include '💡 Pay Bills' on main menus");
 
   // Must not have standalone Cash Out / Withdraw on the main menu rows (unified into Send Money)
   assert.ok(!menuCode.includes('"💵 Cash Out / Withdraw"'), "Must not have separate Cash Out / Withdraw button on mainMenu");
 });
 
-test("In-Chat Balance Cards: Symmetrical Add and Send buttons", () => {
+test("In-Chat Balance Cards: Clean finance display without crypto jargon or addresses", () => {
   const botCode = fs.readFileSync(path.join(__dirname, "../bot.js"), "utf8");
 
   // showBalance in-chat buttons
   assert.ok(botCode.includes('btnPrimary("📤 Send Money",        "action_send_menu")'), "showBalance must have aligned 📤 Send Money button");
-  assert.ok(botCode.includes('btnSuccess("📥 Add Money",         "action_receive")'), "showBalance must have 📥 Add Money button");
+  assert.ok(botCode.includes('btnSuccess("📥 Deposit",           "action_receive")'), "showBalance must have 📥 Deposit button");
 
   // showBizBalance in-chat buttons
   assert.ok(botCode.includes('btnPrimary("📤 Send Money",    "action_send_menu")'), "showBizBalance must have aligned 📤 Send Money button");
-  assert.ok(botCode.includes('btnSuccess("📥 Add Money",     "action_receive")'), "showBizBalance must have 📥 Add Money button");
+  assert.ok(botCode.includes('btnSuccess("📥 Deposit",       "action_receive")'), "showBizBalance must have 📥 Deposit button");
   assert.ok(botCode.includes('btnPrimary("👥 Pay Team",      "action_pay_team")'), "showBizBalance must have 👥 Pay Team button");
+
+  // Clean balance cards must not show chain tags or crypto addresses
+  const showBalanceBlock = botCode.match(/async function showBalance\(ctx\) \{([\s\S]*?)async function showBizBalance/);
+  assert.ok(showBalanceBlock, "showBalance block should be found");
+  assert.ok(!showBalanceBlock[1].includes("Arc: $"), "showBalance must not show Arc/Solana chain split");
+  assert.ok(!showBalanceBlock[1].includes("Solana Deposit Address"), "showBalance must not show Solana address");
+  assert.ok(!showBalanceBlock[1].includes("EVM - tap to copy"), "showBalance must not show EVM address");
+
+  const showBizBlock = botCode.match(/async function showBizBalance\(ctx\) \{([\s\S]*?)\/\/ ─── Receive/);
+  assert.ok(showBizBlock, "showBizBalance block should be found");
+  assert.ok(!showBizBlock[1].includes("Arc: $"), "showBizBalance must not show Arc/Solana chain split");
+  assert.ok(!showBizBlock[1].includes("Solana Business Address"), "showBizBalance must not show Solana address");
+  assert.ok(!showBizBlock[1].includes("EVM - tap to copy"), "showBizBalance must not show EVM address");
 });
 
 test("Unified Send & Withdraw Menu: Includes all rails and safe HTML", () => {
