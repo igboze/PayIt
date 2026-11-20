@@ -165,6 +165,7 @@ async function showGlobalPortal(ctx, forcedContext = null) {
         ...Markup.inlineKeyboard([
           [Markup.button.callback("🏦 Global Bank Accounts (10 Currencies)", `nuvion_accounts_menu_${p}`)],
           [Markup.button.callback("🌍 Send Abroad (27 Currencies)", `nuvion_po_menu_${p}`)],
+          [Markup.button.callback(accountType === "business" ? "💳 Business & Team USD Cards" : "💳 Virtual & Disposable USD Cards", `nuvion_cards_menu_${p}`)],
           [Markup.button.callback("🔗 Request Payment Link (UK/EU/CA/MoMo)", `nuvion_paylink_menu_${p}`)],
           ...(accountType === "business" ? [[Markup.button.callback("📄 Multi-Currency CSV Payroll", `nuvion_po_csv_start_${p}`)]] : []),
           [Markup.button.callback("🔄 Sync Bridge & Status", `nuvion_refresh_${accountType}`)],

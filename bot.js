@@ -51,10 +51,12 @@ const flowsBills        = require("./src/flows_bills");
 const nuvion            = require("./src/nuvion");
 const nuvionOrchestrator = require("./src/nuvion_orchestrator");
 const nuvionPayouts     = require("./src/nuvion_payouts");
+const nuvionCards       = require("./src/nuvion_cards");
 const nuvionPoller      = require("./src/nuvion_poller");
 const flowsNuvionKyc    = require("./src/flows_nuvion_kyc");
 const flowsGlobalAccounts = require("./src/flows_global_accounts");
 const flowsGlobalPayouts  = require("./src/flows_global_payouts");
+const flowsCards          = require("./src/flows_cards");
 const autoEarn = require("./src/auto_earn");
 const cashflow = require("./src/cashflow");
 const socialTransfers = require("./src/social_transfers");
@@ -919,6 +921,12 @@ async function showBalance(ctx) {
     let effectiveTotalUsdc = totalUsdc;
     let hasSavings = false;
 
+    const cardLoadedUsd = await nuvionCards.getTotalLoadedCardUsd(ctx.from.id, context);
+    const hasCardsLoaded = cardLoadedUsd > 0;
+    if (hasCardsLoaded) {
+      effectiveTotalUsdc += cardLoadedUsd;
+    }
+
     if (position && position.amount_usdc > 0) {
       hasSavings = true;
       const grossYield = savings.calcAccruedYield(position);
@@ -935,12 +943,13 @@ async function showBalance(ctx) {
         `\n\n💡 <i>You also have $${otherPosition.amount_usdc.toFixed(2)} saved in your ${otherLabel} account.</i>`;
     }
 
+    const cardLine = hasCardsLoaded ? `\n• <b>Cards Loaded:</b> $${cardLoadedUsd.toFixed(2)}` : "";
     const netWorthNaira = rate
       ? `≈ ${fx.formatNaira(effectiveTotalUsdc * rate)} at ₦${Math.round(rate).toLocaleString()}/$`
       : "";
 
-    const balanceHeader = hasSavings
-      ? `💰 <b>${label} Balance: $${effectiveTotalUsdc.toFixed(2)}</b>\n${netWorthNaira}\n──────────────────────────\n• <b>Available:</b> $${totalUsdc.toFixed(2)}${eurcLine}`
+    const balanceHeader = (hasSavings || hasCardsLoaded)
+      ? `💰 <b>${label} Balance: $${effectiveTotalUsdc.toFixed(2)}</b>\n${netWorthNaira}\n──────────────────────────\n• <b>Available:</b> $${totalUsdc.toFixed(2)}${cardLine}${eurcLine}`
       : `💰 <b>${label} Balance</b>\n──────────────────────────\n<b>$${totalUsdc.toFixed(2)}</b>${eurcLine}\n${netWorthNaira}`;
 
     const buttonRows = [];
@@ -1003,6 +1012,12 @@ async function showBizBalance(ctx) {
     let effectiveTotalUsdc = totalUsdc;
     let hasSavings = false;
 
+    const bizCardLoadedUsd = await nuvionCards.getTotalLoadedCardUsd(ctx.from.id, "business");
+    const hasBizCardsLoaded = bizCardLoadedUsd > 0;
+    if (hasBizCardsLoaded) {
+      effectiveTotalUsdc += bizCardLoadedUsd;
+    }
+
     if (position && position.amount_usdc > 0) {
       hasSavings = true;
       const grossYield = savings.calcAccruedYield(position);
@@ -1015,10 +1030,11 @@ async function showBizBalance(ctx) {
         `\n• <b>Savings:</b> $${vaultTotal.toFixed(2)} (+$${netProfit.toFixed(4)} earned · ${position.apy}% APY)`;
     }
 
+    const bizCardLine = hasBizCardsLoaded ? `\n• <b>Cards Loaded:</b> $${bizCardLoadedUsd.toFixed(2)}` : "";
     const netWorthNaira = rate ? `≈ ${fx.formatNaira(effectiveTotalUsdc * rate)} at ₦${Math.round(rate).toLocaleString()}/$` : "";
 
-    const balanceHeader = hasSavings
-      ? `💼 <b>Business Balance: $${effectiveTotalUsdc.toFixed(2)}</b>\n${netWorthNaira}\n──────────────────────────\n• <b>Available:</b> $${totalUsdc.toFixed(2)}${eurcLine}`
+    const balanceHeader = (hasSavings || hasBizCardsLoaded)
+      ? `💼 <b>Business Balance: $${effectiveTotalUsdc.toFixed(2)}</b>\n${netWorthNaira}\n──────────────────────────\n• <b>Available:</b> $${totalUsdc.toFixed(2)}${bizCardLine}${eurcLine}`
       : `💼 <b>Business Balance</b>\n──────────────────────────\n<b>$${totalUsdc.toFixed(2)}</b>${eurcLine}\n${netWorthNaira}`;
 
     const buttonRows = [];
@@ -3114,8 +3130,22 @@ flowsGlobalPayouts.registerGlobalPayoutsFlows(bot, {
   backToMenu,
 });
 
+flowsCards.registerCardsFlows(bot, {
+  requireUser,
+  getContext,
+  backToMenu,
+});
+
+bot.command("cards", async (ctx) => {
+  const user = requireUser(ctx);
+  if (!user) return;
+  const ctxMode = user.active_context || getContext(ctx.from.id) || "personal";
+  return flowsCards.showCardsMenu(ctx, ctxMode);
+});
+
 nuvionOrchestrator.registerOrchestratorHooks();
 nuvionPayouts.registerPayoutHooks();
+nuvionCards.registerCardHooks();
 
 // ─── Withdraw / Cash Out (Naira-first UX) ────────────────────────────────────
 
@@ -7370,6 +7400,11 @@ bot.on("text", async (ctx) => {
 
     if (flowsGlobalPayouts.handlesState(state.type)) {
       const handled = await flowsGlobalPayouts.handleGlobalPayoutsTextState(ctx, state, text, userId);
+      if (handled) return;
+    }
+
+    if (flowsCards.handlesState(state.type)) {
+      const handled = await flowsCards.handleCardsTextState(ctx, state, text, userId);
       if (handled) return;
     }
 
