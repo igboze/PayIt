@@ -2453,6 +2453,13 @@ function ensureApiKeysSchema() {
       );
       CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
       CREATE INDEX IF NOT EXISTS idx_api_keys_telegram ON api_keys(telegram_id);
+      CREATE TABLE IF NOT EXISTS api_key_wallets (
+        key_id      TEXT NOT NULL,
+        telegram_id INTEGER NOT NULL,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (key_id, telegram_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_api_key_wallets_tg ON api_key_wallets(telegram_id);
     `);
   } catch (err) {
     console.warn("[db] ensureApiKeysSchema note:", err.message);
@@ -2542,6 +2549,39 @@ function recordApiKeyUsage(keyId) {
     ensureApiKeysSchema();
     db.prepare("UPDATE api_keys SET last_used_at = datetime('now') WHERE key_id = ?").run(keyId);
   } catch (_) { }
+}
+
+function registerApiKeyWallet(keyId, telegramId) {
+  if (!keyId || !telegramId) return false;
+  ensureApiKeysSchema();
+  db.prepare("INSERT OR IGNORE INTO api_key_wallets (key_id, telegram_id) VALUES (?, ?)").run(
+    String(keyId),
+    Number(telegramId)
+  );
+  return true;
+}
+
+function getApiKeyWallets(keyId) {
+  if (!keyId) return [];
+  ensureApiKeysSchema();
+  return db
+    .prepare("SELECT telegram_id FROM api_key_wallets WHERE key_id = ? ORDER BY created_at DESC")
+    .all(String(keyId))
+    .map((r) => r.telegram_id);
+}
+
+function isWalletOwnedByApiKey(keyId, telegramId, ownerTelegramId = 0) {
+  const targetId = Number(telegramId);
+  if (!Number.isFinite(targetId) || targetId <= 0) return false;
+  if (ownerTelegramId && Number(ownerTelegramId) > 0 && targetId === Number(ownerTelegramId)) {
+    return true;
+  }
+  if (!keyId) return false;
+  ensureApiKeysSchema();
+  const row = db
+    .prepare("SELECT 1 FROM api_key_wallets WHERE key_id = ? AND telegram_id = ?")
+    .get(String(keyId), targetId);
+  return Boolean(row);
 }
 
 // ─── Social Escrows & P2P Gifts ──────────────────────────────────────────────
@@ -2853,6 +2893,9 @@ module.exports = {
   updateApiKey,
   revokeApiKey,
   recordApiKeyUsage,
+  registerApiKeyWallet,
+  getApiKeyWallets,
+  isWalletOwnedByApiKey,
   ensureSocialEscrowsSchema,
   createSocialEscrow,
   getSocialEscrowById,

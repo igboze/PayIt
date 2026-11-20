@@ -771,6 +771,18 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
       return apiRoutes.handleApiRequest(req, res, bot);
     }
 
+    // 0b. Builder API Markdown docs (/BUILDER_API.md)
+    if (req.method === "GET" && (req.url === "/BUILDER_API.md" || req.url === "/docs")) {
+      try {
+        const md = fs.readFileSync(path.join(__dirname, "..", "BUILDER_API.md"), "utf8");
+        res.writeHead(200, { "Content-Type": "text/markdown; charset=utf-8" });
+        return res.end(md);
+      } catch (_) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ error: "Docs not found" }));
+      }
+    }
+
 
     // 1. Health check
     if (req.method === "GET" && req.url === "/health") {

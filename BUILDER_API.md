@@ -1,8 +1,8 @@
 # 🛠️ Proxim Builder API Documentation
 
-The **Proxim Builder API** allows developers to build their own fintech, payment, commerce, and cross-chain applications powered by **100% of Proxim's infrastructure**.
+The **Proxim Builder API** lets developers build fintech, payment, commerce, and cross-chain applications powered by Proxim's real on-chain and fiat infrastructure.
 
-Builders can access all capabilities via secure API keys, and can **customize their keys** to only enable the specific features their application needs.
+Builders authenticate with scoped API keys and are strictly isolated to wallets provisioned by their own API key (plus the key creator's own account).
 
 ---
 
@@ -13,21 +13,18 @@ Builders can access all capabilities via secure API keys, and can **customize th
 API keys can be generated directly inside the Proxim Telegram Bot with custom permission scoping:
 
 1. **Open Developer Portal**:
-   - Send `/developer` or `/api` to the bot (or tap **[🛠️ Developer API]** in the main menu).
+   - Send `/developer` or `/api` to the bot.
 2. **Create New Key**:
    - Tap **[➕ Generate New API Key]** and enter your application name (e.g. `My Checkout Bot`, `Crypto Wallet App`).
 3. **Choose Permissions Profile**:
-   - **🌟 100% Full Access (`all`)**: Grants unrestricted access to all current and future Proxim features.
-   - **⚙️ Custom Scoped Features**: Select only the exact modules needed for your app (e.g. only `wallets` and `invoices`). Features can be toggled on/off interactively.
+   - **🌟 Full Access (`all`)**: Grants access to all enabled API modules.
+   - **⚙️ Custom Scoped Features**: Select only the exact modules needed for your app (e.g. `wallets`, `invoices`, `bridge`). Features can be edited at any time.
 4. **Copy Secret Key**:
-   - Your secret key format is `prx_live_<48_hex_chars>` (e.g. `prx_live_a9b1c2d3...`).
-   - ⚠️ **Important**: For security, secret keys are hashed with **SHA-256** and never stored in plain text. The raw key is displayed **only once** upon generation. Store it securely in your `.env` file.
+   - Format: `prx_live_<48_hex_chars>`.
+   - ⚠️ **Important**: Keys are stored as **SHA-256 hashes** only. The raw secret is shown **once** at creation.
 
-### 2. Managing & Revoking Keys
-- Run `/developer` anytime to inspect your active keys, see last-used timestamps, edit allowed features, or revoke keys immediately if compromised.
-
-### 3. Authentication & Headers
-Include your key in the HTTP headers of every request using either:
+### 2. Authentication & Headers
+Include your key in every authenticated request:
 ```http
 Authorization: Bearer prx_live_YOUR_SECRET_KEY
 ```
@@ -36,57 +33,61 @@ or
 X-API-Key: prx_live_YOUR_SECRET_KEY
 ```
 
+### 3. Tenant Isolation & Security
+- Every wallet created via `POST /api/v1/wallets` is permanently bound to the creating API key (`api_key_wallets`).
+- An API key can **only** read balances, send transfers, bridge funds, open/close savings vaults, view invoices, or fetch receipts for wallets it created (or the key owner's own Telegram account).
+- Attempting to access another user's or another API key's wallet returns `403 Forbidden`.
+
 ### 4. Rate Limiting
-- Default rate limit: **120 requests per minute** per API key.
-- If exceeded, the server returns HTTP `429 Too Many Requests`.
+- Default rate limit: **120 requests per minute** per API key (`429 Too Many Requests` when exceeded).
 
 ### 5. Base URL
+Use your deployed Proxim server URL (configured via `PUBLIC_API_URL`, `WEBHOOK_URL`, or `RAILWAY_PUBLIC_DOMAIN`):
 ```
-https://api.proxim.finance/api/v1
+https://<your-deployed-host>/api/v1
 ```
-*(Or your local/self-hosted deployment: `http://localhost:3000/api/v1`)*
+*(Local development default: `http://localhost:3000/api/v1`)*
+
+Live documentation is always available at:
+```http
+GET /api/v1/docs
+```
 
 ---
 
 ## ⚙️ Customizable Feature Permissions
 
-Each API key can have full access (`"all"`), or a customized list of features:
-
 | Feature Identifier | Description | Capabilities |
 | :--- | :--- | :--- |
-| `all` | **100% Full Access** | Access all current and future endpoints |
+| `all` | **Full Access** | Access all API modules |
 | `wallets` | **Multichain Wallets** | Create customer wallets, get addresses, check unified balances |
-| `transfers` | **Instant Transfers** | Send gasless USDC and tokens on Arc Mainnet |
-| `invoices` | **Invoicing & Checkout** | Generate personal/business invoices, QR codes, payment tracking |
-| `onramp` | **Naira Onramp** | Dynamic Nigerian virtual bank accounts for fiat deposits |
-| `offramp` | **Naira Offramp** | Payout USDC to any Nigerian commercial bank account |
-| `crypto_deposits` | **Multi-Chain EVM** | Deposit addresses on Ethereum, Base, Arbitrum, Polygon, Avalanche |
-| `near_intents` | **NEAR Intents & Robinhood Chain** | Cross-chain swaps for Robinhood Chain, Solana, and NEAR tokens |
+| `transfers` | **Instant Transfers** | Send Arc USDC transfers (Paymaster-sponsored or direct) |
+| `invoices` | **Invoicing & Checkout** | Create, list, and check status of payment invoices |
+| `onramp` | **Naira Onramp** | Dynamic Nigerian virtual bank accounts via Paj v2 |
+| `offramp` | **Naira Offramp** | Live USD/NGN rates and Naira bank payouts via Paj v2 |
+| `crypto_deposits` | **Multi-Chain EVM** | EVM deposit addresses & on-demand DEX/CCTP sweep to Arc |
+| `near_intents` | **NEAR Intents & Robinhood Chain** | Cross-chain swaps across Starknet, Robinhood Chain, Solana, and NEAR |
 | `bridge` | **CCTP Cross-Chain Bridge** | Native USDC bridging between Arc and Solana / EVM |
-| `savings` | **Yield & Savings Vaults** | ERC-4626 USDC deposits, interest accrual, withdrawals |
-| `receipts` | **Proof & Receipts** | Cryptographic payment proofs and PNG receipts |
+| `savings` | **Yield & Savings Vaults** | Live Circle EarnKit / ERC-4626 vaults, real on-chain deposits & withdrawals |
+| `receipts` | **Proof & Receipts** | Transaction receipt JSON and HD PNG receipt cards |
 
-*If an API key attempts to call an endpoint for a feature that is not enabled, the API returns `403 Forbidden`.*
+*Calling an endpoint outside the key's enabled features returns `403 Forbidden`.*
 
 ---
 
 ## 📡 API Endpoints Reference
 
-### 1. System & Authentication
+### 1. System, Docs & Authentication
 
 #### Health & Status
 ```http
 GET /api/v1/health
 ```
-**Response:**
-```json
-{
-  "success": true,
-  "service": "Proxim Builder API",
-  "version": "1.0.0",
-  "status": "operational",
-  "supportedChains": ["Arc", "Solana", "NEAR", "Robinhood Chain", "Starknet", "Base", "Arbitrum", "Ethereum", "Polygon", "Avalanche"]
-}
+Returns service status, live `baseUrl`, `docsUrl`, and `supportedChains`.
+
+#### Live API Documentation (Markdown)
+```http
+GET /api/v1/docs
 ```
 
 #### List Available Features
@@ -98,18 +99,7 @@ GET /api/v1/features
 ```http
 GET /api/v1/auth/me
 ```
-**Headers:** `Authorization: Bearer prx_live_...`  
-**Response:**
-```json
-{
-  "success": true,
-  "keyId": "key_9f83b211a4c2",
-  "appName": "Acme Pay",
-  "allowedFeatures": ["all"],
-  "rateLimitPerMin": 120,
-  "createdAt": "2026-10-11 06:45:00"
-}
-```
+**Headers:** `Authorization: Bearer prx_live_...`
 
 ---
 
@@ -126,6 +116,8 @@ POST /api/v1/wallets
   "pin": "1234"
 }
 ```
+*(If `pin` is omitted, a cryptographically random secret is generated automatically.)*
+
 **Response (201 Created):**
 ```json
 {
@@ -152,6 +144,7 @@ GET /api/v1/wallets/:identifier/balance
   "userId": 583920194,
   "totalUsdc": 150.25,
   "arcUsdc": 100.25,
+  "arcEurc": 0,
   "solanaSplUsdc": 50.00,
   "pendingBridgeUsdc": 0.00
 }
@@ -175,14 +168,19 @@ POST /api/v1/transfers
 {
   "fromUserId": 583920194,
   "toAddress": "0x8888888888888888888888888888888888888888",
-  "amountUsdc": 25.50
+  "amountUsdc": 25.50,
+  "pin": "1234",
+  "narration": "Order #1024"
 }
 ```
+*(Omit `pin` to sign with the server-managed key if available.)*
+
 **Response (200 OK):**
 ```json
 {
   "success": true,
-  "txHash": "0x98f3b20c91823746192837465102938475610293847561029384756102938475",
+  "txHash": "0x98f3b20c...",
+  "sponsored": true,
   "amountUsdc": 25.50,
   "recipient": "0x8888888888888888888888888888888888888888"
 }
@@ -190,7 +188,7 @@ POST /api/v1/transfers
 
 ---
 
-### 4. Invoices & Checkout (`feature: "invoices"`)
+### 4. Invoices (`feature: "invoices"`)
 
 #### Create Payment Invoice
 ```http
@@ -201,11 +199,11 @@ POST /api/v1/invoices
 {
   "clientName": "Globex Inc",
   "amount": 250.00,
-  "currency": "USDC",
   "items": [
     { "description": "Software Subscription", "amount": 250.00 }
   ],
-  "memo": "October Billing"
+  "memo": "October Billing",
+  "walletAddress": "0x4b78a99268f7d983411b0e5192b45100a738491c"
 }
 ```
 **Response (201 Created):**
@@ -216,85 +214,34 @@ POST /api/v1/invoices
     "invoice_number": "INV-M39K10A",
     "client_name": "Globex Inc",
     "total": 250.00,
-    "status": "draft"
+    "status": "unpaid"
   },
-  "paymentUrl": "https://payit.app/invoice/INV-M39K10A"
+  "paymentAddress": "0x4b78a99268f7d983411b0e5192b45100a738491c",
+  "statusUrl": "https://<your-host>/api/v1/invoices/INV-M39K10A"
 }
 ```
 
-#### Get Invoice Status
+#### List Invoices
 ```http
-GET /api/v1/invoices/:invoiceNumber
+GET /api/v1/invoices
+```
+
+#### Get Invoice by Number or ID
+```http
+GET /api/v1/invoices/:invoiceNumberOrId
 ```
 
 ---
 
-### 5. NEAR Intents & Robinhood Chain (`feature: "near_intents"`)
+### 5. NEAR Intents & Cross-Chain Swaps (`feature: "near_intents"`)
 
-NEAR Intents allows your users to send **any token from Robinhood Chain, Solana, or NEAR**, automatically swap it to Base USDC, and bridge it to Arc USDC without manual bridging steps.
-
-#### Get Supported Tokens
-```http
-GET /api/v1/intents/tokens
-```
-Returns tokens for `starknet`, `robinhood`, `solana`, and `near`.
-
-#### Create Starknet Deposit
-```http
-POST /api/v1/intents/deposits/starknet
-```
-**Request Body:**
-```json
-{
-  "originSymbol": "STRK",
-  "amount": 100.00,
-  "recipientAddress": "0x4b78a99268f7d983411b0e5192b45100a738491c"
-}
-```
-*Supported Starknet tokens: `STRK`, `ETH`, `ZEC`, `XRP`.*
-
-**Response (201 Created):**
-```json
-{
-  "success": true,
-  "depositId": 143,
-  "depositAddress": "0x05342a...",
-  "estimatedAmountOutUsdc": 10.45,
-  "status": "awaiting_deposit",
-  "instructions": "Send exactly 100 STRK on Starknet to 0x05342a..."
-}
-```
-
-#### Create Robinhood Chain Deposit
-```http
-POST /api/v1/intents/deposits/robinhood
-```
-**Request Body:**
-```json
-{
-  "originSymbol": "USDG",
-  "amount": 10.00,
-  "recipientAddress": "0x4b78a99268f7d983411b0e5192b45100a738491c"
-}
-```
-*Supported Robinhood Chain tokens: `USDG`, `ETH`, `WETH`, `USDe`, `PONS`, `CASHCAT`.*
-
-**Response (201 Created):**
-```json
-{
-  "success": true,
-  "depositId": 142,
-  "depositAddress": "0x38a0A25058938332A1912135394d3E560325e902",
-  "estimatedAmountOutUsdc": 9.967,
-  "status": "awaiting_deposit",
-  "instructions": "Send exactly 10 USDG on Robinhood Chain to 0x38a0A25058938332A1912135394d3E560325e902"
-}
-```
-
-#### Track Intent Deposit Status
-```http
-GET /api/v1/intents/deposits/:depositId
-```
+- `GET /api/v1/intents/tokens` — Live supported tokens on Starknet, Robinhood Chain, NEAR, and Solana.
+- `POST /api/v1/intents/quote` — Dry-run quote to Base USDC.
+- `POST /api/v1/intents/deposits/starknet` — Create Starknet deposit (`STRK`, `ETH`, `ZEC`, `XRP`).
+- `POST /api/v1/intents/deposits/robinhood` — Create Robinhood Chain deposit (`USDG`, `ETH`, `WETH`, `USDe`, etc.).
+- `POST /api/v1/intents/deposits/near` — Create NEAR deposit (`originSymbol`, `amount`, `recipientAddress`, `refundTo`).
+- `POST /api/v1/intents/deposits/solana` — Create Solana deposit (`originSymbol`, `amount`, `recipientAddress`, `refundTo`).
+- `GET /api/v1/intents/deposits/:depositId` — Track deposit & live 1Click solver status.
 
 ---
 
@@ -308,9 +255,7 @@ POST /api/v1/onramp/bank-transfer
 ```json
 {
   "amountNgn": 50000,
-  "recipientAddress": "0x4b78a99268f7d983411b0e5192b45100a738491c",
-  "customerEmail": "customer@example.com",
-  "customerName": "Alice Johnson"
+  "recipientAddress": "8F3bNqm8e734tXpG82bM9rC1zP5qK93h12aBsJ83dKL4"
 }
 ```
 **Response (200 OK):**
@@ -318,48 +263,60 @@ POST /api/v1/onramp/bank-transfer
 {
   "success": true,
   "orderId": "ord_9381023",
+  "status": "pending",
+  "estimatedUsdc": 34.5,
+  "rate": 1450,
   "virtualAccount": {
-    "bankName": "Wema Bank / Paj",
+    "bankName": "Wema Bank",
     "accountNumber": "9827361829",
-    "accountName": "Proxim / Alice Johnson",
+    "accountName": "Paj / Proxim",
     "amountNgn": 50000,
-    "expiresAt": "2026-10-11T08:00:00Z"
+    "expiresAt": "2026-11-20T13:00:00Z"
   }
 }
+```
+
+#### Check Onramp Order Status
+```http
+GET /api/v1/onramp/status/:orderId
+```
+
+#### Get Live Naira Exchange Rates
+```http
+GET /api/v1/offramp/rates
 ```
 
 #### Withdraw to Nigerian Bank (Offramp)
 ```http
 POST /api/v1/offramp/bank-transfer
 ```
-**Request Body:**
-```json
-{
-  "amountUsdc": 35.00,
-  "bankCode": "058",
-  "accountNumber": "0123456789",
-  "accountName": "Alice Johnson"
-}
+- **Custodial mode** (pass `userId` + optional `pin`): creates the Paj order **and** sends the exact USDC from that tenant wallet on-chain (`mode: "executed"`).
+- **Self-funded quote mode** (omit `userId`): creates the Paj order and returns `fundingAddress`, `fundingChain`, and `fundingAmountUsdc` (`mode: "awaiting_funding"`).
+
+#### Check Offramp Payout Status
+```http
+GET /api/v1/offramp/status/:orderId
 ```
 
 ---
 
 ### 7. Savings & Yield (`feature: "savings"`)
 
-#### Get Current Yield APY
+Powered by **Circle EarnKit** & live **ERC-4626 Morpho Vaults** on Arc.
+
+#### Get Live Yield Vaults & APYs
 ```http
 GET /api/v1/savings/rates
 ```
-**Response:**
-```json
-{
-  "success": true,
-  "apy": 0.082,
-  "vault": "Morpho USDC Prime Vault (ERC-4626)"
-}
-```
+Returns live filtered vaults (`vaults[]`) plus the top USDC vault summary (`apy`, `apyPercent`, `vault`, `vaultAddress`, `chain`, `feeFraction`).
 
-#### Deposit into Savings Vault
+#### Check Active Savings Position
+```http
+GET /api/v1/savings/position/:userId
+```
+Returns active principal, live accrued gross/net yield, and vault metadata.
+
+#### Deposit USDC into Vault (On-Chain)
 ```http
 POST /api/v1/savings/deposit
 ```
@@ -367,51 +324,15 @@ POST /api/v1/savings/deposit
 ```json
 {
   "userId": 583920194,
-  "amountUsdc": 100.00
+  "amountUsdc": 100.00,
+  "vaultAddress": "0xa8fd51b78370c7ca948566d7ba97d252bc325124"
 }
 ```
+*(Omit `vaultAddress` to use the top active USDC vault.)* Executes an actual on-chain EarnKit / ERC-4626 deposit and returns `txHash`, `vault`, and `position`.
 
----
-
-### 8. Multi-Chain EVM Deposits (`feature: "crypto_deposits"`)
-
-Enables customer deposit addresses on external EVM chains with automated DEX swap (native token → USDC) and CCTP auto-sweep directly to Arc USDC.
-
-#### Supported Chains & DEX Configurations
+#### Withdraw Principal + Accrued Yield (On-Chain)
 ```http
-GET /api/v1/deposits/crypto/chains
-```
-**Response (200 OK):**
-```json
-{
-  "success": true,
-  "chains": [
-    { "chainKey": "BASE", "name": "Base", "chainId": 8453, "nativeSymbol": "ETH", "usdcAddress": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" },
-    { "chainKey": "ARBITRUM", "name": "Arbitrum", "chainId": 42161, "nativeSymbol": "ETH", "usdcAddress": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" },
-    { "chainKey": "ETHEREUM", "name": "Ethereum", "chainId": 1, "nativeSymbol": "ETH", "usdcAddress": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" },
-    { "chainKey": "ROBINHOOD", "name": "Robinhood Chain", "chainId": 4663, "nativeSymbol": "ETH" }
-  ]
-}
-```
-
-#### Get Customer Multi-Chain Deposit Address
-```http
-GET /api/v1/deposits/crypto/address/:userId
-```
-**Response:**
-```json
-{
-  "success": true,
-  "userId": 583920194,
-  "depositAddress": "0x4b78a99268f7d983411b0e5192b45100a738491c",
-  "supportedChains": ["Base", "Arbitrum", "Ethereum", "Optimism", "Polygon", "Avalanche", "Robinhood Chain"],
-  "note": "Incoming deposits of ETH/AVAX/MATIC or USDC on any supported chain are automatically detected, converted to USDC, and swept to Arc."
-}
-```
-
-#### Trigger On-Demand Deposit Sweep
-```http
-POST /api/v1/deposits/crypto/sweep
+POST /api/v1/savings/withdraw
 ```
 **Request Body:**
 ```json
@@ -419,129 +340,58 @@ POST /api/v1/deposits/crypto/sweep
   "userId": 583920194
 }
 ```
+Redeems all on-chain vault shares, routes the 10% performance fee on profits, and returns `withdrawnAmount`, `principalUsdc`, `netYieldUsdc`, `devFeeUsdc`, and `withdrawTxHash`.
+
+---
+
+### 8. Multi-Chain EVM Deposits (`feature: "crypto_deposits"`)
+
+- `GET /api/v1/deposits/crypto/chains` — Supported EVM chains & DEX router configs.
+- `GET /api/v1/deposits/crypto/address/:userId` — Customer multi-chain EVM deposit address.
+- `POST /api/v1/deposits/crypto/sweep` — Trigger on-demand swap + CCTP sweep to Arc.
 
 ---
 
 ### 9. Circle CCTP Cross-Chain Bridge (`feature: "bridge"`)
 
-Bridge native USDC with zero slippage between Arc Mainnet, Solana, and EVM chains using Circle CCTP.
-
-#### Supported CCTP Domains
-```http
-GET /api/v1/bridge/supported
-```
-**Response:**
-```json
-{
-  "success": true,
-  "protocol": "Circle CCTP",
-  "supportedChains": ["Arc", "Solana", "Base", "Arbitrum", "Optimism", "Polygon", "Avalanche", "Ethereum"]
-}
-```
-
-#### Execute Cross-Chain USDC Transfer / Withdrawal
-```http
-POST /api/v1/bridge/transfer
-```
-**Request Body:**
-```json
-{
-  "userId": 583920194,
-  "destinationChain": "Solana",
-  "destinationAddress": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
-  "amountUsdc": 50.00
-}
-```
+- `GET /api/v1/bridge/supported` — Supported Circle CCTP domains and chains.
+- `POST /api/v1/bridge/transfer` — Burn native USDC on Arc and mint on Solana, Base, Arbitrum, Optimism, Polygon, Avalanche, or Ethereum.
 
 ---
 
 ### 10. Proofs & Payment Receipts (`feature: "receipts"`)
 
-Query transaction receipts and fetch downloadable cryptographic PNG receipt cards.
+- `GET /api/v1/receipts/:txHash` — Transaction receipt metadata JSON.
+- `GET /api/v1/receipts/:txHash?format=png` — Downloadable HD branded PNG receipt card (`image/png`) with real account & counterparty details.
 
-#### Query Receipt (JSON)
-```http
-GET /api/v1/receipts/:txHash
-```
-**Response:**
-```json
-{
-  "success": true,
-  "receipt": {
-    "id": 1024,
-    "txHash": "0x7a8b9c...",
-    "amountUsdc": 50.00,
-    "status": "completed",
-    "type": "transfer",
-    "createdAt": "2026-10-11T09:15:00Z",
-    "pngUrl": "/api/v1/receipts/0x7a8b9c...?format=png"
-  }
-}
-```
+---
 
-#### Download Receipt Image (PNG)
-```http
-GET /api/v1/receipts/:txHash?format=png
-```
-Returns a high-resolution, branded PNG receipt card (`image/png`) suitable for direct rendering or customer download.
+## 💻 Code Example (Node.js)
 
-## 💻 Code Examples
-
-### Node.js / JavaScript
 ```javascript
 const axios = require("axios");
 
 const proxim = axios.create({
-  baseURL: "https://api.proxim.finance/api/v1",
+  baseURL: `${process.env.PROXIM_API_BASE_URL}/api/v1`,
   headers: {
-    Authorization: `Bearer prx_live_YOUR_API_KEY`,
+    Authorization: `Bearer ${process.env.PROXIM_API_KEY}`,
     "Content-Type": "application/json",
   },
 });
 
 async function main() {
-  // 1. Verify API Key
   const me = await proxim.get("/auth/me");
-  console.log("Connected to Proxim as:", me.data.appName);
+  console.log("Connected as:", me.data.appName);
 
-  // 2. Create customer wallet
-  const wallet = await proxim.post("/wallets", {
-    username: "john_doe",
-  });
-  console.log("Customer Arc Address:", wallet.data.addresses.arc);
-  console.log("Customer Robinhood Address:", wallet.data.addresses.robinhood);
+  const wallet = await proxim.post("/wallets", { username: "john_doe" });
+  console.log("Arc address:", wallet.data.addresses.arc);
 
-  // 3. Create a Robinhood Chain deposit quote
-  const deposit = await proxim.post("/intents/deposits/robinhood", {
-    originSymbol: "USDG",
-    amount: 50,
-    recipientAddress: wallet.data.addresses.arc,
-  });
-  console.log("Deposit Address:", deposit.data.depositAddress);
+  const bal = await proxim.get(`/wallets/${wallet.data.userId}/balance`);
+  console.log("Total USDC:", bal.data.totalUsdc);
+
+  const rates = await proxim.get("/savings/rates");
+  console.log("Top vault:", rates.data.vault, `${rates.data.apyPercent}% APY`);
 }
 
 main();
-```
-
-### Python
-```python
-import requests
-
-PROXIM_URL = "https://api.proxim.finance/api/v1"
-HEADERS = {
-    "Authorization": "Bearer prx_live_YOUR_API_KEY",
-    "Content-Type": "application/json"
-}
-
-# Check API health & active features
-res = requests.get(f"{PROXIM_URL}/auth/me", headers=HEADERS)
-print("Builder Info:", res.json())
-
-# Create a Robinhood Chain deposit
-hood_deposit = requests.post(f"{PROXIM_URL}/intents/deposits/robinhood", headers=HEADERS, json={
-    "originSymbol": "USDG",
-    "amount": 20,
-    "recipientAddress": "0x4b78a99268f7d983411b0e5192b45100a738491c"
-})
-print("Deposit Instructions:", hood_deposit.json())
 ```

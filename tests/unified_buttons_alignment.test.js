@@ -42,6 +42,8 @@ test("In-Chat Balance Cards: Clean finance display without crypto jargon or addr
   assert.ok(!showBalanceBlock[1].includes("Arc: $"), "showBalance must not show Arc/Solana chain split");
   assert.ok(!showBalanceBlock[1].includes("Solana Deposit Address"), "showBalance must not show Solana address");
   assert.ok(!showBalanceBlock[1].includes("EVM - tap to copy"), "showBalance must not show EVM address");
+  assert.ok(!showBalanceBlock[1].includes("Developer API"), "showBalance must hide Developer API button while internal");
+  assert.ok(!showBalanceBlock[1].includes("action_developer_menu"), "showBalance must not include action_developer_menu button");
 
   const showBizBlock = botCode.match(/async function showBizBalance\(ctx\) \{([\s\S]*?)\/\/ ─── Receive/);
   assert.ok(showBizBlock, "showBizBalance block should be found");

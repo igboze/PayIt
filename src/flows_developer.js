@@ -4,7 +4,12 @@
 
 const { Markup } = require("telegraf");
 const apiKeys = require("./api_keys");
+const apiRoutes = require("./api_routes");
 const convState = require("./conversation_state");
+
+function getApiV1BaseUrl() {
+  return `${apiRoutes.getPublicBaseUrl()}/api/v1`;
+}
 
 let deps = {};
 
@@ -105,7 +110,7 @@ function registerDeveloperFlows(bot, depsIn = {}) {
     state.data.selectedFeatures = selected;
     convState.setState(ctx.from.id, state.type, state.data, "personal");
 
-    return showCustomFeatureSelection(ctx, state.data.appName, selected);
+    return showCustomFeatureSelection(ctx, state.data.appName, selected, state.data.keyId || null);
   });
 
   bot.action("action_dev_generate_custom_key", async (ctx) => {
@@ -166,23 +171,26 @@ function registerDeveloperFlows(bot, depsIn = {}) {
 
   bot.action("action_dev_docs", async (ctx) => {
     ctx.answerCbQuery().catch(() => {});
+    const apiBase = getApiV1BaseUrl();
     return ctx.reply(
       `📖 <b>Proxim Builder API Quickstart</b>\n──────────────────────────\n` +
-      `<b>Base URL:</b> <code>https://api.proxim.finance/api/v1</code> (or your deployed URL)\n\n` +
+      `<b>Base URL:</b> <code>${apiBase}</code>\n` +
+      `<b>Full Docs:</b> <code>GET ${apiBase}/docs</code>\n\n` +
       `<b>Authentication:</b>\n` +
       `Send your API key in the headers of any request:\n` +
       `<code>Authorization: Bearer prx_live_...</code>\n\n` +
       `<b>Core Endpoints:</b>\n` +
-      `• <code>GET /api/v1/auth/me</code> — Verify key & limits\n` +
-      `• <code>POST /api/v1/wallets</code> — Create customer wallet\n` +
+      `• <code>GET /api/v1/auth/me</code> — Verify key &amp; limits\n` +
+      `• <code>POST /api/v1/wallets</code> — Create tenant-isolated customer wallet\n` +
       `• <code>GET /api/v1/wallets/:id/balance</code> — Check unified balances\n` +
-      `• <code>POST /api/v1/transfers</code> — Send USDC instantly\n` +
+      `• <code>POST /api/v1/transfers</code> — Send USDC on Arc\n` +
       `• <code>POST /api/v1/invoices</code> — Create payment invoice\n` +
       `• <code>POST /api/v1/onramp/bank-transfer</code> — Virtual Nigerian bank account\n` +
+      `• <code>POST /api/v1/offramp/bank-transfer</code> — Naira bank payout\n` +
       `• <code>POST /api/v1/intents/deposits/robinhood</code> — Robinhood Chain deposit\n` +
-      `• <code>POST /api/v1/intents/deposits/solana</code> — Solana deposit\n` +
-      `• <code>GET /api/v1/savings/rates</code> — USDC yield vaults\n\n` +
-      `<i>Full interactive documentation is available in <code>BUILDER_API.md</code></i>`,
+      `• <code>POST /api/v1/bridge/transfer</code> — Circle CCTP USDC bridge\n` +
+      `• <code>GET /api/v1/savings/rates</code> — Live EarnKit USDC yield vaults\n\n` +
+      `<i>Security: Each API key can only access wallets it provisioned or your own account.</i>`,
       {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard([
@@ -277,6 +285,7 @@ function showCustomFeatureSelection(ctx, appName, selected = [], editingKeyId = 
     { id: "offramp", name: "🏦 Naira Offramp" },
     { id: "crypto_deposits", name: "🌐 EVM Deposits" },
     { id: "near_intents", name: "🏹 Robinhood / NEAR" },
+    { id: "bridge", name: "🌉 CCTP Bridge" },
     { id: "savings", name: "📈 Yield Savings" },
     { id: "receipts", name: "🧾 Receipts" },
   ];
@@ -318,6 +327,7 @@ function showKeyCreatedSuccess(ctx, created) {
   const feats = created.allowedFeatures.includes("all")
     ? "🌟 100% Full Access (All Features)"
     : created.allowedFeatures.map((f) => `• <code>${f}</code>`).join("\n");
+  const apiBase = getApiV1BaseUrl();
 
   return ctx.reply(
     `🎉 <b>API Key Generated!</b>\n──────────────────────────\n` +
@@ -329,7 +339,7 @@ function showKeyCreatedSuccess(ctx, created) {
     `⚠️ <b>IMPORTANT:</b> Copy and save this key right now! For security reasons, you will NOT be able to view the secret key again.\n\n` +
     `<b>Enabled Features:</b>\n${feats}\n\n` +
     `🧪 <b>Quick Test (curl):</b>\n` +
-    `<code>curl -H "Authorization: Bearer ${created.secretKey}" https://api.proxim.finance/api/v1/auth/me</code>`,
+    `<code>curl -H "Authorization: Bearer ${created.secretKey}" ${apiBase}/auth/me</code>`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([

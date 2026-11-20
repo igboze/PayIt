@@ -953,8 +953,7 @@ async function showBalance(ctx) {
       [btnDefault("📜 Activity History",  "action_history"),
        btnPrimary("⚡ Check for Deposits","action_sweep_deposits")],
       [btnPrimary("🔀 Move Funds",        "action_move_funds")],
-      [btnPrimary("🔐 Export Key",        "action_export_keys"),
-       btnDefault("🛠️ Developer API",     "action_developer_menu")]
+      [btnPrimary("🔐 Export Key",        "action_export_keys")]
     );
 
     await ctx.reply(
