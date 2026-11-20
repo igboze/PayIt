@@ -18,6 +18,7 @@ const solAddrLib = require("./solana_address");
 const multichain = require("./multichain");
 const { generateReceiptPNG } = require("./receipt_generator");
 const apiRoutes = require("./api_routes");
+const nuvionWebhooks = require("./nuvion_webhooks");
 const fx = require("./fx");
 
 function verifyAlchemySignature(rawBody, headers, signingKey) {
@@ -832,6 +833,11 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
         }
       });
       return;
+    }
+
+    // 2b. Nuvion Global Banking Webhook route (exempt from API key auth; HMAC-SHA256 verified)
+    if (req.method === "POST" && (req.url === "/webhook/nuvion" || req.url === "/webhook/nuvion/")) {
+      return nuvionWebhooks.handleNuvionWebhookHttp(req, res, bot);
     }
 
     // 3. Automated EVM Cross-Chain Deposit Webhook route (/webhook/crypto-deposit & /webhook/alchemy)

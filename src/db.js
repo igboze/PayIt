@@ -2788,6 +2788,470 @@ function getUserBillPayments(telegramId, limit = 10) {
   `).all(telegramId, limit) || [];
 }
 
+// ─── Nuvion Global Banking (Tier-1 Entities, Base Bridge, Accounts, Cards, Jobs) ─
+
+function ensureNuvionSchema() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS nuvion_entities (
+        id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id                 INTEGER NOT NULL,
+        account_type                TEXT NOT NULL DEFAULT 'personal',
+        entity_id                   TEXT UNIQUE NOT NULL,
+        entity_type                 TEXT NOT NULL DEFAULT 'individual',
+        person_id                   TEXT,
+        business_id                 TEXT,
+        legal_name                  TEXT,
+        email                       TEXT,
+        status                      TEXT NOT NULL DEFAULT 'incomplete',
+        risk_level                  TEXT,
+        self_counterparty_id        TEXT,
+        self_base_payment_detail_id TEXT,
+        usc_account_id              TEXT,
+        usc_base_detail_id          TEXT,
+        usc_base_address            TEXT,
+        created_at                  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at                  TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(telegram_id, account_type)
+      );
+      CREATE INDEX IF NOT EXISTS idx_nuvion_entities_entity ON nuvion_entities(entity_id);
+      CREATE INDEX IF NOT EXISTS idx_nuvion_entities_tg ON nuvion_entities(telegram_id, account_type);
+
+      CREATE TABLE IF NOT EXISTS nuvion_kyc_drafts (
+        telegram_id  INTEGER NOT NULL,
+        account_type TEXT NOT NULL DEFAULT 'personal',
+        step         TEXT NOT NULL,
+        data_json    TEXT NOT NULL DEFAULT '{}',
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (telegram_id, account_type)
+      );
+
+      CREATE TABLE IF NOT EXISTS nuvion_accounts (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_id    TEXT NOT NULL,
+        account_id   TEXT UNIQUE NOT NULL,
+        currency     TEXT NOT NULL,
+        account_type TEXT NOT NULL DEFAULT 'checking',
+        display_name TEXT,
+        nuvion_ban   TEXT,
+        purpose      TEXT NOT NULL DEFAULT 'receiving',
+        status       TEXT NOT NULL DEFAULT 'active',
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_nuvion_accounts_entity ON nuvion_accounts(entity_id, currency);
+
+      CREATE TABLE IF NOT EXISTS nuvion_account_details (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id       TEXT NOT NULL,
+        detail_id        TEXT UNIQUE NOT NULL,
+        entity_id        TEXT NOT NULL,
+        asset_type       TEXT NOT NULL DEFAULT 'fiat',
+        currency         TEXT NOT NULL,
+        chain            TEXT,
+        account_number   TEXT,
+        iban             TEXT,
+        routing_number   TEXT,
+        sort_code        TEXT,
+        swift_code       TEXT,
+        bank_name        TEXT,
+        beneficiary_name TEXT,
+        status           TEXT NOT NULL DEFAULT 'pending',
+        raw_meta_json    TEXT,
+        created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_nuvion_details_account ON nuvion_account_details(account_id);
+      CREATE INDEX IF NOT EXISTS idx_nuvion_details_entity ON nuvion_account_details(entity_id, currency);
+
+      CREATE TABLE IF NOT EXISTS nuvion_counterparties (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_id           TEXT NOT NULL,
+        counterparty_id     TEXT NOT NULL,
+        payment_detail_id   TEXT UNIQUE NOT NULL,
+        label               TEXT,
+        currency            TEXT NOT NULL,
+        country             TEXT,
+        scheme              TEXT,
+        payment_method      TEXT NOT NULL,
+        account_holder_name TEXT,
+        summary_json        TEXT,
+        created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_nuvion_cp_entity ON nuvion_counterparties(entity_id, currency);
+
+      CREATE TABLE IF NOT EXISTS nuvion_cards (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_id   TEXT NOT NULL,
+        account_id  TEXT NOT NULL,
+        card_id     TEXT UNIQUE NOT NULL,
+        card_type   TEXT NOT NULL DEFAULT 'virtual',
+        card_name   TEXT,
+        currency    TEXT NOT NULL DEFAULT 'USD',
+        last4       TEXT,
+        status      TEXT NOT NULL DEFAULT 'active',
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_nuvion_cards_entity ON nuvion_cards(entity_id);
+
+      CREATE TABLE IF NOT EXISTS nuvion_jobs (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_id          TEXT NOT NULL,
+        telegram_id        INTEGER NOT NULL,
+        account_type       TEXT NOT NULL DEFAULT 'personal',
+        job_type           TEXT NOT NULL,
+        state              TEXT NOT NULL DEFAULT 'pending',
+        currency           TEXT,
+        amount_minor       INTEGER DEFAULT 0,
+        margin_minor       INTEGER DEFAULT 0,
+        unique_reference   TEXT UNIQUE,
+        source_tx_hash     TEXT,
+        nuvion_transfer_id TEXT,
+        fx_quote_id        TEXT,
+        session_id         TEXT,
+        card_id            TEXT,
+        payload_json       TEXT,
+        error_message      TEXT,
+        retry_count        INTEGER NOT NULL DEFAULT 0,
+        created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_nuvion_jobs_state ON nuvion_jobs(job_type, state);
+      CREATE INDEX IF NOT EXISTS idx_nuvion_jobs_entity ON nuvion_jobs(entity_id, state);
+    `);
+  } catch (err) {
+    console.warn("[db] ensureNuvionSchema note:", err.message);
+  }
+}
+
+try {
+  ensureNuvionSchema();
+} catch (_) {}
+
+function upsertNuvionEntity({
+  telegramId,
+  accountType = "personal",
+  entityId,
+  entityType = "individual",
+  personId = null,
+  businessId = null,
+  legalName = null,
+  email = null,
+  status = "incomplete",
+  riskLevel = null,
+}) {
+  ensureNuvionSchema();
+  db.prepare(`
+    INSERT INTO nuvion_entities
+      (telegram_id, account_type, entity_id, entity_type, person_id, business_id, legal_name, email, status, risk_level)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(telegram_id, account_type) DO UPDATE SET
+      entity_id   = excluded.entity_id,
+      entity_type = excluded.entity_type,
+      person_id   = COALESCE(excluded.person_id, nuvion_entities.person_id),
+      business_id = COALESCE(excluded.business_id, nuvion_entities.business_id),
+      legal_name  = COALESCE(excluded.legal_name, nuvion_entities.legal_name),
+      email       = COALESCE(excluded.email, nuvion_entities.email),
+      status      = excluded.status,
+      risk_level  = COALESCE(excluded.risk_level, nuvion_entities.risk_level),
+      updated_at  = datetime('now')
+  `).run(
+    Number(telegramId),
+    accountType,
+    String(entityId),
+    entityType,
+    personId,
+    businessId,
+    legalName,
+    email,
+    status,
+    riskLevel
+  );
+  return getNuvionEntityByUser(telegramId, accountType);
+}
+
+function getNuvionEntityByUser(telegramId, accountType = "personal") {
+  ensureNuvionSchema();
+  return db.prepare(
+    "SELECT * FROM nuvion_entities WHERE telegram_id = ? AND account_type = ?"
+  ).get(Number(telegramId), accountType) || null;
+}
+
+function getNuvionEntityByEntityId(entityId) {
+  ensureNuvionSchema();
+  return db.prepare("SELECT * FROM nuvion_entities WHERE entity_id = ?").get(String(entityId)) || null;
+}
+
+function updateNuvionEntity(entityId, fields = {}) {
+  ensureNuvionSchema();
+  const allowed = [
+    "person_id", "business_id", "legal_name", "email", "status", "risk_level",
+    "self_counterparty_id", "self_base_payment_detail_id",
+    "usc_account_id", "usc_base_detail_id", "usc_base_address",
+  ];
+  const sets = [];
+  const vals = [];
+  for (const key of allowed) {
+    if (fields[key] !== undefined) {
+      sets.push(`${key} = ?`);
+      vals.push(fields[key]);
+    }
+  }
+  if (!sets.length) return getNuvionEntityByEntityId(entityId);
+  sets.push("updated_at = datetime('now')");
+  vals.push(String(entityId));
+  db.prepare(`UPDATE nuvion_entities SET ${sets.join(", ")} WHERE entity_id = ?`).run(...vals);
+  return getNuvionEntityByEntityId(entityId);
+}
+
+function saveNuvionKycDraft(telegramId, accountType = "personal", step, data = {}) {
+  ensureNuvionSchema();
+  db.prepare(`
+    INSERT INTO nuvion_kyc_drafts (telegram_id, account_type, step, data_json, updated_at)
+    VALUES (?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(telegram_id, account_type) DO UPDATE SET
+      step = excluded.step,
+      data_json = excluded.data_json,
+      updated_at = datetime('now')
+  `).run(Number(telegramId), accountType, String(step), JSON.stringify(data || {}));
+}
+
+function getNuvionKycDraft(telegramId, accountType = "personal") {
+  ensureNuvionSchema();
+  const row = db.prepare(
+    "SELECT * FROM nuvion_kyc_drafts WHERE telegram_id = ? AND account_type = ?"
+  ).get(Number(telegramId), accountType);
+  if (!row) return null;
+  let parsed = {};
+  try { parsed = JSON.parse(row.data_json || "{}"); } catch (_) {}
+  return { ...row, data: parsed };
+}
+
+function deleteNuvionKycDraft(telegramId, accountType = "personal") {
+  ensureNuvionSchema();
+  db.prepare("DELETE FROM nuvion_kyc_drafts WHERE telegram_id = ? AND account_type = ?").run(
+    Number(telegramId),
+    accountType
+  );
+}
+
+function upsertNuvionAccount({
+  entityId,
+  accountId,
+  currency,
+  accountType = "checking",
+  displayName = null,
+  nuvionBan = null,
+  purpose = "receiving",
+  status = "active",
+}) {
+  ensureNuvionSchema();
+  db.prepare(`
+    INSERT INTO nuvion_accounts (entity_id, account_id, currency, account_type, display_name, nuvion_ban, purpose, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id) DO UPDATE SET
+      display_name = COALESCE(excluded.display_name, nuvion_accounts.display_name),
+      nuvion_ban   = COALESCE(excluded.nuvion_ban, nuvion_accounts.nuvion_ban),
+      purpose      = excluded.purpose,
+      status       = excluded.status,
+      updated_at   = datetime('now')
+  `).run(String(entityId), String(accountId), String(currency).toUpperCase(), accountType, displayName, nuvionBan, purpose, status);
+  return db.prepare("SELECT * FROM nuvion_accounts WHERE account_id = ?").get(String(accountId)) || null;
+}
+
+function getNuvionAccountsByEntity(entityId, { currency = null, purpose = null } = {}) {
+  ensureNuvionSchema();
+  let sql = "SELECT * FROM nuvion_accounts WHERE entity_id = ?";
+  const vals = [String(entityId)];
+  if (currency) { sql += " AND currency = ?"; vals.push(String(currency).toUpperCase()); }
+  if (purpose) { sql += " AND purpose = ?"; vals.push(purpose); }
+  sql += " ORDER BY id ASC";
+  return db.prepare(sql).all(...vals) || [];
+}
+
+function upsertNuvionAccountDetail({
+  accountId,
+  detailId,
+  entityId,
+  assetType = "fiat",
+  currency,
+  chain = null,
+  accountNumber = null,
+  iban = null,
+  routingNumber = null,
+  sortCode = null,
+  swiftCode = null,
+  bankName = null,
+  beneficiaryName = null,
+  status = "pending",
+  rawMeta = null,
+}) {
+  ensureNuvionSchema();
+  const metaStr = rawMeta ? (typeof rawMeta === "string" ? rawMeta : JSON.stringify(rawMeta)) : null;
+  db.prepare(`
+    INSERT INTO nuvion_account_details
+      (account_id, detail_id, entity_id, asset_type, currency, chain, account_number, iban,
+       routing_number, sort_code, swift_code, bank_name, beneficiary_name, status, raw_meta_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(detail_id) DO UPDATE SET
+      account_number   = COALESCE(excluded.account_number, nuvion_account_details.account_number),
+      iban             = COALESCE(excluded.iban, nuvion_account_details.iban),
+      routing_number   = COALESCE(excluded.routing_number, nuvion_account_details.routing_number),
+      sort_code        = COALESCE(excluded.sort_code, nuvion_account_details.sort_code),
+      swift_code       = COALESCE(excluded.swift_code, nuvion_account_details.swift_code),
+      bank_name        = COALESCE(excluded.bank_name, nuvion_account_details.bank_name),
+      beneficiary_name = COALESCE(excluded.beneficiary_name, nuvion_account_details.beneficiary_name),
+      status           = excluded.status,
+      raw_meta_json    = COALESCE(excluded.raw_meta_json, nuvion_account_details.raw_meta_json),
+      updated_at       = datetime('now')
+  `).run(
+    String(accountId), String(detailId), String(entityId), assetType, String(currency).toUpperCase(),
+    chain, accountNumber, iban, routingNumber, sortCode, swiftCode, bankName, beneficiaryName, status, metaStr
+  );
+  return db.prepare("SELECT * FROM nuvion_account_details WHERE detail_id = ?").get(String(detailId)) || null;
+}
+
+function getNuvionAccountDetailsByEntity(entityId, currency = null) {
+  ensureNuvionSchema();
+  if (currency) {
+    return db.prepare(
+      "SELECT * FROM nuvion_account_details WHERE entity_id = ? AND currency = ? ORDER BY id DESC"
+    ).all(String(entityId), String(currency).toUpperCase()) || [];
+  }
+  return db.prepare("SELECT * FROM nuvion_account_details WHERE entity_id = ? ORDER BY id DESC").all(String(entityId)) || [];
+}
+
+function saveNuvionCounterparty({
+  entityId,
+  counterpartyId,
+  paymentDetailId,
+  label = null,
+  currency,
+  country = null,
+  scheme = null,
+  paymentMethod,
+  accountHolderName = null,
+  summary = null,
+}) {
+  ensureNuvionSchema();
+  const sumStr = summary ? (typeof summary === "string" ? summary : JSON.stringify(summary)) : null;
+  db.prepare(`
+    INSERT OR REPLACE INTO nuvion_counterparties
+      (entity_id, counterparty_id, payment_detail_id, label, currency, country, scheme, payment_method, account_holder_name, summary_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    String(entityId), String(counterpartyId), String(paymentDetailId), label,
+    String(currency).toUpperCase(), country, scheme, paymentMethod, accountHolderName, sumStr
+  );
+  return db.prepare("SELECT * FROM nuvion_counterparties WHERE payment_detail_id = ?").get(String(paymentDetailId)) || null;
+}
+
+function getNuvionCounterpartiesByEntity(entityId, currency = null) {
+  ensureNuvionSchema();
+  if (currency) {
+    return db.prepare(
+      "SELECT * FROM nuvion_counterparties WHERE entity_id = ? AND currency = ? ORDER BY id DESC"
+    ).all(String(entityId), String(currency).toUpperCase()) || [];
+  }
+  return db.prepare("SELECT * FROM nuvion_counterparties WHERE entity_id = ? ORDER BY id DESC").all(String(entityId)) || [];
+}
+
+function upsertNuvionCard({ entityId, accountId, cardId, cardType = "virtual", cardName = null, currency = "USD", last4 = null, status = "active" }) {
+  ensureNuvionSchema();
+  db.prepare(`
+    INSERT INTO nuvion_cards (entity_id, account_id, card_id, card_type, card_name, currency, last4, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(card_id) DO UPDATE SET
+      account_id = excluded.account_id,
+      card_name  = COALESCE(excluded.card_name, nuvion_cards.card_name),
+      last4      = COALESCE(excluded.last4, nuvion_cards.last4),
+      status     = excluded.status,
+      updated_at = datetime('now')
+  `).run(String(entityId), String(accountId), String(cardId), cardType, cardName, String(currency).toUpperCase(), last4, status);
+  return db.prepare("SELECT * FROM nuvion_cards WHERE card_id = ?").get(String(cardId)) || null;
+}
+
+function getNuvionCardsByEntity(entityId) {
+  ensureNuvionSchema();
+  return db.prepare("SELECT * FROM nuvion_cards WHERE entity_id = ? AND status != 'deleted' ORDER BY id DESC").all(String(entityId)) || [];
+}
+
+function createNuvionJob({
+  entityId,
+  telegramId,
+  accountType = "personal",
+  jobType,
+  state = "pending",
+  currency = null,
+  amountMinor = 0,
+  marginMinor = 0,
+  uniqueReference = null,
+  sourceTxHash = null,
+  nuvionTransferId = null,
+  fxQuoteId = null,
+  sessionId = null,
+  cardId = null,
+  payload = null,
+}) {
+  ensureNuvionSchema();
+  const payloadStr = payload ? (typeof payload === "string" ? payload : JSON.stringify(payload)) : null;
+  const info = db.prepare(`
+    INSERT INTO nuvion_jobs
+      (entity_id, telegram_id, account_type, job_type, state, currency, amount_minor, margin_minor,
+       unique_reference, source_tx_hash, nuvion_transfer_id, fx_quote_id, session_id, card_id, payload_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    String(entityId), Number(telegramId), accountType, jobType, state, currency,
+    Math.round(Number(amountMinor) || 0), Math.round(Number(marginMinor) || 0),
+    uniqueReference, sourceTxHash, nuvionTransferId, fxQuoteId, sessionId, cardId, payloadStr
+  );
+  return getNuvionJobById(info.lastInsertRowid);
+}
+
+function getNuvionJobById(id) {
+  ensureNuvionSchema();
+  const row = db.prepare("SELECT * FROM nuvion_jobs WHERE id = ?").get(id);
+  if (!row) return null;
+  let payload = {};
+  try { payload = row.payload_json ? JSON.parse(row.payload_json) : {}; } catch (_) {}
+  return { ...row, payload };
+}
+
+function updateNuvionJob(id, fields = {}) {
+  ensureNuvionSchema();
+  const allowed = [
+    "state", "amount_minor", "margin_minor", "source_tx_hash",
+    "nuvion_transfer_id", "fx_quote_id", "session_id", "card_id",
+    "payload_json", "error_message", "retry_count",
+  ];
+  const sets = [];
+  const vals = [];
+  for (const key of allowed) {
+    if (fields[key] !== undefined) {
+      sets.push(`${key} = ?`);
+      vals.push(key === "payload_json" && typeof fields[key] !== "string" ? JSON.stringify(fields[key]) : fields[key]);
+    }
+  }
+  if (!sets.length) return getNuvionJobById(id);
+  sets.push("updated_at = datetime('now')");
+  vals.push(id);
+  db.prepare(`UPDATE nuvion_jobs SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+  return getNuvionJobById(id);
+}
+
+function getNuvionJobsByState(jobType, state) {
+  ensureNuvionSchema();
+  const rows = db.prepare(
+    "SELECT * FROM nuvion_jobs WHERE job_type = ? AND state = ? ORDER BY id ASC"
+  ).all(jobType, state) || [];
+  return rows.map((r) => {
+    let payload = {};
+    try { payload = r.payload_json ? JSON.parse(r.payload_json) : {}; } catch (_) {}
+    return { ...r, payload };
+  });
+}
+
 module.exports = {
   db,
   resolveDbPath,
@@ -2909,6 +3373,26 @@ module.exports = {
   getBillPaymentById,
   updateBillPayment,
   getUserBillPayments,
+  ensureNuvionSchema,
+  upsertNuvionEntity,
+  getNuvionEntityByUser,
+  getNuvionEntityByEntityId,
+  updateNuvionEntity,
+  saveNuvionKycDraft,
+  getNuvionKycDraft,
+  deleteNuvionKycDraft,
+  upsertNuvionAccount,
+  getNuvionAccountsByEntity,
+  upsertNuvionAccountDetail,
+  getNuvionAccountDetailsByEntity,
+  saveNuvionCounterparty,
+  getNuvionCounterpartiesByEntity,
+  upsertNuvionCard,
+  getNuvionCardsByEntity,
+  createNuvionJob,
+  getNuvionJobById,
+  updateNuvionJob,
+  getNuvionJobsByState,
   _db: db,
   db: db,
   prepare: (...args) => db.prepare(...args),

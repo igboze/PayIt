@@ -48,6 +48,8 @@ const chains            = require("./src/chains");
 const flowsMultichain   = require("./src/flows_multichain");
 const flowsDeveloper     = require("./src/flows_developer");
 const flowsBills        = require("./src/flows_bills");
+const nuvion            = require("./src/nuvion");
+const flowsNuvionKyc    = require("./src/flows_nuvion_kyc");
 const autoEarn = require("./src/auto_earn");
 const cashflow = require("./src/cashflow");
 const socialTransfers = require("./src/social_transfers");
@@ -955,6 +957,9 @@ async function showBalance(ctx) {
       [btnPrimary("🔀 Move Funds",        "action_move_funds")],
       [btnPrimary("🔐 Export Key",        "action_export_keys")]
     );
+    if (nuvion.isUserAllowedNuvion(ctx.from.id)) {
+      buttonRows.push([btnPrimary("🌍 Global Banking (Beta)", "action_nuvion_portal")]);
+    }
 
     await ctx.reply(
       `${balanceHeader}${savingsSection}`,
@@ -1033,6 +1038,7 @@ async function showBizBalance(ctx) {
       [btnPrimary("💸 Log Expense",   "action_log_expense"),
        btnPrimary("⚡ Check for Deposits", "action_sweep_deposits")],
       [btnPrimary("🔐 Export Keys",   "action_export_keys")],
+      ...(nuvion.isUserAllowedNuvion(ctx.from.id) ? [[btnPrimary("🌍 Business Global Banking (Beta)", "biz_nuvion_portal")]] : []),
       ...accountToggle("business")
     );
 
@@ -3070,6 +3076,14 @@ const billsFlow = flowsBills.registerBillsFlows(bot, {
   afterPaymentButtons,
 });
 
+flowsNuvionKyc.registerNuvionKycFlows(bot, {
+  requireUser,
+  getContext,
+  deleteSensitiveMessage,
+  downloadTelegramFile,
+  backToMenu,
+});
+
 // ─── Withdraw / Cash Out (Naira-first UX) ────────────────────────────────────
 
 // Quick-pick NGN amounts for the Naira cash-out flow.
@@ -4885,6 +4899,16 @@ bot.action("action_confirm_shopping", (ctx) => {
 bot.on("photo", async (ctx) => {
   const state = convState.getState(ctx.from.id);
 
+  // ── Nuvion Tier-1 KYC / KYB document photo upload (auto-deleted from chat) ──
+  if (flowsNuvionKyc.isUploadState(state?.type)) {
+    const photo = ctx.message.photo[ctx.message.photo.length - 1];
+    const handled = await flowsNuvionKyc.handleNuvionKycMediaUpload(ctx, {
+      fileId: photo.file_id,
+      mimeType: "image/jpeg",
+    });
+    if (handled) return;
+  }
+
   // ── Logo upload helper ────────────────────────────────────────────────────
   async function handleLogoSave() {
     const photo  = ctx.message.photo[ctx.message.photo.length - 1];
@@ -5035,6 +5059,20 @@ bot.on("document", async (ctx) => {
   const doc      = ctx.message.document;
   const mimeType = doc.mime_type || "";
   const fileName = (doc.file_name || "").toLowerCase();
+
+  // ── Nuvion Tier-1 KYC / KYB document upload (PDF/DOCX/image, auto-deleted) ──
+  const docState = convState.getState(ctx.from.id);
+  if (flowsNuvionKyc.isUploadState(docState?.type)) {
+    const allowedMimes = ["application/pdf", "image/jpeg", "image/jpg", "image/png", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
+    const resolvedMime = allowedMimes.includes(mimeType)
+      ? mimeType
+      : (fileName.endsWith(".pdf") ? "application/pdf" : fileName.endsWith(".png") ? "image/png" : fileName.endsWith(".docx") ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : "image/jpeg");
+    const handled = await flowsNuvionKyc.handleNuvionKycMediaUpload(ctx, {
+      fileId: doc.file_id,
+      mimeType: resolvedMime,
+    });
+    if (handled) return;
+  }
 
   const isPdf  = mimeType === "application/pdf" || fileName.endsWith(".pdf");
   const isCsv  = mimeType === "text/csv"        || fileName.endsWith(".csv");
@@ -7210,6 +7248,11 @@ bot.on("text", async (ctx) => {
 
     if (state.type.startsWith("bill_")) {
       const handled = await billsFlow.handleBillsTextState(ctx, state, text);
+      if (handled) return;
+    }
+
+    if (flowsNuvionKyc.handlesState(state.type)) {
+      const handled = await flowsNuvionKyc.handleNuvionKycTextState(ctx, state, text, userId);
       if (handled) return;
     }
 
