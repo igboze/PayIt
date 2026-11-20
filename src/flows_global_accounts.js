@@ -73,13 +73,16 @@ async function showGlobalAccountsMenu(ctx, accountType = "personal") {
           Markup.button.callback(`🇪🇺 EUR${badge("EUR")}`, `nuvion_acct_${p}_EUR`),
         ],
         [
+          Markup.button.callback(`🇨🇦 CAD${badge("CAD")}`, `nuvion_acct_${p}_CAD`),
           Markup.button.callback(`🇳🇬 NGN${badge("NGN")}`, `nuvion_acct_${p}_NGN`),
           Markup.button.callback(`🇦🇪 AED${badge("AED")}`, `nuvion_acct_${p}_AED`),
-          Markup.button.callback(`🇰🇪 KES${badge("KES")}`, `nuvion_acct_${p}_KES`),
         ],
         [
+          Markup.button.callback(`🇰🇪 KES${badge("KES")}`, `nuvion_acct_${p}_KES`),
           Markup.button.callback(`🇬🇭 GHS${badge("GHS")}`, `nuvion_acct_${p}_GHS`),
           Markup.button.callback(`🇹🇿 TZS${badge("TZS")}`, `nuvion_acct_${p}_TZS`),
+        ],
+        [
           Markup.button.callback(`🇲🇽 MXN${badge("MXN")}`, `nuvion_acct_${p}_MXN`),
         ],
         [Markup.button.callback("🔗 Request Payment Link (UK / EU / Canada / MoMo)", `nuvion_paylink_menu_${p}`)],

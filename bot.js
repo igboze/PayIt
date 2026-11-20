@@ -50,9 +50,11 @@ const flowsDeveloper     = require("./src/flows_developer");
 const flowsBills        = require("./src/flows_bills");
 const nuvion            = require("./src/nuvion");
 const nuvionOrchestrator = require("./src/nuvion_orchestrator");
+const nuvionPayouts     = require("./src/nuvion_payouts");
 const nuvionPoller      = require("./src/nuvion_poller");
 const flowsNuvionKyc    = require("./src/flows_nuvion_kyc");
 const flowsGlobalAccounts = require("./src/flows_global_accounts");
+const flowsGlobalPayouts  = require("./src/flows_global_payouts");
 const autoEarn = require("./src/auto_earn");
 const cashflow = require("./src/cashflow");
 const socialTransfers = require("./src/social_transfers");
@@ -2480,13 +2482,21 @@ async function showSendMoneyMenu(ctx) {
   const addr = getActiveWallet(user);
   let balDisplay = "$0.00";
   try {
-    const bal = await safeGetBalance(addr);
-    balDisplay = bal.display;
-  } catch (_) {}
+    const unified = await chains.getUnifiedBalance(user, context);
+    balDisplay = `$${Number(unified.total || 0).toFixed(2)}`;
+  } catch (_) {
+    try {
+      const bal = await safeGetBalance(addr);
+      balDisplay = bal.display;
+    } catch (__) {}
+  }
 
+  const pKey = context === "business" ? "biz" : "per";
+  const showGlobalPayoutsBtn = nuvion.isUserAllowedNuvion(ctx.from.id);
   const keyboard = Markup.inlineKeyboard([
     [btnSuccess("✈️ Send to Telegram User (@username)", "action_send_telegram_user")],
     [btnSuccess("🇳🇬 Bank Transfer (Cash Out to Naira)", "action_withdraw_menu")],
+    ...(showGlobalPayoutsBtn ? [[btnSuccess("🌍 Send Abroad (27 Currencies)", `nuvion_po_menu_${pKey}`)]] : []),
     [btnPrimary("🌐 Withdraw Crypto (10+ Chains)",        "action_crosschain_withdraw")],
     [btnPrimary("👛 Send to Wallet Address",              "action_sendout_menu")],
     [btnPrimary("👥 Send to Saved Contact",               "action_send_contact")],
@@ -2504,6 +2514,9 @@ async function showSendMoneyMenu(ctx) {
     `🇳🇬 <b>Bank Transfer (Cash Out to Naira)</b>\n` +
     `• Instant payout to 100+ Nigerian commercial banks & neobanks\n` +
     `• Direct NIBSS settlement into bank accounts in under 35 seconds\n\n` +
+    (showGlobalPayoutsBtn
+      ? `🌍 <b>Send Abroad (27 Currencies)</b>\n• Bank transfers & mobile money to UK, US, Europe, Canada, China, Africa, UAE, Asia-Pacific & SWIFT\n\n`
+      : "") +
     `🌐 <b>Withdraw Crypto (Multi-Chain)</b>\n` +
     `• Supports Solana, NEAR, Base, Arbitrum, Polygon, Ethereum, Bitcoin, Tron & more\n` +
     `• 1:1 USDC & cross-chain intent settlement with 0 slippage\n\n` +
@@ -3095,7 +3108,14 @@ flowsGlobalAccounts.registerGlobalAccountsFlows(bot, {
   backToMenu,
 });
 
+flowsGlobalPayouts.registerGlobalPayoutsFlows(bot, {
+  requireUser,
+  getContext,
+  backToMenu,
+});
+
 nuvionOrchestrator.registerOrchestratorHooks();
+nuvionPayouts.registerPayoutHooks();
 
 // ─── Withdraw / Cash Out (Naira-first UX) ────────────────────────────────────
 
@@ -5087,6 +5107,12 @@ bot.on("document", async (ctx) => {
     if (handled) return;
   }
 
+  // ── Nuvion Phase 3 Business Multi-Currency Global CSV Payroll upload ──
+  if (docState?.type === "nuvion_payout_csv_upload") {
+    const handled = await flowsGlobalPayouts.handleGlobalPayrollDocument(ctx, docState, ctx.from.id);
+    if (handled) return;
+  }
+
   const isPdf  = mimeType === "application/pdf" || fileName.endsWith(".pdf");
   const isCsv  = mimeType === "text/csv"        || fileName.endsWith(".csv");
   const isXlsx = mimeType.includes("spreadsheet") ||
@@ -5450,14 +5476,19 @@ function promptForPersonalInvoice(ctx) {
 function showPayTeamMenu(ctx) {
   convState.clearState(ctx.from.id);
   convState.setState(ctx.from.id, "await_payroll_instruction", {}, "business");
+  const showGlobalCsvBtn = nuvion.isUserAllowedNuvion(ctx.from?.id);
   return ctx.reply(
     `👥 <b>Pay Your Team</b>\n──────────────────────────\n` +
     `👉 <b>Send your payroll instruction into the chat or upload a CSV file:</b>\n\n` +
     `💬 <i>Example: <b>Pay Emeka $100 and Amara $80 for this week</b></i>\n` +
-    `💬 <i>Or: <b>Pay 0xABC...123 $150 salary</b></i>`,
+    `💬 <i>Or: <b>Pay 0xABC...123 $150 salary</b></i>` +
+    (showGlobalCsvBtn ? `\n\n🌍 <i>Paying international staff in GBP, EUR, USD, NGN, KES, CNY &amp; 27 currencies? Tap Global CSV Payroll below!</i>` : ""),
     {
       parse_mode: "HTML",
-      ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+      ...Markup.inlineKeyboard([
+        ...(showGlobalCsvBtn ? [[Markup.button.callback("🌍 Global Multi-Currency CSV Payroll", "nuvion_po_csv_start_biz")]] : []),
+        [Markup.button.callback("❌ Cancel", "main_menu")],
+      ])
     }
   );
 }
@@ -7271,6 +7302,11 @@ bot.on("text", async (ctx) => {
 
     if (flowsGlobalAccounts.handlesState(state.type)) {
       const handled = await flowsGlobalAccounts.handleGlobalAccountsTextState(ctx, state, text, userId);
+      if (handled) return;
+    }
+
+    if (flowsGlobalPayouts.handlesState(state.type)) {
+      const handled = await flowsGlobalPayouts.handleGlobalPayoutsTextState(ctx, state, text, userId);
       if (handled) return;
     }
 

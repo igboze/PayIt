@@ -8,6 +8,7 @@
 const nuvion = require("./nuvion");
 const db = require("./db");
 const orchestrator = require("./nuvion_orchestrator");
+const payouts = require("./nuvion_payouts");
 
 const INTERAC_POLL_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes per Nuvion docs
 const INTERAC_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000; // Stop after 3 days per Nuvion docs
@@ -128,11 +129,41 @@ async function reconcilePendingSweepsOnce(bot = null) {
   return results;
 }
 
+/**
+ * Retry any stuck Phase 3 outbound payout refunds (`refund_pending`) so zero USC stays stranded in Nuvion.
+ */
+async function reconcilePendingPayoutsOnce(bot = null) {
+  const refundJobs = db.getNuvionJobsByState("outbound_fiat_payout", "refund_pending");
+  const results = [];
+
+  for (const job of refundJobs) {
+    if ((job.retry_count || 0) >= MAX_SWEEP_RETRIES) continue;
+    try {
+      const entityRecord = db.getNuvionEntityByEntityId(job.entity_id);
+      if (!entityRecord) continue;
+      const confirmed = job.nuvion_transfer_id
+        ? await nuvion.getTransfer(job.nuvion_transfer_id, job.entity_id)
+        : { id: job.nuvion_transfer_id, unique_reference: job.unique_reference, amount: job.payload?.expectedUscMinor || 0, status: "failed" };
+      const res = await payouts.handleOutboundPayoutFailed({ confirmed, entityRecord, bot });
+      results.push({ jobId: job.id, ...res });
+    } catch (err) {
+      db.updateNuvionJob(job.id, {
+        retry_count: (job.retry_count || 0) + 1,
+        error_message: err.message,
+      });
+      results.push({ jobId: job.id, error: err.message });
+    }
+  }
+
+  return results;
+}
+
 async function runNuvionPollerCycle(bot = null) {
   if (!nuvion.isNuvionConfigured()) return { skipped: true };
   const interac = await pollInteracSessionsOnce(bot);
   const sweeps = await reconcilePendingSweepsOnce(bot);
-  return { interac, sweeps };
+  const payoutRefunds = await reconcilePendingPayoutsOnce(bot);
+  return { interac, sweeps, payoutRefunds };
 }
 
 function startNuvionPoller(bot = null, intervalMs = INTERAC_POLL_INTERVAL_MS) {
@@ -157,6 +188,7 @@ function stopNuvionPoller() {
 module.exports = {
   pollInteracSessionsOnce,
   reconcilePendingSweepsOnce,
+  reconcilePendingPayoutsOnce,
   runNuvionPollerCycle,
   startNuvionPoller,
   stopNuvionPoller,
