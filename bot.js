@@ -2324,12 +2324,16 @@ async function handleSweepDeposits(ctx) {
         if (solBal && solBal.uiAmount > 0) {
           solAmount = solBal.uiAmount;
           if (process.env.AUTO_BRIDGE_SOLANA_TO_ARC !== "true") {
-            return ctx.reply(
-              `💰 <b>Solana Balance Detected</b>\n──────────────────────────\n` +
-              `Detected <b>$${solAmount.toFixed(2)} USDC</b> on your Solana deposit address:\n<code>${solAddr}</code>\n\n` +
-              `<i>Your funds remain safely on Solana.</i>`,
-              { parse_mode: "HTML" }
-            );
+            await cctpBridge.sendSolanaDepositReceipt({
+              bot,
+              telegramId: ctx.from.id,
+              solanaAddress: solAddr,
+              arcAddress: arcAddr,
+              amountUsdc: solAmount,
+              user,
+              bridgedToArc: false,
+            });
+            return;
           }
           const bridgeRes = await cctpBridge.autoBridgeSolanaToArc({
             telegramId: ctx.from.id,
@@ -3656,6 +3660,52 @@ async function promptForWithdrawBank(ctx, userId, amountUsdc, rail, context, ngn
   });
 }
 
+async function consolidateSolanaToArcForOfframp(ctx, user, { amountUsdc, feeUsdc, totalRequiredUsdc, arcUsdc, solUsdc, context, ngnAmount = null }) {
+  const userId = user.telegram_id;
+  const arcAddr = getActiveWallet(user);
+  if (!paj.isArcRailEnabled() || solUsdc <= 0 || !arcAddr) {
+    return { consolidated: false, reason: "Arc rail or Solana balance unavailable" };
+  }
+
+  let userPk = null;
+  try {
+    userPk = db.getSystemDecryptedPrivateKey(user, context || "personal");
+  } catch (_) {}
+
+  if (!userPk) {
+    return { consolidated: false, reason: "Solana signing key requires PIN unlock" };
+  }
+
+  await ctx.reply(
+    `⚡ <b>Consolidating Split Balance for Cash Out</b>\n──────────────────────────\n` +
+    `• <b>Arc Balance:</b> $${arcUsdc.toFixed(2)} USDC\n` +
+    `• <b>Solana Balance:</b> $${solUsdc.toFixed(2)} USDC\n\n` +
+    `⏳ Moving <b>$${solUsdc.toFixed(2)} USDC</b> from Solana → Arc via Circle CCTP so your full balance can off-ramp on Paj (~15–30s)...`,
+    { parse_mode: "HTML" }
+  );
+
+  try {
+    const bridgeRes = await cctpBridge.autoBridgeSolanaToArc({
+      telegramId: userId,
+      amountUsdc: solUsdc,
+      recipientArcAddress: arcAddr,
+      userPrivateKey: userPk,
+      waitForCompletion: true,
+      bot,
+    });
+    if (bridgeRes && bridgeRes.status === "completed") {
+      return { consolidated: true, rail: "arc", arcTxHash: bridgeRes.arcTxHash };
+    }
+    return {
+      consolidated: false,
+      inProgress: bridgeRes?.status === "pending_retry" || bridgeRes?.status === "burned",
+      reason: bridgeRes?.error || "Cross-chain attestation is still finalizing. Try Cash Out again in ~30 seconds.",
+    };
+  } catch (err) {
+    return { consolidated: false, reason: err.message };
+  }
+}
+
 async function handleCashOutAmount(ctx, userId, amount, context) {
   const user = requireUser(ctx);
   if (!user) return;
@@ -3721,7 +3771,26 @@ async function handleCashOutAmount(ctx, userId, amount, context) {
   let rail;
   if (arcRailUsable) rail = "arc";
   else if (solRailUsable) rail = "solana";
-  else {
+  else if (paj.isArcRailEnabled() && solUsdc > 0 && totalUsdc >= totalRequiredUsdc) {
+    const cons = await consolidateSolanaToArcForOfframp(ctx, user, {
+      amountUsdc: amount,
+      feeUsdc,
+      totalRequiredUsdc,
+      arcUsdc,
+      solUsdc,
+      context,
+    });
+    if (cons.consolidated) {
+      rail = "arc";
+    } else {
+      return ctx.reply(
+        cons.inProgress
+          ? `⏳ <b>Solana → Arc Transfer In Progress</b>\n──────────────────────────\n${cons.reason}`
+          : `⚠️ Could not auto-consolidate Solana USDC to Arc: ${cons.reason}\n\nYou can also tap <b>Move Funds</b> or cash out up to your single-chain balance.`,
+        { parse_mode: "HTML" }
+      );
+    }
+  } else {
     const bestSingleUsdc = paj.isArcRailEnabled() ? Math.max(arcUsdc, solUsdc) : solUsdc;
     const singleMax = calcMaxOfframpFromBalance(bestSingleUsdc);
     const singleMaxDisplay = (Math.floor(singleMax.maxSendUsdc * 100) / 100).toFixed(2);
@@ -3854,7 +3923,27 @@ async function handleCashOutNgn(ctx, userId, ngnAmount, context) {
   let rail;
   if (arcRailUsable) rail = "arc";
   else if (solRailUsable) rail = "solana";
-  else {
+  else if (paj.isArcRailEnabled() && solUsdc > 0 && totalUsdc >= totalRequiredUsdc) {
+    const cons = await consolidateSolanaToArcForOfframp(ctx, user, {
+      amountUsdc,
+      feeUsdc,
+      totalRequiredUsdc,
+      arcUsdc,
+      solUsdc,
+      context,
+      ngnAmount: Math.round(ngnAmount),
+    });
+    if (cons.consolidated) {
+      rail = "arc";
+    } else {
+      return ctx.reply(
+        cons.inProgress
+          ? `⏳ <b>Solana → Arc Transfer In Progress</b>\n──────────────────────────\n${cons.reason}`
+          : `⚠️ Could not auto-consolidate Solana USDC to Arc: ${cons.reason}`,
+        { parse_mode: "HTML" }
+      );
+    }
+  } else {
     const bestSingleUsdc = paj.isArcRailEnabled() ? Math.max(arcUsdc, solUsdc) : solUsdc;
     const singleMax = calcMaxOfframpFromBalance(bestSingleUsdc, rate);
     const singleHint = singleMax.maxSendNgn > 0
@@ -3929,10 +4018,10 @@ bot.action("cashout_amt_max", async (ctx) => {
   if (!user) return;
   const context = getContext(userId);
   const unified = await chains.getUnifiedBalance(user, context);
-  const usableBalance = paj.isArcRailEnabled()
-    ? Math.max(unified.arc.usdc, unified.solana.usdc)
-    : unified.solana.usdc;
   const totalBalance = unified.arc.usdc + unified.solana.usdc;
+  const usableBalance = paj.isArcRailEnabled()
+    ? totalBalance
+    : unified.solana.usdc;
   if (totalBalance <= 0) return ctx.reply("Your spendable balance is $0.00.");
   const { maxSendUsdc } = calcMaxOfframpFromBalance(usableBalance > 0 ? usableBalance : totalBalance);
   if (maxSendUsdc <= 0) return ctx.reply("Your spendable balance is too low to cover a cash out and the 1% fee.");
@@ -7883,7 +7972,26 @@ bot.on("text", async (ctx) => {
       let rail;
       if (arcRailUsable) rail = "arc";
       else if (solRailUsable) rail = "solana";
-      else {
+      else if (paj.isArcRailEnabled() && solUsdc > 0 && totalUsdc >= totalRequiredUsdc) {
+        const cons = await consolidateSolanaToArcForOfframp(ctx, user, {
+          amountUsdc: amount,
+          feeUsdc,
+          totalRequiredUsdc,
+          arcUsdc,
+          solUsdc,
+          context: state.context,
+        });
+        if (cons.consolidated) {
+          rail = "arc";
+        } else {
+          return ctx.reply(
+            cons.inProgress
+              ? `⏳ <b>Solana → Arc Transfer In Progress</b>\n──────────────────────────\n${cons.reason}`
+              : `⚠️ Could not auto-consolidate Solana USDC to Arc: ${cons.reason}`,
+            { parse_mode: "HTML" }
+          );
+        }
+      } else {
         const bestSingleUsdc = paj.isArcRailEnabled() ? Math.max(arcUsdc, solUsdc) : solUsdc;
         const singleMax = calcMaxOfframpFromBalance(bestSingleUsdc);
         const singleMaxDisplay = (Math.floor(singleMax.maxSendUsdc * 100) / 100).toFixed(2);

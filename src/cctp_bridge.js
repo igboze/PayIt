@@ -755,6 +755,61 @@ async function recoverPendingInboundCctpTransfers(bot = null) {
 }
 
 /**
+ * Generate and send a Deposit Receipt PNG for a steady Solana address deposit.
+ */
+async function sendSolanaDepositReceipt({
+  bot,
+  telegramId,
+  solanaAddress,
+  arcAddress = null,
+  amountUsdc,
+  txHash = null,
+  user = null,
+  bridgedToArc = false,
+}) {
+  if (!bot || !telegramId) return null;
+  const userObj = user || db.getUser(telegramId);
+  let receiptPath = null;
+  try {
+    receiptPath = await generateReceiptPNG({
+      receiptId: `DEP-${(txHash || Date.now().toString()).slice(0, 10)}`,
+      senderName: "Solana Transfer",
+      senderAddress: solanaAddress || userObj?.solana_deposit_address || null,
+      recipientName: userObj ? (userObj.business_name || userObj.first_name || "Proxim Account") : "Proxim Account",
+      recipientAddress: arcAddress || userObj?.deposit_address || solanaAddress || null,
+      amountUsdc: Number(amountUsdc),
+      token: "USDC",
+      type: "Deposit",
+      timestamp: new Date().toISOString(),
+      status: "Confirmed",
+      txHash: txHash || undefined,
+    });
+  } catch (err) {
+    console.warn("[cctp_bridge:solana_receipt_png_warn]", err.message);
+  }
+
+  const networkLine = bridgedToArc ? "Arc Mainnet (via Solana)" : "Solana Mainnet";
+  const explorerUrl = bridgedToArc && txHash ? getExplorerUrl(txHash, "tx") : null;
+  const explorerLink = explorerUrl ? `\n🔗 <a href="${explorerUrl}">View on Arcscan</a>` : "";
+  const caption =
+    `🎉 <b>Solana Deposit Received!</b>\n` +
+    `──────────────────────────\n` +
+    `💰 <b>Amount:</b> $${Number(amountUsdc).toFixed(2)} USDC\n` +
+    `📍 <b>Solana Address:</b> <code>${solanaAddress || userObj?.solana_deposit_address || "—"}</code>\n` +
+    `🏛 <b>Network:</b> ${networkLine}${explorerLink}\n\n` +
+    `<i>Your balance is ready to spend, save, or cash out.</i>`;
+
+  if (receiptPath && typeof bot.telegram?.sendPhoto === "function") {
+    await bot.telegram.sendPhoto(telegramId, { source: receiptPath }, { caption, parse_mode: "HTML" }).catch(async () => {
+      await bot.telegram.sendMessage(telegramId, caption, { parse_mode: "HTML" });
+    });
+  } else if (typeof bot.telegram?.sendMessage === "function") {
+    await bot.telegram.sendMessage(telegramId, caption, { parse_mode: "HTML" });
+  }
+  return receiptPath;
+}
+
+/**
  * Auto-Bridge Handler: Triggered when an onramp payment settles on Solana.
  * Dual-Rail Zero Token Loss Architecture:
  * - Rail A (Instant Disbursement): Disburses directly on Arc from funded Relayer Treasury.
@@ -783,6 +838,7 @@ async function autoBridgeSolanaToArc({
   userPrivateKey,
   maxAttempts = isTestEnv() ? 2 : 45,
   intervalMs = isTestEnv() ? 100 : 4000,
+  waitForCompletion = false,
   bot = null,
 }) {
   console.log(`[cctp_bridge] Auto-bridge triggered for TG:${telegramId}, amount: $${amountUsdc} USDC`);
@@ -906,18 +962,36 @@ async function autoBridgeSolanaToArc({
       status: "burned",
     });
 
-    // Launch background completion & Iris polling
-    completeInboundCctpTransferFlow({
+    // Launch completion & Iris polling (awaited when waitForCompletion=true, e.g. offramp consolidation)
+    const completionPromise = completeInboundCctpTransferFlow({
       inboundId,
       solanaBurnSig,
       recipientArcAddress,
-      amountUsdc,
+      amountUsdc: burnAmount,
       telegramId,
       signerPrivateKey: relayerKey,
       maxAttempts,
       intervalMs,
       bot,
     });
+
+    if (waitForCompletion) {
+      const arcTxHash = await completionPromise;
+      return {
+        success: Boolean(arcTxHash),
+        status: arcTxHash ? "completed" : "pending_retry",
+        method: "cctp_burn",
+        sourceChain: "Solana",
+        sourceDomain: CCTP_DOMAINS.SOLANA,
+        destinationChain: "Arc Mainnet",
+        destinationDomain: CCTP_DOMAINS.ARC,
+        amountUsdc: burnAmount,
+        recipient: recipientArcAddress,
+        solanaTxSignature: solanaBurnSig,
+        arcTxHash: arcTxHash || null,
+        inboundId,
+      };
+    }
 
     return {
       success: true,
@@ -927,7 +1001,7 @@ async function autoBridgeSolanaToArc({
       sourceDomain: CCTP_DOMAINS.SOLANA,
       destinationChain: "Arc Mainnet",
       destinationDomain: CCTP_DOMAINS.ARC,
-      amountUsdc,
+      amountUsdc: burnAmount,
       recipient: recipientArcAddress,
       solanaTxSignature: solanaBurnSig,
       inboundId,
@@ -2689,6 +2763,7 @@ module.exports = {
   redeemOnArc,
   disburseDirectOnArc,
   autoBridgeSolanaToArc,
+  sendSolanaDepositReceipt,
   completeInboundCctpTransferFlow,
   executeArcToSolanaCctpBurn,
   executeArcToEvmCctpBurn,
