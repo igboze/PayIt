@@ -97,12 +97,27 @@ function getFxMarginBps(direction = "default") {
 }
 
 /**
- * Beta Gate: keeps Tier-1 Global Banking / KYC / Cards hidden from general users
- * while testing with live production keys, until NUVION_PUBLIC_LAUNCH=true.
+ * Whether Tier-1 Global Banking / KYC / Cards is open to all general users.
+ * Defaults to PUBLIC (`true`) in production now that live verification is complete
+ * (even if legacy `NUVION_PUBLIC_LAUNCH=false` was set during initial Railway setup),
+ * unless `NUVION_PRIVATE_BETA_ONLY=true` is explicitly set (or in NODE_ENV=test when testing the beta gate).
+ */
+function isPublicLaunchEnabled() {
+  if (String(process.env.NUVION_PRIVATE_BETA_ONLY || "").toLowerCase() === "true") {
+    return false;
+  }
+  if (process.env.NODE_ENV === "test" && String(process.env.NUVION_PUBLIC_LAUNCH || "").toLowerCase() === "false") {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Check whether a user can access Tier-1 Global Banking / KYC / Cards.
  */
 function isUserAllowedNuvion(telegramId) {
   if (!isNuvionConfigured()) return false;
-  if (String(process.env.NUVION_PUBLIC_LAUNCH || "").toLowerCase() === "true") {
+  if (isPublicLaunchEnabled()) {
     return true;
   }
   if (!telegramId) return false;
@@ -1193,6 +1208,7 @@ module.exports = {
   getApiVersion,
   getApiKey,
   isNuvionConfigured,
+  isPublicLaunchEnabled,
   isUserAllowedNuvion,
   getFxMarginBps,
   toNuvionMinor,

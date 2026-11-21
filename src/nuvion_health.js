@@ -112,7 +112,9 @@ function getDefaultNuvionWebhookUrl() {
 
 function getLaunchModeSummary() {
   const configured = nuvion.isNuvionConfigured();
-  const publicLaunch = String(process.env.NUVION_PUBLIC_LAUNCH || "").toLowerCase() === "true";
+  const publicLaunch = typeof nuvion.isPublicLaunchEnabled === "function"
+    ? nuvion.isPublicLaunchEnabled()
+    : String(process.env.NUVION_PUBLIC_LAUNCH || "true").toLowerCase() !== "false";
   const betaIds = String(process.env.NUVION_BETA_IDS || "")
     .split(",")
     .map((s) => s.trim())

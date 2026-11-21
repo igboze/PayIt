@@ -666,7 +666,7 @@ async function handleUscInflowForCardJobs({ confirmed, entityRecord, bot = null 
       let createdCard = null;
       try {
         const existingList = await nuvion.listCards({ entityId: entityRecord.entity_id, accountId: p.cardAccountId, limit: 5 });
-        const rows = existingList?.data || [];
+        const rows = existingList?.cards || existingList?.data || [];
         createdCard = rows.find((c) => c.status !== "deleted") || null;
       } catch (_) {}
 
@@ -1158,7 +1158,7 @@ async function fetchCardTransactions({ telegramId, accountType = "personal", car
   const entity = db.getNuvionEntityByUser(telegramId, accountType);
   if (!entity) throw new Error("Global banking profile not found.");
   const res = await nuvion.getCardTransactions(cardId, { entityId: entity.entity_id, limit });
-  return res?.data || [];
+  return res?.payments || res?.data || [];
 }
 
 // ── 7. Real-Time Spend / Decline / Refund Webhooks + Disposable Auto-Sweep ───

@@ -130,7 +130,7 @@ function saveDraftAndState(userId, accountType, step, data) {
 async function deleteUserStepMessage(ctx) {
   if (!ctx) return;
   try {
-    if (typeof deps.deleteSensitiveMessage === "function" && ctx.message?.message_id) {
+    if (typeof deps.deleteSensitiveMessage === "function") {
       await deps.deleteSensitiveMessage(ctx);
       return;
     }

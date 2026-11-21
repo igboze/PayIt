@@ -574,9 +574,9 @@ test("Nuvion Phase 1: Step-by-Step Telegram Personal KYC Chat Wizard (End-to-End
     assert.equal(await flowsNuvionKyc.handleNuvionKycMediaUpload(makeCtx(betaUserId), { fileId: "tg_id_front_1", mimeType: "image/jpeg" }), true);
     assert.equal(await flowsNuvionKyc.handleNuvionKycMediaUpload(makeCtx(betaUserId), { fileId: "tg_poa_1", mimeType: "application/pdf" }), true);
 
-    // Review screen masks secrets & sensitive chat messages were auto-deleted (BVN + NIN + ID# + 2 uploads = 5)
+    // Review screen masks secrets & all 12 user chat inputs/uploads were auto-deleted after each step
     assert.ok(replies[replies.length - 1].text.includes("*******4455"), "Review screen must mask BVN");
-    assert.equal(deletedCount, 5, "All 5 sensitive inputs/uploads must be auto-deleted from Telegram chat");
+    assert.equal(deletedCount, 12, "All 12 user inputs & uploads must be auto-deleted from Telegram chat after each step");
 
     // Submit to mock Nuvion server
     await triggerAction(betaUserId, "nuvion_kyc_submit");
