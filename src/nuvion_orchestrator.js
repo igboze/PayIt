@@ -979,8 +979,8 @@ async function handleUnallocatedUscInflowSweep({ confirmed, entityRecord, bot = 
       `💼 <b>Account:</b> ${acctLabel}\n` +
       `🔖 <b>Reference:</b> <code>${escapeHtml(confirmed.id)}</code>\n` +
       `──────────────────────────\n` +
-      `<i>Automatically swept from your Nuvion Base bridge address directly into your self-custodial Proxim wallet.</i>`,
-      { parse_mode: "HTML" }
+      `<i>Automatically swept from your <a href="https://nuvion.co/">Nuvion</a> Base bridge address directly into your self-custodial Proxim wallet.</i>`,
+      { parse_mode: "HTML", disable_web_page_preview: true }
     ).catch(() => {});
   }
 

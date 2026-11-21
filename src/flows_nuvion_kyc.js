@@ -151,7 +151,7 @@ async function deleteUserStepMessage(ctx) {
 }
 
 const NUVION_PRIVACY_FOOTER =
-  `\n\n🔒 <i>Handled securely by <b>Nuvion</b> · 100% compliant &amp; confidential (never shared with anyone) · Your reply is auto-deleted after capture.</i>`;
+  `\n\n🔒 <i>Handled securely by <a href="https://nuvion.co/"><b>Nuvion</b> (nuvion.co)</a> · 100% compliant &amp; confidential (never shared with anyone) · Your reply is auto-deleted after capture.</i>`;
 
 const COUNTRY_KYC_PRESETS = {
   US: {
@@ -360,11 +360,11 @@ async function showGlobalPortal(ctx, forcedContext = null) {
       (isBiz
         ? `• Certificate of Incorporation &amp; Articles/Memorandum of Association (PDF)\n• Business proof of address (&lt; 3 months)\n• Director / Owner Government ID &amp; proof of address\n\n`
         : `• Valid Government ID (Passport, National ID, or Driver's License)\n• Proof of address (utility bill or bank statement &lt; 3 months)\n• Local tax/identity number where required by your country (e.g. SSN for US, BVN/NIN for NG)\n\n`) +
-      `🛡️ <b>Privacy &amp; Compliance Guarantee (Powered by Nuvion)</b>\n` +
-      `• Your KYC/KYB verification is handled directly by <b>Nuvion</b>, our regulated global banking &amp; compliance infrastructure partner.\n` +
+      `🛡️ <b>Privacy &amp; Compliance Guarantee (Powered by <a href="https://nuvion.co/">Nuvion</a>)</b>\n` +
+      `• Your KYC/KYB verification is handled directly by <a href="https://nuvion.co/"><b>Nuvion (nuvion.co)</b></a>, our regulated global banking &amp; compliance infrastructure partner.\n` +
       `• <b>100% Compliant &amp; Confidential:</b> Your data and documents are encrypted, used strictly for regulatory verification, and <b>will never be shared with anyone</b>.\n` +
       `• <b>Auto-Delete Chat Protection:</b> Every detail and document you enter is automatically deleted from this Telegram chat as soon as each step is completed.`,
-      { parse_mode: "HTML", ...Markup.inlineKeyboard(buttons) }
+      { parse_mode: "HTML", disable_web_page_preview: true, ...Markup.inlineKeyboard(buttons) }
     );
   }
 
@@ -401,10 +401,12 @@ async function showGlobalPortal(ctx, forcedContext = null) {
     return ctx.reply(
       `⏳ <b>${label} — Verification In Progress</b>\n──────────────────────────\n` +
       `• <b>Name:</b> ${escapeHtml(entity.legal_name || "—")}\n` +
-      `• <b>Status:</b> <code>${escapeHtml(status.toUpperCase())}</code>\n\n` +
+      `• <b>Status:</b> <code>${escapeHtml(status.toUpperCase())}</code>\n` +
+      `• <b>Compliance Partner:</b> <a href="https://nuvion.co/"><b>Nuvion (nuvion.co)</b></a>\n\n` +
       `We'll message you automatically the moment your verification is approved.`,
       {
         parse_mode: "HTML",
+        disable_web_page_preview: true,
         ...Markup.inlineKeyboard([
           [Markup.button.callback("🔄 Check Status Now", `nuvion_refresh_${accountType}`)],
           [Markup.button.callback("🏠 Main Menu", "main_menu")],
@@ -634,9 +636,10 @@ async function promptPersonalKycStep(ctx, userId, step, data = {}) {
         (data.ssn ? `• <b>SSN:</b> <code>${maskSecret(data.ssn)}</code>\n` : "") +
         `• <b>ID:</b> ${escapeHtml(data.id_type)} (<code>${maskSecret(data.id_number)}</code>)\n` +
         `• <b>Documents:</b> ID Front ✅${data.doc_id_back ? " · ID Back ✅" : ""} · Proof of Address ✅\n\n` +
-        `🛡️ <i>Your verification is processed by <b>Nuvion</b> (100% compliant &amp; confidential — never shared with anyone). This review card will also be auto-deleted upon submission.</i>`,
+        `🛡️ <i>Your verification is processed by <a href="https://nuvion.co/"><b>Nuvion (nuvion.co)</b></a> (100% compliant &amp; confidential — never shared with anyone). This review card will also be auto-deleted upon submission.</i>`,
         {
           parse_mode: "HTML",
+          disable_web_page_preview: true,
           ...Markup.inlineKeyboard([
             [Markup.button.callback("🚀 Submit Verification", "nuvion_kyc_submit")],
             [Markup.button.callback("🗑️ Cancel & Clear", "nuvion_kyc_reset")],
@@ -792,9 +795,10 @@ async function promptBusinessKybStep(ctx, userId, step, data = {}) {
         `• <b>Email:</b> ${escapeHtml(data.business_email)}\n` +
         `• <b>Officer:</b> ${escapeHtml(data.officer_first_name)} ${escapeHtml(data.officer_last_name)} (${escapeHtml(data.officer_job_title)}, ${data.officer_ownership}%)\n` +
         `• <b>Documents:</b> COI ✅ · MemArt ✅ · Biz POA ✅ · Officer ID ✅ · Officer POA ✅\n\n` +
-        `🛡️ <i>Your KYB verification is processed by <b>Nuvion</b> (100% compliant &amp; confidential — never shared with anyone). This review card will also be auto-deleted upon submission.</i>`,
+        `🛡️ <i>Your KYB verification is processed by <a href="https://nuvion.co/"><b>Nuvion (nuvion.co)</b></a> (100% compliant &amp; confidential — never shared with anyone). This review card will also be auto-deleted upon submission.</i>`,
         {
           parse_mode: "HTML",
+          disable_web_page_preview: true,
           ...Markup.inlineKeyboard([
             [Markup.button.callback("🚀 Submit Business Verification", "nuvion_kyb_submit")],
             [Markup.button.callback("🗑️ Cancel & Clear", "nuvion_kyb_reset")],
@@ -970,11 +974,12 @@ async function executePersonalKycSubmission(ctx, userId) {
 
     return ctx.reply(
       `🎉 <b>Verification Submitted!</b>\n──────────────────────────\n` +
-      `Your Tier-1 verification is now being reviewed by <b>Nuvion</b>.\n\n` +
+      `Your Tier-1 verification is now being reviewed by <a href="https://nuvion.co/"><b>Nuvion (nuvion.co)</b></a>.\n\n` +
       `🛡️ <b>Privacy Confirmed:</b> Your application is 100% compliant and confidential, will never be shared with anyone, and your local chat inputs &amp; draft have been erased.\n\n` +
       `We'll notify you automatically right here as soon as your Global Bank Accounts, Virtual USD Cards, and International Transfers are active!`,
       {
         parse_mode: "HTML",
+        disable_web_page_preview: true,
         ...Markup.inlineKeyboard([
           [Markup.button.callback("🔄 Check Status", "nuvion_refresh_personal")],
           [Markup.button.callback("🏠 Main Menu", "main_menu")],
@@ -1248,11 +1253,12 @@ async function executeBusinessKybSubmission(ctx, userId) {
 
     return ctx.reply(
       `🎉 <b>Business Verification Submitted!</b>\n──────────────────────────\n` +
-      `<b>${escapeHtml(d.legal_name)}</b> is now under KYB compliance review by <b>Nuvion</b>.\n\n` +
+      `<b>${escapeHtml(d.legal_name)}</b> is now under KYB compliance review by <a href="https://nuvion.co/"><b>Nuvion (nuvion.co)</b></a>.\n\n` +
       `🛡️ <b>Privacy Confirmed:</b> Your business records are 100% compliant and confidential, will never be shared with anyone, and your local chat inputs &amp; draft have been erased.\n\n` +
       `We'll notify you automatically the moment your Business Global Bank Accounts and Team Cards are live!`,
       {
         parse_mode: "HTML",
+        disable_web_page_preview: true,
         ...Markup.inlineKeyboard([
           [Markup.button.callback("🔄 Check Status", "nuvion_refresh_business")],
           [Markup.button.callback("🏠 Main Menu", "main_menu")],
