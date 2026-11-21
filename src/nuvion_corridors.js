@@ -583,7 +583,7 @@ function buildCounterpartyPayload(entityId, rail, details, recipientEmail = null
   const lastName = parts.slice(1).join(" ") || firstName;
   const country = (details.country || rail.country || CURRENCY_INFO[rail.currency]?.defaultCountry || "US").toUpperCase();
   const slug = fullName.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 16) || "recipient";
-  const email = (details.email || recipientEmail || `${slug}+${Date.now().toString(36)}@recipients.proxim.local`).trim().toLowerCase();
+  const email = (details.email || recipientEmail || `${slug}+${Date.now().toString(36)}@recipients.proxim.app`).trim().toLowerCase();
 
   return {
     entityId,

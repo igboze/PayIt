@@ -109,13 +109,17 @@ function getPajRailChains() {
  *  - near: derived implicit account from the system key (refund address);
  *    returns null when the system key is unavailable
  */
-function deriveAddress(user, accountType, chainKey) {
+function deriveAddress(user, accountType, chainKey, options = {}) {
   if (!user) return null;
   const isBiz = accountType === "business";
+  const strictBusiness = Boolean(options?.strictBusiness);
   const chain = getChain(chainKey);
   if (!chain) return null;
 
   if (chain.family === "evm" && (chainKey === "arc" || chainKey === "base")) {
+    if (isBiz && strictBusiness) {
+      return user.business_deposit_address || null;
+    }
     return (isBiz ? user.business_deposit_address : null) || user.deposit_address || null;
   }
   if (chain.family === "solana") {
@@ -130,7 +134,7 @@ function deriveAddress(user, accountType, chainKey) {
   if (chain.family === "near") {
     try {
       const nearLib = require("./near");
-      const sysKey = db.getSystemDecryptedPrivateKey(user);
+      const sysKey = db.getSystemDecryptedPrivateKey(user, accountType);
       return nearLib.deriveNearAddress(sysKey).nearAddress;
     } catch (err) {
       console.warn("[chains] near address derivation note:", err.message);
@@ -161,7 +165,8 @@ function _round2(n) {
  *   total: number,
  * }>}
  */
-async function getUnifiedBalance(user, accountType = "personal") {
+async function getUnifiedBalance(user, accountType = "personal", options = {}) {
+  const strictBusiness = Boolean(options?.strictBusiness);
   const result = {
     accountType,
     arcAddress: null,
@@ -177,7 +182,7 @@ async function getUnifiedBalance(user, accountType = "personal") {
   if (!user) return result;
 
   // Arc (native USDC + EURC on the EVM address)
-  const arcAddress = deriveAddress(user, accountType, "arc");
+  const arcAddress = deriveAddress(user, accountType, "arc", { strictBusiness });
   result.arcAddress = arcAddress;
   if (arcAddress) {
     try {
@@ -187,7 +192,7 @@ async function getUnifiedBalance(user, accountType = "personal") {
     }
     try {
       result.arc.eurc = _round2(parseFloat(walletLib.formatMicro(await tokens.getEurcBalance(arcAddress))));
-    } catch (_) {}
+    } catch (_) { }
 
     // Base USDC (Tier-1 Nuvion pass-through rail — same 0x address as Arc)
     if (process.env.NODE_ENV !== "test" || process.env.ENABLE_BASE_BALANCE_READ === "true") {
@@ -200,7 +205,7 @@ async function getUnifiedBalance(user, accountType = "personal") {
         if (Number.isFinite(baseVal) && baseVal > 0) {
           result.base.usdc = _round2(baseVal);
         }
-      } catch (_) {}
+      } catch (_) { }
 
       // Circle Gateway unified USDC balance (Arc + Base)
       try {
@@ -209,21 +214,23 @@ async function getUnifiedBalance(user, accountType = "personal") {
         if (Number.isFinite(gwVal) && gwVal > 0) {
           result.gateway.usdc = _round2(gwVal);
         }
-      } catch (_) {}
+      } catch (_) { }
     }
   }
 
   // Solana (SPL USDC across derived + stored addresses)
-  const solPrimary = deriveAddress(user, accountType, "solana");
+  const solPrimary = deriveAddress(user, accountType, "solana", { strictBusiness });
   const solStored = accountType === "business" ? user.biz_solana_deposit_address : user.solana_deposit_address;
-  const solAddrs = [...new Set([solPrimary, solStored, user.paj_permanent_offramp_address].filter(Boolean))];
+  const solAddrs = accountType === "business" && strictBusiness
+    ? [...new Set([solPrimary, solStored].filter(Boolean))]
+    : [...new Set([solPrimary, solStored, user.paj_permanent_offramp_address].filter(Boolean))];
   result.solanaAddresses = solAddrs;
   let solUsdc = 0;
   for (const a of solAddrs) {
     try {
       const bal = await multichain.getSplTokenBalance(a);
       if (bal && bal.uiAmount > 0) solUsdc += bal.uiAmount;
-    } catch (_) {}
+    } catch (_) { }
   }
   result.solana.usdc = _round2(solUsdc);
 

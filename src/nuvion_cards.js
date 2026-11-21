@@ -20,6 +20,7 @@ const nuvion = require("./nuvion");
 const nuvionWebhooks = require("./nuvion_webhooks");
 const payouts = require("./nuvion_payouts");
 const db = require("./db");
+const idempotency = require("./idempotency");
 const walletLib = require("./wallet");
 
 const CARD_DEBIT_PAYMENT_TYPES = new Set(["card-debit", "card-debit-recoup"]);
@@ -72,18 +73,25 @@ async function resolveCardholder(entity, overrides = null) {
   if (!firstName || !lastName || !email || !phone) {
     try {
       const live = await nuvion.getEntity(entity.entity_id);
-      const p = live?.person || live?.officers?.[0] || {};
+      const p =
+        live?.person ||
+        live?.business_officers?.[0]?.person ||
+        live?.officers?.[0]?.person ||
+        live?.officers?.[0] ||
+        {};
       if (!firstName && p.first_name) firstName = p.first_name;
       if (!lastName && p.last_name) lastName = p.last_name;
       if (!email && (p.email || live?.business?.email)) email = p.email || live.business.email;
-      if (!phone && (p.phone_number || live?.business?.phone_number)) phone = p.phone_number || live.business.phone_number;
+      // Nuvion Entities API uses `phonenumber` (no underscore); Cardholder API expects `phone_number`!
+      const livePhone = p.phonenumber || p.phone_number || live?.business?.phonenumber || live?.business?.phone_number || "";
+      if (!phone && livePhone) phone = livePhone;
     } catch (_) {}
   }
 
   const legalParts = String(entity.legal_name || "Proxim Member").trim().split(/\s+/);
   firstName = String(firstName || legalParts[0] || "Proxim").trim();
   lastName = String(lastName || legalParts.slice(1).join(" ") || firstName).trim();
-  email = String(email || `cardholder_${entity.telegram_id}@proxim.local`).trim().toLowerCase();
+  email = String(email || `cardholder_${entity.telegram_id}@proxim.app`).trim().toLowerCase();
   phone = String(phone || "+2348000000000").trim();
   if (!phone.startsWith("+")) phone = `+${phone.replace(/\D/g, "")}`;
 
@@ -352,20 +360,30 @@ async function initiateCardIssuance({
   const cardholder = await resolveCardholder(entity, cardholderOverrides);
   const { expirationMonth, expirationYear } = getSafeCardExpiration();
 
-  // Fund user's Nuvion USC Base deposit address from unified balance (zero Base ETH needed on user wallet!)
-  const funding = await payouts.fundNuvionBaseBridge({
-    user,
-    pin,
-    accountType,
-    nuvionBaseAddress: entity.usc_base_address,
-    nuvionCostUsd: nuvionNeededUsd,
-    marginUsd,
-    bot,
-    fundingExecutor,
-  });
-
   const uniqueReference = `prx-card-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
-  const job = db.createNuvionJob({
+  const basePayload = {
+    cardType,
+    cardName: cleanCardName,
+    cardAccountId: cardSubAcc.id,
+    cardAccountBan: cardSubAcc.nuvion_ban || null,
+    bookTransferCounterpartyId: bookTransferTarget.counterpartyId,
+    bookTransferPaymentDetailId: bookTransferTarget.paymentDetailId,
+    loadAmountUsd: loadAmt,
+    creationFeeUsd,
+    creationFeeMinor,
+    nuvionNeededUsd,
+    nuvionNeededMinor: nuvion.toNuvionMinor(nuvionNeededUsd),
+    userTotalUsd,
+    cardholder,
+    expirationMonth,
+    expirationYear,
+    fundingRoute: null,
+    fundingTxHash: null,
+  };
+
+  // CRITICAL: Insert durable job row BEFORE broadcasting funds so <500ms Gateway settlement
+  // can NEVER arrive before the card_issue job exists!
+  let job = db.createNuvionJob({
     entityId: entity.entity_id,
     telegramId,
     accountType,
@@ -375,23 +393,32 @@ async function initiateCardIssuance({
     amountMinor: nuvion.toNuvionMinor(nuvionNeededUsd),
     marginMinor,
     uniqueReference,
-    sourceTxHash: funding.txHash || null,
-    payload: {
-      cardType,
-      cardName: cleanCardName,
-      cardAccountId: cardSubAcc.id,
-      cardAccountBan: cardSubAcc.nuvion_ban || null,
-      bookTransferCounterpartyId: bookTransferTarget.counterpartyId,
-      bookTransferPaymentDetailId: bookTransferTarget.paymentDetailId,
-      loadAmountUsd: loadAmt,
-      creationFeeUsd,
-      creationFeeMinor,
-      nuvionNeededUsd,
-      nuvionNeededMinor: nuvion.toNuvionMinor(nuvionNeededUsd),
-      userTotalUsd,
-      cardholder,
-      expirationMonth,
-      expirationYear,
+    sourceTxHash: null,
+    payload: basePayload,
+  });
+
+  // Fund user's Nuvion USC Base deposit address from unified balance (zero Base ETH needed on user wallet!)
+  let funding;
+  try {
+    funding = await payouts.fundNuvionBaseBridge({
+      user,
+      pin,
+      accountType,
+      nuvionBaseAddress: entity.usc_base_address,
+      nuvionCostUsd: nuvionNeededUsd,
+      marginUsd,
+      bot,
+      fundingExecutor,
+    });
+  } catch (fundErr) {
+    db.updateNuvionJob(job.id, { state: "failed", error_message: fundErr.message });
+    throw fundErr;
+  }
+
+  job = db.updateNuvionJob(job.id, {
+    source_tx_hash: funding.txHash || null,
+    payload_json: {
+      ...basePayload,
       fundingRoute: funding.route,
       fundingTxHash: funding.txHash || null,
     },
@@ -430,19 +457,22 @@ async function initiateCardTopUp({
 
   const bookTransferTarget = await ensureCardAccountBookTransferTarget(entity, card.account_id);
 
-  const funding = await payouts.fundNuvionBaseBridge({
-    user,
-    pin,
-    accountType,
-    nuvionBaseAddress: entity.usc_base_address,
-    nuvionCostUsd: q.loadAmountUsd,
-    marginUsd: q.marginUsd,
-    bot,
-    fundingExecutor,
-  });
-
   const uniqueReference = `prx-ctop-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
-  const job = db.createNuvionJob({
+  const basePayload = {
+    cardId: card.card_id,
+    cardName: card.card_name || "Virtual Card",
+    cardAccountId: card.account_id,
+    bookTransferCounterpartyId: bookTransferTarget.counterpartyId,
+    bookTransferPaymentDetailId: bookTransferTarget.paymentDetailId,
+    loadAmountUsd: q.loadAmountUsd,
+    loadAmountMinor: q.loadAmountMinor,
+    userTotalUsd: q.userTotalUsd,
+    fundingRoute: null,
+    fundingTxHash: null,
+  };
+
+  // CRITICAL: Insert durable job row BEFORE broadcasting funds!
+  let job = db.createNuvionJob({
     entityId: entity.entity_id,
     telegramId,
     accountType,
@@ -452,17 +482,32 @@ async function initiateCardTopUp({
     amountMinor: q.loadAmountMinor,
     marginMinor: q.marginMinor,
     uniqueReference,
-    sourceTxHash: funding.txHash || null,
+    sourceTxHash: null,
     cardId: card.card_id,
-    payload: {
-      cardId: card.card_id,
-      cardName: card.card_name || "Virtual Card",
-      cardAccountId: card.account_id,
-      bookTransferCounterpartyId: bookTransferTarget.counterpartyId,
-      bookTransferPaymentDetailId: bookTransferTarget.paymentDetailId,
-      loadAmountUsd: q.loadAmountUsd,
-      loadAmountMinor: q.loadAmountMinor,
-      userTotalUsd: q.userTotalUsd,
+    payload: basePayload,
+  });
+
+  let funding;
+  try {
+    funding = await payouts.fundNuvionBaseBridge({
+      user,
+      pin,
+      accountType,
+      nuvionBaseAddress: entity.usc_base_address,
+      nuvionCostUsd: q.loadAmountUsd,
+      marginUsd: q.marginUsd,
+      bot,
+      fundingExecutor,
+    });
+  } catch (fundErr) {
+    db.updateNuvionJob(job.id, { state: "failed", error_message: fundErr.message });
+    throw fundErr;
+  }
+
+  job = db.updateNuvionJob(job.id, {
+    source_tx_hash: funding.txHash || null,
+    payload_json: {
+      ...basePayload,
       fundingRoute: funding.route,
       fundingTxHash: funding.txHash || null,
     },
@@ -512,14 +557,32 @@ async function handleUscInflowForCardJobs({ confirmed, entityRecord, bot = null 
     return { handled: false, reason: "not_settled_usc" };
   }
 
+  const inflowClaimKey = confirmed.id ? `nuvion_usc_inflow:${confirmed.id}` : null;
+  if (inflowClaimKey && idempotency.isWebhookProcessed(inflowClaimKey)) {
+    return { handled: false, duplicate: true, reason: "inflow_already_claimed" };
+  }
+
   const netArrivedMinor = Math.max(0, Math.round(Number(confirmed.amount || 0)) - Math.round(Number(confirmed.applicable_fee || 0)));
   if (netArrivedMinor <= 0) return { handled: false, reason: "zero_net" };
 
-  // Check queued card_issue first, then card_topup
-  const issueJob = db
-    .getNuvionJobsByState("card_issue", "funding_in_transit")
-    .find((j) => j.entity_id === entityRecord.entity_id);
+  // Cross-module best-fit match: never steal a USC deposit meant for an outbound fiat payout!
+  const best = payouts.selectBestMatchingUscCandidate(entityRecord.entity_id, netArrivedMinor);
+  if (!best) {
+    return { handled: false, reason: "no_pending_card_jobs" };
+  }
+  if (best.kind !== "card_issue" && best.kind !== "card_topup") {
+    return { handled: false, reason: "deferred_to_payout_job" };
+  }
 
+  // Atomically claim this USC inflow so no second handler/retry can double-spend it
+  if (inflowClaimKey) {
+    const claimedInflow = idempotency.tryClaimWebhookEvent(inflowClaimKey, "usc_inflow_card", entityRecord.entity_id);
+    if (!claimedInflow) {
+      return { handled: false, duplicate: true, reason: "inflow_already_claimed" };
+    }
+  }
+
+  const issueJob = best.kind === "card_issue" ? best.jobs[0] : null;
   const telegram = getBotTelegram(bot);
 
   if (issueJob) {
@@ -636,9 +699,7 @@ async function handleUscInflowForCardJobs({ confirmed, entityRecord, bot = null 
   }
 
   // Check queued card_topup
-  const topupJob = db
-    .getNuvionJobsByState("card_topup", "funding_in_transit")
-    .find((j) => j.entity_id === entityRecord.entity_id);
+  const topupJob = best.kind === "card_topup" ? best.jobs[0] : null;
 
   if (topupJob) {
     const p = topupJob.payload || {};
@@ -731,89 +792,122 @@ async function unloadCardToMainWallet({
     || db.prepare("SELECT * FROM nuvion_cards WHERE card_id = ? AND entity_id = ?").get(String(cardId), entity.entity_id);
   if (!card) throw new Error("Card not found.");
 
-  const liveAcc = await nuvion.getAccount(card.account_id, entity.entity_id);
-  const availMinor = Math.max(0, Math.round(Number(liveAcc?.balance?.available || 0)));
-
-  if (availMinor < minAutoSweepMinor) {
-    return { unloaded: false, reason: "below_threshold", availableUsd: nuvion.fromNuvionMinor(availMinor) };
-  }
-
-  let targetMinor = amountUsd != null ? Math.min(availMinor, nuvion.toNuvionMinor(amountUsd)) : availMinor;
-  if (targetMinor <= 0) {
-    return { unloaded: false, reason: "zero_amount", availableUsd: nuvion.fromNuvionMinor(availMinor) };
-  }
-
-  const uniqueBase = `prx-cunload-${cardId.slice(-8)}-${Date.now()}`;
-  let quote = null;
-  let transfer = null;
-
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      quote = await nuvion.createFxQuote({
-        entityId: entity.entity_id,
-        fromCurrency: "USD",
-        toCurrency: "USC",
-        amountFrom: targetMinor,
-        accountId: card.account_id,
-      });
-
-      const ref = attempt === 0 ? uniqueBase : `${uniqueBase}-r${attempt}`;
-      transfer = await nuvion.createTransfer({
-        entityId: entity.entity_id,
-        accountId: card.account_id,
-        counterpartyId: entity.self_counterparty_id,
-        paymentDetailId: entity.self_base_payment_detail_id,
-        amountMinor: targetMinor,
-        currency: "USD",
-        narration: `${reason} (${card.card_name || cardId})`.slice(0, 100),
-        paymentType: "stablecoin-transfer",
-        fxQuoteId: quote.id,
-        uniqueReference: ref,
-      });
-      break;
-    } catch (err) {
-      if (attempt === 0 && err instanceof nuvion.NuvionError && err.type === "error_transfer_insufficient_funds") {
-        const feeBuf = Math.max(50, Math.ceil(targetMinor * 0.015));
-        if (targetMinor - feeBuf > 0) {
-          targetMinor -= feeBuf;
-          continue;
-        }
-      }
-      throw err;
-    }
-  }
-
-  const unloadedUsd = nuvion.fromNuvionMinor(quote.amount_to);
-  db.createNuvionJob({
-    entityId: entity.entity_id,
+  // Atomic double-tap lock per card so concurrent unload clicks/webhooks never fire two transfers!
+  const unloadLockKey = `card_unload:${entity.entity_id}:${cardId}`;
+  const lock = idempotency.tryAcquireOperationLock(unloadLockKey, {
+    scope: "card_unload",
     telegramId,
     accountType,
-    jobType: "card_unload",
-    state: "completed",
-    currency: "USD",
-    amountMinor: targetMinor,
-    uniqueReference: uniqueBase,
-    nuvionTransferId: transfer.id,
-    fxQuoteId: quote.id,
-    cardId: card.card_id,
-    payload: { cardId: card.card_id, cardName: card.card_name, unloadedUsd, reason },
+    lockTtlSeconds: 45,
+    allowReacquireAfterCompleted: true,
   });
-
-  if (process.env.NODE_ENV !== "test") {
-    setTimeout(() => {
-      try {
-        const evmDepositSweeper = require("./evm_deposit_sweeper");
-        evmDepositSweeper.sweepUserDeposits(entity.telegram_id, null, { silent: true }).catch(() => {});
-      } catch (_) {}
-    }, 15000);
+  if (!lock.acquired) {
+    return { unloaded: false, duplicate: true, reason: "unload_in_progress" };
   }
 
-  return {
-    unloaded: true,
-    cardId: card.card_id,
-    transferId: transfer.id,
-    unloadedUsd,
-  };
+  try {
+    const liveAcc = await nuvion.getAccount(card.account_id, entity.entity_id);
+    const availMinor = Math.max(0, Math.round(Number(liveAcc?.balance?.available || 0)));
+
+    if (availMinor < minAutoSweepMinor) {
+      idempotency.completeOperationIdempotency(unloadLockKey, { responseData: { unloaded: false, reason: "below_threshold" } });
+      return { unloaded: false, reason: "below_threshold", availableUsd: nuvion.fromNuvionMinor(availMinor) };
+    }
+
+    let targetMinor = amountUsd != null ? Math.min(availMinor, nuvion.toNuvionMinor(amountUsd)) : availMinor;
+    if (targetMinor <= 0) {
+      idempotency.completeOperationIdempotency(unloadLockKey, { responseData: { unloaded: false, reason: "zero_amount" } });
+      return { unloaded: false, reason: "zero_amount", availableUsd: nuvion.fromNuvionMinor(availMinor) };
+    }
+
+    const uniqueBase = `prx-cunload-${cardId.slice(-8)}-${Date.now()}`;
+    let quote = null;
+    let transfer = null;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const ref = attempt === 0 ? uniqueBase : `${uniqueBase}-r${attempt}`;
+      try {
+        quote = await nuvion.createFxQuote({
+          entityId: entity.entity_id,
+          fromCurrency: "USD",
+          toCurrency: "USC",
+          amountFrom: targetMinor,
+          accountId: card.account_id,
+        });
+
+        transfer = await nuvion.createTransfer({
+          entityId: entity.entity_id,
+          accountId: card.account_id,
+          counterpartyId: entity.self_counterparty_id,
+          paymentDetailId: entity.self_base_payment_detail_id,
+          amountMinor: targetMinor,
+          currency: "USD",
+          narration: `${reason} (${card.card_name || cardId})`.slice(0, 100),
+          paymentType: "stablecoin-transfer",
+          fxQuoteId: quote.id,
+          uniqueReference: ref,
+        });
+        break;
+      } catch (err) {
+        if (err instanceof nuvion.NuvionError && err.status === 409 && err.type === "error_duplicate_resource") {
+          const recovered = await nuvion.recoverTransferByReference(ref, entity.entity_id).catch(() => null);
+          if (recovered) {
+            transfer = recovered;
+            break;
+          }
+        }
+        if (attempt === 0 && err instanceof nuvion.NuvionError && err.type === "error_transfer_insufficient_funds") {
+          const feeBuf = Math.max(50, Math.ceil(targetMinor * 0.015));
+          if (targetMinor - feeBuf > 0) {
+            targetMinor -= feeBuf;
+            continue;
+          }
+        }
+        throw err;
+      }
+    }
+
+    const unloadedUsd = nuvion.fromNuvionMinor(quote?.amount_to || transfer?.amount || targetMinor);
+    db.createNuvionJob({
+      entityId: entity.entity_id,
+      telegramId,
+      accountType,
+      jobType: "card_unload",
+      state: "completed",
+      currency: "USD",
+      amountMinor: targetMinor,
+      uniqueReference: uniqueBase,
+      nuvionTransferId: transfer.id,
+      fxQuoteId: quote?.id || null,
+      cardId: card.card_id,
+      payload: { cardId: card.card_id, cardName: card.card_name, unloadedUsd, reason },
+    });
+
+    idempotency.completeOperationIdempotency(unloadLockKey, { txHash: transfer.id });
+
+    if (process.env.NODE_ENV !== "test") {
+      setTimeout(() => {
+        try {
+          const evmDepositSweeper = require("./evm_deposit_sweeper");
+          evmDepositSweeper.sweepUserDeposits(entity.telegram_id, null, {
+            silent: true,
+            onlyChain: "BASE",
+            onlyAccountType: entity.account_type || "personal",
+          }).catch(() => {});
+        } catch (_) {}
+      }, 15000);
+    }
+
+    return {
+      unloaded: true,
+      cardId: card.card_id,
+      transferId: transfer.id,
+      unloadedUsd,
+    };
+  } catch (err) {
+    idempotency.failOperationIdempotency(unloadLockKey, err.message);
+    throw err;
+  }
 }
 
 // ── 6. Card Controls, Sensitive Reveal (Never Logged/Stored), Balance Rollup ─

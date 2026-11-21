@@ -77,6 +77,19 @@ function isWebhookProcessed(eventId) {
 }
 
 /**
+ * Atomically claim a webhook/inflow event ID using SQLite INSERT OR IGNORE.
+ * Returns true ONLY for the single first caller (eliminates check-then-set races).
+ */
+function tryClaimWebhookEvent(eventId, eventType = "unknown", resourceId = null) {
+  if (!eventId) return false;
+  const info = db.prepare(`
+    INSERT OR IGNORE INTO processed_webhook_events (event_id, event_type, resource_id, processed_at)
+    VALUES (?, ?, ?, datetime('now'))
+  `).run(String(eventId), String(eventType), resourceId ? String(resourceId) : null);
+  return Boolean(info && info.changes > 0);
+}
+
+/**
  * Mark a webhook event as successfully executed to prevent duplicate delivery.
  */
 function markWebhookProcessed(eventId, eventType = "unknown", resourceId = null) {
@@ -132,9 +145,79 @@ function startOperationIdempotency(key, { scope = "general", telegramId = null, 
     ) VALUES (?, ?, ?, ?, ?, 'pending', datetime('now'))
     ON CONFLICT(key) DO UPDATE SET
       status = 'pending',
-      tx_hash = NULL
+      tx_hash = NULL,
+      created_at = datetime('now')
     WHERE status != 'completed'
   `).run(String(key), scope, telegramId, accountType, Number(amount || 0));
+}
+
+/**
+ * Atomically acquire an operation mutex in SQLite (race-free under concurrent taps/webhooks).
+ * - If no row exists -> inserts 'pending' and returns { acquired: true }
+ * - If row is 'completed' -> returns { acquired: false, reason: 'already_completed', existing }
+ * - If row is 'pending' and fresh (<= lockTtlSeconds) -> returns { acquired: false, reason: 'in_progress', existing }
+ * - If row is 'failed' or stale 'pending' -> atomically takes over lock and returns { acquired: true }
+ */
+function tryAcquireOperationLock(key, {
+  scope = "general",
+  telegramId = null,
+  accountType = "personal",
+  amount = 0,
+  lockTtlSeconds = 60,
+  allowReacquireAfterCompleted = false,
+} = {}) {
+  if (!key) return { acquired: false, reason: "missing_key" };
+  const k = String(key);
+  const ttl = Math.max(1, Number(lockTtlSeconds) || 60);
+  const allowCompletedFlag = allowReacquireAfterCompleted ? 1 : 0;
+
+  // 1. Atomic fresh insert (only 1 caller can ever win on a new key)
+  const inserted = db.prepare(`
+    INSERT OR IGNORE INTO universal_idempotency (
+      key, scope, telegram_id, account_type, amount, status, created_at
+    ) VALUES (?, ?, ?, ?, ?, 'pending', datetime('now'))
+  `).run(k, scope, telegramId, accountType, Number(amount || 0));
+
+  if (inserted && inserted.changes > 0) {
+    return { acquired: true };
+  }
+
+  // 2. Atomic conditional takeover for failed / stale-pending / (optional) completed locks
+  const updated = db.prepare(`
+    UPDATE universal_idempotency
+    SET status = 'pending',
+        scope = ?,
+        telegram_id = ?,
+        account_type = ?,
+        amount = ?,
+        tx_hash = NULL,
+        response_data = NULL,
+        created_at = datetime('now'),
+        completed_at = NULL
+    WHERE key = ?
+      AND (
+        status = 'failed'
+        OR (status = 'pending' AND (strftime('%s', 'now') - strftime('%s', created_at)) > ?)
+        OR (? = 1 AND status = 'completed')
+      )
+  `).run(scope, telegramId, accountType, Number(amount || 0), k, ttl, allowCompletedFlag);
+
+  if (updated && updated.changes > 0) {
+    return { acquired: true };
+  }
+
+  const existing = db.prepare(
+    "SELECT *, (strftime('%s', 'now') - strftime('%s', created_at)) AS age_seconds FROM universal_idempotency WHERE key = ?"
+  ).get(k);
+
+  if (!existing) {
+    return { acquired: false, reason: "conflict" };
+  }
+  return {
+    acquired: false,
+    reason: existing.status === "completed" ? "already_completed" : "in_progress",
+    existing,
+  };
 }
 
 /**
@@ -321,9 +404,11 @@ module.exports = {
   initIdempotencyTable,
   initUniversalIdempotency,
   isWebhookProcessed,
+  tryClaimWebhookEvent,
   markWebhookProcessed,
   checkOperationIdempotency,
   startOperationIdempotency,
+  tryAcquireOperationLock,
   completeOperationIdempotency,
   failOperationIdempotency,
   clearOperationIdempotency,

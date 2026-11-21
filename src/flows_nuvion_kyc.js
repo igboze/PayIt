@@ -9,9 +9,25 @@ const { Markup } = require("telegraf");
 const nuvion = require("./nuvion");
 const nuvionWebhooks = require("./nuvion_webhooks");
 const db = require("./db");
+const idempotency = require("./idempotency");
 const convState = require("./conversation_state");
 
 let deps = {};
+
+const UPLOAD_STEP_ALLOWED_MIMES = {
+  nuvion_kyc_doc_id_front: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+  nuvion_kyc_doc_id_back: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+  nuvion_kyc_doc_poa: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+  nuvion_kyb_doc_coi: new Set(["application/pdf"]),
+  nuvion_kyb_doc_memart: new Set([
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ]),
+  nuvion_kyb_doc_poa: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+  nuvion_kyb_doc_officer_id: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+  nuvion_kyb_doc_officer_poa: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+};
 
 function escapeHtml(str) {
   if (!str) return "";
@@ -39,11 +55,30 @@ function normalizePhone(input, defaultCountry = "NG") {
       clean = "+234" + clean.slice(1);
     } else if (defaultCountry === "NG" && /^234\d{10}$/.test(clean)) {
       clean = "+" + clean;
-    } else if (/^\d{10,15}$/.test(clean)) {
+    } else if (/^\d{9,13}$/.test(clean)) {
       clean = "+" + clean;
     }
   }
-  return /^\+\d{8,15}$/.test(clean) ? clean : null;
+  // Nuvion API strictly requires phonenumber 10–14 characters total including '+'
+  return /^\+\d{9,13}$/.test(clean) && clean.length >= 10 && clean.length <= 14 ? clean : null;
+}
+
+function normalizeWebsiteUrl(raw) {
+  const s = String(raw || "").trim();
+  if (!s || /^(none|n\/a|na|skip|-|nil)$/i.test(s)) return null;
+  const candidate = /^https?:\/\//i.test(s) ? s : `https://${s}`;
+  try {
+    const parsed = new URL(candidate);
+    if ((parsed.protocol === "https:" || parsed.protocol === "http:") && parsed.hostname.includes(".")) {
+      return parsed.toString().replace(/\/$/, "");
+    }
+  } catch (_) {}
+  return undefined; // signals invalid URL format
+}
+
+function isFutureIsoDate(d) {
+  if (!isValidIsoDate(d)) return false;
+  return new Date(`${d}T23:59:59Z`).getTime() > Date.now();
 }
 
 function isValidEmail(email) {
@@ -456,28 +491,28 @@ async function promptBusinessKybStep(ctx, userId, step, data = {}) {
     case "nuvion_kyb_contact":
       return ctx.reply(
         `📧 <b>Step 5/9 — Business Contact</b>\n──────────────────────────\n` +
-        `Send <b>Business Email, Phone, Website</b> separated by commas (e.g. <code>finance@acme.com, +2348012345678, https://acme.com</code>):`,
+        `Send <b>Business Email, Phone, Website (optional)</b> separated by commas (e.g. <code>finance@acme.com, +2348012345678, https://acme.com</code> or omit website):`,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
 
     case "nuvion_kyb_address":
       return ctx.reply(
         `🏠 <b>Step 6/9 — Registered Business Address</b>\n──────────────────────────\n` +
-        `Send <b>Street, City, State, Postal Code, Country Code</b> separated by commas (e.g. <code>14 Admiralty Way, Lagos, Lagos, 106104, NG</code>):`,
+        `Send <b>Street (4+ chars), City, State, Postal Code, Country Code</b> separated by commas (e.g. <code>14 Admiralty Way, Lagos, Lagos, 106104, NG</code>):`,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
 
     case "nuvion_kyb_officer":
       return ctx.reply(
         `👤 <b>Step 7/9 — Controlling Officer / Beneficial Owner (≥25%)</b>\n──────────────────────────\n` +
-        `Send <b>First Name, Last Name, Job Title, Ownership %, Email, Phone, DOB (YYYY-MM-DD), Nationality (2-letter)</b> separated by commas:`,
+        `Send <b>First Name, Last Name, Job Title, Ownership %, Email, Phone, DOB (YYYY-MM-DD), Nationality (2-letter), Gender (m/f)</b> separated by commas:`,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
 
     case "nuvion_kyb_officer_ids":
       return ctx.reply(
         `🔒 <b>Step 7b/9 — Officer ID Details</b>\n──────────────────────────\n` +
-        `Send <b>ID Type (passport/national_id/drivers_license), ID Number, Issue Date, Expiry Date, BVN (if NG), NIN (if NG)</b> separated by commas.\n` +
+        `Send <b>ID Type (passport/national_id/drivers_license), ID Number, Issue Date, Expiry Date, BVN (if NG) / SSN (if US), NIN (if NG)</b> separated by commas.\n` +
         `<i>Your message will be auto-deleted immediately.</i>`,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
@@ -547,16 +582,29 @@ async function executePersonalKycSubmission(ctx, userId) {
     return ctx.reply("⚠️ Your verification draft is incomplete. Please restart with /global.");
   }
 
-  await ctx.reply("⏳ <b>Submitting your Tier-1 verification securely...</b>", { parse_mode: "HTML" });
+  // Idempotency lock: prevent double-tap duplicate POST /individual-entities calls
+  const lockKey = `nuvion_kyc_submit:${userId}:personal`;
+  const lock = idempotency.tryAcquireOperationLock(lockKey, {
+    scope: "nuvion_kyc_submit",
+    telegramId: userId,
+    accountType: "personal",
+    lockTtlSeconds: 120,
+  });
+  if (!lock.acquired) {
+    if (lock.reason === "already_completed") {
+      return showGlobalPortal(ctx, "personal");
+    }
+    return ctx.reply("⏳ Your verification is already being submitted. Please wait a moment...");
+  }
 
   const fullName = [d.first_name, d.middle_name, d.last_name].filter(Boolean).join(" ");
   const personObj = {
     first_name: d.first_name,
     last_name: d.last_name,
     date_of_birth: d.date_of_birth,
-    email: d.email,
-    nationality: d.nationality,
-    gender: d.gender || "m",
+    email: String(d.email).trim().toLowerCase(),
+    nationality: String(d.nationality || "").toUpperCase(),
+    gender: d.gender === "f" ? "f" : "m",
     phonenumber: d.phonenumber,
   };
   if (d.middle_name) personObj.middle_name = d.middle_name;
@@ -572,7 +620,7 @@ async function executePersonalKycSubmission(ctx, userId) {
       city: d.city,
       state: d.state,
       postal_code: d.postal_code,
-      country_code: d.country_code || d.nationality,
+      country_code: String(d.country_code || d.nationality || "").toUpperCase(),
     },
     identification: {
       document: {
@@ -580,7 +628,7 @@ async function executePersonalKycSubmission(ctx, userId) {
         number: d.id_number,
         issue_date: d.id_issue_date,
         expiry_date: d.id_expiry_date,
-        issuing_country: d.id_issuing_country || d.nationality,
+        issuing_country: String(d.id_issuing_country || d.nationality || "").toUpperCase(),
         issuing_authority: d.id_issuing_authority || "Government Authority",
       },
       proof_of_address: {
@@ -598,33 +646,61 @@ async function executePersonalKycSubmission(ctx, userId) {
   };
 
   try {
-    let created = null;
-    try {
-      created = await nuvion.createIndividualEntity(entityPayload);
-    } catch (err) {
-      if (err instanceof nuvion.NuvionError && err.status === 409 && err.type === "error_duplicate_resource") {
-        created = await nuvion.recoverEntityByName({ name: fullName, type: "individual", email: d.email });
-        if (!created) throw err;
-      } else {
-        throw err;
-      }
+    // Pre-flight schema check BEFORE hitting live https://api.nuvion.co!
+    nuvion.validateIndividualEntityPayload(entityPayload);
+
+    await ctx.reply("⏳ <b>Submitting your Tier-1 verification securely...</b>", { parse_mode: "HTML" });
+
+    // Check existing local entity first to avoid duplicate POST /individual-entities on retry
+    const existingLocal = db.getNuvionEntityByUser(userId, "personal");
+    let entityId = existingLocal?.entity_id || null;
+    let personId = existingLocal?.person_id || null;
+    let entityStatus = String(existingLocal?.status || "").toLowerCase();
+
+    if (entityId && (entityStatus === "pending" || entityStatus === "approved")) {
+      db.deleteNuvionKycDraft(userId, "personal");
+      convState.clearState(userId);
+      idempotency.completeOperationIdempotency(lockKey, { txHash: entityId });
+      return showGlobalPortal(ctx, "personal");
     }
 
-    const entityObj = created?.entity || created;
-    const entityId = entityObj?.id;
-    const personId = created?.person?.id || entityObj?.person_id || null;
-    if (!entityId) throw new Error("Nuvion did not return an entity ID.");
+    if (!entityId || entityStatus !== "incomplete") {
+      let created = null;
+      try {
+        created = await nuvion.createIndividualEntity(entityPayload, { validate: true });
+      } catch (err) {
+        if (err instanceof nuvion.NuvionError && err.status === 409 && err.type === "error_duplicate_resource") {
+          created = await nuvion.recoverEntityByName({ name: fullName, type: "individual", email: personObj.email });
+          if (!created) throw err;
+        } else {
+          throw err;
+        }
+      }
 
-    db.upsertNuvionEntity({
-      telegramId: userId,
-      accountType: "personal",
-      entityId,
-      entityType: "individual",
-      personId,
-      legalName: fullName,
-      email: d.email,
-      status: entityObj.status || "incomplete",
-    });
+      const entityObj = created?.entity || created;
+      entityId = entityObj?.id;
+      personId = created?.person?.id || entityObj?.person_id || null;
+      entityStatus = String(entityObj?.status || "incomplete").toLowerCase();
+      if (!entityId) throw new Error("Nuvion did not return an entity ID.");
+
+      db.upsertNuvionEntity({
+        telegramId: userId,
+        accountType: "personal",
+        entityId,
+        entityType: "individual",
+        personId,
+        legalName: fullName,
+        email: personObj.email,
+        status: entityStatus,
+      });
+    } else if (!personId) {
+      try {
+        const live = await nuvion.getEntity(entityId);
+        personId = live?.person?.id || live?.entity?.person_id || null;
+        if (personId) db.updateNuvionEntity(entityId, { person_id: personId });
+        if (live?.entity?.status) entityStatus = String(live.entity.status).toLowerCase();
+      } catch (_) {}
+    }
 
     // Stream Telegram files directly into memory as Base64 (never saved to disk)
     const idFrontBuf = await deps.downloadTelegramFile(ctx, d.doc_id_front.fileId);
@@ -650,8 +726,12 @@ async function executePersonalKycSubmission(ctx, userId) {
       personId,
     });
 
-    await nuvion.submitOnboarding(entityId);
-    db.updateNuvionEntity(entityId, { status: "pending" });
+    if (entityStatus === "incomplete") {
+      await nuvion.submitOnboarding(entityId);
+      db.updateNuvionEntity(entityId, { status: "pending" });
+    }
+
+    idempotency.completeOperationIdempotency(lockKey, { txHash: entityId });
 
     // Wipe sensitive draft immediately after submission
     db.deleteNuvionKycDraft(userId, "personal");
@@ -670,6 +750,7 @@ async function executePersonalKycSubmission(ctx, userId) {
       }
     );
   } catch (err) {
+    idempotency.failOperationIdempotency(lockKey, err.message);
     console.error("[nuvion_kyc:submit_error]", err.message, err.validations || "");
     return ctx.reply(
       `❌ <b>Could not submit verification</b>\n──────────────────────────\n` +
@@ -687,86 +768,132 @@ async function executePersonalKycSubmission(ctx, userId) {
 }
 
 async function executeBusinessKybSubmission(ctx, userId) {
+  const user = db.getUser(userId);
+  if (!user || !user.business_deposit_address) {
+    return ctx.reply(
+      `⚠️ <b>Business Wallet Required</b>\n──────────────────────────\n` +
+      `Please create your Proxim Business Account first so business funds remain strictly isolated from your personal wallet.`,
+      { parse_mode: "HTML", ...(deps.backToMenu || {}) }
+    );
+  }
+
   const draft = db.getNuvionKycDraft(userId, "business");
   const d = draft?.data;
   if (!d || !d.legal_name || !d.doc_coi || !d.doc_memart || !d.doc_poa || !d.doc_officer_id || !d.doc_officer_poa) {
     return ctx.reply("⚠️ Your business verification draft is incomplete. Please restart with /global.");
   }
 
-  await ctx.reply("⏳ <b>Submitting your Business KYB verification securely...</b>", { parse_mode: "HTML" });
+  // Idempotency lock: prevent double-tap duplicate POST /business-entities calls
+  const lockKey = `nuvion_kyc_submit:${userId}:business`;
+  const lock = idempotency.tryAcquireOperationLock(lockKey, {
+    scope: "nuvion_kyb_submit",
+    telegramId: userId,
+    accountType: "business",
+    lockTtlSeconds: 120,
+  });
+  if (!lock.acquired) {
+    if (lock.reason === "already_completed") {
+      return showGlobalPortal(ctx, "business");
+    }
+    return ctx.reply("⏳ Your business verification is already being submitted. Please wait a moment...");
+  }
 
-  const officerPerson = {
-    first_name: d.officer_first_name,
-    last_name: d.officer_last_name,
-    date_of_birth: d.officer_dob,
-    email: d.officer_email,
-    nationality: d.officer_nationality,
-    gender: "m",
-    phonenumber: d.officer_phone,
-    identification: {
-      document: {
-        type: d.officer_id_type || "international_passport",
-        number: d.officer_id_number,
-        issue_date: d.officer_id_issue_date,
-        expiry_date: d.officer_id_expiry_date,
-        issuing_country: d.officer_nationality,
-        issuing_authority: "Government Authority",
+  // Check if founder already completed Personal KYC with the same email -> link via person_id to avoid 409!
+  const existingPersonal = db.getNuvionEntityByUser(userId, "personal");
+  const officerEmailLower = String(d.officer_email || "").trim().toLowerCase();
+  const canReusePersonalPersonId = Boolean(
+    existingPersonal?.person_id &&
+    existingPersonal?.email &&
+    String(existingPersonal.email).trim().toLowerCase() === officerEmailLower
+  );
+
+  let officerEntry;
+  if (canReusePersonalPersonId) {
+    officerEntry = {
+      job_title: d.officer_job_title || "Director",
+      is_control_person: true,
+      is_beneficial_owner: true,
+      ownership_percentage: Number(d.officer_ownership) || 100,
+      person_id: existingPersonal.person_id,
+    };
+  } else {
+    const officerNat = String(d.officer_nationality || "").toUpperCase();
+    const officerPerson = {
+      first_name: d.officer_first_name,
+      last_name: d.officer_last_name,
+      date_of_birth: d.officer_dob,
+      email: officerEmailLower,
+      nationality: officerNat,
+      gender: d.officer_gender === "f" ? "f" : "m",
+      phonenumber: d.officer_phone,
+      identification: {
+        document: {
+          type: d.officer_id_type || "international_passport",
+          number: d.officer_id_number,
+          issue_date: d.officer_id_issue_date,
+          expiry_date: d.officer_id_expiry_date,
+          issuing_country: officerNat,
+          issuing_authority: d.officer_id_authority || "Government Authority",
+        },
+        proof_of_address: { type: "utility_bill" },
       },
-      proof_of_address: { type: "utility_bill" },
-    },
-    address: {
-      line_1: d.biz_line_1,
-      city: d.biz_city,
-      state: d.biz_state,
-      postal_code: d.biz_postal_code,
-      country_code: d.biz_country_code,
+      address: {
+        line_1: d.biz_line_1,
+        city: d.biz_city,
+        state: d.biz_state,
+        postal_code: d.biz_postal_code,
+        country_code: String(d.biz_country_code || officerNat || "").toUpperCase(),
+      },
+    };
+    if (d.officer_bvn) officerPerson.bvn = d.officer_bvn;
+    if (d.officer_nin) officerPerson.nin = d.officer_nin;
+    if (d.officer_ssn) officerPerson.ssn = d.officer_ssn;
+
+    officerEntry = {
+      job_title: d.officer_job_title || "Director",
+      is_control_person: true,
+      is_beneficial_owner: true,
+      ownership_percentage: Number(d.officer_ownership) || 100,
+      person: officerPerson,
+    };
+  }
+
+  const businessObj = {
+    legal_name: d.legal_name,
+    trade_name: d.trade_name || d.legal_name,
+    industry: d.industry || "Technology",
+    email: String(d.business_email || "").trim().toLowerCase(),
+    type: d.business_type || "llc",
+    description: `${d.legal_name} operating in ${d.industry || "Technology"}`,
+    registration_number: d.registration_number,
+    phonenumber: d.business_phone,
+    incorporation_meta: {
+      year: Number(d.incorp_year),
+      month: Number(d.incorp_month),
+      country: String(d.incorp_country || "").toUpperCase(),
+      state: d.incorp_state,
     },
   };
-  if (d.officer_bvn) officerPerson.bvn = d.officer_bvn;
-  if (d.officer_nin) officerPerson.nin = d.officer_nin;
+  // Only send website when a valid URL was actually provided (optional per Nuvion docs)
+  const cleanWebsite = normalizeWebsiteUrl(d.business_website);
+  if (cleanWebsite) {
+    businessObj.website = cleanWebsite;
+  }
+
+  const bizAddress = {
+    line_1: d.biz_line_1,
+    city: d.biz_city,
+    state: d.biz_state,
+    postal_code: d.biz_postal_code,
+    country_code: String(d.biz_country_code || d.incorp_country || "").toUpperCase(),
+  };
 
   const payload = {
     name: d.legal_name,
-    business: {
-      legal_name: d.legal_name,
-      trade_name: d.trade_name || d.legal_name,
-      industry: d.industry || "Technology",
-      email: d.business_email,
-      website: d.business_website || "https://proxim.app",
-      type: d.business_type || "llc",
-      description: `${d.legal_name} operating in ${d.industry || "Technology"}`,
-      registration_number: d.registration_number,
-      phonenumber: d.business_phone,
-      incorporation_meta: {
-        year: Number(d.incorp_year),
-        month: Number(d.incorp_month),
-        country: d.incorp_country,
-        state: d.incorp_state,
-      },
-    },
-    address: {
-      line_1: d.biz_line_1,
-      city: d.biz_city,
-      state: d.biz_state,
-      postal_code: d.biz_postal_code,
-      country_code: d.biz_country_code,
-    },
-    operating_address: {
-      line_1: d.biz_line_1,
-      city: d.biz_city,
-      state: d.biz_state,
-      postal_code: d.biz_postal_code,
-      country_code: d.biz_country_code,
-    },
-    business_officers: [
-      {
-        job_title: d.officer_job_title || "Director",
-        is_control_person: true,
-        is_beneficial_owner: true,
-        ownership_percentage: Number(d.officer_ownership) || 100,
-        person: officerPerson,
-      },
-    ],
+    business: businessObj,
+    address: bizAddress,
+    operating_address: { ...bizAddress },
+    business_officers: [officerEntry],
     meta: {
       registration_number: d.registration_number,
       tax_id: d.tax_id,
@@ -781,35 +908,81 @@ async function executeBusinessKybSubmission(ctx, userId) {
   };
 
   try {
-    let created = null;
-    try {
-      created = await nuvion.createBusinessEntity(payload);
-    } catch (err) {
-      if (err instanceof nuvion.NuvionError && err.status === 409 && err.type === "error_duplicate_resource") {
-        created = await nuvion.recoverEntityByName({ name: d.legal_name, type: "business", email: d.business_email });
-        if (!created) throw err;
-      } else {
-        throw err;
-      }
+    // Pre-flight schema check BEFORE hitting live https://api.nuvion.co!
+    nuvion.validateBusinessEntityPayload(payload);
+
+    await ctx.reply("⏳ <b>Submitting your Business KYB verification securely...</b>", { parse_mode: "HTML" });
+
+    // Check existing local business entity first so retries reuse `incomplete` entity instead of re-creating
+    const existingLocal = db.getNuvionEntityByUser(userId, "business");
+    let entityId = existingLocal?.entity_id || null;
+    let businessId = existingLocal?.business_id || null;
+    let officerPersonId = existingLocal?.person_id || (canReusePersonalPersonId ? existingPersonal.person_id : null);
+    let entityStatus = String(existingLocal?.status || "").toLowerCase();
+
+    if (entityId && (entityStatus === "pending" || entityStatus === "approved")) {
+      db.deleteNuvionKycDraft(userId, "business");
+      convState.clearState(userId);
+      idempotency.completeOperationIdempotency(lockKey, { txHash: entityId });
+      return showGlobalPortal(ctx, "business");
     }
 
-    const entityObj = created?.entity || created;
-    const entityId = entityObj?.id;
-    const businessId = created?.business?.id || entityObj?.business_id || null;
-    const officerPersonId = created?.business_officers?.[0]?.person?.id || created?.officers?.[0]?.person_id || null;
-    if (!entityId) throw new Error("Nuvion did not return a business entity ID.");
+    if (!entityId || entityStatus !== "incomplete") {
+      let created = null;
+      try {
+        created = await nuvion.createBusinessEntity(payload, { validate: true });
+      } catch (err) {
+        if (err instanceof nuvion.NuvionError && err.status === 409 && err.type === "error_duplicate_resource") {
+          created = await nuvion.recoverEntityByName({ name: d.legal_name, type: "business", email: businessObj.email });
+          if (!created) throw err;
+        } else {
+          throw err;
+        }
+      }
 
-    db.upsertNuvionEntity({
-      telegramId: userId,
-      accountType: "business",
-      entityId,
-      entityType: "business",
-      personId: officerPersonId,
-      businessId,
-      legalName: d.legal_name,
-      email: d.business_email,
-      status: entityObj.status || "incomplete",
-    });
+      const entityObj = created?.entity || created;
+      entityId = entityObj?.id;
+      businessId = created?.business?.id || entityObj?.business_id || null;
+      // CRITICAL: POST /business-entities returns `data.business_officers[0].person_id`!
+      officerPersonId =
+        created?.business_officers?.[0]?.person_id ||
+        created?.business_officers?.[0]?.person?.id ||
+        created?.officers?.[0]?.person_id ||
+        created?.officers?.[0]?.person?.id ||
+        (canReusePersonalPersonId ? existingPersonal.person_id : null) ||
+        null;
+      entityStatus = String(entityObj?.status || "incomplete").toLowerCase();
+      if (!entityId) throw new Error("Nuvion did not return a business entity ID.");
+
+      db.upsertNuvionEntity({
+        telegramId: userId,
+        accountType: "business",
+        entityId,
+        entityType: "business",
+        personId: officerPersonId,
+        businessId,
+        legalName: d.legal_name,
+        email: businessObj.email,
+        status: entityStatus,
+      });
+    }
+
+    if (!officerPersonId) {
+      try {
+        const live = await nuvion.getEntity(entityId);
+        officerPersonId =
+          live?.business_officers?.[0]?.person_id ||
+          live?.business_officers?.[0]?.person?.id ||
+          live?.officers?.[0]?.person_id ||
+          null;
+        if (officerPersonId) db.updateNuvionEntity(entityId, { person_id: officerPersonId });
+        if (live?.entity?.status) entityStatus = String(live.entity.status).toLowerCase();
+      } catch (_) {}
+    }
+
+    if (!officerPersonId) {
+      throw new Error("Could not resolve officer person_id from Nuvion business entity; aborting document upload to prevent unlinked officer docs.");
+    }
 
     const docs = [
       { key: "certificate_of_incorporation", doc: d.doc_coi, desc: `COI for ${d.legal_name}` },
@@ -831,8 +1004,12 @@ async function executeBusinessKybSubmission(ctx, userId) {
       });
     }
 
-    await nuvion.submitOnboarding(entityId);
-    db.updateNuvionEntity(entityId, { status: "pending" });
+    if (entityStatus === "incomplete") {
+      await nuvion.submitOnboarding(entityId);
+      db.updateNuvionEntity(entityId, { status: "pending" });
+    }
+
+    idempotency.completeOperationIdempotency(lockKey, { txHash: entityId });
 
     db.deleteNuvionKycDraft(userId, "business");
     convState.clearState(userId);
@@ -850,6 +1027,7 @@ async function executeBusinessKybSubmission(ctx, userId) {
       }
     );
   } catch (err) {
+    idempotency.failOperationIdempotency(lockKey, err.message);
     console.error("[nuvion_kyb:submit_error]", err.message, err.validations || "");
     return ctx.reply(
       `❌ <b>Could not submit business verification</b>\n──────────────────────────\n` +
@@ -1021,6 +1199,14 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
       await ctx.reply("Please enter two valid dates: <code>YYYY-MM-DD, YYYY-MM-DD</code> (Issue Date, Expiry Date).", { parse_mode: "HTML" });
       return true;
     }
+    if (!isFutureIsoDate(parts[1])) {
+      await ctx.reply("⚠️ Your ID appears to be <b>expired</b>. Please provide a valid, unexpired ID.", { parse_mode: "HTML" });
+      return true;
+    }
+    if (parts[0] > parts[1]) {
+      await ctx.reply("⚠️ Issue date cannot be later than expiry date. Please re-enter <code>Issue Date, Expiry Date</code>.", { parse_mode: "HTML" });
+      return true;
+    }
     data.id_issue_date = parts[0];
     data.id_expiry_date = parts[1];
     data.id_issuing_country = data.nationality;
@@ -1083,20 +1269,25 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
     const parts = val.split(",").map((s) => s.trim()).filter(Boolean);
     const phone = normalizePhone(parts[1], data.incorp_country || "NG");
     if (parts.length < 2 || !isValidEmail(parts[0]) || !phone) {
-      await ctx.reply("Send <b>Business Email, Phone, Website</b> separated by commas.", { parse_mode: "HTML" });
+      await ctx.reply("Send <b>Business Email, Phone (10–14 chars e.g. +2348012345678), Website (optional)</b> separated by commas.", { parse_mode: "HTML" });
+      return true;
+    }
+    const website = parts[2] ? normalizeWebsiteUrl(parts[2]) : null;
+    if (website === undefined) {
+      await ctx.reply("That website URL looks invalid. Use format like <code>https://acme.com</code> or omit it.", { parse_mode: "HTML" });
       return true;
     }
     data.business_email = parts[0].toLowerCase();
     data.business_phone = phone;
-    data.business_website = parts[2] || "https://proxim.app";
+    data.business_website = website; // null when omitted -> omitted cleanly in payload
     await promptBusinessKybStep(ctx, userId, "nuvion_kyb_address", data);
     return true;
   }
 
   if (state.type === "nuvion_kyb_address") {
     const parts = val.split(",").map((s) => s.trim()).filter(Boolean);
-    if (parts.length < 5 || !/^[A-Za-z]{2}$/.test(parts[4])) {
-      await ctx.reply("Send <b>Street, City, State, Postal Code, 2-letter Country Code</b> separated by commas.", { parse_mode: "HTML" });
+    if (parts.length < 5 || parts[0].length < 4 || !/^[A-Za-z]{2}$/.test(parts[4])) {
+      await ctx.reply("Send <b>Street (min 4 chars), City, State, Postal Code, 2-letter Country Code</b> separated by commas.", { parse_mode: "HTML" });
       return true;
     }
     data.biz_line_1 = parts[0];
@@ -1111,14 +1302,17 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
   if (state.type === "nuvion_kyb_officer") {
     const parts = val.split(",").map((s) => s.trim()).filter(Boolean);
     if (parts.length < 8 || !isValidEmail(parts[4]) || !isAdultDob(parts[6]) || !/^[A-Za-z]{2}$/.test(parts[7])) {
-      await ctx.reply("Send <b>First Name, Last Name, Job Title, Ownership %, Email, Phone, DOB (YYYY-MM-DD), Nationality (2-letter)</b> separated by commas.", { parse_mode: "HTML" });
+      await ctx.reply("Send <b>First Name, Last Name, Job Title, Ownership %, Email, Phone, DOB (YYYY-MM-DD), Nationality (2-letter), Gender (m/f)</b> separated by commas.", { parse_mode: "HTML" });
       return true;
     }
     const phone = normalizePhone(parts[5], parts[7].toUpperCase());
     if (!phone) {
-      await ctx.reply("Officer phone number is invalid. Use format like <code>+2348012345678</code>.", { parse_mode: "HTML" });
+      await ctx.reply("Officer phone number is invalid (must be 10–14 chars with country code, e.g. <code>+2348012345678</code>).", { parse_mode: "HTML" });
       return true;
     }
+    const rawGender = String(parts[8] || "m").trim().toLowerCase();
+    const gender = rawGender.startsWith("f") ? "f" : "m";
+
     data.officer_first_name = parts[0];
     data.officer_last_name = parts[1];
     data.officer_job_title = parts[2];
@@ -1127,6 +1321,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
     data.officer_phone = phone;
     data.officer_dob = parts[6];
     data.officer_nationality = parts[7].toUpperCase();
+    data.officer_gender = gender;
     await promptBusinessKybStep(ctx, userId, "nuvion_kyb_officer_ids", data);
     return true;
   }
@@ -1135,16 +1330,40 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
     if (deps.deleteSensitiveMessage) await deps.deleteSensitiveMessage(ctx).catch(() => {});
     const parts = val.split(",").map((s) => s.trim()).filter(Boolean);
     if (parts.length < 4 || !isValidIsoDate(parts[2]) || !isValidIsoDate(parts[3])) {
-      await ctx.reply("Send <b>ID Type, ID Number, Issue Date (YYYY-MM-DD), Expiry Date (YYYY-MM-DD), BVN (if NG), NIN (if NG)</b> separated by commas.", { parse_mode: "HTML" });
+      await ctx.reply("Send <b>ID Type, ID Number, Issue Date (YYYY-MM-DD), Expiry Date (YYYY-MM-DD), BVN (if NG) / SSN (if US), NIN (if NG)</b> separated by commas.", { parse_mode: "HTML" });
       return true;
+    }
+    if (!isFutureIsoDate(parts[3]) || parts[2] > parts[3]) {
+      await ctx.reply("⚠️ Officer ID must be unexpired with a valid Issue Date before Expiry Date. Please re-enter.", { parse_mode: "HTML" });
+      return true;
+    }
+    const nat = String(data.officer_nationality || "").toUpperCase();
+    const bizCountry = String(data.biz_country_code || "").toUpperCase();
+    if (nat === "NG" || bizCountry === "NG") {
+      const bvn = String(parts[4] || "").replace(/\D/g, "");
+      const nin = String(parts[5] || "").replace(/\D/g, "");
+      if (!/^\d{11}$/.test(bvn) || !/^\d{11}$/.test(nin)) {
+        await ctx.reply("Nigerian officers require an <b>11-digit BVN</b> and <b>11-digit NIN</b> as the 5th and 6th values.", { parse_mode: "HTML" });
+        return true;
+      }
+      data.officer_bvn = bvn;
+      data.officer_nin = nin;
+    } else if (nat === "US" || bizCountry === "US") {
+      const ssnDigits = String(parts[4] || "").replace(/\D/g, "");
+      if (!/^\d{9}$/.test(ssnDigits)) {
+        await ctx.reply("U.S. officers require a <b>9-digit SSN</b> as the 5th value.", { parse_mode: "HTML" });
+        return true;
+      }
+      data.officer_ssn = `${ssnDigits.slice(0, 3)}-${ssnDigits.slice(3, 5)}-${ssnDigits.slice(5)}`;
+    } else {
+      if (parts[4]) data.officer_bvn = parts[4].replace(/\D/g, "");
+      if (parts[5]) data.officer_nin = parts[5].replace(/\D/g, "");
     }
     const rawType = parts[0].toLowerCase();
     data.officer_id_type = rawType.includes("pass") ? "international_passport" : rawType.includes("driv") ? "drivers_license" : "national_id";
     data.officer_id_number = parts[1];
     data.officer_id_issue_date = parts[2];
     data.officer_id_expiry_date = parts[3];
-    if (parts[4]) data.officer_bvn = parts[4].replace(/\D/g, "");
-    if (parts[5]) data.officer_nin = parts[5].replace(/\D/g, "");
     await promptBusinessKybStep(ctx, userId, "nuvion_kyb_doc_coi", data);
     return true;
   }
@@ -1165,10 +1384,25 @@ async function handleNuvionKycMediaUpload(ctx, { fileId, mimeType = "image/jpeg"
   // Immediately delete sensitive upload from chat
   if (deps.deleteSensitiveMessage) await deps.deleteSensitiveMessage(ctx).catch(() => {});
 
+  const normalizedMime = String(mimeType || "image/jpeg").trim().toLowerCase();
+  const stepAllowed = UPLOAD_STEP_ALLOWED_MIMES[state.type] || nuvion.ALLOWED_DOCUMENT_MIME_TYPES;
+  if (!nuvion.ALLOWED_DOCUMENT_MIME_TYPES.has(normalizedMime) || !stepAllowed.has(normalizedMime)) {
+    const allowedLabels = state.type === "nuvion_kyb_doc_coi"
+      ? "PDF"
+      : state.type === "nuvion_kyb_doc_memart"
+        ? "PDF or DOC/DOCX"
+        : "JPG, PNG, or PDF";
+    await ctx.reply(
+      `⚠️ Unsupported file format (<code>${escapeHtml(normalizedMime)}</code>). Please upload a <b>${allowedLabels}</b> file.`,
+      { parse_mode: "HTML" }
+    );
+    return true;
+  }
+
   const accountType = state.type.startsWith("nuvion_kyb_") ? "business" : "personal";
   const draft = db.getNuvionKycDraft(userId, accountType);
   const data = { ...(draft?.data || {}), ...(state.data || {}) };
-  const docMeta = { fileId, mimeType };
+  const docMeta = { fileId, mimeType: normalizedMime };
 
   switch (state.type) {
     case "nuvion_kyc_doc_id_front":
@@ -1381,8 +1615,12 @@ module.exports = {
   isUploadState,
   handleNuvionKycTextState,
   handleNuvionKycMediaUpload,
+  executePersonalKycSubmission,
+  executeBusinessKybSubmission,
   normalizePhone,
+  normalizeWebsiteUrl,
   isValidEmail,
   isAdultDob,
+  isFutureIsoDate,
   maskSecret,
 };

@@ -67,11 +67,14 @@ async function bootstrapApprovedEntity(entityRecord, { liveEntity = null } = {})
   }
   const entityId = entityRecord.entity_id;
   const user = db.getUser(entityRecord.telegram_id);
+  const isBusiness = entityRecord.account_type === "business";
+  // STRICT ISOLATION: Business entities NEVER fall back to personal deposit_address!
   const targetWalletAddress = user
-    ? (entityRecord.account_type === "business"
-        ? (user.business_deposit_address || user.deposit_address)
-        : user.deposit_address)
+    ? (isBusiness ? (user.business_deposit_address || null) : (user.deposit_address || null))
     : null;
+  if (isBusiness && user && !targetWalletAddress) {
+    throw new Error(`Business wallet not provisioned for user ${entityRecord.telegram_id}; refusing personal wallet fallback.`);
+  }
 
   const updates = {};
 
@@ -158,12 +161,30 @@ async function bootstrapApprovedEntity(entityRecord, { liveEntity = null } = {})
     let selfCpId = entityRecord.self_counterparty_id;
     let selfBasePdId = entityRecord.self_base_payment_detail_id;
 
+    // Check locally cached self-counterparty first to avoid duplicate creations on retry
+    if (!selfCpId || !selfBasePdId) {
+      const cachedSelf = db.getNuvionCounterpartiesByEntity(entityId, "USC").find((c) => {
+        try {
+          const s = c.summary_json ? JSON.parse(c.summary_json) : {};
+          return s.isSelf === true && String(s.wallet_address || "").toLowerCase() === targetWalletAddress.toLowerCase();
+        } catch (_) {
+          return false;
+        }
+      });
+      if (cachedSelf) {
+        selfCpId = selfCpId || cachedSelf.counterparty_id;
+        selfBasePdId = selfBasePdId || cachedSelf.payment_detail_id;
+        updates.self_counterparty_id = selfCpId;
+        updates.self_base_payment_detail_id = selfBasePdId;
+      }
+    }
+
     if (!selfCpId) {
       const fullName = (entityRecord.legal_name || user?.username || "Proxim Account").trim();
       const parts = fullName.split(/\s+/);
       const firstName = parts[0] || "Proxim";
       const lastName = parts.slice(1).join(" ") || firstName;
-      const email = entityRecord.email || liveEntity?.person?.email || liveEntity?.business?.email || `user_${entityRecord.telegram_id}@proxim.local`;
+      const email = entityRecord.email || liveEntity?.person?.email || liveEntity?.business?.email || `user_${entityRecord.telegram_id}@proxim.app`;
 
       const profile = entityRecord.entity_type === "business"
         ? {
@@ -239,6 +260,44 @@ async function bootstrapApprovedEntity(entityRecord, { liveEntity = null } = {})
 }
 
 /**
+ * Resolve child entity_id for a webhook payload even when Nuvion omits top-level `data.entity_id`.
+ */
+function _resolveEntityIdForWebhook(data) {
+  if (!data || typeof data !== "object") return null;
+  if (data.entity_id) return String(data.entity_id);
+  if (data.account?.entity_id) return String(data.account.entity_id);
+
+  const accountId = data.account_id || data.account?.id || null;
+  if (accountId) {
+    try {
+      const acc = db.prepare("SELECT entity_id FROM nuvion_accounts WHERE account_id = ? LIMIT 1").get(String(accountId));
+      if (acc?.entity_id) return String(acc.entity_id);
+      const det = db.prepare("SELECT entity_id FROM nuvion_account_details WHERE account_id = ? LIMIT 1").get(String(accountId));
+      if (det?.entity_id) return String(det.entity_id);
+    } catch (_) {}
+  }
+
+  const cardId = data.card_id || (data.type && ["virtual", "disposable"].includes(data.type) ? data.id : null);
+  if (cardId) {
+    try {
+      const card = db.prepare("SELECT entity_id FROM nuvion_cards WHERE card_id = ? LIMIT 1").get(String(cardId));
+      if (card?.entity_id) return String(card.entity_id);
+    } catch (_) {}
+  }
+
+  if (data.id) {
+    try {
+      const job = db.prepare(
+        "SELECT entity_id FROM nuvion_jobs WHERE nuvion_transfer_id = ? OR session_id = ? LIMIT 1"
+      ).get(String(data.id), String(data.id));
+      if (job?.entity_id) return String(job.entity_id);
+    } catch (_) {}
+  }
+
+  return null;
+}
+
+/**
  * Process a verified Nuvion webhook event asynchronously.
  * Always confirms latest state via GET before crediting or notifying.
  */
@@ -271,11 +330,12 @@ async function processNuvionEvent(payload, headers = {}, bot = null) {
     ? `nuvion:${headerEventId}`
     : `nuvion:${event}:${data.id || data.account?.id || Date.now()}`;
 
-  if (idempotency.isWebhookProcessed(dedupId)) {
+  // Single atomic INSERT OR IGNORE claim (prevents simultaneous retry race conditions)
+  const claimed = idempotency.tryClaimWebhookEvent(dedupId, event, data.id || data.account?.id || null);
+  if (!claimed) {
     console.log(`[nuvion_webhooks] Duplicate event ${dedupId} ignored.`);
     return { handled: true, duplicate: true, event };
   }
-  idempotency.markWebhookProcessed(dedupId, event, data.id || data.account?.id || null);
 
   const telegram = getBotTelegram(bot);
   console.log(`[nuvion_webhooks] Processing event "${event}" (id=${headerEventId || "n/a"})`);
@@ -348,7 +408,7 @@ async function processNuvionEvent(payload, headers = {}, bot = null) {
   // ── 2. Account Details Provisioning (Fiat Bank Details & Base USC Address) ─
   if (event === "account_details.created" || event === "account_details.updated") {
     const detailId = data.id;
-    const entityId = data.entity_id;
+    const entityId = _resolveEntityIdForWebhook(data);
     if (!detailId) return { handled: false, reason: "missing_detail_id" };
 
     // Confirm latest state via GET /account-details/{id}?entity_id=...
@@ -408,11 +468,12 @@ async function processNuvionEvent(payload, headers = {}, bot = null) {
   // ── 3. Transfers (Inflows, Outflows, Card Debits & Refunds) ───────────────
   if (event.startsWith("inflows.") || event.startsWith("outflows.")) {
     const transferId = data.id;
-    const entityId = data.entity_id || null;
+    let entityId = _resolveEntityIdForWebhook(data);
     let confirmed = data;
     if (transferId) {
       try {
         confirmed = await nuvion.getTransfer(transferId, entityId);
+        if (!entityId) entityId = _resolveEntityIdForWebhook(confirmed);
       } catch (err) {
         console.warn(`[nuvion_webhooks] Could not confirm transfer ${transferId}:`, err.message);
       }
@@ -425,11 +486,12 @@ async function processNuvionEvent(payload, headers = {}, bot = null) {
   // ── 4. Funding Sessions (Open Banking, Interac, MoMo, Crypto) ─────────────
   if (event === "funding_sessions.updated") {
     const sessionId = data.id;
-    const entityId = data.entity_id || null;
+    let entityId = _resolveEntityIdForWebhook(data);
     let confirmed = data;
     if (sessionId) {
       try {
         confirmed = await nuvion.getFundingSession(sessionId, entityId);
+        if (!entityId) entityId = _resolveEntityIdForWebhook(confirmed);
       } catch (err) {
         console.warn(`[nuvion_webhooks] Could not confirm funding session ${sessionId}:`, err.message);
       }
@@ -442,7 +504,7 @@ async function processNuvionEvent(payload, headers = {}, bot = null) {
   // ── 5. Cards Lifecycle ────────────────────────────────────────────────────
   if (event.startsWith("cards.")) {
     const cardId = data.id || data.card_id;
-    const entityId = data.entity_id || null;
+    const entityId = _resolveEntityIdForWebhook(data);
     const statusMap = {
       "cards.created": "active",
       "cards.frozen": "blocked",

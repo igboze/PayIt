@@ -10,6 +10,7 @@ const crypto = require("node:crypto");
 const nuvion = require("./nuvion");
 const nuvionWebhooks = require("./nuvion_webhooks");
 const db = require("./db");
+const idempotency = require("./idempotency");
 const invoiceDb = require("./invoice_db");
 const walletLib = require("./wallet");
 const apiRoutes = require("./api_routes");
@@ -415,7 +416,7 @@ async function ensureChildToParentMarginTarget(entityId, currency) {
     profile: {
       legal_name: "Proxim Platform",
       relationship: "platform",
-      email: `treasury+${code.toLowerCase()}@proxim.local`,
+      email: `treasury+${code.toLowerCase()}@proxim.app`,
       registered_address: {
         line1: "1 Proxim Way",
         city: "Lagos",
@@ -477,270 +478,344 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null }) {
   if (netMinor <= 0) return { swept: false, reason: "zero_net_amount" };
 
   const sweepJobRef = `sweep-in-${confirmed.id}`;
-  const existingJob = db.prepare("SELECT * FROM nuvion_jobs WHERE unique_reference = ?").get(sweepJobRef);
-  if (existingJob && (existingJob.state === "completed" || existingJob.state === "processing")) {
-    return { swept: false, duplicate: true, jobId: existingJob.id };
+  const sweepLockKey = `nuvion_in_sweep:${confirmed.id}`;
+  const existingRow = db.prepare("SELECT * FROM nuvion_jobs WHERE unique_reference = ?").get(sweepJobRef);
+  if (existingRow && (existingRow.state === "completed" || existingRow.state === "processing")) {
+    return { swept: false, duplicate: true, jobId: existingRow.id };
   }
 
-  // Ensure entity has its Base self-counterparty bootstrapped
-  let entity = entityRecord;
-  if (!entity.self_counterparty_id || !entity.self_base_payment_detail_id) {
-    entity = await nuvionWebhooks.bootstrapApprovedEntity(entity);
-  }
-  if (!entity.self_counterparty_id || !entity.self_base_payment_detail_id) {
-    throw new Error(`Entity ${entity.entity_id} is missing Base self-counterparty wallet details`);
-  }
-
-  const entityId = entity.entity_id;
-  const accountId = confirmed.account_id;
-  const marginBps = nuvion.getFxMarginBps("inbound");
-  const targetMarginMinor = nuvion.calcMarginMinor(netMinor, marginBps);
-
-  const job = existingJob || db.createNuvionJob({
-    entityId,
-    telegramId: entity.telegram_id,
-    accountType: entity.account_type || "personal",
-    jobType: "inbound_fiat_sweep",
-    state: "processing",
-    currency,
-    amountMinor: netMinor,
-    marginMinor: targetMarginMinor,
-    uniqueReference: sweepJobRef,
-    nuvionTransferId: confirmed.id,
-    payload: {
-      inflowId: confirmed.id,
-      accountId,
-      grossMinor,
-      railFeeMinor,
-      narration: confirmed.narration || null,
-      fundingSessionId: confirmed.meta?.funding_session_id || null,
-    },
+  // Atomic SQLite mutex: guarantees webhook & poller can NEVER race on the same inflow!
+  const lock = idempotency.tryAcquireOperationLock(sweepLockKey, {
+    scope: "nuvion_inbound_sweep",
+    telegramId: entityRecord.telegram_id,
+    accountType: entityRecord.account_type || "personal",
+    amount: nuvion.fromNuvionMinor(netMinor),
+    lockTtlSeconds: 120,
   });
+  if (!lock.acquired) {
+    return { swept: false, duplicate: true, reason: lock.reason };
+  }
 
-  // Step 1: Collect 1% FX Margin via free instant book-transfer (Child -> Parent)
-  let collectedMarginMinor = 0;
-  if (targetMarginMinor >= 1) {
-    try {
-      const marginTarget = await ensureChildToParentMarginTarget(entityId, currency);
-      if (marginTarget) {
-        await nuvion.createTransfer({
+  let job = null;
+  try {
+    // Re-read inside lock and atomically claim retry_pending -> processing
+    const lockedExisting = db.prepare("SELECT * FROM nuvion_jobs WHERE unique_reference = ?").get(sweepJobRef);
+    if (lockedExisting) {
+      if (lockedExisting.state === "completed" || lockedExisting.state === "processing") {
+        idempotency.completeOperationIdempotency(sweepLockKey, { txHash: lockedExisting.nuvion_transfer_id || sweepJobRef });
+        return { swept: false, duplicate: true, jobId: lockedExisting.id };
+      }
+      const claimed = db.db
+        .prepare("UPDATE nuvion_jobs SET state = 'processing', updated_at = datetime('now') WHERE id = ? AND state = 'retry_pending'")
+        .run(lockedExisting.id);
+      if (!claimed || claimed.changes === 0) {
+        idempotency.failOperationIdempotency(sweepLockKey, "Could not claim retry_pending job");
+        return { swept: false, duplicate: true, jobId: lockedExisting.id };
+      }
+      job = db.getNuvionJobById(lockedExisting.id);
+    }
+
+    // Ensure entity has its Base self-counterparty bootstrapped
+    let entity = entityRecord;
+    if (!entity.self_counterparty_id || !entity.self_base_payment_detail_id) {
+      entity = await nuvionWebhooks.bootstrapApprovedEntity(entity);
+    }
+    if (!entity.self_counterparty_id || !entity.self_base_payment_detail_id) {
+      throw new Error(`Entity ${entity.entity_id} is missing Base self-counterparty wallet details`);
+    }
+
+    const entityId = entity.entity_id;
+    const accountId = confirmed.account_id;
+    const marginBps = nuvion.getFxMarginBps("inbound");
+    const targetMarginMinor = nuvion.calcMarginMinor(netMinor, marginBps);
+
+    if (!job) {
+      job = db.createNuvionJob({
+        entityId,
+        telegramId: entity.telegram_id,
+        accountType: entity.account_type || "personal",
+        jobType: "inbound_fiat_sweep",
+        state: "processing",
+        currency,
+        amountMinor: netMinor,
+        marginMinor: targetMarginMinor,
+        uniqueReference: sweepJobRef,
+        nuvionTransferId: confirmed.id,
+        payload: {
+          inflowId: confirmed.id,
+          accountId,
+          grossMinor,
+          railFeeMinor,
+          narration: confirmed.narration || null,
+          fundingSessionId: confirmed.meta?.funding_session_id || null,
+          marginCollected: false,
+          collectedMarginMinor: 0,
+        },
+      });
+    }
+
+    const jobPayload = { ...(job.payload || {}) };
+
+    // Step 1: Collect 1% FX Margin via free instant book-transfer (Child -> Parent)
+    // Persisted immediately into payload_json so retries NEVER double-charge 1% margin!
+    let collectedMarginMinor = jobPayload.marginCollected ? Math.round(Number(jobPayload.collectedMarginMinor || 0)) : 0;
+    if (!jobPayload.marginCollected && targetMarginMinor >= 1) {
+      try {
+        const marginTarget = await ensureChildToParentMarginTarget(entityId, currency);
+        if (marginTarget) {
+          const marginRef = `margin-${confirmed.id}`;
+          try {
+            await nuvion.createTransfer({
+              entityId,
+              accountId,
+              counterpartyId: marginTarget.counterpartyId,
+              paymentDetailId: marginTarget.paymentDetailId,
+              amountMinor: targetMarginMinor,
+              currency,
+              narration: `FX spread ${confirmed.id}`,
+              paymentType: "book-transfer",
+              uniqueReference: marginRef,
+            });
+            collectedMarginMinor = targetMarginMinor;
+          } catch (mErr) {
+            // If margin transfer already succeeded on an earlier attempt (409 duplicate unique_reference), count it once!
+            if (mErr instanceof nuvion.NuvionError && mErr.status === 409 && mErr.type === "error_duplicate_resource") {
+              collectedMarginMinor = targetMarginMinor;
+            } else {
+              throw mErr;
+            }
+          }
+          jobPayload.marginCollected = true;
+          jobPayload.collectedMarginMinor = collectedMarginMinor;
+          db.updateNuvionJob(job.id, {
+            margin_minor: collectedMarginMinor,
+            payload_json: jobPayload,
+          });
+        }
+      } catch (marginErr) {
+        // If margin book-transfer fails (e.g. parent account unavailable), never strand user's deposit!
+        console.warn(`[nuvion_orchestrator] Margin book-transfer skipped for ${confirmed.id}:`, marginErr.message);
+      }
+    }
+
+    // Step 2: Convert remaining fiat -> USC and fire straight to User's 0x wallet on BASE_MAINNET
+    const configuredFeeBuffer = Math.max(0, Math.round(Number(process.env.NUVION_STABLECOIN_OUTFLOW_FEE_MINOR || 0)));
+    let sweepMinor = netMinor - collectedMarginMinor - configuredFeeBuffer;
+    if (sweepMinor <= 0) {
+      db.updateNuvionJob(job.id, { state: "failed", error_message: "Net amount too small after fee buffer" });
+      idempotency.failOperationIdempotency(sweepLockKey, "amount_too_small");
+      return { swept: false, reason: "amount_too_small" };
+    }
+
+    let quote = null;
+    let outflow = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const ref = attempt === 0 ? `sweep-base-${confirmed.id}` : `sweep-base-${confirmed.id}-r${attempt}`;
+      try {
+        quote = await nuvion.createFxQuote({
+          entityId,
+          fromCurrency: currency,
+          toCurrency: "USC",
+          amountFrom: sweepMinor,
+          accountId,
+        });
+
+        outflow = await nuvion.createTransfer({
           entityId,
           accountId,
-          counterpartyId: marginTarget.counterpartyId,
-          paymentDetailId: marginTarget.paymentDetailId,
-          amountMinor: targetMarginMinor,
+          counterpartyId: entity.self_counterparty_id,
+          paymentDetailId: entity.self_base_payment_detail_id,
+          amountMinor: sweepMinor,
           currency,
-          narration: `FX spread ${confirmed.id}`,
-          paymentType: "book-transfer",
-          uniqueReference: `margin-${confirmed.id}`,
+          narration: `Proxim auto-settlement ${confirmed.id}`,
+          paymentType: "stablecoin-transfer",
+          fxQuoteId: quote.id,
+          uniqueReference: ref,
         });
-        collectedMarginMinor = targetMarginMinor;
+        break;
+      } catch (err) {
+        // Recover cleanly if this exact unique_reference already landed on Nuvion
+        if (err instanceof nuvion.NuvionError && err.status === 409 && err.type === "error_duplicate_resource") {
+          const recovered = await nuvion.recoverTransferByReference(ref, entityId).catch(() => null);
+          if (recovered) {
+            outflow = recovered;
+            break;
+          }
+        }
+        // Handle Nuvion applicable_fee on top of amount (400 error_transfer_insufficient_funds)
+        if (attempt === 0 && err instanceof nuvion.NuvionError && err.type === "error_transfer_insufficient_funds") {
+          const retryBuffer = Math.max(100, Math.ceil(sweepMinor * 0.015));
+          if (sweepMinor - retryBuffer > 0) {
+            console.warn(`[nuvion_orchestrator] Insufficient funds with fee on ${confirmed.id}; retrying with buffer ${retryBuffer}`);
+            sweepMinor -= retryBuffer;
+            continue;
+          }
+        }
+        db.updateNuvionJob(job.id, {
+          state: "retry_pending",
+          retry_count: (job.retry_count || 0) + 1,
+          error_message: err.message,
+          payload_json: jobPayload,
+        });
+        throw err;
       }
-    } catch (marginErr) {
-      // If margin book-transfer fails (e.g. parent account unavailable), never strand user's deposit!
-      console.warn(`[nuvion_orchestrator] Margin book-transfer skipped for ${confirmed.id}:`, marginErr.message);
     }
-  }
 
-  // Step 2: Convert remaining fiat -> USC and fire straight to User's 0x wallet on BASE_MAINNET
-  const configuredFeeBuffer = Math.max(0, Math.round(Number(process.env.NUVION_STABLECOIN_OUTFLOW_FEE_MINOR || 0)));
-  let sweepMinor = netMinor - collectedMarginMinor - configuredFeeBuffer;
-  if (sweepMinor <= 0) {
-    db.updateNuvionJob(job.id, { state: "failed", error_message: "Net amount too small after fee buffer" });
-    return { swept: false, reason: "amount_too_small" };
-  }
+    const creditedUsd = nuvion.fromNuvionMinor(quote?.amount_to || outflow?.amount || sweepMinor);
+    const grossMajor = nuvion.fromNuvionMinor(grossMinor);
+    const netFiatMajor = nuvion.fromNuvionMinor(netMinor);
 
-  let quote = null;
-  let outflow = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
+    db.updateNuvionJob(job.id, {
+      state: "completed",
+      margin_minor: collectedMarginMinor,
+      fx_quote_id: quote?.id || null,
+      nuvion_transfer_id: outflow.id,
+      payload_json: {
+        ...jobPayload,
+        outflowId: outflow.id,
+        fxQuoteId: quote?.id || null,
+        sweepMinor,
+        collectedMarginMinor,
+        creditedUsd,
+        rate: quote?.rate || null,
+      },
+    });
+    idempotency.completeOperationIdempotency(sweepLockKey, { txHash: outflow.id });
+
+    // Step 3: Record ledger transaction
     try {
-      quote = await nuvion.createFxQuote({
-        entityId,
-        fromCurrency: currency,
-        toCurrency: "USC",
-        amountFrom: sweepMinor,
-        accountId,
-      });
+      const txType = currency === "NGN" ? "deposit_naira" : "deposit_fiat";
+      const amountMicro = walletLib.parseToMicro(creditedUsd.toFixed(6));
+      db.recordTransaction(
+        entity.telegram_id,
+        txType,
+        String(amountMicro),
+        "confirmed",
+        outflow.id || confirmed.id,
+        entity.account_type || "personal",
+        18,
+        "base",
+        confirmed.narration || `${currency} deposit`
+      );
+    } catch (txErr) {
+      console.warn("[nuvion_orchestrator] recordTransaction note:", txErr.message);
+    }
 
-      const ref = attempt === 0 ? `sweep-base-${confirmed.id}` : `sweep-base-${confirmed.id}-r${attempt}`;
-      outflow = await nuvion.createTransfer({
-        entityId,
-        accountId,
-        counterpartyId: entity.self_counterparty_id,
-        paymentDetailId: entity.self_base_payment_detail_id,
-        amountMinor: sweepMinor,
-        currency,
-        narration: `Proxim auto-settlement ${confirmed.id}`,
-        paymentType: "stablecoin-transfer",
-        fxQuoteId: quote.id,
-        uniqueReference: ref,
-      });
-      break;
-    } catch (err) {
-      // Handle Nuvion applicable_fee on top of amount (400 error_transfer_insufficient_funds)
-      if (attempt === 0 && err instanceof nuvion.NuvionError && err.type === "error_transfer_insufficient_funds") {
-        const retryBuffer = Math.max(100, Math.ceil(sweepMinor * 0.015));
-        if (sweepMinor - retryBuffer > 0) {
-          console.warn(`[nuvion_orchestrator] Insufficient funds with fee on ${confirmed.id}; retrying with buffer ${retryBuffer}`);
-          sweepMinor -= retryBuffer;
-          continue;
+    // Step 4: Auto-mark any linked invoice paid (via funding_session job OR INV-... narration match)
+    let paidInvoiceNumber = null;
+    try {
+      const fsId = confirmed.meta?.funding_session_id;
+      let invId = null;
+      if (fsId) {
+        const fsJob = db.prepare("SELECT * FROM nuvion_jobs WHERE session_id = ?").get(String(fsId));
+        if (fsJob) {
+          const fsPayload = fsJob.payload_json ? JSON.parse(fsJob.payload_json) : {};
+          invId = fsPayload.invoiceId || null;
+          db.updateNuvionJob(fsJob.id, { state: "settled" });
         }
       }
-      db.updateNuvionJob(job.id, {
-        state: "retry_pending",
-        retry_count: (job.retry_count || 0) + 1,
-        error_message: err.message,
-      });
-      throw err;
-    }
-  }
-
-  const creditedUsd = nuvion.fromNuvionMinor(quote.amount_to);
-  const grossMajor = nuvion.fromNuvionMinor(grossMinor);
-  const netFiatMajor = nuvion.fromNuvionMinor(netMinor);
-
-  db.updateNuvionJob(job.id, {
-    state: "completed",
-    margin_minor: collectedMarginMinor,
-    fx_quote_id: quote.id,
-    nuvion_transfer_id: outflow.id,
-    payload_json: {
-      ...(job.payload || {}),
-      outflowId: outflow.id,
-      fxQuoteId: quote.id,
-      sweepMinor,
-      collectedMarginMinor,
-      creditedUsd,
-      rate: quote.rate,
-    },
-  });
-
-  // Step 3: Record ledger transaction
-  try {
-    const txType = currency === "NGN" ? "deposit_naira" : "deposit_fiat";
-    const amountMicro = walletLib.parseToMicro(creditedUsd.toFixed(6));
-    db.recordTransaction(
-      entity.telegram_id,
-      txType,
-      String(amountMicro),
-      "confirmed",
-      outflow.id || confirmed.id,
-      entity.account_type || "personal",
-      18,
-      "base",
-      confirmed.narration || `${currency} deposit`
-    );
-  } catch (txErr) {
-    console.warn("[nuvion_orchestrator] recordTransaction note:", txErr.message);
-  }
-
-  // Step 4: Auto-mark any linked invoice paid (via funding_session job OR INV-... narration match)
-  let paidInvoiceNumber = null;
-  try {
-    const fsId = confirmed.meta?.funding_session_id;
-    let invId = null;
-    if (fsId) {
-      const fsJob = db.prepare("SELECT * FROM nuvion_jobs WHERE session_id = ?").get(String(fsId));
-      if (fsJob) {
-        const fsPayload = fsJob.payload_json ? JSON.parse(fsJob.payload_json) : {};
-        invId = fsPayload.invoiceId || null;
-        db.updateNuvionJob(fsJob.id, { state: "settled" });
-      }
-    }
-    if (invId) {
-      const inv = invoiceDb.getInvoice(Number(invId));
-      if (inv && inv.status !== "paid") {
-        invoiceDb.markInvoicePaidWithTxHash(inv.id, outflow.id || confirmed.id);
-        paidInvoiceNumber = inv.invoice_number;
-      }
-    } else if (confirmed.narration) {
-      const m = String(confirmed.narration).match(/\b(INV-[A-Z0-9-]+)\b/i);
-      if (m) {
-        const inv = invoiceDb.getInvoiceByNumber(m[1].toUpperCase());
-        if (inv && Number(inv.telegram_id || inv.owner_telegram_id) === Number(entity.telegram_id) && inv.status !== "paid") {
+      if (invId) {
+        const inv = invoiceDb.getInvoice(Number(invId));
+        if (inv && inv.status !== "paid") {
           invoiceDb.markInvoicePaidWithTxHash(inv.id, outflow.id || confirmed.id);
           paidInvoiceNumber = inv.invoice_number;
         }
+      } else if (confirmed.narration) {
+        const m = String(confirmed.narration).match(/\b(INV-[A-Z0-9-]+)\b/i);
+        if (m) {
+          const inv = invoiceDb.getInvoiceByNumber(m[1].toUpperCase());
+          if (inv && Number(inv.telegram_id || inv.owner_telegram_id) === Number(entity.telegram_id) && inv.status !== "paid") {
+            invoiceDb.markInvoicePaidWithTxHash(inv.id, outflow.id || confirmed.id);
+            paidInvoiceNumber = inv.invoice_number;
+          }
+        }
       }
+    } catch (invErr) {
+      console.warn("[nuvion_orchestrator] Invoice auto-match note:", invErr.message);
     }
-  } catch (invErr) {
-    console.warn("[nuvion_orchestrator] Invoice auto-match note:", invErr.message);
-  }
 
-  // Step 5: Send clean Telegram confirmation + HD Receipt PNG (Naira-only for NGN!)
-  const telegram = getBotTelegram(bot);
-  if (telegram && entity.telegram_id) {
-    const isNgn = currency === "NGN";
-    const acctLabel = entity.account_type === "business" ? "Business Account" : "Personal Account";
-    const fiatStr = formatFiatAmount(currency, grossMajor);
-    const captionLines = [
-      `🎉 <b>Deposit Received!</b>`,
-      `──────────────────────────`,
-      `💵 <b>Amount Received:</b> ${fiatStr}`,
-    ];
-    if (!isNgn) {
-      captionLines.push(`💰 <b>Credited to Balance:</b> $${creditedUsd.toFixed(2)}`);
-    }
-    captionLines.push(`💼 <b>Account:</b> ${acctLabel}`);
-    if (paidInvoiceNumber) {
-      captionLines.push(`🧾 <b>Invoice Paid:</b> <code>${escapeHtml(paidInvoiceNumber)}</code>`);
-    }
-    if (confirmed.narration) {
-      captionLines.push(`💬 <b>Note:</b> <i>${escapeHtml(confirmed.narration)}</i>`);
-    }
-    captionLines.push(`🔖 <b>Reference:</b> <code>${escapeHtml(confirmed.id)}</code>`);
-    captionLines.push(`──────────────────────────\n<i>Settled directly into your main Proxim balance.</i>`);
-    const caption = captionLines.join("\n");
+    // Step 5: Send clean Telegram confirmation + HD Receipt PNG (Naira-only for NGN!)
+    const telegram = getBotTelegram(bot);
+    if (telegram && entity.telegram_id) {
+      const isNgn = currency === "NGN";
+      const acctLabel = entity.account_type === "business" ? "Business Account" : "Personal Account";
+      const fiatStr = formatFiatAmount(currency, grossMajor);
+      const captionLines = [
+        `🎉 <b>Deposit Received!</b>`,
+        `──────────────────────────`,
+        `💵 <b>Amount Received:</b> ${fiatStr}`,
+      ];
+      if (!isNgn) {
+        captionLines.push(`💰 <b>Credited to Balance:</b> $${creditedUsd.toFixed(2)}`);
+      }
+      captionLines.push(`💼 <b>Account:</b> ${acctLabel}`);
+      if (paidInvoiceNumber) {
+        captionLines.push(`🧾 <b>Invoice Paid:</b> <code>${escapeHtml(paidInvoiceNumber)}</code>`);
+      }
+      if (confirmed.narration) {
+        captionLines.push(`💬 <b>Note:</b> <i>${escapeHtml(confirmed.narration)}</i>`);
+      }
+      captionLines.push(`🔖 <b>Reference:</b> <code>${escapeHtml(confirmed.id)}</code>`);
+      captionLines.push(`──────────────────────────\n<i>Settled directly into your main Proxim balance.</i>`);
+      const caption = captionLines.join("\n");
 
-    let receiptPath = null;
-    try {
-      receiptPath = await generateReceiptPNG({
-        receiptId: `DEP-${String(confirmed.id).slice(-10)}`,
-        senderName: isNgn ? "Nigerian Bank Transfer" : `${currency} Bank Transfer`,
-        recipientName: entity.legal_name || acctLabel,
-        amountUsdc: creditedUsd,
-        displayCurrency: isNgn ? "NGN" : "USD",
-        fiatAmountDisplay: isNgn ? formatFiatAmount("NGN", netFiatMajor) : `${fiatStr} ($${creditedUsd.toFixed(2)})`,
-        type: "Deposit",
-        timestamp: new Date().toISOString(),
-        status: "Confirmed",
-        txHash: outflow.id || confirmed.id,
-        narration: confirmed.narration || null,
-      });
-    } catch (_) {}
-
-    if (receiptPath && typeof telegram.sendPhoto === "function") {
+      let receiptPath = null;
       try {
-        await telegram.sendPhoto(entity.telegram_id, { source: receiptPath }, { caption, parse_mode: "HTML" });
-      } catch (_) {
+        receiptPath = await generateReceiptPNG({
+          receiptId: `DEP-${String(confirmed.id).slice(-10)}`,
+          senderName: isNgn ? "Nigerian Bank Transfer" : `${currency} Bank Transfer`,
+          recipientName: entity.legal_name || acctLabel,
+          amountUsdc: creditedUsd,
+          displayCurrency: isNgn ? "NGN" : "USD",
+          fiatAmountDisplay: isNgn ? formatFiatAmount("NGN", netFiatMajor) : `${fiatStr} ($${creditedUsd.toFixed(2)})`,
+          type: "Deposit",
+          timestamp: new Date().toISOString(),
+          status: "Confirmed",
+          txHash: outflow.id || confirmed.id,
+          narration: confirmed.narration || null,
+        });
+      } catch (_) {}
+
+      if (receiptPath && typeof telegram.sendPhoto === "function") {
+        try {
+          await telegram.sendPhoto(entity.telegram_id, { source: receiptPath }, { caption, parse_mode: "HTML" });
+        } catch (_) {
+          await telegram.sendMessage(entity.telegram_id, caption, { parse_mode: "HTML" }).catch(() => {});
+        }
+      } else {
         await telegram.sendMessage(entity.telegram_id, caption, { parse_mode: "HTML" }).catch(() => {});
       }
-    } else {
-      await telegram.sendMessage(entity.telegram_id, caption, { parse_mode: "HTML" }).catch(() => {});
     }
-  }
 
-  // Step 6: Trigger non-blocking silent background Base -> Arc sweep (skipped in unit tests)
-  if (process.env.NODE_ENV !== "test") {
-    setTimeout(() => {
-      try {
-        const evmDepositSweeper = require("./evm_deposit_sweeper");
-        evmDepositSweeper.sweepUserDeposits(entity.telegram_id, null, { silent: true }).catch(() => {});
-      } catch (_) {}
-    }, 15000);
-  }
+    // Step 6: Trigger non-blocking silent background Base -> Arc sweep strictly for this accountType (skipped in unit tests)
+    if (process.env.NODE_ENV !== "test") {
+      setTimeout(() => {
+        try {
+          const evmDepositSweeper = require("./evm_deposit_sweeper");
+          evmDepositSweeper.sweepUserDeposits(entity.telegram_id, null, {
+            silent: true,
+            onlyChain: "BASE",
+            onlyAccountType: entity.account_type || "personal",
+          }).catch(() => {});
+        } catch (_) {}
+      }, 15000);
+    }
 
-  return {
-    swept: true,
-    jobId: job.id,
-    outflowId: outflow.id,
-    fxQuoteId: quote.id,
-    currency,
-    grossMajor,
-    collectedMarginMinor,
-    creditedUsd,
-    paidInvoiceNumber,
-  };
+    return {
+      swept: true,
+      jobId: job.id,
+      outflowId: outflow.id,
+      fxQuoteId: quote?.id || null,
+      currency,
+      grossMajor,
+      collectedMarginMinor,
+      creditedUsd,
+      paidInvoiceNumber,
+    };
+  } catch (err) {
+    idempotency.failOperationIdempotency(sweepLockKey, err.message);
+    throw err;
+  }
 }
 
 /**

@@ -476,17 +476,37 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
   const rpcUrl = isRelayChain ? dexConfig.rpcUrl : cctpConfig.rpcUrl;
   const effectiveChainId = isRelayChain ? dexConfig.chainId : cctpConfig.chainId;
 
-  // 3. Resolve user private key via system encryption or explicit override
+  // 3. Detect early if this Base USDC arrival belongs to a Nuvion fiat settlement, card unload, or refund
+  //    so we NEVER leak crypto-jargon progress/receipt messages or duplicate ledger rows!
+  const isNativeEarly = isNativeToken(token, dexConfig);
+  let isNuvionSettled = Boolean(options?.silent);
+  if (!isNuvionSettled && Number(effectiveChainId) === 8453 && !isNativeEarly && targetTelegramId) {
+    try {
+      const recentNuvion = db
+        .prepare(
+          `SELECT id FROM nuvion_jobs
+           WHERE telegram_id = ? AND account_type = ?
+             AND job_type IN ('inbound_fiat_sweep', 'card_unload', 'outbound_fiat_payout')
+             AND state IN ('completed', 'refunded')
+             AND updated_at >= datetime('now', '-30 minutes')
+           LIMIT 1`
+        )
+        .get(Number(targetTelegramId), accountType || "personal");
+      if (recentNuvion) isNuvionSettled = true;
+    } catch (_) {}
+  }
+
+  // 3b. Resolve user private key via system encryption or explicit override (strict accountType isolation!)
   let userPrivateKey = options?.overridePrivateKey || null;
   if (!userPrivateKey) {
     try {
       userPrivateKey = db.getSystemDecryptedPrivateKey(user, accountType);
     } catch (keyErr) {
-      console.warn(`[evm_sweeper] Could not decrypt system key for user ${user.telegram_id}:`, keyErr.message);
+      console.warn(`[evm_sweeper] Could not decrypt system key for user ${user.telegram_id} (${accountType}):`, keyErr.message);
     }
   }
 
-  if (!userPrivateKey && !user.system_encrypted_key && bot && targetTelegramId) {
+  if (!isNuvionSettled && !userPrivateKey && !user.system_encrypted_key && bot && targetTelegramId) {
     try {
       // First-time user: needs to authorize PIN once to enable auto-sweep
       const { Markup } = require("telegraf");
@@ -507,7 +527,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     } catch (msgErr) {
       console.warn(`[evm_sweeper] Failed to notify user TG:${targetTelegramId}:`, msgErr.message);
     }
-  } else if (!userPrivateKey && user.system_encrypted_key && bot && targetTelegramId) {
+  } else if (!isNuvionSettled && !userPrivateKey && user.system_encrypted_key && bot && targetTelegramId) {
     // User is authorized but key could not be decrypted at runtime — prompt manual sweep
     try {
       const { Markup } = require("telegraf");
@@ -533,11 +553,17 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
   const provider = new JsonRpcProvider(rpcUrl, effectiveChainId, { staticNetwork: true });
   const signer = userPrivateKey ? new Wallet(userPrivateKey, provider) : null;
 
+  // CRITICAL FUND-ISOLATION GUARD: Never allow a personal key to sweep a business address or vice-versa!
+  if (signer && signer.address.toLowerCase() !== toAddress.toLowerCase()) {
+    console.error(`[evm_sweeper] CRITICAL ISOLATION GUARD: Signer ${signer.address} != target ${toAddress} (${accountType}). Aborting sweep!`);
+    return { success: false, error: "Wallet signer mismatch — aborted for fund isolation" };
+  }
+
   let effectiveAmountUsdc = 0;
   let swapTxHash = null;
 
-  // Intermediate notification: Notify user that deposit is in progress
-  if (bot && targetTelegramId) {
+  // Intermediate notification: Notify user that deposit is in progress (suppressed for silent/Nuvion settlements!)
+  if (!isNuvionSettled && bot && targetTelegramId) {
     try {
       await bot.telegram.sendMessage(
         targetTelegramId,
@@ -656,22 +682,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
       return { success: false, error: "Amount below minimum threshold ($0.50 USDC)" };
     }
 
-    // Detect if this Base USDC arrival was already recorded & receipted by Nuvion's fiat inbound orchestrator
-    let isNuvionSettled = Boolean(options?.silent);
-    if (!isNuvionSettled && Number(effectiveChainId) === 8453 && !isNative && targetTelegramId) {
-      try {
-        const recentNuvion = db
-          .prepare(
-            `SELECT id FROM nuvion_jobs
-             WHERE telegram_id = ? AND account_type = ? AND job_type = 'inbound_fiat_sweep'
-               AND state = 'completed' AND updated_at >= datetime('now', '-20 minutes')
-             LIMIT 1`
-          )
-          .get(Number(targetTelegramId), accountType || "personal");
-        if (recentNuvion) isNuvionSettled = true;
-      } catch (_) {}
-    }
-
+    // `isNuvionSettled` was already computed above before notifications (covers silent, inbound fiat, card unload & payout refund)
     // Record transaction with retry to guarantee user is credited (skip duplicate ledger row for Nuvion fiat settlements)
     if (!isNuvionSettled) {
       let recorded = false;
@@ -1006,9 +1017,14 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
   const user = db.getUser(telegramId);
   if (!user) return [];
 
+  const onlyAcct = options?.onlyAccountType ? String(options.onlyAccountType).toLowerCase() : null;
+  const onlyChain = options?.onlyChain ? String(options.onlyChain).toUpperCase() : null;
+
   const addresses = [
-    { address: user.deposit_address, accountType: "personal" },
-    ...(user.business_deposit_address ? [{ address: user.business_deposit_address, accountType: "business" }] : []),
+    ...(!onlyAcct || onlyAcct === "personal" ? [{ address: user.deposit_address, accountType: "personal" }] : []),
+    ...((!onlyAcct || onlyAcct === "business") && user.business_deposit_address
+      ? [{ address: user.business_deposit_address, accountType: "business" }]
+      : []),
   ];
 
   const results = [];
@@ -1018,7 +1034,9 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
     ...Object.entries(cctpBridge.EVM_CCTP_CONTRACTS)
       .filter(([chainKey, cfg]) => {
         const isTestnetChain = chainKey.includes("SEPOLIA");
-        return currentNet.isTestnet ? isTestnetChain : !isTestnetChain;
+        if (currentNet.isTestnet ? !isTestnetChain : isTestnetChain) return false;
+        if (onlyChain && chainKey.toUpperCase() !== onlyChain && String(cfg.chainId) !== onlyChain) return false;
+        return true;
       })
       .map(([chainKey, cfg]) => ({
         key: chainKey,
@@ -1029,7 +1047,7 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
         decimals: cfg.decimals,
         isRelayIntent: [8453, 42161, 10, 1].includes(cfg.chainId),
       })),
-    ...(!currentNet.isTestnet ? [{
+    ...(!currentNet.isTestnet && (!onlyChain || onlyChain === "ROBINHOOD" || onlyChain === "4663") ? [{
       key: "ROBINHOOD",
       name: "Robinhood Chain",
       chainId: 4663,

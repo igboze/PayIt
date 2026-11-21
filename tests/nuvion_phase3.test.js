@@ -328,8 +328,7 @@ test("Phase 3: End-to-End Global Payouts (CNY Wire, Tier-1 NGN NIP Naira-only, S
     const w = walletLib.generateUserWallet();
     const bizW = walletLib.generateUserWallet();
     db.createUserWithWallet(tgId, "global_ceo", w.address, w.privateKey, "1234");
-    db.db.prepare("UPDATE users SET business_deposit_address = ? WHERE telegram_id = ?")
-      .run(bizW.address, tgId);
+    db.addBusinessWallet(tgId, bizW.address, bizW.privateKey, "1234");
 
     // Tier-0 check before Tier-1 approval -> NGN stays on Paj v2
     assert.equal(payouts.shouldUseNuvionForNgnPayout(tgId, "personal"), false);

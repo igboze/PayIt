@@ -340,7 +340,7 @@ test("Phase 4: Safe expiration (<= 24 months) & End-to-End Disposable + Business
     const w = walletLib.generateUserWallet();
     const bizW = walletLib.generateUserWallet();
     db.createUserWithWallet(tgId, "card_founder", w.address, w.privateKey, "1234");
-    db.db.prepare("UPDATE users SET business_deposit_address = ? WHERE telegram_id = ?").run(bizW.address, tgId);
+    db.addBusinessWallet(tgId, bizW.address, bizW.privateKey, "1234");
 
     const perEntId = "01P4ENT_PERSONAL_CARDS";
     const bizEntId = "01P4ENT_BUSINESS_CARDS";

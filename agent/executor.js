@@ -267,19 +267,23 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
           }
         } catch (_) {}
       }
-      const solAddress = multichain.getOrDeriveSolanaAddress ? multichain.getOrDeriveSolanaAddress(user) : null;
-      if (solAddress && !solAddrsToCheck.includes(solAddress)) solAddrsToCheck.push(solAddress);
-      if (user.solana_deposit_address && !solAddrsToCheck.includes(user.solana_deposit_address)) {
-        solAddrsToCheck.push(user.solana_deposit_address);
-      }
-      if (user.biz_solana_deposit_address && !solAddrsToCheck.includes(user.biz_solana_deposit_address)) {
-        solAddrsToCheck.push(user.biz_solana_deposit_address);
-      }
-      if (user.business_solana_deposit_address && !solAddrsToCheck.includes(user.business_solana_deposit_address)) {
-        solAddrsToCheck.push(user.business_solana_deposit_address);
-      }
-      if (user.paj_permanent_offramp_address && !solAddrsToCheck.includes(user.paj_permanent_offramp_address)) {
-        solAddrsToCheck.push(user.paj_permanent_offramp_address);
+      const isBizAcct = options.accountType === "business";
+      if (isBizAcct) {
+        if (user.biz_solana_deposit_address && !solAddrsToCheck.includes(user.biz_solana_deposit_address)) {
+          solAddrsToCheck.push(user.biz_solana_deposit_address);
+        }
+        if (user.business_solana_deposit_address && !solAddrsToCheck.includes(user.business_solana_deposit_address)) {
+          solAddrsToCheck.push(user.business_solana_deposit_address);
+        }
+      } else {
+        const solAddress = multichain.getOrDeriveSolanaAddress ? multichain.getOrDeriveSolanaAddress(user) : null;
+        if (solAddress && !solAddrsToCheck.includes(solAddress)) solAddrsToCheck.push(solAddress);
+        if (user.solana_deposit_address && !solAddrsToCheck.includes(user.solana_deposit_address)) {
+          solAddrsToCheck.push(user.solana_deposit_address);
+        }
+        if (user.paj_permanent_offramp_address && !solAddrsToCheck.includes(user.paj_permanent_offramp_address)) {
+          solAddrsToCheck.push(user.paj_permanent_offramp_address);
+        }
       }
       let solUsdc = 0;
       for (const a of solAddrsToCheck) {
@@ -327,6 +331,36 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
         arcBalanceMicro = await walletLib.getNativeBalanceMicro(userWallet.address);
         balance = arcBalanceMicro;
       } catch {}
+    }
+  }
+
+  // Arc <-> Base Seamless Bridge: If user recently received funds via Nuvion (on Base) and
+  // immediately triggers a Paj Cash-Out (on Arc) before the 15s background sweep ran,
+  // surgically sweep Base USDC -> Arc on-demand for THIS exact accountType!
+  if (balance < totalRequiredMicro && rail === "arc" && (process.env.NODE_ENV !== "test" || options.enableBaseAutoSweep === true)) {
+    try {
+      const baseBalStr = await Promise.race([
+        walletLib.getUsdcBalance(userWallet.address, "Base"),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("base_rpc_timeout")), 3000)),
+      ]);
+      const baseUsd = parseFloat(baseBalStr || "0");
+      if (Number.isFinite(baseUsd) && baseUsd >= 1.0) {
+        const baseMicro = walletLib.parseToMicro(baseUsd.toFixed(6));
+        if (arcBalanceMicro + baseMicro >= totalRequiredMicro) {
+          const evmDepositSweeper = require("../src/evm_deposit_sweeper");
+          await evmDepositSweeper.sweepUserDeposits(telegramId, null, {
+            silent: true,
+            onlyChain: "BASE",
+            onlyAccountType: options.accountType || "personal",
+            overridePrivateKey: userWallet.privateKey,
+            force: true,
+          });
+          arcBalanceMicro = await walletLib.getNativeBalanceMicro(userWallet.address);
+          balance = arcBalanceMicro;
+        }
+      }
+    } catch (baseSweepErr) {
+      console.warn("[executor:offramp] On-demand Base -> Arc sweep note:", baseSweepErr.message);
     }
   }
 

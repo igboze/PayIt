@@ -1461,7 +1461,7 @@ function getUserByDepositAddress(address) {
  */
 function getSystemDecryptedPrivateKey(user, accountType = "personal") {
   if (!user) throw new Error("User required to decrypt system key");
-  const enc = (accountType === "business" && user.biz_system_encrypted_key)
+  const enc = accountType === "business"
     ? user.biz_system_encrypted_key
     : user.system_encrypted_key;
   if (!enc) {

@@ -5,7 +5,14 @@
 // Virtual & Disposable USD Cards, and HMAC-SHA256 Webhooks.
 
 const crypto = require("node:crypto");
+const http = require("node:http");
+const https = require("node:https");
 const axios = require("axios");
+
+// Dedicated non-pooled agents prevent stale keep-alive ECONNRESET races after idle periods
+// (e.g. Cloudflare/ALB idle timeouts or >5s receipt PNG generation between consecutive calls).
+const _httpAgent = new http.Agent({ keepAlive: false });
+const _httpsAgent = new https.Agent({ keepAlive: false });
 
 const DEFAULT_API_VERSION = "2026-02-06";
 const DEFAULT_FX_MARGIN_BPS = 100; // 1.00%
@@ -13,6 +20,16 @@ const DEFAULT_FX_MARGIN_BPS = 100; // 1.00%
 const SUPPORTED_FIAT_RECEIVING_CURRENCIES = [
   "USD", "EUR", "GBP", "CAD", "NGN", "AED", "KES", "GHS", "TZS", "MXN",
 ];
+
+// Official Nuvion POST /documents accepted meta.file_type values (exact case-sensitive match)
+const ALLOWED_DOCUMENT_MIME_TYPES = new Set([
+  "application/pdf",
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+]);
 
 const STABLECOIN_CHAIN_TO_NETWORK = {
   base: "BASE_MAINNET",
@@ -238,46 +255,333 @@ async function nuvionRequest({ method, path, params = null, data = null, entityI
     headers["Content-Type"] = "application/json";
   }
 
-  try {
-    const res = await axios({
-      method: upperMethod,
-      url: `${getBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`,
-      headers,
-      params: Object.keys(cleanParams).length ? cleanParams : undefined,
-      data: bodyData,
-      timeout: timeoutMs,
-      validateStatus: () => true,
-    });
+  const url = `${getBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
+  const maxAttempts = upperMethod === "GET" ? 2 : 1;
 
-    const payload = res.data || {};
-    const requestId = res.headers?.["x-request-id"] || res.headers?.["X-Request-ID"] || null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const res = await axios({
+        method: upperMethod,
+        url,
+        headers,
+        params: Object.keys(cleanParams).length ? cleanParams : undefined,
+        data: bodyData,
+        timeout: timeoutMs,
+        httpAgent: _httpAgent,
+        httpsAgent: _httpsAgent,
+        validateStatus: () => true,
+      });
 
-    if (res.status >= 200 && res.status < 300) {
-      return payload;
+      const payload = res.data || {};
+      const requestId = res.headers?.["x-request-id"] || res.headers?.["X-Request-ID"] || null;
+
+      if (res.status >= 200 && res.status < 300) {
+        return payload;
+      }
+
+      throw new NuvionError({
+        status: res.status,
+        type: payload.type || `error_http_${res.status}`,
+        message: payload.message || `Nuvion request failed with HTTP ${res.status}`,
+        validations: payload.validations || null,
+        requestId,
+        raw: payload,
+      });
+    } catch (err) {
+      if (err instanceof NuvionError) throw err;
+      const isTransientSocket = err.code === "ECONNRESET" || err.code === "EPIPE" || /ECONNRESET|socket hang up/i.test(err.message || "");
+      if (attempt + 1 < maxAttempts && isTransientSocket) {
+        continue;
+      }
+      throw new NuvionError({
+        status: err.response?.status || 503,
+        type: "error_network",
+        message: err.message || "Network error contacting Nuvion API",
+        raw: err.response?.data || null,
+      });
     }
-
-    throw new NuvionError({
-      status: res.status,
-      type: payload.type || `error_http_${res.status}`,
-      message: payload.message || `Nuvion request failed with HTTP ${res.status}`,
-      validations: payload.validations || null,
-      requestId,
-      raw: payload,
-    });
-  } catch (err) {
-    if (err instanceof NuvionError) throw err;
-    throw new NuvionError({
-      status: err.response?.status || 503,
-      type: "error_network",
-      message: err.message || "Network error contacting Nuvion API",
-      raw: err.response?.data || null,
-    });
   }
 }
 
-// ── 1. Entities & KYC/KYB ─────────────────────────────────────────────────────
+// ── 1. Entities & KYC/KYB (With Production Schema Pre-Flight Validators) ──────
 
-async function createIndividualEntity(payload) {
+function _isValidCalendarDate(dateStr) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || "").trim())) return false;
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().startsWith(String(dateStr).trim());
+}
+
+function _isPastDate(dateStr) {
+  if (!_isValidCalendarDate(dateStr)) return false;
+  return new Date(`${dateStr}T00:00:00Z`).getTime() < Date.now();
+}
+
+function _isValidIso2(code) {
+  return /^[A-Z]{2}$/.test(String(code || "").trim());
+}
+
+function _isValidNuvionPhone(phone) {
+  const s = String(phone || "").trim();
+  return /^\+\d{9,13}$/.test(s) && s.length >= 10 && s.length <= 14;
+}
+
+function _isValidEmailAddr(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(email || "").trim());
+}
+
+function _isValidHttpUrl(urlStr) {
+  try {
+    const parsed = new URL(String(urlStr || "").trim());
+    return (parsed.protocol === "https:" || parsed.protocol === "http:") && parsed.hostname.includes(".");
+  } catch (_) {
+    return false;
+  }
+}
+
+function _validateAddressObj(addr, prefix, issues) {
+  if (!addr || typeof addr !== "object") return;
+  const line1 = String(addr.line_1 || "").trim();
+  if (line1.length < 4 || line1.length > 255) {
+    issues.push({ [`${prefix}.line_1`]: { type: "error_validation_invalid_length", message: "Street address (line_1) must be 4–255 characters." } });
+  }
+  if (!String(addr.city || "").trim() || String(addr.city).length > 100) {
+    issues.push({ [`${prefix}.city`]: { type: "error_validation_required_field_missing", message: "Address city is required (1–100 chars)." } });
+  }
+  if (!String(addr.state || "").trim() || String(addr.state).length > 100) {
+    issues.push({ [`${prefix}.state`]: { type: "error_validation_required_field_missing", message: "Address state is required (1–100 chars)." } });
+  }
+  if (!String(addr.postal_code || "").trim() || String(addr.postal_code).length > 20) {
+    issues.push({ [`${prefix}.postal_code`]: { type: "error_validation_required_field_missing", message: "Address postal_code is required (1–20 chars)." } });
+  }
+  if (!_isValidIso2(addr.country_code)) {
+    issues.push({ [`${prefix}.country_code`]: { type: "error_validation_invalid_format", message: "Address country_code must be a 2-letter uppercase ISO code." } });
+  }
+}
+
+function _validatePersonObj(person, prefix, countryHint, issues, { requirePhone = true } = {}) {
+  if (!person || typeof person !== "object") {
+    issues.push({ [prefix]: { type: "error_validation_required_field_missing", message: `The '${prefix}' object is required.` } });
+    return;
+  }
+  if (!String(person.first_name || "").trim() || String(person.first_name).length > 100) {
+    issues.push({ [`${prefix}.first_name`]: { type: "error_validation_required_field_missing", message: "First name is required (1–100 chars)." } });
+  }
+  if (!String(person.last_name || "").trim() || String(person.last_name).length > 100) {
+    issues.push({ [`${prefix}.last_name`]: { type: "error_validation_required_field_missing", message: "Last name is required (1–100 chars)." } });
+  }
+  if (!_isPastDate(person.date_of_birth)) {
+    issues.push({ [`${prefix}.date_of_birth`]: { type: "error_validation_date_invalid", message: "Date of birth must be a valid past YYYY-MM-DD date." } });
+  }
+  if (!_isValidEmailAddr(person.email)) {
+    issues.push({ [`${prefix}.email`]: { type: "error_validation_email_invalid", message: "A valid email address is required." } });
+  }
+  if (!_isValidIso2(person.nationality)) {
+    issues.push({ [`${prefix}.nationality`]: { type: "error_validation_invalid_format", message: "Nationality must be a 2-letter uppercase ISO country code." } });
+  }
+  if (!["m", "f"].includes(String(person.gender || ""))) {
+    issues.push({ [`${prefix}.gender`]: { type: "error_validation_invalid_format", message: "Gender must be 'm' or 'f'." } });
+  }
+  if (requirePhone || person.phonenumber) {
+    if (!_isValidNuvionPhone(person.phonenumber)) {
+      issues.push({ [`${prefix}.phonenumber`]: { type: "error_validation_invalid_length", message: "Phone number must include '+' and be 10–14 characters total (e.g. +2348012345678)." } });
+    }
+  }
+
+  const nat = String(person.nationality || "").toUpperCase();
+  const resCountry = String(countryHint || "").toUpperCase();
+  if (nat === "NG" || resCountry === "NG") {
+    if (!/^\d{11}$/.test(String(person.bvn || ""))) {
+      issues.push({ [`${prefix}.bvn`]: { type: "error_validation_invalid_format", message: "Nigerian nationals/residents require an 11-digit BVN." } });
+    }
+    if (!/^\d{11}$/.test(String(person.nin || ""))) {
+      issues.push({ [`${prefix}.nin`]: { type: "error_validation_invalid_format", message: "Nigerian nationals/residents require an 11-digit NIN." } });
+    }
+  }
+  if (nat === "US" || resCountry === "US") {
+    const ssnDigits = String(person.ssn || "").replace(/-/g, "");
+    if (!/^\d{9,}$/.test(ssnDigits)) {
+      issues.push({ [`${prefix}.ssn`]: { type: "error_validation_invalid_length", message: "U.S. nationals/residents require a valid 9-digit SSN." } });
+    }
+  }
+}
+
+function _validateIdentificationObj(ident, prefix, issues) {
+  if (!ident || typeof ident !== "object") return;
+  const doc = ident.document;
+  if (doc) {
+    if (!["international_passport", "drivers_license", "national_id"].includes(String(doc.type || ""))) {
+      issues.push({ [`${prefix}.document.type`]: { type: "error_validation_invalid_format", message: "ID document type must be international_passport, drivers_license, or national_id." } });
+    }
+    if (!String(doc.number || "").trim()) {
+      issues.push({ [`${prefix}.document.number`]: { type: "error_validation_required_field_missing", message: "ID document number is required." } });
+    }
+    if (doc.issuing_country && !_isValidIso2(doc.issuing_country)) {
+      issues.push({ [`${prefix}.document.issuing_country`]: { type: "error_validation_invalid_format", message: "ID issuing_country must be a 2-letter ISO code." } });
+    }
+    if (doc.issue_date && !_isValidCalendarDate(doc.issue_date)) {
+      issues.push({ [`${prefix}.document.issue_date`]: { type: "error_validation_date_invalid", message: "ID issue_date must be YYYY-MM-DD." } });
+    }
+    if (doc.expiry_date) {
+      if (!_isValidCalendarDate(doc.expiry_date)) {
+        issues.push({ [`${prefix}.document.expiry_date`]: { type: "error_validation_date_invalid", message: "ID expiry_date must be YYYY-MM-DD." } });
+      } else {
+        const expMs = new Date(`${doc.expiry_date}T23:59:59Z`).getTime();
+        if (expMs <= Date.now()) {
+          issues.push({ [`${prefix}.document.expiry_date`]: { type: "error_kyc_document_expired", message: "Your government ID is expired. Please use a valid unexpired ID." } });
+        }
+        if (doc.issue_date && _isValidCalendarDate(doc.issue_date) && doc.issue_date > doc.expiry_date) {
+          issues.push({ [`${prefix}.document.issue_date`]: { type: "error_validation_date_out_of_range", message: "ID issue date cannot be after expiry date." } });
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Local pre-flight schema validation for POST /individual-entities (X-API-Version: 2026-02-06).
+ * Catches validation issues BEFORE calling live https://api.nuvion.co to protect API standing.
+ */
+function validateIndividualEntityPayload(payload) {
+  const issues = [];
+  if (!payload || typeof payload !== "object") {
+    throw new NuvionError({ status: 422, type: "error_validation_error", message: "Individual entity payload is required." });
+  }
+  const name = String(payload.name || "").trim();
+  if (name.length < 1 || name.length > 255) {
+    issues.push({ name: { type: "error_validation_required_field_missing", message: "Entity name is required (1–255 chars)." } });
+  }
+  _validatePersonObj(payload.person, "person", payload.address?.country_code, issues, { requirePhone: true });
+  if (payload.address) _validateAddressObj(payload.address, "address", issues);
+  if (payload.identification) _validateIdentificationObj(payload.identification, "identification", issues);
+
+  if (issues.length > 0) {
+    const firstKey = Object.keys(issues[0])[0];
+    throw new NuvionError({
+      status: 422,
+      type: "error_validation_error",
+      message: issues[0][firstKey]?.message || "Individual entity validation failed",
+      validations: issues,
+    });
+  }
+  return true;
+}
+
+/**
+ * Local pre-flight schema validation for POST /business-entities (X-API-Version: 2026-02-06).
+ * Prevents 422 validation errors and 500 empty business_officers errors on live https://api.nuvion.co.
+ */
+function validateBusinessEntityPayload(payload) {
+  const issues = [];
+  if (!payload || typeof payload !== "object") {
+    throw new NuvionError({ status: 422, type: "error_validation_error", message: "Business entity payload is required." });
+  }
+  const name = String(payload.name || "").trim();
+  if (name.length < 1 || name.length > 255) {
+    issues.push({ name: { type: "error_validation_required_field_missing", message: "Business display name is required (1–255 chars)." } });
+  }
+  const biz = payload.business;
+  if (!biz || typeof biz !== "object") {
+    issues.push({ business: { type: "error_validation_required_field_missing", message: "Business details object is required." } });
+  } else {
+    if (!String(biz.legal_name || "").trim() || String(biz.legal_name).length > 255) {
+      issues.push({ "business.legal_name": { type: "error_validation_required_field_missing", message: "Business legal_name is required (1–255 chars)." } });
+    }
+    if (!String(biz.industry || "").trim() || String(biz.industry).length > 100) {
+      issues.push({ "business.industry": { type: "error_validation_required_field_missing", message: "Business industry is required (1–100 chars)." } });
+    }
+    if (!_isValidEmailAddr(biz.email)) {
+      issues.push({ "business.email": { type: "error_validation_email_invalid", message: "A valid business contact email is required." } });
+    }
+    if (biz.website !== undefined && biz.website !== null && biz.website !== "") {
+      if (!_isValidHttpUrl(biz.website)) {
+        issues.push({ "business.website": { type: "error_validation_invalid_format", message: "Business website must be a valid URL starting with https:// (or omit it)." } });
+      }
+    }
+    if (!String(biz.type || "").trim()) {
+      issues.push({ "business.type": { type: "error_validation_required_field_missing", message: "Business type (e.g. llc, corporation) is required." } });
+    }
+    if (!String(biz.description || "").trim() || String(biz.description).length > 1000) {
+      issues.push({ "business.description": { type: "error_validation_required_field_missing", message: "Business description is required (1–1000 chars)." } });
+    }
+    if (!String(biz.registration_number || "").trim() || String(biz.registration_number).length > 255) {
+      issues.push({ "business.registration_number": { type: "error_validation_required_field_missing", message: "Business registration_number is required." } });
+    }
+    if (biz.phonenumber !== undefined && biz.phonenumber !== null && biz.phonenumber !== "") {
+      if (!_isValidNuvionPhone(biz.phonenumber)) {
+        issues.push({ "business.phonenumber": { type: "error_validation_invalid_length", message: "Business phone number must include '+' and be 10–14 characters total." } });
+      }
+    }
+    const inc = biz.incorporation_meta;
+    const currentYear = new Date().getUTCFullYear();
+    if (!inc || typeof inc !== "object") {
+      issues.push({ "business.incorporation_meta": { type: "error_validation_required_field_missing", message: "incorporation_meta is required." } });
+    } else {
+      const yr = Number(inc.year);
+      const mo = Number(inc.month);
+      if (!Number.isInteger(yr) || yr < 1900 || yr > currentYear) {
+        issues.push({ "business.incorporation_meta.year": { type: "error_validation_value_out_of_range", message: `Incorporation year must be between 1900 and ${currentYear}.` } });
+      }
+      if (!Number.isInteger(mo) || mo < 1 || mo > 12) {
+        issues.push({ "business.incorporation_meta.month": { type: "error_validation_value_out_of_range", message: "Incorporation month must be between 1 and 12." } });
+      }
+      if (!_isValidIso2(inc.country)) {
+        issues.push({ "business.incorporation_meta.country": { type: "error_validation_invalid_format", message: "Incorporation country must be a 2-letter uppercase ISO code." } });
+      }
+      if (typeof inc.state !== "string" || inc.state.length > 100) {
+        issues.push({ "business.incorporation_meta.state": { type: "error_validation_required_field_missing", message: "Incorporation state is required (max 100 chars)." } });
+      }
+    }
+  }
+
+  if (payload.address) _validateAddressObj(payload.address, "address", issues);
+  if (payload.operating_address) _validateAddressObj(payload.operating_address, "operating_address", issues);
+
+  if (payload.business_officers !== undefined) {
+    if (!Array.isArray(payload.business_officers) || payload.business_officers.length === 0) {
+      // Nuvion returns 500 error_system_internal_error on empty business_officers array!
+      issues.push({ business_officers: { type: "error_validation_invalid_format", message: "business_officers cannot be empty; include at least one officer or omit the field." } });
+    } else {
+      payload.business_officers.forEach((off, idx) => {
+        const pfx = `business_officers[${idx}]`;
+        if (!String(off?.job_title || "").trim() || String(off.job_title).length > 100) {
+          issues.push({ [`${pfx}.job_title`]: { type: "error_validation_required_field_missing", message: "Officer job_title is required (1–100 chars)." } });
+        }
+        if (typeof off?.is_control_person !== "boolean") {
+          issues.push({ [`${pfx}.is_control_person`]: { type: "error_validation_required_field_missing", message: "Officer is_control_person boolean is required." } });
+        }
+        if (typeof off?.is_beneficial_owner !== "boolean") {
+          issues.push({ [`${pfx}.is_beneficial_owner`]: { type: "error_validation_required_field_missing", message: "Officer is_beneficial_owner boolean is required." } });
+        }
+        const pct = Number(off?.ownership_percentage);
+        if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+          issues.push({ [`${pfx}.ownership_percentage`]: { type: "error_validation_value_out_of_range", message: "Officer ownership_percentage must be 0–100." } });
+        }
+        if (!off?.person_id && !off?.person) {
+          issues.push({ [pfx]: { type: "error_validation_invalid_format", message: "Each officer must include either person or person_id." } });
+        } else if (off?.person) {
+          _validatePersonObj(off.person, `${pfx}.person`, off.person.address?.country_code || payload.address?.country_code, issues, { requirePhone: false });
+          if (off.person.address) _validateAddressObj(off.person.address, `${pfx}.person.address`, issues);
+          if (off.person.identification) _validateIdentificationObj(off.person.identification, `${pfx}.person.identification`, issues);
+        }
+      });
+    }
+  }
+
+  if (issues.length > 0) {
+    const firstKey = Object.keys(issues[0])[0];
+    throw new NuvionError({
+      status: 422,
+      type: "error_validation_error",
+      message: issues[0][firstKey]?.message || "Business entity validation failed",
+      validations: issues,
+    });
+  }
+  return true;
+}
+
+async function createIndividualEntity(payload, { validate = null } = {}) {
+  const shouldValidate = validate === null ? getEnvironment() === "production" : Boolean(validate);
+  if (shouldValidate) validateIndividualEntityPayload(payload);
   const res = await nuvionRequest({ method: "POST", path: "/individual-entities", data: payload, role: "admin" });
   return res.data;
 }
@@ -287,7 +591,9 @@ async function updateIndividualEntity(entityId, payload) {
   return res.data;
 }
 
-async function createBusinessEntity(payload) {
+async function createBusinessEntity(payload, { validate = null } = {}) {
+  const shouldValidate = validate === null ? getEnvironment() === "production" : Boolean(validate);
+  if (shouldValidate) validateBusinessEntityPayload(payload);
   const res = await nuvionRequest({ method: "POST", path: "/business-entities", data: payload, role: "admin" });
   return res.data;
 }
@@ -298,17 +604,43 @@ async function updateBusinessEntity(entityId, payload) {
 }
 
 async function uploadDocument({ entityId, key, description, fileBase64, fileBackBase64 = null, fileType = "image/jpeg", personId = null }) {
+  if (!entityId) {
+    throw new NuvionError({ status: 422, type: "error_validation_required_field_missing", message: "entityId is required for document upload." });
+  }
+  const cleanFileType = String(fileType || "").trim().toLowerCase();
+  if (!ALLOWED_DOCUMENT_MIME_TYPES.has(cleanFileType)) {
+    throw new NuvionError({
+      status: 422,
+      type: "error_validation_value_not_supported",
+      message: `Unsupported document file type "${fileType}". Accepted formats: PDF, JPG, JPEG, PNG, DOC, DOCX.`,
+    });
+  }
+  const cleanDesc = String(description || key || "Verification document").trim().slice(0, 500);
+  if (!fileBase64 || typeof fileBase64 !== "string") {
+    throw new NuvionError({ status: 422, type: "error_validation_required_field_missing", message: "Document file content is required." });
+  }
+
   const body = {
     entity_id: entityId,
     key,
-    description: description || key,
+    description: cleanDesc,
     file: fileBase64,
-    meta: { file_type: fileType },
+    meta: { file_type: cleanFileType },
   };
   if (fileBackBase64) body.file_back = fileBackBase64;
   if (personId) body.link_to_identity = { person_id: personId };
 
   const res = await nuvionRequest({ method: "POST", path: "/documents", data: body, role: "admin", timeoutMs: 45000 });
+  return res.data;
+}
+
+async function getOnboardingProgress(entityId) {
+  const res = await nuvionRequest({
+    method: "GET",
+    path: "/onboarding-progress",
+    entityId,
+    role: "admin",
+  });
   return res.data;
 }
 
@@ -854,6 +1186,7 @@ module.exports = {
   DEFAULT_API_VERSION,
   DEFAULT_FX_MARGIN_BPS,
   SUPPORTED_FIAT_RECEIVING_CURRENCIES,
+  ALLOWED_DOCUMENT_MIME_TYPES,
   STABLECOIN_CHAIN_TO_NETWORK,
   getEnvironment,
   getBaseUrl,
@@ -869,11 +1202,14 @@ module.exports = {
   formatUserFriendlyError,
   nuvionRequest,
   // Entities
+  validateIndividualEntityPayload,
+  validateBusinessEntityPayload,
   createIndividualEntity,
   updateIndividualEntity,
   createBusinessEntity,
   updateBusinessEntity,
   uploadDocument,
+  getOnboardingProgress,
   submitOnboarding,
   listEntities,
   getEntity,

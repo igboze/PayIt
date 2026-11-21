@@ -57,10 +57,94 @@ function getBotTelegram(bot) {
 }
 
 function getUserPrivateKey(user, pin, accountType = "personal") {
-  if (accountType === "business" && user.biz_encrypted_key) {
+  if (accountType === "business") {
+    // STRICT ISOLATION: Business payouts/cards NEVER fall back to personal private key!
+    if (!user.biz_encrypted_key) {
+      throw new Error("Business wallet is not set up. Please provision your Business account before transacting.");
+    }
     return db.decryptBusinessPrivateKey(pin, user);
   }
   return db.decryptPrivateKey(pin, user);
+}
+
+/**
+ * Deterministic cross-module matcher for incoming Nuvion `USC` bridge deposits.
+ * Inspects ALL `funding_in_transit` jobs on `entityId` across payouts, payroll batches,
+ * card issuance, and card top-ups so concurrent jobs on the same entity NEVER steal each other's deposit!
+ */
+function selectBestMatchingUscCandidate(entityId, netArrivedMinor) {
+  const candidates = [];
+
+  const payoutJobs = db
+    .getNuvionJobsByState("outbound_fiat_payout", "funding_in_transit")
+    .filter((j) => j.entity_id === entityId);
+
+  const batches = new Map();
+  for (const job of payoutJobs) {
+    const batchId = job.payload?.payrollBatchId || null;
+    if (batchId) {
+      if (!batches.has(batchId)) batches.set(batchId, []);
+      batches.get(batchId).push(job);
+    } else {
+      const expectedMinor = Math.round(Number(job.payload?.expectedUscMinor || 0));
+      candidates.push({
+        kind: "outbound_fiat_payout",
+        jobs: [job],
+        expectedMinor,
+        oldestId: job.id,
+      });
+    }
+  }
+  for (const [batchId, jobs] of batches.entries()) {
+    const expectedMinor = jobs.reduce((sum, j) => sum + Math.round(Number(j.payload?.expectedUscMinor || 0)), 0);
+    candidates.push({
+      kind: "outbound_fiat_payout",
+      batchId,
+      jobs,
+      expectedMinor,
+      oldestId: Math.min(...jobs.map((j) => j.id)),
+    });
+  }
+
+  const issueJobs = db
+    .getNuvionJobsByState("card_issue", "funding_in_transit")
+    .filter((j) => j.entity_id === entityId);
+  for (const job of issueJobs) {
+    const expectedMinor = Math.round(Number(job.payload?.nuvionNeededMinor || job.amount_minor || 0));
+    candidates.push({
+      kind: "card_issue",
+      jobs: [job],
+      expectedMinor,
+      oldestId: job.id,
+    });
+  }
+
+  const topupJobs = db
+    .getNuvionJobsByState("card_topup", "funding_in_transit")
+    .filter((j) => j.entity_id === entityId);
+  for (const job of topupJobs) {
+    const expectedMinor = Math.round(Number(job.payload?.loadAmountMinor || job.amount_minor || 0));
+    candidates.push({
+      kind: "card_topup",
+      jobs: [job],
+      expectedMinor,
+      oldestId: job.id,
+    });
+  }
+
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+
+  const scored = candidates.map((c) => {
+    const diff = c.expectedMinor > 0 ? Math.abs(netArrivedMinor - c.expectedMinor) : Number.MAX_SAFE_INTEGER;
+    const tolerance = Math.max(100, Math.ceil((c.expectedMinor || 0) * 0.03));
+    return { ...c, diff, withinTolerance: c.expectedMinor > 0 && diff <= tolerance };
+  });
+
+  const exactPool = scored.filter((s) => s.withinTolerance);
+  const pool = exactPool.length > 0 ? exactPool : scored;
+  pool.sort((a, b) => (a.diff - b.diff) || (a.oldestId - b.oldestId));
+  return pool[0];
 }
 
 /**
@@ -284,7 +368,8 @@ async function fundNuvionBaseBridge({
   fundingExecutor = null,
 }) {
   const totalNeededUsd = round2(Number(nuvionCostUsd) + Number(marginUsd));
-  const unified = await chains.getUnifiedBalance(user, accountType);
+  // STRICT ISOLATION: never blend Personal balance into a Business account!
+  const unified = await chains.getUnifiedBalance(user, accountType, { strictBusiness: true });
   if (unified.total + 0.001 < totalNeededUsd) {
     throw new Error(
       `Insufficient balance. Needed $${totalNeededUsd.toFixed(2)}, available $${unified.total.toFixed(2)}.`
@@ -305,9 +390,12 @@ async function fundNuvionBaseBridge({
   }
 
   let fundingResult = null;
+  let arcAvailable = Number(unified.arc?.usdc || 0);
+  const baseAvailable = Number(unified.base?.usdc || 0);
+  const gwAvailable = Number(unified.gateway?.usdc || 0);
 
   // Route 1 (Fastest <500ms): Circle Gateway unified USDC -> mint straight onto Base Nuvion address
-  if ((unified.gateway?.usdc || 0) >= nuvionCostUsd) {
+  if (gwAvailable >= nuvionCostUsd) {
     const signer = new Wallet(privateKey);
     const gwRes = await gateway.transferBetweenChains({
       signer,
@@ -321,51 +409,72 @@ async function fundNuvionBaseBridge({
       txHash: gwRes.txHash || gwRes.transferId || `gw_${Date.now()}`,
     };
   }
-  // Route 2: Direct Base USDC (if already sitting on Base EOA)
-  else if ((unified.base?.usdc || 0) >= nuvionCostUsd) {
+  // Route 2: Direct Base USDC (if already sitting on Base EOA — instant 2s on Base!)
+  else if (baseAvailable >= nuvionCostUsd) {
     fundingResult = await sendDirectBaseUsdc(privateKey, nuvionBaseAddress, nuvionCostUsd);
   }
-  // Route 3: Arc Mainnet -> Base CCTP burn (zero Base ETH needed on user wallet!)
-  else if ((unified.arc?.usdc || 0) >= nuvionCostUsd) {
-    const arcWallet = walletLib.getWallet(privateKey);
-    const burn = await cctpBridge.executeArcToEvmCctpBurn({
-      userWallet: arcWallet,
-      amountUsdc: nuvionCostUsd,
-      destinationDomain: BASE_DOMAIN_ID,
-      destinationRecipientAddress: nuvionBaseAddress,
-      telegramId: user.telegram_id,
-    });
-    if (!burn?.success) {
-      throw new Error(burn?.error || "Failed to initiate Arc -> Base settlement transfer.");
+  // Route 3: Arc Mainnet -> Base CCTP burn (or auto-consolidate split Base+Arc -> Arc first!)
+  else {
+    // If balance is split across Arc + Base (e.g. fresh Nuvion deposit + existing Paj Arc balance),
+    // automatically sweep Base -> Arc silently so Arc covers the full transfer seamlessly!
+    if (arcAvailable < nuvionCostUsd && baseAvailable >= 1.0 && (arcAvailable + baseAvailable) >= nuvionCostUsd) {
+      try {
+        const evmDepositSweeper = require("./evm_deposit_sweeper");
+        await evmDepositSweeper.sweepUserDeposits(user.telegram_id, null, {
+          silent: true,
+          onlyChain: "BASE",
+          onlyAccountType: accountType,
+          overridePrivateKey: privateKey,
+          force: true,
+        });
+        const refreshed = await chains.getUnifiedBalance(user, accountType, { strictBusiness: true });
+        arcAvailable = Number(refreshed.arc?.usdc || 0);
+      } catch (consolidateErr) {
+        console.warn("[nuvion_payouts] Split Base+Arc auto-consolidation note:", consolidateErr.message);
+      }
     }
-    fundingResult = {
-      route: "arc_cctp_base",
-      txHash: burn.txHash,
-      messageHash: burn.messageHash || null,
-    };
 
-    // Kick off non-blocking relayer mint onto Base straight into Nuvion's Base USC address
-    if (process.env.NODE_ENV !== "test") {
-      cctpBridge.completeCctpWithdrawalOnEvm({
-        arcTxHash: burn.txHash,
-        messageHex: burn.messageHex || null,
-        messageHash: burn.messageHash || null,
+    if (arcAvailable >= nuvionCostUsd) {
+      const arcWallet = walletLib.walletFromPrivateKey(privateKey);
+      const burn = await cctpBridge.executeArcToEvmCctpBurn({
+        userWallet: arcWallet,
+        amountUsdc: nuvionCostUsd,
         destinationDomain: BASE_DOMAIN_ID,
         destinationRecipientAddress: nuvionBaseAddress,
-        userWallet: arcWallet,
-        userPrivateKey: privateKey,
         telegramId: user.telegram_id,
-        bot: null, // Silent bridge — Nuvion payout webhook sends the clean fiat receipt!
-        amountUsdc: nuvionCostUsd,
-        chainName: "Base",
-      }).catch((err) => {
-        console.warn("[nuvion_payouts] Arc->Base CCTP completion note:", err.message);
       });
+      if (!burn?.success) {
+        throw new Error(burn?.error || "Failed to initiate Arc -> Base settlement transfer.");
+      }
+      fundingResult = {
+        route: "arc_cctp_base",
+        txHash: burn.txHash,
+        messageHash: burn.messageHash || null,
+      };
+
+      // Kick off non-blocking relayer mint onto Base straight into Nuvion's Base USC address
+      if (process.env.NODE_ENV !== "test") {
+        cctpBridge.completeCctpWithdrawalOnEvm({
+          arcTxHash: burn.txHash,
+          messageHex: burn.messageHex || null,
+          messageHash: burn.messageHash || null,
+          destinationDomain: BASE_DOMAIN_ID,
+          destinationRecipientAddress: nuvionBaseAddress,
+          userWallet: arcWallet,
+          userPrivateKey: privateKey,
+          telegramId: user.telegram_id,
+          bot: null, // Silent bridge — Nuvion payout webhook sends the clean fiat receipt!
+          amountUsdc: nuvionCostUsd,
+          chainName: "Base",
+        }).catch((err) => {
+          console.warn("[nuvion_payouts] Arc->Base CCTP completion note:", err.message);
+        });
+      }
+    } else {
+      throw new Error(
+        "Your funds are split across rails. Please consolidate into your main balance or wait a moment for pending sweeps to settle."
+      );
     }
-  } else {
-    throw new Error(
-      "Your funds are split across rails. Please consolidate into your main balance or wait a moment for pending sweeps to settle."
-    );
   }
 
   // Collect 1% FX margin to Proxim fee wallet (non-blocking if fee wallet is unset)
@@ -379,8 +488,8 @@ async function fundNuvionBaseBridge({
   let marginTxHash = null;
   if (marginUsd >= 0.01 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
     try {
-      const arcWallet = walletLib.getWallet(privateKey);
-      if (feeRecipient.toLowerCase() !== arcWallet.address.toLowerCase() && (unified.arc?.usdc || 0) >= marginUsd) {
+      const arcWallet = walletLib.walletFromPrivateKey(privateKey);
+      if (feeRecipient.toLowerCase() !== arcWallet.address.toLowerCase() && arcAvailable >= marginUsd) {
         const feeRes = await walletLib.sendSponsoredOrDirectTransaction(
           arcWallet,
           feeRecipient,
@@ -452,22 +561,32 @@ async function initiateGlobalPayout({
     recipientSummary = `${recipientName} (${quoteInfo.targetCurrency})`;
   }
 
-  // Fund Nuvion USC Base deposit address from user's unified balance
-  const funding = await fundNuvionBaseBridge({
-    user,
-    pin,
-    accountType,
-    nuvionBaseAddress: entity.usc_base_address,
-    nuvionCostUsd: quoteInfo.nuvionCostUsd,
-    marginUsd: quoteInfo.marginUsd,
-    bot,
-    fundingExecutor,
-  });
-
   const refSuffix = crypto.randomBytes(4).toString("hex");
   const uniqueReference = `prx-out-${Date.now()}-${refSuffix}`;
 
-  const job = db.createNuvionJob({
+  const basePayload = {
+    railKey: rail.key,
+    paymentMethod: rail.paymentMethod,
+    railLabel: rail.label,
+    targetCurrency: quoteInfo.targetCurrency,
+    targetAmountMajor: quoteInfo.targetAmountMajor,
+    targetAmountMinor: quoteInfo.targetAmountMinor,
+    expectedUscMinor: quoteInfo.nuvionCostMinor,
+    userTotalUsd: quoteInfo.userTotalUsd,
+    effectiveRate: quoteInfo.effectiveRate,
+    counterpartyId,
+    paymentDetailId,
+    recipientName,
+    recipientSummary,
+    narration: narration || `Payment to ${recipientName}`,
+    fundingRoute: null,
+    fundingTxHash: null,
+    marginTxHash: null,
+  };
+
+  // CRITICAL: Insert durable job row BEFORE broadcasting funds so <500ms Gateway settlement
+  // can NEVER arrive before the job exists!
+  let job = db.createNuvionJob({
     entityId: entity.entity_id,
     telegramId,
     accountType,
@@ -477,23 +596,33 @@ async function initiateGlobalPayout({
     amountMinor: quoteInfo.targetAmountMinor,
     marginMinor: quoteInfo.marginMinor,
     uniqueReference,
-    sourceTxHash: funding.txHash || null,
+    sourceTxHash: null,
     fxQuoteId: quoteInfo.nuvionQuoteId,
-    payload: {
-      railKey: rail.key,
-      paymentMethod: rail.paymentMethod,
-      railLabel: rail.label,
-      targetCurrency: quoteInfo.targetCurrency,
-      targetAmountMajor: quoteInfo.targetAmountMajor,
-      targetAmountMinor: quoteInfo.targetAmountMinor,
-      expectedUscMinor: quoteInfo.nuvionCostMinor,
-      userTotalUsd: quoteInfo.userTotalUsd,
-      effectiveRate: quoteInfo.effectiveRate,
-      counterpartyId,
-      paymentDetailId,
-      recipientName,
-      recipientSummary,
-      narration: narration || `Payment to ${recipientName}`,
+    payload: basePayload,
+  });
+
+  // Fund Nuvion USC Base deposit address from user's unified balance
+  let funding;
+  try {
+    funding = await fundNuvionBaseBridge({
+      user,
+      pin,
+      accountType,
+      nuvionBaseAddress: entity.usc_base_address,
+      nuvionCostUsd: quoteInfo.nuvionCostUsd,
+      marginUsd: quoteInfo.marginUsd,
+      bot,
+      fundingExecutor,
+    });
+  } catch (fundErr) {
+    db.updateNuvionJob(job.id, { state: "failed", error_message: fundErr.message });
+    throw fundErr;
+  }
+
+  job = db.updateNuvionJob(job.id, {
+    source_tx_hash: funding.txHash || null,
+    payload_json: {
+      ...basePayload,
       fundingRoute: funding.route,
       fundingTxHash: funding.txHash || null,
       marginTxHash: funding.marginTxHash || null,
@@ -615,28 +744,46 @@ async function handleUscInflowForPendingPayout({ confirmed, entityRecord, bot = 
     return { dispatched: false, reason: "not_settled_usc" };
   }
 
-  const pendingJobs = db
-    .getNuvionJobsByState("outbound_fiat_payout", "funding_in_transit")
-    .filter((j) => j.entity_id === entityRecord.entity_id);
-
-  if (pendingJobs.length === 0) {
-    return { dispatched: false, reason: "no_pending_payout_jobs" };
+  const inflowClaimKey = confirmed.id ? `nuvion_usc_inflow:${confirmed.id}` : null;
+  if (inflowClaimKey && idempotency.isWebhookProcessed(inflowClaimKey)) {
+    return { dispatched: false, duplicate: true, reason: "inflow_already_claimed" };
   }
 
   const netArrivedMinor = Math.max(0, Math.round(Number(confirmed.amount || 0)) - Math.round(Number(confirmed.applicable_fee || 0)));
   if (netArrivedMinor <= 0) return { dispatched: false, reason: "zero_net_inflow" };
 
+  // Cross-module best-fit match: never steal a USC deposit meant for a card issuance/top-up!
+  const best = selectBestMatchingUscCandidate(entityRecord.entity_id, netArrivedMinor);
+  if (!best) {
+    return { dispatched: false, reason: "no_pending_payout_jobs" };
+  }
+  if (best.kind !== "outbound_fiat_payout") {
+    return { dispatched: false, reason: "deferred_to_card_job" };
+  }
+
+  // Atomically claim this USC inflow so no second handler/retry can double-spend it
+  if (inflowClaimKey) {
+    const claimedInflow = idempotency.tryClaimWebhookEvent(inflowClaimKey, "usc_inflow_payout", entityRecord.entity_id);
+    if (!claimedInflow) {
+      return { dispatched: false, duplicate: true, reason: "inflow_already_claimed" };
+    }
+  }
+
   let remainingMinor = netArrivedMinor;
   const dispatched = [];
-
-  // Check if the oldest pending job belongs to a multi-row payroll batch
-  const firstBatchId = pendingJobs[0].payload?.payrollBatchId || null;
-  const targetJobs = firstBatchId
-    ? pendingJobs.filter((j) => j.payload?.payrollBatchId === firstBatchId)
-    : [pendingJobs[0]];
+  const targetJobs = best.jobs;
 
   for (const job of targetJobs) {
     if (remainingMinor <= 0) break;
+
+    // Atomic SQLite state lock: funding_in_transit -> dispatching
+    const locked = db.db
+      .prepare("UPDATE nuvion_jobs SET state = 'dispatching', updated_at = datetime('now') WHERE id = ? AND state = 'funding_in_transit'")
+      .run(job.id);
+    if (!locked || locked.changes === 0) {
+      continue;
+    }
+
     const itemCap = targetJobs.length > 1
       ? Math.min(remainingMinor, Math.round((job.payload?.expectedUscMinor || remainingMinor) * 1.02))
       : remainingMinor;
@@ -784,17 +931,23 @@ async function handleOutboundPayoutCompleted({ confirmed, entityRecord, bot = nu
 async function handleOutboundPayoutFailed({ confirmed, entityRecord, bot = null }) {
   const job = _findOutboundJobForTransfer(confirmed);
   if (!job) return { refunded: false, reason: "no_matching_payout_job" };
-  if (job.state === "refunded" || job.state === "refunding") {
+
+  // Atomic SQLite claim so simultaneous webhook + poller can NEVER double-refund!
+  const claimed = db.db
+    .prepare("UPDATE nuvion_jobs SET state = 'refunding', updated_at = datetime('now') WHERE id = ? AND state NOT IN ('refunding', 'refunded')")
+    .run(job.id);
+  if (!claimed || claimed.changes === 0) {
     return { refunded: false, duplicate: true, jobId: job.id };
   }
 
   let entity = entityRecord || db.getNuvionEntityByEntityId(job.entity_id);
-  if (!entity) return { refunded: false, reason: "missing_entity" };
+  if (!entity) {
+    db.updateNuvionJob(job.id, { state: "refund_pending", error_message: "missing_entity" });
+    return { refunded: false, reason: "missing_entity" };
+  }
   if (!entity.self_counterparty_id || !entity.self_base_payment_detail_id) {
     entity = await nuvionWebhooks.bootstrapApprovedEntity(entity);
   }
-
-  db.updateNuvionJob(job.id, { state: "refunding" });
 
   let refundMinor = Math.round(Number(confirmed.amount || job.payload?.dispatchedUscMinor || job.payload?.expectedUscMinor || 0));
   if (refundMinor <= 0) {
@@ -804,8 +957,8 @@ async function handleOutboundPayoutFailed({ confirmed, entityRecord, bot = null 
 
   let refundTransfer = null;
   for (let attempt = 0; attempt < 2; attempt++) {
+    const ref = attempt === 0 ? `refund-${job.unique_reference}` : `refund-${job.unique_reference}-r${attempt}`;
     try {
-      const ref = attempt === 0 ? `refund-${job.unique_reference}` : `refund-${job.unique_reference}-r${attempt}`;
       refundTransfer = await nuvion.createTransfer({
         entityId: entity.entity_id,
         accountId: entity.usc_account_id,
@@ -819,6 +972,13 @@ async function handleOutboundPayoutFailed({ confirmed, entityRecord, bot = null 
       });
       break;
     } catch (err) {
+      if (err instanceof nuvion.NuvionError && err.status === 409 && err.type === "error_duplicate_resource") {
+        const recovered = await nuvion.recoverTransferByReference(ref, entity.entity_id).catch(() => null);
+        if (recovered) {
+          refundTransfer = recovered;
+          break;
+        }
+      }
       if (attempt === 0 && err instanceof nuvion.NuvionError && err.type === "error_transfer_insufficient_funds") {
         const feeBuf = Math.max(50, Math.ceil(refundMinor * 0.015));
         if (refundMinor - feeBuf > 0) {
@@ -862,12 +1022,16 @@ async function handleOutboundPayoutFailed({ confirmed, entityRecord, bot = null 
     ).catch(() => {});
   }
 
-  // Trigger silent background sweep Base -> Arc (non-test only)
+  // Trigger silent background sweep Base -> Arc strictly for this accountType (non-test only)
   if (process.env.NODE_ENV !== "test") {
     setTimeout(() => {
       try {
         const evmDepositSweeper = require("./evm_deposit_sweeper");
-        evmDepositSweeper.sweepUserDeposits(entity.telegram_id, null, { silent: true }).catch(() => {});
+        evmDepositSweeper.sweepUserDeposits(entity.telegram_id, null, {
+          silent: true,
+          onlyChain: "BASE",
+          onlyAccountType: entity.account_type || "personal",
+        }).catch(() => {});
       } catch (_) {}
     }, 15000);
   }
@@ -975,18 +1139,8 @@ async function executeGlobalPayrollBatch({
     prepared.push({ ...row, counterpartyId: reg.counterpartyId, paymentDetailId: reg.paymentDetailId });
   }
 
-  // Single consolidated funding transfer to Business entity's Nuvion Base USC address
-  const funding = await fundNuvionBaseBridge({
-    user,
-    pin,
-    accountType,
-    nuvionBaseAddress: entity.usc_base_address,
-    nuvionCostUsd: batchNuvionCostUsd,
-    marginUsd: batchMarginUsd,
-    bot,
-    fundingExecutor,
-  });
-
+  // Create durable payroll jobs & pending idempotency locks BEFORE broadcasting funds
+  // so <500ms Gateway settlement can NEVER arrive before the batch jobs exist!
   const jobs = [];
   for (const item of prepared) {
     const uniqueReference = `prx-gpay-${batchId.slice(-6)}-${item.rowIndex}-${crypto.randomBytes(2).toString("hex")}`;
@@ -1009,7 +1163,7 @@ async function executeGlobalPayrollBatch({
       amountMinor: item.quote.targetAmountMinor,
       marginMinor: item.quote.marginMinor,
       uniqueReference,
-      sourceTxHash: funding.txHash || null,
+      sourceTxHash: null,
       fxQuoteId: item.quote.nuvionQuoteId,
       payload: {
         payrollBatchId: batchId,
@@ -1028,26 +1182,60 @@ async function executeGlobalPayrollBatch({
         paymentDetailId: item.paymentDetailId,
         recipientName: item.name,
         narration: item.narration,
+        fundingRoute: null,
+        fundingTxHash: null,
+      },
+    });
+    jobs.push({ job, item, uniqueReference });
+  }
+
+  // Single consolidated funding transfer to Business entity's Nuvion Base USC address
+  let funding;
+  try {
+    funding = await fundNuvionBaseBridge({
+      user,
+      pin,
+      accountType,
+      nuvionBaseAddress: entity.usc_base_address,
+      nuvionCostUsd: batchNuvionCostUsd,
+      marginUsd: batchMarginUsd,
+      bot,
+      fundingExecutor,
+    });
+  } catch (fundErr) {
+    for (const entry of jobs) {
+      db.updateNuvionJob(entry.job.id, { state: "failed", error_message: fundErr.message });
+      idempotency.failIdempotency(entry.item.idemKey, fundErr.message);
+    }
+    throw fundErr;
+  }
+
+  const finalJobs = [];
+  for (const entry of jobs) {
+    const updated = db.updateNuvionJob(entry.job.id, {
+      source_tx_hash: funding.txHash || null,
+      payload_json: {
+        ...(entry.job.payload || {}),
         fundingRoute: funding.route,
         fundingTxHash: funding.txHash || null,
       },
     });
-    idempotency.completeIdempotency(item.idemKey, {
-      txHash: funding.txHash || uniqueReference,
-      reference: uniqueReference,
+    idempotency.completeIdempotency(entry.item.idemKey, {
+      txHash: funding.txHash || entry.uniqueReference,
+      reference: entry.uniqueReference,
     });
-    jobs.push(job);
+    finalJobs.push(updated);
   }
 
   return {
     batchId,
-    queuedCount: jobs.length,
+    queuedCount: finalJobs.length,
     skippedCount: skippedRows.length,
     totalNuvionCostUsd: batchNuvionCostUsd,
     totalMarginUsd: batchMarginUsd,
     totalUserUsd: round2(batchNuvionCostUsd + batchMarginUsd),
     funding,
-    jobs,
+    jobs: finalJobs,
   };
 }
 
@@ -1077,6 +1265,8 @@ function registerPayoutHooks() {
 }
 
 module.exports = {
+  getUserPrivateKey,
+  selectBestMatchingUscCandidate,
   shouldUseNuvionForNgnPayout,
   ensureApprovedBridgeEntity,
   quoteGlobalPayout,
