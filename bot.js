@@ -568,25 +568,40 @@ bot.start(async (ctx) => {
     const nuvionEnt = nuvionAllowed ? db.getNuvionEntityByUser(ctx.from.id, context) : null;
     const nuvionStatus = String(nuvionEnt?.status || "").toLowerCase();
     const portalAction = context === "business" ? "biz_nuvion_portal" : "action_nuvion_portal";
-    let tierWelcomeHint = "";
+    const isBizContext = context === "business";
+    let tierStatusLine = `🏷️ <b>Current Tier:</b> Tier 0 (Standard — NGN Accounts Only)\n`;
+    let tierDetailBlock = "";
     if (nuvionAllowed) {
       if (nuvionStatus === "approved") {
-        tierWelcomeHint = `🌍 Tier: Tier-1 Global Verified ✅ (Global Accounts, 27 Currencies & USD Cards Active)\n`;
+        tierStatusLine = `🏷️ <b>Current Tier:</b> Tier 1 Global Verified ✅\n`;
+        tierDetailBlock =
+          `\n🌍 <b>Tier 1 Active:</b> Your NGN accounts, Global Bank Accounts (USD, GBP, EUR, CAD, AED &amp; more), ${isBizContext ? "Business &amp; Team USD Cards, and 27-currency payroll" : "Virtual USD Cards, and international transfers"} are unlocked.\n`;
       } else if (nuvionStatus === "pending" || nuvionStatus === "incomplete") {
-        tierWelcomeHint = `⏳ Tier: Verification in progress — tap below to check status\n`;
+        tierStatusLine = `🏷️ <b>Current Tier:</b> Tier 0 (NGN Accounts Only) · ⏳ <i>Tier 1 Under Review</i>\n`;
+        tierDetailBlock =
+          `\n⏳ <b>Tier 1 ${isBizContext ? "Business (KYB)" : "Personal (KYC)"} Verification In Progress:</b> You currently have access to NGN accounts while your Tier 1 upgrade for Global Bank Accounts &amp; USD Cards is being reviewed.\n`;
       } else {
-        tierWelcomeHint = `🪪 Tier: Standard (Tier 0) — Verify your ID below to unlock USD/GBP/EUR Bank Accounts, Virtual USD Cards & Global Transfers!\n`;
+        tierStatusLine = `🏷️ <b>Current Tier:</b> Tier 0 (Standard — NGN Accounts Only)\n`;
+        tierDetailBlock = isBizContext
+          ? `\n🔒 <b>Unlock Business Global Accounts (Requires Tier 1):</b>\n` +
+            `Your Business account is currently on <b>Tier 0</b> (Nigerian Naira / NGN accounts, local transfers, invoicing &amp; savings only).\n` +
+            `Getting named <b>Company Global Bank Accounts (USD, GBP, EUR, CAD, AED &amp; more)</b>, <b>Team USD Cards</b>, and international payroll requires <b>Tier 1 Business Verification (KYB)</b> — tap below to verify.\n`
+          : `\n🔒 <b>Unlock Global Bank Accounts (Requires Tier 1):</b>\n` +
+            `You are currently on <b>Tier 0</b> (Nigerian Naira / NGN accounts, local bank transfers, dollar savings &amp; bills only).\n` +
+            `Getting named <b>Global Bank Accounts (USD, GBP, EUR, CAD, AED &amp; more)</b>, <b>Virtual USD Cards</b>, and international transfers requires <b>Tier 1 ID Verification (KYC)</b> — tap below to verify.\n`;
       }
     }
 
     await ctx.reply(
-      `👋 Welcome back, ${ctx.from.first_name || "there"}!\n\n` +
-      `Your balance: ${balDisplay}\n` +
-      `Account: ${context === "business" ? "Business 💼" : "Personal 👤"}\n` +
-      tierWelcomeHint +
-      `🌐 Website: https://www.proximfi.xyz/\n\n` +
+      `👋 <b>Welcome back, ${escapeHtml(ctx.from.first_name || "there")}!</b>\n` +
+      `──────────────────────────\n` +
+      `💰 <b>Balance:</b> ${escapeHtml(balDisplay)}\n` +
+      `${isBizContext ? "💼 <b>Account:</b> Business" : "👤 <b>Account:</b> Personal"}\n` +
+      tierStatusLine +
+      tierDetailBlock +
+      `\n🌐 <b>Website:</b> <a href="https://www.proximfi.xyz/">www.proximfi.xyz</a>\n\n` +
       `What would you like to do?`,
-      { disable_web_page_preview: true, ...mainMenu(context) }
+      { parse_mode: "HTML", disable_web_page_preview: true, ...mainMenu(context) }
     );
     const toggleMarkup = accountToggle(context);
     const toggleRows = [...(toggleMarkup.reply_markup?.inline_keyboard || [])];
@@ -601,8 +616,8 @@ bot.start(async (ctx) => {
         toggleRows.unshift([
           btnSuccess(
             context === "business"
-              ? "💼 Verify Business (KYB) — Unlock Global Accounts & Cards"
-              : "🪪 Verify ID — Unlock Global Accounts & USD Cards",
+              ? "💼 Upgrade to Tier 1 (Verify Business KYB)"
+              : "🪪 Upgrade to Tier 1 (Verify ID for Global Accounts)",
             portalAction
           ),
         ]);
@@ -610,7 +625,7 @@ bot.start(async (ctx) => {
     }
     toggleRows.push([Markup.button.url("🌐 Official Website (proximfi.xyz)", "https://www.proximfi.xyz/")]);
     return ctx.reply(
-      `Active account: ${context === "business" ? "Business 💼" : "Personal 👤"}\nSwitch or upgrade below:`,
+      `Active account: ${context === "business" ? "Business 💼" : "Personal 👤"} (${nuvionStatus === "approved" ? "Tier 1 Global ✅" : "Tier 0 — NGN Only"})\nSwitch account or upgrade to Tier 1 below:`,
       Markup.inlineKeyboard(toggleRows)
     );
   }
@@ -863,9 +878,18 @@ bot.action("switch_personal", async (ctx) => {
   } catch (err) {
     // Ignore error if edit fails
   }
+  const perEnt = db.getNuvionEntityByUser(ctx.from.id, "personal");
+  const perStatus = String(perEnt?.status || "").toLowerCase();
+  const tierMsg = perStatus === "approved"
+    ? `🏷️ <b>Tier:</b> Tier 1 Global Verified ✅ (NGN + Global USD/GBP/EUR Accounts &amp; USD Cards Active)`
+    : perStatus === "pending" || perStatus === "incomplete"
+      ? `🏷️ <b>Tier:</b> Tier 0 (NGN Accounts Only) · ⏳ <i>Tier 1 KYC Under Review</i>`
+      : `🏷️ <b>Tier:</b> Tier 0 (Standard — NGN Accounts Only)\n🔒 <i>Global Bank Accounts (USD/GBP/EUR) &amp; Virtual USD Cards require Tier 1 ID Verification (KYC). Tap <b>🌍 Global &amp; Cards</b> below to upgrade.</i>`;
   await ctx.reply(
-    `👤 Switched to Personal\n\nYour balance: ${bal.display}`,
-    mainMenu("personal")
+    `👤 <b>Switched to Personal Account</b>\n──────────────────────────\n` +
+    `💰 <b>Balance:</b> ${escapeHtml(bal.display)}\n` +
+    `${tierMsg}`,
+    { parse_mode: "HTML", ...mainMenu("personal") }
   );
 });
 
@@ -891,9 +915,19 @@ bot.action("switch_business", async (ctx) => {
     // Ignore error if edit fails
   }
 
+  const bizEnt = db.getNuvionEntityByUser(ctx.from.id, "business");
+  const bizStatus = String(bizEnt?.status || "").toLowerCase();
+  const tierMsg = bizStatus === "approved"
+    ? `🏷️ <b>Tier:</b> Tier 1 Global Verified ✅ (NGN + Company Global USD/GBP/EUR Accounts &amp; Team Cards Active)`
+    : bizStatus === "pending" || bizStatus === "incomplete"
+      ? `🏷️ <b>Tier:</b> Tier 0 (NGN Accounts Only) · ⏳ <i>Tier 1 Business KYB Under Review</i>`
+      : `🏷️ <b>Tier:</b> Tier 0 (Standard — NGN Accounts Only)\n🔒 <i>Company Global Bank Accounts (USD/GBP/EUR), Team USD Cards &amp; 27-currency payroll require Tier 1 Business Verification (KYB). Tap <b>🌍 Global &amp; Cards</b> below to upgrade.</i>`;
+
   await ctx.reply(
-    `💼 Switched to Business\n\nBalance: ${bal.display}${pendingLine}`,
-    mainMenu("business")
+    `💼 <b>Switched to Business Account</b>\n──────────────────────────\n` +
+    `💰 <b>Balance:</b> ${escapeHtml(bal.display)}\n` +
+    `${tierMsg}${pendingLine}`,
+    { parse_mode: "HTML", ...mainMenu("business") }
   );
 });
 
@@ -1021,12 +1055,13 @@ async function showBalance(ctx) {
 
     if (nuvionAllowed) {
       if (nuvionStatus === "approved") {
-        globalUpgradeHint = `\n• <b>Global Banking:</b> ✅ Tier-1 Verified (USD/GBP/EUR Accounts &amp; Cards Active)`;
+        globalUpgradeHint = `\n• <b>Account Tier:</b> Tier 1 Global Verified ✅ (NGN + USD/GBP/EUR Accounts &amp; Cards Active)`;
       } else if (nuvionStatus === "pending" || nuvionStatus === "incomplete") {
-        globalUpgradeHint = `\n\n⏳ <b>Tier-1 Global Verification:</b> In review — tap below to check status.`;
+        globalUpgradeHint = `\n• <b>Account Tier:</b> Tier 0 (NGN Accounts Only)\n⏳ <b>Tier-1 Global Verification:</b> Under review — tap below to check status.`;
       } else {
         globalUpgradeHint =
-          `\n\n🪪 <b>Upgrade to Tier-1 Global:</b> <i>Tap "Verify ID" below to unlock named USD, GBP &amp; EUR bank accounts, Virtual USD Cards, and transfers to 27 currencies.</i>`;
+          `\n• <b>Account Tier:</b> Tier 0 (Standard — NGN Accounts Only)\n\n` +
+          `🔒 <b>Want Global Bank Accounts &amp; USD Cards?</b> <i>Getting named USD, GBP &amp; EUR bank accounts, Virtual USD Cards, and transfers to 27+ currencies requires <b>Tier 1</b> verification. Tap below to verify your ID.</i>`;
       }
     }
 
@@ -1131,12 +1166,13 @@ async function showBizBalance(ctx) {
     let bizGlobalHint = "";
     if (bizNuvionAllowed) {
       if (bizNuvionStatus === "approved") {
-        bizGlobalHint = `\n• <b>Global Banking:</b> ✅ KYB Verified (Global Accounts, Team Cards &amp; 27-Currency Payroll Active)`;
+        bizGlobalHint = `\n• <b>Account Tier:</b> Tier 1 Global Verified ✅ (NGN + Company Global Accounts, Team Cards &amp; 27-Currency Payroll Active)`;
       } else if (bizNuvionStatus === "pending" || bizNuvionStatus === "incomplete") {
-        bizGlobalHint = `\n\n⏳ <b>Business KYB Verification:</b> In review — tap below to check status.`;
+        bizGlobalHint = `\n• <b>Account Tier:</b> Tier 0 (NGN Accounts Only)\n⏳ <b>Tier-1 Business KYB Verification:</b> Under review — tap below to check status.`;
       } else {
         bizGlobalHint =
-          `\n\n💼 <b>Upgrade Business to Tier-1 Global (KYB):</b> <i>Tap "Verify Business" below to unlock named USD/GBP/EUR company accounts, Team USD Cards &amp; 27-currency payroll.</i>`;
+          `\n• <b>Account Tier:</b> Tier 0 (Standard — NGN Accounts Only)\n\n` +
+          `🔒 <b>Want Company Global Accounts &amp; Team USD Cards?</b> <i>Getting named USD, GBP &amp; EUR company bank accounts, Team USD Cards, and 27-currency payroll requires <b>Tier 1 Business Verification (KYB)</b>. Tap below to verify your business.</i>`;
       }
     }
 
@@ -1319,10 +1355,12 @@ async function showSettings(ctx) {
   const tierLine = !nuvionAllowed
     ? ""
     : nuvionStatus === "approved"
-      ? `Verification Tier: Tier 1 Global Verified ✅\n`
+      ? `<b>Current Tier:</b> Tier 1 Global Verified ✅ (NGN + Global Accounts &amp; USD Cards Active)\n`
       : nuvionStatus === "pending" || nuvionStatus === "incomplete"
-        ? `Verification Tier: Tier 1 Under Review ⏳\n`
-        : `Verification Tier: Tier 0 (Standard) — Verify ID below to unlock Global Accounts & USD Cards 🌍\n`;
+        ? `<b>Current Tier:</b> Tier 0 (NGN Accounts Only) · ⏳ Tier 1 Verification Under Review\n`
+        : context === "business"
+          ? `<b>Current Tier:</b> Tier 0 (Standard — NGN Accounts Only)\n• <b>Tier 1 Upgrade:</b> Requires Business Verification (KYB) to unlock Company Global Accounts &amp; Team USD Cards 🌍\n`
+          : `<b>Current Tier:</b> Tier 0 (Standard — NGN Accounts Only)\n• <b>Tier 1 Upgrade:</b> Requires ID Verification (KYC) to unlock Global Accounts &amp; Virtual USD Cards 🌍\n`;
 
   await ctx.reply(
     `⚙️ <b>Account Settings</b>\n──────────────────────────\n` +
@@ -6959,16 +6997,18 @@ bot.on("text", async (ctx) => {
         `🎉 <b>Your Proxim ${isBusiness ? "Business" : "Personal"} Account Is Ready!</b>\n` +
         `──────────────────────────\n` +
         `• <b>Account Status:</b> Active ✅\n` +
+        `• <b>Current Tier:</b> Tier 0 (Standard — NGN Accounts Only)\n` +
         `• <b>Security:</b> Protected by your private 4-digit PIN\n\n` +
-        `🏦 <b>Next Step — Unlock Global Banking &amp; USD Cards:</b>\n` +
-        `Tap <b>Verify ${isBusiness ? "Business (KYB)" : "ID (KYC)"}</b> below to activate named USD, GBP, EUR &amp; NGN bank accounts, Virtual &amp; Disposable USD Mastercards, and international transfers across 27+ currencies.\n\n` +
-        `<i>(You can also deposit Naira immediately or view your security keys anytime under ⚙️ Settings.)</i>`;
+        `🇳🇬 <b>What You Have Now (Tier 0):</b>\n` +
+        `You can immediately receive and send Nigerian Naira (NGN), save in dollars, ${isBusiness ? "send invoices, " : ""}and pay local bills.\n\n` +
+        `🌍 <b>Want Global Bank Accounts &amp; USD Cards? (Requires Tier 1):</b>\n` +
+        `Opening named <b>USD, GBP, EUR, CAD &amp; AED Bank Accounts</b>, issuing <b>${isBusiness ? "Business &amp; Team" : "Virtual &amp; Disposable"} USD Mastercards</b>, and sending money across 27+ currencies requires upgrading to <b>Tier 1</b> via <b>${isBusiness ? "Business Verification (KYB)" : "ID Verification (KYC)"}</b> below.`;
 
       await ctx.reply(welcomeText, {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard([
-          [btnSuccess(isBusiness ? "💼 Verify Business (KYB) — Global Accounts & Cards" : "🪪 Verify ID — Unlock Global Accounts & USD Cards", portalAction)],
-          [btnPrimary("📥 Deposit Money", "action_receive"), btnPrimary("💰 View Balance", isBusiness ? "biz_balance" : "action_balance")],
+          [btnSuccess(isBusiness ? "💼 Upgrade to Tier 1 — Verify Business (KYB)" : "🪪 Upgrade to Tier 1 — Verify ID (KYC)", portalAction)],
+          [btnPrimary("📥 Deposit Naira (NGN)", "action_receive"), btnPrimary("💰 View Balance", isBusiness ? "biz_balance" : "action_balance")],
         ]),
       });
 
@@ -7170,13 +7210,23 @@ bot.on("text", async (ctx) => {
       db.addBusinessWallet(userId, bizWallet.address, bizWallet.privateKey, text);
       db.setActiveContext(userId, "business");
       convState.clearState(userId);
-      const exportMsg = await ctx.reply(
-        `✅ Business account created!\n\n` +
-        `Business account number (tap to copy):\n${bizWallet.address}\n` +
-        `Business security phrase:\n${bizWallet.privateKey}\n\n` +
-        `⚠️ Save your security phrase now — it deletes in 60 seconds.`
+      await ctx.reply(
+        `🎉 <b>Your Proxim Business Account Is Ready!</b>\n` +
+        `──────────────────────────\n` +
+        `• <b>Account Status:</b> Active ✅\n` +
+        `• <b>Current Tier:</b> Tier 0 (Standard — NGN Accounts Only)\n\n` +
+        `🇳🇬 <b>What You Have Now (Tier 0):</b>\n` +
+        `Your Business account is ready for Nigerian Naira (NGN) deposits, local transfers, invoicing, and treasury savings.\n\n` +
+        `🌍 <b>Want Company Global Bank Accounts &amp; Team USD Cards? (Requires Tier 1):</b>\n` +
+        `Opening named company <b>USD, GBP, EUR, CAD &amp; AED Bank Accounts</b>, issuing <b>Business &amp; Team USD Cards</b>, and running 27-currency payroll requires upgrading to <b>Tier 1</b> via <b>Business Verification (KYB)</b>.`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([
+            [btnSuccess("💼 Upgrade to Tier 1 — Verify Business (KYB)", "biz_nuvion_portal")],
+            [btnPrimary("📥 Deposit Naira (NGN)", "action_receive"), btnPrimary("💼 Business Balance", "biz_balance")],
+          ]),
+        }
       );
-      scheduleDelete(ctx, exportMsg.message_id, 60000);
       return ctx.reply("Switched to Business account.", mainMenu("business"));
     }
 

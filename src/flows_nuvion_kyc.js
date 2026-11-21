@@ -348,12 +348,14 @@ async function showGlobalPortal(ctx, forcedContext = null) {
     buttons.push([Markup.button.callback("🏠 Main Menu", "main_menu")]);
 
     return ctx.reply(
-      `🌍 <b>${label} (Tier 1)</b>\n──────────────────────────\n` +
-      `Upgrade your account to unlock full Global Neobank capabilities:\n\n` +
+      `🌍 <b>${label} — Upgrade from Tier 0 to Tier 1</b>\n──────────────────────────\n` +
+      `🏷️ <b>Your Current Tier:</b> Tier 0 (Standard — NGN Accounts Only)\n\n` +
+      `On <b>Tier 0</b>, your ${isBiz ? "Business" : "Personal"} account only has access to <b>Nigerian Naira (NGN)</b> accounts and local transfers.\n` +
+      `Getting <b>Global Bank Accounts</b> and <b>Virtual USD Cards</b> requires <b>Tier 1</b>, which unlocks automatically once you complete ${isBiz ? "Business Verification (KYB)" : "ID Verification (KYC)"}:\n\n` +
       `• 🏦 <b>Named Global Bank Accounts</b> (USD, GBP, EUR, NGN, CAD, AED, KES, GHS)\n` +
-      `• 💳 <b>Virtual &amp; Disposable USD Cards</b> (Netflix, AWS, Ads, Online Shopping)\n` +
+      `• 💳 <b>${isBiz ? "Business &amp; Team" : "Virtual &amp; Disposable"} USD Cards</b> (Netflix, AWS, Ads, Online Shopping)\n` +
       `• ✈️ <b>Global Transfers</b> (27+ currencies via bank &amp; mobile money rails)\n` +
-      (isBiz ? `• 🧾 <b>Global Client Invoicing &amp; Team Cards</b>\n` : "") +
+      (isBiz ? `• 🧾 <b>Global Client Invoicing &amp; 27-Currency Payroll</b>\n` : "") +
       `\n<i>All deposits automatically settle straight into your main Proxim balance.</i>\n\n` +
       `🌍 <b>Supported Worldwide:</b> Choose your country when you begin.\n` +
       `<b>What you'll need:</b>\n` +
