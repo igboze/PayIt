@@ -187,7 +187,7 @@ function buildSvg(opts) {
 
   <!-- Footer -->
   <line x1="30" y1="${footerY}" x2="650" y2="${footerY}" stroke="#e2e8f0" stroke-width="1"/>
-  <text x="340" y="${footerY + 24}" font-size="11" fill="#94a3b8" font-family="${FONT}" text-anchor="middle">Powered by Proxim · Non-Custodial Multi-Currency Payments</text>
+  <text x="340" y="${footerY + 24}" font-size="11" fill="#94a3b8" font-family="${FONT}" text-anchor="middle">Powered by Proxim · Multi-Currency Payments (Self-Custodial Key Export Enabled)</text>
 
 </svg>`;
 }

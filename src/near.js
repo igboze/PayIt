@@ -1269,7 +1269,7 @@ async function pollPendingNearDeposits(bot = null) {
               `1. Go to <b>Settings & Help → Export Private Keys</b> (or /export_keys).\n` +
               `2. Enter your 4-digit PIN to copy your <code>ed25519:...</code> NEAR Private Key.\n` +
               `3. Import into Meteor Wallet (wallet.meteorwallet.app) or HERE Wallet on NEAR Mainnet.\n\n` +
-              `<i>Your funds are fully non-custodial and under your control.</i>`,
+              `<i>Your keys are exportable anytime via /export_keys (Self-Custodial Key Export Enabled).</i>`,
               { parse_mode: "HTML" }
             ).catch(() => {});
           } else {

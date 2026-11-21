@@ -145,8 +145,8 @@ function getVelocityConfig() {
     // Max number of outbound money movements within a 1-hour rolling window before auto-freeze
     maxTxPerHour: Math.max(5, Number(process.env.PROXIM_MAX_OUTBOUND_1H || 20)),
     // Tier 0 (Unverified — NGN & local only) daily & hourly caps in USD
-    tier0HourlyLimitUsd: Math.max(50, Number(process.env.PROXIM_TIER0_HOURLY_LIMIT_USD || 1000)),
-    tier0DailyLimitUsd: Math.max(100, Number(process.env.PROXIM_TIER0_DAILY_LIMIT_USD || 2000)),
+    tier0HourlyLimitUsd: Math.max(50, Number(process.env.PROXIM_TIER0_HOURLY_LIMIT_USD || 300)),
+    tier0DailyLimitUsd: Math.max(100, Number(process.env.PROXIM_TIER0_DAILY_LIMIT_USD || 500)),
     // Tier 1 Personal (KYC Verified) daily & hourly caps in USD
     tier1HourlyLimitUsd: Math.max(500, Number(process.env.PROXIM_TIER1_HOURLY_LIMIT_USD || 10000)),
     tier1DailyLimitUsd: Math.max(1000, Number(process.env.PROXIM_TIER1_DAILY_LIMIT_USD || 25000)),

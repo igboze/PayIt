@@ -11,6 +11,7 @@ const nuvionWebhooks = require("./nuvion_webhooks");
 const db = require("./db");
 const idempotency = require("./idempotency");
 const convState = require("./conversation_state");
+const compliance = require("./compliance");
 
 let deps = {};
 
@@ -150,8 +151,7 @@ async function deleteUserStepMessage(ctx) {
   } catch (_) {}
 }
 
-const NUVION_PRIVACY_FOOTER =
-  `\n\n🔒 <i>Handled securely by <b>Nuvion</b> · 100% compliant &amp; confidential (never shared with anyone) · Your reply is auto-deleted after capture.</i>`;
+const NUVION_PRIVACY_FOOTER = compliance.KYC_CONSENT_FOOTER;
 
 const COUNTRY_KYC_PRESETS = {
   US: {
@@ -1297,6 +1297,11 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
   if (state.type === "nuvion_kyc_country") {
     const code = val.toUpperCase();
     if (/^[A-Z]{2}$/.test(code)) {
+      if (compliance.isSanctionedCountry(code)) {
+        await deleteUserStepMessage(ctx);
+        await ctx.reply(compliance.getSanctionedCountryMessage(code), { parse_mode: "HTML", disable_web_page_preview: true });
+        return true;
+      }
       await deleteUserStepMessage(ctx);
       data.nationality = code;
       data.country_code = code;
@@ -1496,6 +1501,11 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
   if (state.type === "nuvion_kyb_country") {
     const code = val.toUpperCase();
     if (/^[A-Z]{2}$/.test(code)) {
+      if (compliance.isSanctionedCountry(code)) {
+        await deleteUserStepMessage(ctx);
+        await ctx.reply(compliance.getSanctionedCountryMessage(code), { parse_mode: "HTML", disable_web_page_preview: true });
+        return true;
+      }
       await deleteUserStepMessage(ctx);
       data.incorp_country = code;
       data.biz_country_code = code;
@@ -1547,10 +1557,16 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
       await ctx.reply("Send <b>Year, Month (1-12), 2-letter Country Code, State</b> (e.g. <code>2023, 5, NG, Lagos</code>).", { parse_mode: "HTML" });
       return true;
     }
+    const incorpCode = parts[2].toUpperCase();
+    if (compliance.isSanctionedCountry(incorpCode)) {
+      await deleteUserStepMessage(ctx);
+      await ctx.reply(compliance.getSanctionedCountryMessage(incorpCode), { parse_mode: "HTML", disable_web_page_preview: true });
+      return true;
+    }
     await deleteUserStepMessage(ctx);
     data.incorp_year = yr;
     data.incorp_month = mo;
-    data.incorp_country = parts[2].toUpperCase();
+    data.incorp_country = incorpCode;
     data.incorp_state = parts[3];
     await promptBusinessKybStep(ctx, userId, "nuvion_kyb_contact", data);
     return true;

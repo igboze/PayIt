@@ -338,6 +338,12 @@ function ensureUserSchema() {
   if (!columns.includes("biz_sender_name")) {
     try { db.exec("ALTER TABLE users ADD COLUMN biz_sender_name TEXT"); } catch (_) {}
   }
+  if (!columns.includes("accepted_terms_at")) {
+    try { db.exec("ALTER TABLE users ADD COLUMN accepted_terms_at TEXT"); } catch (_) {}
+  }
+  if (!columns.includes("accepted_terms_version")) {
+    try { db.exec("ALTER TABLE users ADD COLUMN accepted_terms_version TEXT"); } catch (_) {}
+  }
 
   // SQLite does not allow adding a UNIQUE constraint directly on ALTER TABLE for an existing column,
   // so create a unique index if possible. If duplicates already exist, ignore the failure and keep
@@ -532,6 +538,19 @@ function syncUsername(telegramId, username) {
 
 function getUser(telegramId) {
   return db.prepare("SELECT * FROM users WHERE telegram_id = ?").get(telegramId) || null;
+}
+
+function recordTermsAcceptance(telegramId, version = "2026-11") {
+  const res = db
+    .prepare(
+      "UPDATE users SET accepted_terms_at = COALESCE(accepted_terms_at, datetime('now')), accepted_terms_version = ? WHERE telegram_id = ?"
+    )
+    .run(String(version), Number(telegramId));
+  return res.changes > 0;
+}
+
+function hasAcceptedTerms(user) {
+  return Boolean(user && user.accepted_terms_at);
 }
 
 function getAllUsers() {
@@ -3374,6 +3393,8 @@ module.exports = {
   resolveDbPath,
   getUser,
   getUserByTelegramId: getUser,
+  recordTermsAcceptance,
+  hasAcceptedTerms,
   setUserSenderName,
   resolveSenderName,
   findUserByUsername,

@@ -63,6 +63,7 @@ const autoEarn = require("./src/auto_earn");
 const cashflow = require("./src/cashflow");
 const socialTransfers = require("./src/social_transfers");
 const fraudGuard = require("./src/fraud_guard");
+const compliance = require("./src/compliance");
 
 // ── Agent modules ─────────────────────────────────────────────────────────────
 const { parsePaymentIntent } = require("./agent/orchestrator");
@@ -688,13 +689,14 @@ bot.start(async (ctx) => {
     `📈 <b>Dollar Savings, Bills &amp; Business Suite</b> — Earn yield, pay bills, send invoices &amp; run payroll\n\n` +
     `🔒 <i>Bank-grade security protected by your private PIN. You stay in full control of your money.</i>\n` +
     `🌐 <b>Website:</b> <a href="https://www.proximfi.xyz/">www.proximfi.xyz</a>\n\n` +
+    `⚖️ <i>${compliance.LEGAL_BANKING_DISCLAIMER} By continuing, you accept our <a href="${compliance.TERMS_URL}">Terms of Service &amp; Privacy Policy</a> (v${compliance.TERMS_VERSION}).</i>\n\n` +
     `How will you use Proxim today?`,
     {
       parse_mode: "HTML",
       disable_web_page_preview: true,
       ...Markup.inlineKeyboard([
-        [Markup.button.callback("👤 Personal Account", "onboard_personal")],
-        [Markup.button.callback("💼 Business Account", "onboard_business")],
+        [Markup.button.callback("✅ Personal Account (Accept & Continue)", "onboard_personal")],
+        [Markup.button.callback("💼 Business Account (Accept & Continue)", "onboard_business")],
       ])
     }
   );
@@ -1395,7 +1397,8 @@ async function showSettings(ctx) {
         btnPrimary("📱 Verify Phone", "verifyphone_prompt")],
         [btnSuccess("👥 Invite Friends", "action_referral"),
         btnPrimary("💼 Business Profile", "biz_profile_menu")],
-        [btnDefault("🏠 Main Menu", "main_menu")],
+        [btnDefault("⚖️ Legal & Terms", "action_legal"),
+        btnDefault("🏠 Main Menu", "main_menu")],
       ])
     }
   );
@@ -1453,6 +1456,23 @@ async function showReferralMenu(ctx) {
     }
   );
 }
+
+bot.command(["legal", "terms"], async (ctx) => {
+  return ctx.reply(compliance.buildLegalSummaryHtml(), {
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+    ...backToMenu,
+  });
+});
+
+bot.action("action_legal", async (ctx) => {
+  await safeAnswerCbQuery(ctx);
+  return ctx.reply(compliance.buildLegalSummaryHtml(), {
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+    ...backToMenu,
+  });
+});
 
 // ─── Rewards Menu ───────────────────────────────────────────────────────────
 
@@ -6981,6 +7001,7 @@ bot.on("text", async (ctx) => {
           isBusiness ? state.data.businessPrivateKey : null,
           state.data.referrerId || null
         );
+        db.recordTermsAcceptance(userId, compliance.TERMS_VERSION);
       }
 
       // Save business profile if collected
