@@ -344,6 +344,7 @@ async function showGlobalPortal(ctx, forcedContext = null) {
     } else {
       buttons.push([Markup.button.callback(isBiz ? "💼 Verify Business (KYB)" : "🪪 Start Tier-1 Verification (KYC)", startAction)]);
     }
+    buttons.push([Markup.button.url("🌐 Official Website (proximfi.xyz)", "https://www.proximfi.xyz/")]);
     buttons.push([Markup.button.callback("🏠 Main Menu", "main_menu")]);
 
     return ctx.reply(
@@ -389,6 +390,7 @@ async function showGlobalPortal(ctx, forcedContext = null) {
           [Markup.button.callback("🔗 Request Payment Link (UK/EU/CA/MoMo)", `nuvion_paylink_menu_${p}`)],
           ...(accountType === "business" ? [[Markup.button.callback("📄 Multi-Currency CSV Payroll", `nuvion_po_csv_start_${p}`)]] : []),
           [Markup.button.callback("🔄 Sync Bridge & Status", `nuvion_refresh_${accountType}`)],
+          [Markup.button.url("🌐 Official Website (proximfi.xyz)", "https://www.proximfi.xyz/")],
           [Markup.button.callback("🏠 Main Menu", "main_menu")],
         ]),
       }

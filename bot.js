@@ -583,9 +583,10 @@ bot.start(async (ctx) => {
       `👋 Welcome back, ${ctx.from.first_name || "there"}!\n\n` +
       `Your balance: ${balDisplay}\n` +
       `Account: ${context === "business" ? "Business 💼" : "Personal 👤"}\n` +
-      tierWelcomeHint + `\n` +
+      tierWelcomeHint +
+      `🌐 Website: https://www.proximfi.xyz/\n\n` +
       `What would you like to do?`,
-      mainMenu(context)
+      { disable_web_page_preview: true, ...mainMenu(context) }
     );
     const toggleMarkup = accountToggle(context);
     const toggleRows = [...(toggleMarkup.reply_markup?.inline_keyboard || [])];
@@ -607,6 +608,7 @@ bot.start(async (ctx) => {
         ]);
       }
     }
+    toggleRows.push([Markup.button.url("🌐 Official Website (proximfi.xyz)", "https://www.proximfi.xyz/")]);
     return ctx.reply(
       `Active account: ${context === "business" ? "Business 💼" : "Personal 👤"}\nSwitch or upgrade below:`,
       Markup.inlineKeyboard(toggleRows)
@@ -641,12 +643,15 @@ bot.start(async (ctx) => {
       `──────────────────────────\n` +
       `Your money is waiting for you on <b>Proxim</b>.\n\n` +
       `Set up your free wallet in <b>10 seconds</b> (just pick a 4-digit PIN) and your <b>$${pendingGiftAmount.toFixed(2)}</b> will land in your balance immediately.\n\n` +
-      `💵 Spend, save in dollars, or cash out to your bank anytime.`,
+      `💵 Spend, save in dollars, or cash out to your bank anytime.\n` +
+      `🌐 <a href="https://www.proximfi.xyz/">www.proximfi.xyz</a>`,
       {
         parse_mode: "HTML",
+        disable_web_page_preview: true,
         ...Markup.inlineKeyboard([
           [btnSuccess(`🎉 Claim $${pendingGiftAmount.toFixed(2)} Now`, "onboard_personal")],
           [Markup.button.callback("💼 Claim to a Business Account", "onboard_business")],
+          [Markup.button.url("🌐 Official Website (proximfi.xyz)", "https://www.proximfi.xyz/")],
         ]),
       }
     );
@@ -669,13 +674,16 @@ bot.start(async (ctx) => {
     `💳 <b>Virtual &amp; Disposable USD Cards</b> — Spend globally on subscriptions, ads &amp; cloud\n` +
     `🌍 <b>Instant Local &amp; Global Transfers</b> — Send to 27+ currencies &amp; Nigerian banks in seconds\n` +
     `📈 <b>Dollar Savings, Bills &amp; Business Suite</b> — Earn yield, pay bills, send invoices &amp; run payroll\n\n` +
-    `🔒 <i>Bank-grade security protected by your private PIN. You stay in full control of your money.</i>\n\n` +
+    `🔒 <i>Bank-grade security protected by your private PIN. You stay in full control of your money.</i>\n` +
+    `🌐 <b>Website:</b> <a href="https://www.proximfi.xyz/">www.proximfi.xyz</a>\n\n` +
     `How will you use Proxim today?`,
     {
       parse_mode: "HTML",
+      disable_web_page_preview: true,
       ...Markup.inlineKeyboard([
         [Markup.button.callback("👤 Personal Account", "onboard_personal")],
         [Markup.button.callback("💼 Business Account", "onboard_business")],
+        [Markup.button.url("🌐 Official Website (proximfi.xyz)", "https://www.proximfi.xyz/")],
       ])
     }
   );
@@ -1323,35 +1331,41 @@ async function showSettings(ctx) {
     `• <b>Personal Account:</b> Active ✅\n` +
     `• <b>Business Account:</b> ${hasBiz ? "Active ✅" : "Not set up yet"}\n` +
     `• <b>Phone Number:</b> ${phone}\n` +
-    `• <b>Rewards Balance:</b> ${points} points (${formatPointValue(points)})\n\n` +
+    `• <b>Rewards Balance:</b> ${points} points (${formatPointValue(points)})\n` +
+    `• <b>Official Website:</b> <a href="https://www.proximfi.xyz/">www.proximfi.xyz</a>\n\n` +
     `🔒 <i>Your account is protected by bank-grade encryption and your private 4-digit PIN.</i>`,
 
-    Markup.inlineKeyboard([
-      ...(nuvionAllowed
-        ? [[
-            nuvionStatus === "approved"
-              ? btnPrimary("🌍 Global Banking & USD Cards (Tier 1 ✅)", portalAction)
-              : btnSuccess(
-                  context === "business"
-                    ? "💼 Verify Business (KYB) — Upgrade to Tier 1 Global"
-                    : "🪪 Verify ID — Upgrade to Tier 1 Global",
-                  portalAction
-                ),
-          ]]
-        : []),
-      [btnPrimary("🔁 Switch Account",                "action_switch_account"),
-       btnSuccess("🏅 Rewards",                       "action_rewards")],
-      [btnPrimary("🔑 Save Personal Security Phrase", "export_personal")],
-      [btnPrimary("🔑 Save Business Security Phrase", "export_business")],
-      [btnPrimary("🔒 Change PIN",                    "changepin"),
-       btnDanger("🔄 Forgot / Reset PIN",             "resetpin_start")],
-      [btnDanger("🛡️ Lock Account",                  "lock_account")],
-      [btnPrimary("👛 Link External Wallet",          "setwallet_prompt"),
-       btnPrimary("📱 Verify Phone",                  "verifyphone_prompt")],
-      [btnSuccess("👥 Invite Friends",                 "action_referral"),
-       btnPrimary("💼 Business Profile",              "biz_profile_menu")],
-      [btnDefault("🏠 Main Menu",                     "main_menu")],
-    ])
+    {
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      ...Markup.inlineKeyboard([
+        ...(nuvionAllowed
+          ? [[
+              nuvionStatus === "approved"
+                ? btnPrimary("🌍 Global Banking & USD Cards (Tier 1 ✅)", portalAction)
+                : btnSuccess(
+                    context === "business"
+                      ? "💼 Verify Business (KYB) — Upgrade to Tier 1 Global"
+                      : "🪪 Verify ID — Upgrade to Tier 1 Global",
+                    portalAction
+                  ),
+            ]]
+          : []),
+        [btnPrimary("🔁 Switch Account",                "action_switch_account"),
+         btnSuccess("🏅 Rewards",                       "action_rewards")],
+        [btnPrimary("🔑 Save Personal Security Phrase", "export_personal")],
+        [btnPrimary("🔑 Save Business Security Phrase", "export_business")],
+        [btnPrimary("🔒 Change PIN",                    "changepin"),
+         btnDanger("🔄 Forgot / Reset PIN",             "resetpin_start")],
+        [btnDanger("🛡️ Lock Account",                  "lock_account")],
+        [btnPrimary("👛 Link External Wallet",          "setwallet_prompt"),
+         btnPrimary("📱 Verify Phone",                  "verifyphone_prompt")],
+        [btnSuccess("👥 Invite Friends",                 "action_referral"),
+         btnPrimary("💼 Business Profile",              "biz_profile_menu")],
+        [Markup.button.url("🌐 Official Website (proximfi.xyz)", "https://www.proximfi.xyz/")],
+        [btnDefault("🏠 Main Menu",                     "main_menu")],
+      ])
+    }
   );
 }
 
@@ -1598,8 +1612,9 @@ function showHelp(ctx) {
       `💸 Expense Tracking & Cash Flow — monitor monthly business income vs expenses\n` +
       `💰 Business Treasury Savings — earn yield on idle company dollar reserves\n` +
       `💵 Instant Naira Cash-Out — settle directly to any Nigerian bank account\n\n` +
-      `You can also just type what you want to do — Proxim understands plain English and Pidgin.`,
-      mainMenu(context)
+      `You can also just type what you want to do — Proxim understands plain English and Pidgin.\n\n` +
+      `🌐 Official Website: https://www.proximfi.xyz/`,
+      { disable_web_page_preview: true, ...mainMenu(context) }
     );
   }
   return ctx.reply(
@@ -1613,8 +1628,9 @@ function showHelp(ctx) {
     `📈 Save & Earn — earn automated daily yield on your dollar savings\n` +
     `🤖 Auto-Pay & Invoices — schedule recurring transfers or send professional invoices\n\n` +
     `You can also type naturally — "send 50 dollars to Emeka", ` +
-    `"cash out 50 to my GTBank account", or "invoice TechCorp 200 for design work".`,
-    mainMenu(context)
+    `"cash out 50 to my GTBank account", or "invoice TechCorp 200 for design work".\n\n` +
+    `🌐 Official Website: https://www.proximfi.xyz/`,
+    { disable_web_page_preview: true, ...mainMenu(context) }
   );
 }
 
@@ -1631,8 +1647,9 @@ function showFeatures(ctx) {
     `✅ Instant Bill Payments (Airtime, Data, Electricity, Cable TV)\n` +
     `✅ AI Invoicing, Expense Ledger & Multi-Currency CSV Payroll\n` +
     `✅ Automated Recurring Transfers (Auto-Pay) & Saved Contacts\n` +
-    `✅ Photo/PDF Bill & Invoice Scanner powered by Proxim AI`,
-    mainMenu(context)
+    `✅ Photo/PDF Bill & Invoice Scanner powered by Proxim AI\n\n` +
+    `🌐 Official Website: https://www.proximfi.xyz/`,
+    { disable_web_page_preview: true, ...mainMenu(context) }
   );
 }
 
