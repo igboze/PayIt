@@ -1,5 +1,5 @@
 // bot.js
-// Proxim — Agentic Stablecoins Payment Solution inside Telegram
+// Proxim — Global AI Neobank & Fintech Platform inside Telegram
 // Personal + Business accounts · dollar + euro wallets · Arc Testnet
 //
 // Architecture:
@@ -663,12 +663,12 @@ bot.start(async (ctx) => {
     `${referralGreeting}` +
     `👋 <b>Welcome to Proxim</b>\n` +
     `──────────────────────────\n` +
-    `Your non-custodial neobank living right inside Telegram.\n\n` +
-    `💵 <b>Save in Digital Dollars ($)</b> — preserve value against inflation\n` +
-    `🇳🇬 <b>Spend or Cash Out in Naira</b> — direct to your bank in under 35 seconds\n` +
-    `🌐 <b>Deposit & Withdraw Crypto</b> — NEAR, Solana, Base & 10+ chains\n` +
-    `🧾 <b>SME Invoicing & Bulk Payroll</b> — voice notes to invoices & ledgers\n\n` +
-    `🔒 <i>100% Non-Custodial: secured by your private PIN. You hold your own money.</i>\n\n` +
+    `Your all-in-one global neobank &amp; fintech right inside Telegram.\n\n` +
+    `🏦 <b>Named Global Bank Accounts</b> — Receive USD, GBP, EUR, NGN, CAD &amp; more\n` +
+    `💳 <b>Virtual &amp; Disposable USD Cards</b> — Spend globally on subscriptions, ads &amp; cloud\n` +
+    `🌍 <b>Instant Local &amp; Global Transfers</b> — Send to 27+ currencies &amp; Nigerian banks in seconds\n` +
+    `📈 <b>Dollar Savings, Bills &amp; Business Suite</b> — Earn yield, pay bills, send invoices &amp; run payroll\n\n` +
+    `🔒 <i>Bank-grade security protected by your private PIN. You stay in full control of your money.</i>\n\n` +
     `How will you use Proxim today?`,
     {
       parse_mode: "HTML",
@@ -1595,32 +1595,30 @@ function showHelp(ctx) {
   const context = getContext(ctx.from?.id);
   if (context === "business") {
     return ctx.reply(
-      `📖 Proxim for Business\n──────────────────────────\n` +
-      `🧾 New Invoice — describe it in plain English, get a PDF\n` +
-      `📋 My Invoices — track and manage what's owed to you\n` +
-      `💸 Log Expense — record a business spend quickly\n` +
-      `👥 Pay Team — bulk pay your staff in dollars\n` +
-      `📊 This Month — income vs expenses summary\n` +
-      `💰 Business Savings — set aside money for tax or goals\n` +
-      `📤 Send Payment — pay suppliers in dollars\n` +
-      `💵 Cash Out — convert dollars to Naira\n\n` +
+      `📖 Proxim Business Banking\n──────────────────────────\n` +
+      `🏦 Global Bank Accounts — named USD, GBP, EUR, NGN, CAD, AED, KES & GHS accounts\n` +
+      `💳 Business & Team USD Cards — issue virtual & disposable cards for ads, SaaS & staff\n` +
+      `🌍 Global Payouts & CSV Payroll — pay vendors & global teams across 27+ currencies\n` +
+      `🧾 Smart Invoicing — describe an invoice in plain English and get a branded PDF\n` +
+      `💸 Expense Tracking & Cash Flow — monitor monthly business income vs expenses\n` +
+      `💰 Business Treasury Savings — earn yield on idle company dollar reserves\n` +
+      `💵 Instant Naira Cash-Out — settle directly to any Nigerian bank account\n\n` +
       `You can also just type what you want to do — Proxim understands plain English and Pidgin.`,
       mainMenu(context)
     );
   }
   return ctx.reply(
-    `📖 How to Use Proxim\n──────────────────────────\n` +
-    `💰 Balance — your dollar and savings balance\n` +
-    `📥 Deposit — add funds via Naira bank transfer or crypto\n` +
-    `📤 Send Money — send to a saved contact or account number\n` +
-    `📈 Save & Earn — earn interest on your dollars\n` +
-    `🤖 Auto-Pay — set up recurring payments\n` +
-    `🧾 Invoice — create and send payment requests\n` +
-    `👥 Contacts — save people you pay often\n` +
-    `🌍 Add from Abroad — bring money from Binance, Coinbase, MetaMask\n\n` +
-    `You can also just type what you want — "send 10 dollars to Emeka", ` +
-    `"cash out 50 to my GTBank account", "invoice TechCorp 200 for design work".\n\n` +
-    `You can even send a photo of a bill or invoice and Proxim will read it.`,
+    `📖 Welcome to Proxim — Your Global Neobank\n──────────────────────────\n` +
+    `💰 Balance — view your unified dollar, Naira & savings balance\n` +
+    `🌍 Global & Cards — open named USD, GBP, EUR & NGN bank accounts + Virtual USD Cards\n` +
+    `📥 Deposit — fund via local Naira transfer, international bank accounts, or external wallets\n` +
+    `📤 Send Money — send to Nigerian banks, 27+ international currencies, or Proxim contacts\n` +
+    `💳 Virtual & Disposable USD Cards — pay globally for Netflix, Apple, AWS, Ads & shopping\n` +
+    `📱 Pay Bills — instant airtime, mobile data, electricity & cable TV\n` +
+    `📈 Save & Earn — earn automated daily yield on your dollar savings\n` +
+    `🤖 Auto-Pay & Invoices — schedule recurring transfers or send professional invoices\n\n` +
+    `You can also type naturally — "send 50 dollars to Emeka", ` +
+    `"cash out 50 to my GTBank account", or "invoice TechCorp 200 for design work".`,
     mainMenu(context)
   );
 }
@@ -1628,22 +1626,17 @@ function showHelp(ctx) {
 function showFeatures(ctx) {
   const context = getContext(ctx.from?.id);
   return ctx.reply(
-    `✨ What's live on Proxim:\n\n` +
-    `✅ Personal and Business accounts (one PIN)\n` +
-    `✅ Agentic Stablecoins Payment Solution\n` +
-    `✅ Add money from Binance, Coinbase, MetaMask and more\n` +
-    `✅ Cash out to Naira via bank transfer\n` +
-    `✅ Earn interest on your dollar balance\n` +
-    `✅ Create professional invoices in plain English\n` +
-    `✅ Auto-payments — schedule recurring transfers\n` +
-    `✅ Business tools: invoices, expenses, payroll, cash flow\n` +
-    `✅ Send a photo of a bill and Proxim reads and pays it\n` +
-    `✅ Upload a spreadsheet to bulk pay your team\n` +
-    `✅ Save contacts — send to "Emeka" instead of a long account number\n\n` +
-    `🚧 Coming soon:\n` +
-    `— Card spending\n` +
-    `— Airtime and bills\n` +
-    `— Business AI reports`,
+    `✨ Proxim — Full-Service Global Neobank & Fintech:\n\n` +
+    `✅ Personal & Business Neobank Accounts (secured by your PIN)\n` +
+    `✅ Named Global Bank Accounts (USD, GBP, EUR, NGN, CAD, AED, KES, GHS, TZS, MXN)\n` +
+    `✅ Virtual & 1-Time Disposable USD Mastercards\n` +
+    `✅ Global Bank & Mobile Money Transfers across 27+ currencies\n` +
+    `✅ Instant Naira Deposits & Bank Cash-Outs (<35 seconds)\n` +
+    `✅ High-Yield Dollar Savings Vaults (Save & Earn)\n` +
+    `✅ Instant Bill Payments (Airtime, Data, Electricity, Cable TV)\n` +
+    `✅ AI Invoicing, Expense Ledger & Multi-Currency CSV Payroll\n` +
+    `✅ Automated Recurring Transfers (Auto-Pay) & Saved Contacts\n` +
+    `✅ Photo/PDF Bill & Invoice Scanner powered by Proxim AI`,
     mainMenu(context)
   );
 }

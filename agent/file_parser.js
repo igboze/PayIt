@@ -179,7 +179,7 @@ async function buildFilePaymentPlan(rows, instruction, userContext = {}) {
 
   const batchId = userContext.batchId || `batch_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
 
-  const systemPrompt = `You are a payment planning assistant for Proxim, a Nigerian multi-chain and fiat wallet bot.
+  const systemPrompt = `You are a payment planning assistant for Proxim, a global neobank and business payroll fintech platform.
 
 Users attach files containing payroll/payment rows and instructions.
 Each row can specify payment in Nigerian Naira (NGN bank transfer) or on-chain (Arc EVM USDC/EURC or Solana USDC).

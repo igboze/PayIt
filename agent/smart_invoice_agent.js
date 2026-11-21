@@ -175,7 +175,7 @@ function normalizeInvoiceParsed(parsed, rawUserMessage = "") {
 }
 
 async function parseSmartInvoiceIntent(userMessage, userContext = {}) {
-  const systemPrompt = `You are a Smart Invoicing Agent for Proxim — an Agentic Stablecoins Payment Solution.
+  const systemPrompt = `You are a Smart Invoicing Agent for Proxim — a full-service Global Neobank & Fintech Platform.
 Users will provide raw, unstructured text describing work they have done or an invoice to create.
 Extract the relevant details to generate a professional invoice.
 

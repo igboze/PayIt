@@ -15,7 +15,7 @@
 const { getJSONCompletion } = require("./ai_provider");
 
 async function parsePaymentIntent(userMessage, userContext) {
-  const systemPrompt = `You are a payment orchestration agent for Proxim — a non-custodial USDC wallet inside Telegram, used primarily by Nigerians.
+  const systemPrompt = `You are a payment orchestration agent for Proxim — a full-service global neobank and fintech platform inside Telegram.
 
 Users may write in English, Pidgin English, or a mix.
 
