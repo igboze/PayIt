@@ -23,14 +23,20 @@ const fx = require("./fx");
 
 function verifyAlchemySignature(rawBody, headers, signingKey) {
   if (!signingKey) return true;
-  const signature = headers["x-alchemy-signature"] || headers["X-Alchemy-Signature"];
-  if (!signature) return true;
+  const signature =
+    headers?.["x-alchemy-signature"] ||
+    headers?.["X-Alchemy-Signature"] ||
+    headers?.["x-webhook-signature"] ||
+    headers?.["X-Webhook-Signature"];
+  if (!signature) return false;
   try {
     const crypto = require("crypto");
     const hmac = crypto.createHmac("sha256", signingKey);
     hmac.update(rawBody);
     const digest = hmac.digest("hex");
-    return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(signature));
+    const cleanSig = String(signature).trim();
+    if (digest.length !== cleanSig.length) return false;
+    return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(cleanSig));
   } catch {
     return false;
   }
@@ -815,7 +821,7 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
         const rawBody = Buffer.concat(chunks);
 
         // Reject unsigned or badly signed webhooks. Without this, anyone who knows the URL can
-        // POST a fake "order.successful" event. Enforced when PAJ_WEBHOOK_SECRET (whsec_...) is set.
+        // POST a fake "order.successful" event.
         const strictSecret = process.env.PAJ_WEBHOOK_SECRET || "";
         if (strictSecret) {
           if (!paj.verifyWebhookSignature(rawBody, req.headers, strictSecret)) {
@@ -823,8 +829,12 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
             res.writeHead(401, { "Content-Type": "application/json" });
             return res.end(JSON.stringify({ error: "invalid signature" }));
           }
+        } else if (process.env.NODE_ENV === "production") {
+          console.error("[webhook_server] Rejected Paj webhook in production: PAJ_WEBHOOK_SECRET is not configured.");
+          res.writeHead(401, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ error: "webhook secret not configured" }));
         } else {
-          console.warn("[webhook_server] WARNING: PAJ_WEBHOOK_SECRET is not set. Paj webhooks are NOT authenticated.");
+          console.warn("[webhook_server] WARNING: PAJ_WEBHOOK_SECRET is not set (non-production mode).");
         }
 
         // Return 200 immediately to acknowledge Paj
@@ -864,18 +874,25 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
       req.on("end", async () => {
         const rawBody = Buffer.concat(chunks);
 
-        // Verify Alchemy HMAC signature if coming into /webhook/alchemy and signing key is configured
-        if (req.url.includes("alchemy")) {
-          const signingKey = process.env.ALCHEMY_WEBHOOK_SIGNING_KEY || process.env.ALCHEMY_API_KEY;
-          if (signingKey && (req.headers["x-alchemy-signature"] || req.headers["X-Alchemy-Signature"])) {
-            const isValid = verifyAlchemySignature(rawBody, req.headers, signingKey);
-            if (!isValid) {
-              console.warn("[webhook_server] Alchemy webhook HMAC signature mismatch.");
-              res.writeHead(401, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "Invalid signature" }));
-              return;
-            }
+        // Verify HMAC signature on /webhook/alchemy, /webhook/crypto-deposit, and /webhook/quicknode
+        // Never allow an attacker to bypass signature verification simply by omitting the header!
+        const signingKey =
+          process.env.ALCHEMY_WEBHOOK_SIGNING_KEY ||
+          process.env.CRYPTO_DEPOSIT_WEBHOOK_SECRET ||
+          (req.url.includes("alchemy") ? process.env.ALCHEMY_API_KEY : "");
+        if (signingKey) {
+          const isValid = verifyAlchemySignature(rawBody, req.headers, signingKey);
+          if (!isValid) {
+            console.warn(`[webhook_server] Rejected ${req.url} webhook: missing or invalid HMAC signature.`);
+            res.writeHead(401, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Invalid or missing signature" }));
+            return;
           }
+        } else if (process.env.NODE_ENV === "production") {
+          console.error(`[webhook_server] Rejected ${req.url} in production: ALCHEMY_WEBHOOK_SIGNING_KEY / CRYPTO_DEPOSIT_WEBHOOK_SECRET not set.`);
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Webhook signing key not configured" }));
+          return;
         }
 
         // Acknowledge webhook provider immediately

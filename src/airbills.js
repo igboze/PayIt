@@ -28,6 +28,8 @@ const {
 const db = require("./db");
 const walletLib = require("./wallet");
 const multichain = require("./multichain");
+const idempotency = require("./idempotency");
+const fraudGuard = require("./fraud_guard");
 const cctpBridge = require("./cctp_bridge");
 const fx = require("./fx");
 
@@ -544,6 +546,30 @@ async function executeBillPayment({
   const userSolanaAddress = userSolanaKeypair.publicKey.toBase58();
 
   const estUsdc = await estimateBillUsdc(amountNgn);
+
+  // 1b. Anti-Fraud Velocity, Circuit Breaker & Per-User Concurrency Lock (Findings 2 & 5)
+  await fraudGuard.assertOutboundAllowed({
+    telegramId: user.telegram_id,
+    accountType: context,
+    action: `bill_${category}`,
+    amountUsd: estUsdc,
+    reference: `${productCode}:${recipient}`,
+    record: false,
+  });
+
+  const billLockKey = `airbills_pay_lock:${user.telegram_id}`;
+  const billLock = idempotency.tryAcquireOperationLock(billLockKey, {
+    scope: "airbills_bill_payment",
+    telegramId: user.telegram_id,
+    accountType: context,
+    amount: estUsdc,
+    lockTtlSeconds: 90,
+    allowReacquireAfterCompleted: true,
+  });
+  if (!billLock.acquired) {
+    throw new Error("A bill payment is already in progress on your account. Please wait for it to finish.");
+  }
+
   const billRecord = db.createBillPayment({
     telegramId: user.telegram_id,
     accountType: context,
@@ -557,18 +583,16 @@ async function executeBillPayment({
   });
 
   try {
-    // 2. One-time on-demand Solana wallet activation (USDC ATA + tiny SOL gas drip)
-    if (onProgress) await onProgress("⚡ Checking your Solana bill wallet...");
-    await ensureUserSolanaActivated(userSolanaKeypair.publicKey);
-
-    // 3. Ensure user's own Solana wallet has enough USDC (fast path if already funded, else CCTP from Arc)
+    // 2. CRITICAL (Finding 2): Verify user has sufficient USDC balance on Solana or Arc BEFORE
+    // calling ensureUserSolanaActivated() so $0.00 balance sybil bots can NEVER drain SOL rent or gas drips!
     let solUsdc = await getSolanaUsdcBalance(userSolanaKeypair.publicKey);
     // Add 3% buffer when bridging to protect against slight NGN/USD quote movement
     const bridgeTargetUsdc = Number((estUsdc * 1.03 + 0.05).toFixed(4));
     let arcTxHash = null;
+    let neededUsdc = 0;
 
     if (solUsdc < bridgeTargetUsdc) {
-      const neededUsdc = Number(Math.max(0.5, bridgeTargetUsdc - solUsdc).toFixed(4));
+      neededUsdc = Number(Math.max(0.5, bridgeTargetUsdc - solUsdc).toFixed(4));
       const arcBalMicro = await walletLib.getNativeBalanceMicro(userArcWallet.address);
       const arcBal = parseFloat(walletLib.formatMicro(arcBalMicro));
 
@@ -577,7 +601,22 @@ async function executeBillPayment({
           `Insufficient balance. You need ~$${neededUsdc.toFixed(2)} USDC, but your balance is $${arcBal.toFixed(2)}.`
         );
       }
+    }
 
+    // Record velocity only after confirming the user actually holds the funds
+    fraudGuard.recordOutboundVelocity({
+      telegramId: user.telegram_id,
+      accountType: context,
+      action: `bill_${category}`,
+      amountUsd: estUsdc,
+      reference: `${productCode}:${recipient}`,
+    });
+
+    // 3. One-time on-demand Solana wallet activation (USDC ATA + tiny SOL gas drip) — ONLY for funded users!
+    if (onProgress) await onProgress("⚡ Checking your Solana bill wallet...");
+    await ensureUserSolanaActivated(userSolanaKeypair.publicKey);
+
+    if (solUsdc < bridgeTargetUsdc) {
       if (onProgress) {
         await onProgress(`🌉 Moving ~$${neededUsdc.toFixed(2)} from your wallet to settle this bill (~25s)...`);
       }
@@ -667,6 +706,8 @@ async function executeBillPayment({
       );
     } catch (_) {}
 
+    idempotency.completeOperationIdempotency(billLockKey, { txHash: solanaTxSig });
+
     return {
       success: true,
       bill: updated,
@@ -679,6 +720,7 @@ async function executeBillPayment({
       processResponse: processRes,
     };
   } catch (err) {
+    idempotency.failOperationIdempotency(billLockKey, err.message);
     db.updateBillPayment(billRecord.id, {
       status: "failed",
       error_message: err.message,

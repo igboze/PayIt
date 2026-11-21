@@ -14,6 +14,7 @@ const idempotency = require("./idempotency");
 const invoiceDb = require("./invoice_db");
 const walletLib = require("./wallet");
 const apiRoutes = require("./api_routes");
+const fraudGuard = require("./fraud_guard");
 const { generateReceiptPNG } = require("./receipt_generator");
 
 const CURRENCY_META = {
@@ -515,15 +516,7 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null }) {
       job = db.getNuvionJobById(lockedExisting.id);
     }
 
-    // Ensure entity has its Base self-counterparty bootstrapped
     let entity = entityRecord;
-    if (!entity.self_counterparty_id || !entity.self_base_payment_detail_id) {
-      entity = await nuvionWebhooks.bootstrapApprovedEntity(entity);
-    }
-    if (!entity.self_counterparty_id || !entity.self_base_payment_detail_id) {
-      throw new Error(`Entity ${entity.entity_id} is missing Base self-counterparty wallet details`);
-    }
-
     const entityId = entity.entity_id;
     const accountId = confirmed.account_id;
     const marginBps = nuvion.getFxMarginBps("inbound");
@@ -555,6 +548,60 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null }) {
     }
 
     const jobPayload = { ...(job.payload || {}) };
+
+    // Step 0: Chargeback & Reversal Arbitrage Screener (Finding 3)
+    // Screens hosted payment links (Interac e-Transfer, Open Banking, MoMo) and frozen accounts
+    // BEFORE bootstrapping or sweeping funds out of Nuvion to irreversible Base USDC!
+    const screenRes = await fraudGuard.screenInboundFiatInflow({
+      entityRecord: entity,
+      confirmed,
+      netMajor: nuvion.fromNuvionMinor(netMinor),
+      isPaymentLink: Boolean(jobPayload.fundingSessionId),
+      bot,
+    });
+    if (screenRes.hold) {
+      db.updateNuvionJob(job.id, {
+        state: "held_fraud_review",
+        error_message: screenRes.reason,
+        payload_json: {
+          ...jobPayload,
+          heldForReview: true,
+          holdReason: screenRes.reason,
+          estUsd: screenRes.estUsd,
+        },
+      });
+      idempotency.completeOperationIdempotency(sweepLockKey, { txHash: `held_${confirmed.id}` });
+
+      const telegramHold = getBotTelegram(bot);
+      if (telegramHold && entity.telegram_id) {
+        const grossStrHold = formatFiatAmount(currency, nuvion.fromNuvionMinor(grossMinor));
+        await telegramHold.sendMessage(
+          entity.telegram_id,
+          `🛡️ <b>Deposit Under Security Review (${grossStrHold})</b>\n` +
+          `──────────────────────────\n` +
+          `• <b>Amount Received:</b> ${grossStrHold}\n` +
+          `• <b>Reference:</b> <code>${escapeHtml(confirmed.id)}</code>\n\n` +
+          `<i>To protect your account against payment reversals, this inflow is currently held safely in your ${escapeHtml(currency)} account for standard compliance verification and will settle into your balance once cleared.</i>`,
+          { parse_mode: "HTML" }
+        ).catch(() => {});
+      }
+
+      return {
+        swept: false,
+        held: true,
+        reason: screenRes.reason,
+        jobId: job.id,
+        estUsd: screenRes.estUsd,
+      };
+    }
+
+    // Ensure entity has its Base self-counterparty bootstrapped
+    if (!entity.self_counterparty_id || !entity.self_base_payment_detail_id) {
+      entity = await nuvionWebhooks.bootstrapApprovedEntity(entity);
+    }
+    if (!entity.self_counterparty_id || !entity.self_base_payment_detail_id) {
+      throw new Error(`Entity ${entity.entity_id} is missing Base self-counterparty wallet details`);
+    }
 
     // Step 1: Collect 1% FX Margin via free instant book-transfer (Child -> Parent)
     // Persisted immediately into payload_json so retries NEVER double-charge 1% margin!

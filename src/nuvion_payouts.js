@@ -24,6 +24,7 @@ const gateway = require("./gateway");
 const cctpBridge = require("./cctp_bridge");
 const walletLib = require("./wallet");
 const idempotency = require("./idempotency");
+const fraudGuard = require("./fraud_guard");
 const { generateReceiptPNG } = require("./receipt_generator");
 
 const BASE_USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
@@ -646,6 +647,16 @@ async function initiateGlobalPayout({
     targetAmountMajor,
   });
 
+  // Enforce Anti-Fraud Velocity Tripwires, Tier Daily Limits & Global Circuit Breaker (Finding 5)
+  await fraudGuard.assertOutboundAllowed({
+    telegramId,
+    accountType,
+    action: `nuvion_payout_${quoteInfo.targetCurrency}`,
+    amountUsd: quoteInfo.userTotalUsd,
+    reference: railKey,
+    bot,
+  });
+
   const { entity, rail } = quoteInfo;
 
   // Resolve recipient counterparty + payment detail
@@ -1238,6 +1249,16 @@ async function executeGlobalPayrollBatch({
 
   const batchNuvionCostUsd = round2(payableRows.reduce((s, r) => s + r.quote.nuvionCostUsd, 0));
   const batchMarginUsd = round2(payableRows.reduce((s, r) => s + r.quote.marginUsd, 0));
+
+  // Enforce Anti-Fraud Velocity Tripwires, Tier Daily Limits & Global Circuit Breaker on Payroll Batch (Finding 5)
+  await fraudGuard.assertOutboundAllowed({
+    telegramId,
+    accountType,
+    action: "nuvion_batch_payroll",
+    amountUsd: round2(batchNuvionCostUsd + batchMarginUsd),
+    reference: batchId,
+    bot,
+  });
 
   // Register/reuse recipients first so we never fund if a recipient payload is invalid
   const prepared = [];

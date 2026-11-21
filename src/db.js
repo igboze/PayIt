@@ -900,11 +900,22 @@ function setPhoneVerified(telegramId, verified) {
   db.prepare("UPDATE users SET phone_verified = ? WHERE telegram_id = ?").run(verified ? 1 : 0, telegramId);
 }
 
+// Actions that NEVER qualify for triggering a referral bonus (e.g. free invoice creation)
+const NON_QUALIFYING_REFERRAL_ACTIONS = new Set([
+  "invoice",
+  "businessInvoice",
+  "invoice_created",
+  "referral_bonus",
+]);
+
 function awardPoints(telegramId, points, action, details = null, options = {}) {
   if (!Number.isInteger(points) || points === 0) return;
   const normalized = Number(points);
   if (normalized > 0 && !options.skipReferral) {
-    maybeAwardReferralBonus(telegramId, options.notify);
+    maybeAwardReferralBonus(telegramId, options.notify, {
+      action,
+      amountUsd: options.amountUsd,
+    });
   }
   db.prepare("UPDATE users SET points_balance = points_balance + ? WHERE telegram_id = ?").run(normalized, telegramId);
   db.prepare(
@@ -922,7 +933,19 @@ function awardPoints(telegramId, points, action, details = null, options = {}) {
   }
 }
 
-function maybeAwardReferralBonus(telegramId, notify = null) {
+function maybeAwardReferralBonus(telegramId, notify = null, context = {}) {
+  const act = String(context?.action || "").trim();
+  if (act && NON_QUALIFYING_REFERRAL_ACTIONS.has(act)) {
+    return;
+  }
+  const minQualifyingUsd = Math.max(0, Number(process.env.MIN_REFERRAL_QUALIFYING_USD ?? 5));
+  if (context?.amountUsd !== undefined && context?.amountUsd !== null) {
+    const vol = Number(context.amountUsd);
+    if (!Number.isFinite(vol) || vol < minQualifyingUsd) {
+      return;
+    }
+  }
+
   const row = db.prepare(
     "SELECT referrer_telegram_id, referred_on_first_point FROM users WHERE telegram_id = ?"
   ).get(telegramId);
@@ -932,14 +955,37 @@ function maybeAwardReferralBonus(telegramId, notify = null) {
   const referrer = getUser(row.referrer_telegram_id);
   if (!referrer) return;
 
-  db.prepare(
-    "UPDATE users SET referred_on_first_point = 1 WHERE telegram_id = ?"
+  // Atomic check-and-set so concurrent transactions can never double-award the referral bonus
+  const claim = db.prepare(
+    "UPDATE users SET referred_on_first_point = 1 WHERE telegram_id = ? AND COALESCE(referred_on_first_point, 0) = 0"
   ).run(telegramId);
+  if (!claim || claim.changes === 0) return;
 
   awardPoints(referrer.telegram_id, REFERRAL_BONUS_POINTS, "referral_bonus", `Referral: ${telegramId}`, {
     skipReferral: true,
     notify,
   });
+}
+
+/**
+ * Atomically deduct points from a user's balance only if `points_balance >= points`.
+ * Prevents concurrent PIN submissions from driving `points_balance` negative.
+ */
+function redeemPointsAtomic(telegramId, points, action = "redeem", details = null) {
+  const pts = Math.round(Number(points));
+  if (!Number.isInteger(pts) || pts <= 0) {
+    throw new Error("Invalid points amount to redeem.");
+  }
+  const info = db.prepare(
+    "UPDATE users SET points_balance = points_balance - ? WHERE telegram_id = ? AND points_balance >= ?"
+  ).run(pts, telegramId, pts);
+  if (!info || info.changes === 0) {
+    throw new Error("Insufficient points balance.");
+  }
+  db.prepare(
+    "INSERT INTO points_history (telegram_id, points, action, details) VALUES (?, ?, ?, ?)"
+  ).run(telegramId, -pts, action, details);
+  return getPointsBalance(telegramId);
 }
 
 function getPointsBalance(telegramId) {
@@ -3355,6 +3401,8 @@ module.exports = {
   unblockUser,
   isBlocked,
   awardPoints,
+  maybeAwardReferralBonus,
+  redeemPointsAtomic,
   getPointsBalance,
   getPointsHistory,
   recordTransaction,

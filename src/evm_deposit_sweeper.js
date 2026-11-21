@@ -559,6 +559,26 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     return { success: false, error: "Wallet signer mismatch — aborted for fund isolation" };
   }
 
+  // CRITICAL ON-CHAIN VERIFICATION GUARD (Finding 1):
+  // In production, if a 0x txHash is provided via webhook, verify the transaction receipt actually exists
+  // and succeeded on-chain BEFORE sending notifications, dripping gas, or awarding points!
+  if (
+    process.env.NODE_ENV !== "test" &&
+    !options?.skipReceiptVerify &&
+    typeof txHash === "string" &&
+    /^0x[0-9a-fA-F]{64}$/.test(txHash)
+  ) {
+    try {
+      const onChainReceipt = await provider.getTransactionReceipt(txHash);
+      if (!onChainReceipt || onChainReceipt.status === 0) {
+        console.warn(`[evm_sweeper] Rejected unconfirmed or reverted deposit txHash ${txHash} on ${chainName}`);
+        return { success: false, error: "Transaction not confirmed on-chain" };
+      }
+    } catch (rcptErr) {
+      console.warn(`[evm_sweeper] Receipt check warning for ${txHash} on ${chainName}:`, rcptErr.message);
+    }
+  }
+
   let effectiveAmountUsdc = 0;
   let swapTxHash = null;
 

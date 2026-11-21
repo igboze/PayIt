@@ -22,6 +22,7 @@ const payouts = require("./nuvion_payouts");
 const db = require("./db");
 const idempotency = require("./idempotency");
 const walletLib = require("./wallet");
+const fraudGuard = require("./fraud_guard");
 const { generateMaskedProximCardPNG } = require("./card_image_generator");
 
 const CARD_DEBIT_PAYMENT_TYPES = new Set(["card-debit", "card-debit-recoup"]);
@@ -86,7 +87,7 @@ async function resolveCardholder(entity, overrides = null) {
       // Nuvion Entities API uses `phonenumber` (no underscore); Cardholder API expects `phone_number`!
       const livePhone = p.phonenumber || p.phone_number || live?.business?.phonenumber || live?.business?.phone_number || "";
       if (!phone && livePhone) phone = livePhone;
-    } catch (_) {}
+    } catch (_) { }
   }
 
   const legalParts = String(entity.legal_name || "Proxim Member").trim().split(/\s+/);
@@ -398,6 +399,16 @@ async function initiateCardIssuance({
   const proximRevenueMinor = proximCardFeeMinor + marginMinor;
   const userTotalUsd = round2(nuvionNeededUsd + proximRevenueUsd);
 
+  // Enforce Anti-Fraud Velocity Tripwires, Tier Daily Limits & Global Circuit Breaker (Finding 5)
+  await fraudGuard.assertOutboundAllowed({
+    telegramId,
+    accountType,
+    action: `nuvion_card_issue_${cardType}`,
+    amountUsd: userTotalUsd,
+    reference: cleanCardName,
+    bot,
+  });
+
   const cardholder = await resolveCardholder(entity, cardholderOverrides);
   const { expirationMonth, expirationYear } = getSafeCardExpiration();
 
@@ -510,6 +521,16 @@ async function initiateCardTopUp({
 
   const q = await quoteCardTopUp({ telegramId, accountType, cardId, loadAmountUsd });
   const { entity, card } = q;
+
+  // Enforce Anti-Fraud Velocity Tripwires, Tier Daily Limits & Global Circuit Breaker (Finding 5)
+  await fraudGuard.assertOutboundAllowed({
+    telegramId,
+    accountType,
+    action: "nuvion_card_topup",
+    amountUsd: q.userTotalUsd,
+    reference: card.card_id,
+    bot,
+  });
 
   const bookTransferTarget = await ensureCardAccountBookTransferTarget(entity, card.account_id);
 
@@ -668,7 +689,7 @@ async function handleUscInflowForCardJobs({ confirmed, entityRecord, bot = null 
         const existingList = await nuvion.listCards({ entityId: entityRecord.entity_id, accountId: p.cardAccountId, limit: 5 });
         const rows = existingList?.cards || existingList?.data || [];
         createdCard = rows.find((c) => c.status !== "deleted") || null;
-      } catch (_) {}
+      } catch (_) { }
 
       // Step 3: Issue card (NON-IDEMPOTENT — called strictly once under lock!)
       if (!createdCard) {
@@ -725,7 +746,7 @@ async function handleUscInflowForCardJobs({ confirmed, entityRecord, bot = null 
           "base",
           `Issued ${p.cardType} card: ${p.cardName}`
         );
-      } catch (_) {}
+      } catch (_) { }
 
       if (telegram && issueJob.telegram_id) {
         const kindLabel = p.cardType === "disposable" ? "Disposable 1-Time USD Card" : "Virtual USD Card";
@@ -757,16 +778,16 @@ async function handleUscInflowForCardJobs({ confirmed, entityRecord, bot = null 
             availableUsd: Number(p.loadAmountUsd || 0),
             status: createdCard.status || "active",
           });
-        } catch (_) {}
+        } catch (_) { }
 
         if (cardImgPath && typeof telegram.sendPhoto === "function") {
           try {
             await telegram.sendPhoto(issueJob.telegram_id, { source: cardImgPath }, { caption, parse_mode: "HTML" });
           } catch (_) {
-            await telegram.sendMessage(issueJob.telegram_id, caption, { parse_mode: "HTML" }).catch(() => {});
+            await telegram.sendMessage(issueJob.telegram_id, caption, { parse_mode: "HTML" }).catch(() => { });
           }
         } else {
-          await telegram.sendMessage(issueJob.telegram_id, caption, { parse_mode: "HTML" }).catch(() => {});
+          await telegram.sendMessage(issueJob.telegram_id, caption, { parse_mode: "HTML" }).catch(() => { });
         }
       }
 
@@ -822,7 +843,7 @@ async function handleUscInflowForCardJobs({ confirmed, entityRecord, bot = null 
           "base",
           `Topped up card: ${p.cardName}`
         );
-      } catch (_) {}
+      } catch (_) { }
 
       if (telegram && topupJob.telegram_id) {
         await telegram.sendMessage(
@@ -833,7 +854,7 @@ async function handleUscInflowForCardJobs({ confirmed, entityRecord, bot = null 
           `💵 <b>Added to Card Limit:</b> +$${creditedUsd.toFixed(2)}\n` +
           `<i>Ready to spend immediately!</i>`,
           { parse_mode: "HTML" }
-        ).catch(() => {});
+        ).catch(() => { });
       }
 
       return { handled: true, jobType: "card_topup", jobId: topupJob.id, cardId: topupJob.card_id, creditedUsd };
@@ -975,8 +996,8 @@ async function unloadCardToMainWallet({
             silent: true,
             onlyChain: "BASE",
             onlyAccountType: entity.account_type || "personal",
-          }).catch(() => {});
-        } catch (_) {}
+          }).catch(() => { });
+        } catch (_) { }
       }, 15000);
     }
 
@@ -1012,7 +1033,7 @@ async function getUserCardsWithBalances(telegramId, accountType = "personal") {
     try {
       const liveAcc = await nuvion.getAccount(card.account_id, entity.entity_id);
       availableUsd = nuvion.fromNuvionMinor(liveAcc?.balance?.available || 0);
-    } catch (_) {}
+    } catch (_) { }
     totalCardBalanceUsd = round2(totalCardBalanceUsd + availableUsd);
     enriched.push({
       ...card,
@@ -1061,7 +1082,7 @@ async function revealCardDetailsWithPin({ telegramId, pin, accountType = "person
   try {
     const liveAcc = await nuvion.getAccount(card.account_id, entity.entity_id);
     availableUsd = nuvion.fromNuvionMinor(liveAcc?.balance?.available || 0);
-  } catch (_) {}
+  } catch (_) { }
 
   // Update only safe non-sensitive last4 & status in DB (NEVER number or cvv!)
   const safeLast4 = details?.number ? String(details.number).slice(-4) : card.last4;
@@ -1200,7 +1221,7 @@ async function handleCardOutflowWebhook({ event, confirmed, data, entityRecord, 
     try {
       const acc = await nuvion.getAccount(card.account_id, entity.entity_id);
       remainingUsd = nuvion.fromNuvionMinor(acc?.balance?.available || 0);
-    } catch (_) {}
+    } catch (_) { }
   }
 
   // Case 1: Card Debit Settled (`outflows.completed`)
@@ -1251,7 +1272,7 @@ async function handleCardOutflowWebhook({ event, confirmed, data, entityRecord, 
         "base",
         `${cardLabel}: ${merchant}`
       );
-    } catch (_) {}
+    } catch (_) { }
 
     if (telegram && entity.telegram_id) {
       const sweepNote = sweptLeftoverUsd > 0
@@ -1265,7 +1286,7 @@ async function handleCardOutflowWebhook({ event, confirmed, data, entityRecord, 
         `• <b>Amount:</b> $${amountUsd.toFixed(2)}\n` +
         `• <b>Card:</b> ${escapeHtml(cardLabel)}${sweepNote}`,
         { parse_mode: "HTML" }
-      ).catch(() => {});
+      ).catch(() => { });
     }
 
     return { handled: true, type: "card_spend", amountUsd, sweptLeftoverUsd };
@@ -1284,7 +1305,7 @@ async function handleCardOutflowWebhook({ event, confirmed, data, entityRecord, 
         (remainingUsd !== null ? `• <b>Available on Card:</b> $${remainingUsd.toFixed(2)}\n` : "") +
         `\n<i>Top up your card or unfreeze it from 💳 Cards if you want to retry.</i>`,
         { parse_mode: "HTML" }
-      ).catch(() => {});
+      ).catch(() => { });
     }
     return { handled: true, type: "card_declined", amountUsd };
   }
@@ -1304,7 +1325,7 @@ async function handleCardOutflowWebhook({ event, confirmed, data, entityRecord, 
           bot,
         });
         if (sweepRes.unloaded) sweptRefundUsd = sweepRes.unloadedUsd;
-      } catch (_) {}
+      } catch (_) { }
     }
 
     if (telegram && entity.telegram_id) {
@@ -1320,7 +1341,7 @@ async function handleCardOutflowWebhook({ event, confirmed, data, entityRecord, 
         `• <b>Card:</b> ${escapeHtml(cardLabel)}\n` +
         (destLine ? `${destLine}` : ""),
         { parse_mode: "HTML" }
-      ).catch(() => {});
+      ).catch(() => { });
     }
     return { handled: true, type: "card_refund", amountUsd, sweptRefundUsd };
   }

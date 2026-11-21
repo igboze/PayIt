@@ -62,6 +62,7 @@ const { generateCryptoNetworksBannerPNG } = require("./src/chain_logo_generator"
 const autoEarn = require("./src/auto_earn");
 const cashflow = require("./src/cashflow");
 const socialTransfers = require("./src/social_transfers");
+const fraudGuard = require("./src/fraud_guard");
 
 // ── Agent modules ─────────────────────────────────────────────────────────────
 const { parsePaymentIntent } = require("./agent/orchestrator");
@@ -3437,6 +3438,44 @@ bot.action("admin_nuvion_test_wh", async (ctx) => {
   } catch (err) {
     return ctx.reply(`❌ Test webhook failed: ${escapeHtml(err.message)}`, { parse_mode: "HTML" });
   }
+});
+
+// ── Admin 1-Second Global Payout Circuit Breaker & Chargeback Release ────────
+bot.command("pause_payouts", async (ctx) => {
+  if (!ADMIN_IDS.includes(String(ctx.from?.id || ""))) return ctx.reply("⛔ Admin only.");
+  const reason = String(ctx.message?.text || "").replace(/^\/pause_payouts\s*/i, "").trim() || "Emergency admin circuit breaker";
+  const status = fraudGuard.setPayoutsPaused(true, reason, ctx.from.id);
+  return ctx.reply(
+    `🛑 <b>GLOBAL PAYOUT CIRCUIT BREAKER ACTIVATED</b>\n──────────────────────────\n` +
+    `• <b>Status:</b> All outbound transfers, cash-outs, card loads &amp; bill payments are <b>PAUSED</b>.\n` +
+    `• <b>Reason:</b> ${escapeHtml(status.reason)}\n\n` +
+    `Send <code>/resume_payouts</code> to restore outbound operations.`,
+    { parse_mode: "HTML" }
+  );
+});
+
+bot.command("resume_payouts", async (ctx) => {
+  if (!ADMIN_IDS.includes(String(ctx.from?.id || ""))) return ctx.reply("⛔ Admin only.");
+  fraudGuard.setPayoutsPaused(false, "Resumed by admin", ctx.from.id);
+  return ctx.reply(
+    `✅ <b>GLOBAL PAYOUT CIRCUIT BREAKER LIFTED</b>\n──────────────────────────\n` +
+    `All outbound transfers, cash-outs, card loads &amp; bill payments are now <b>ACTIVE</b>.`,
+    { parse_mode: "HTML" }
+  );
+});
+
+bot.command("release_inflow", async (ctx) => {
+  if (!ADMIN_IDS.includes(String(ctx.from?.id || ""))) return ctx.reply("⛔ Admin only.");
+  const inflowId = String(ctx.message?.text || "").replace(/^\/release_inflow\s*/i, "").trim();
+  if (!inflowId) return ctx.reply("Usage: /release_inflow <inflow_id>");
+  fraudGuard.approveHeldInflow(inflowId);
+  try {
+    await nuvionPoller.runNuvionPollerCycle(bot);
+  } catch (_) {}
+  return ctx.reply(
+    `✅ <b>Inflow Released:</b> <code>${escapeHtml(inflowId)}</code>\nMarked approved and queued for immediate Base settlement sweep.`,
+    { parse_mode: "HTML" }
+  );
 });
 
 nuvionOrchestrator.registerOrchestratorHooks();
@@ -8129,6 +8168,17 @@ bot.on("text", async (ctx) => {
         const feeUsdc = typeof state.data.feeUsdc === "number" ? state.data.feeUsdc : Number((state.data.amountUsdc * 0.01).toFixed(4));
         const netAmountUsdc = typeof state.data.netAmountUsdc === "number" ? state.data.netAmountUsdc : Number(state.data.amountUsdc.toFixed(4));
         const totalDebitUsdc = Number((netAmountUsdc + feeUsdc).toFixed(4));
+
+        // Enforce Anti-Fraud Velocity Tripwires, Tier Daily Limits & Global Circuit Breaker (Finding 5)
+        await fraudGuard.assertOutboundAllowed({
+          telegramId: userId,
+          accountType: context,
+          action: "paj_offramp_ngn",
+          amountUsd: totalDebitUsdc,
+          reference: state.data.accountNumber || null,
+          bot,
+        });
+
         const senderName = state.data.senderName || db.resolveSenderName(userId, context, ctx.from);
         const narration = paj.sanitizeNarration(state.data.narration || `Payment from ${senderName}`);
         const result = await executeOfframp(
@@ -8161,7 +8211,9 @@ bot.on("text", async (ctx) => {
 
         if (result.success) {
           try {
-            db.awardPoints(ctx.from.id, POINTS.cashout, "cashout", `Cash out $${state.data.amountUsdc.toFixed(2)}`);
+            db.awardPoints(ctx.from.id, POINTS.cashout, "cashout", `Cash out $${state.data.amountUsdc.toFixed(2)}`, {
+              amountUsd: state.data.amountUsdc,
+            });
           } catch (err) {
             console.error("[points_award_cashout]", err);
           }
@@ -9331,11 +9383,17 @@ bot.on("text", async (ctx) => {
       await deleteSensitiveMessage(ctx);
       if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
       if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN. Try again."); }
-      const user = db.getUser(userId);
       const points = state.data.points;
       const redeemType = state.data.redeemType || "airtime";
-      db.awardPoints(userId, -points, `redeem_${redeemType}`, `Redeemed ${points} points for ${redeemType}`);
       convState.clearState(userId);
+      try {
+        db.redeemPointsAtomic(userId, points, `redeem_${redeemType}`, `Redeemed ${points} points for ${redeemType}`);
+      } catch (redeemErr) {
+        return ctx.reply(
+          `⚠️ ${redeemErr.message || "Could not redeem points."}`,
+          Markup.inlineKeyboard([[Markup.button.callback("🏠 Main Menu", "main_menu")]])
+        );
+      }
       return ctx.reply(
         `✅ Redemption requested!\n` +
         `${points} points redeemed for ${formatPointValue(points)} ${redeemType === "airtime" ? "airtime credit" : "bill credit"}.\n\n` +
