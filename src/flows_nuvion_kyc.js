@@ -123,6 +123,36 @@ function saveDraftAndState(userId, accountType, step, data) {
   convState.setState(userId, step, { accountType, ...data }, accountType);
 }
 
+/**
+ * Immediately delete the user's message from the Telegram chat once a KYC/KYB step is captured
+ * (or delete the review message when submitted/cleared) so zero personal details remain in chat history.
+ */
+async function deleteUserStepMessage(ctx) {
+  if (!ctx) return;
+  try {
+    if (typeof deps.deleteSensitiveMessage === "function" && ctx.message?.message_id) {
+      await deps.deleteSensitiveMessage(ctx);
+      return;
+    }
+  } catch (_) {}
+  try {
+    if (typeof ctx.deleteMessage === "function") {
+      await ctx.deleteMessage();
+      return;
+    }
+  } catch (_) {}
+  try {
+    const chatId = ctx.chat?.id || ctx.from?.id;
+    const msgId = ctx.message?.message_id || ctx.callbackQuery?.message?.message_id;
+    if (chatId && msgId && ctx.telegram && typeof ctx.telegram.deleteMessage === "function") {
+      await ctx.telegram.deleteMessage(chatId, msgId);
+    }
+  } catch (_) {}
+}
+
+const NUVION_PRIVACY_FOOTER =
+  `\n\n🔒 <i>Handled securely by <b>Nuvion</b> · 100% compliant &amp; confidential (never shared with anyone) · Your reply is auto-deleted after capture.</i>`;
+
 function wizardControls(accountType) {
   const prefix = accountType === "business" ? "nuvion_kyb" : "nuvion_kyc";
   return [
@@ -176,8 +206,12 @@ async function showGlobalPortal(ctx, forcedContext = null) {
       `\n<i>All fiat deposits automatically settle straight into your main Proxim balance.</i>\n\n` +
       `<b>What you'll need:</b>\n` +
       (isBiz
-        ? `• Company registration (CAC) &amp; MemArt PDFs\n• Business proof of address\n• Director/owner ID + BVN/NIN (for Nigerian nationals)`
-        : `• Government ID (Passport, National ID, or Driver's License)\n• Proof of address (utility bill / bank statement &lt; 3 months)\n• BVN &amp; NIN (for Nigerian nationals)`),
+        ? `• Company registration (CAC) &amp; MemArt PDFs\n• Business proof of address\n• Director/owner ID + BVN/NIN (for Nigerian nationals)\n\n`
+        : `• Government ID (Passport, National ID, or Driver's License)\n• Proof of address (utility bill / bank statement &lt; 3 months)\n• BVN &amp; NIN (for Nigerian nationals)\n\n`) +
+      `🛡️ <b>Privacy &amp; Compliance Guarantee (Powered by Nuvion)</b>\n` +
+      `• Your KYC/KYB verification is handled directly by <b>Nuvion</b>, our regulated global banking &amp; compliance infrastructure partner.\n` +
+      `• <b>100% Compliant &amp; Confidential:</b> Your data and documents are encrypted, used strictly for regulatory verification, and <b>will never be shared with anyone</b>.\n` +
+      `• <b>Auto-Delete Chat Protection:</b> Every detail and document you enter is automatically deleted from this Telegram chat as soon as each step is completed.`,
       { parse_mode: "HTML", ...Markup.inlineKeyboard(buttons) }
     );
   }
@@ -243,28 +277,32 @@ async function promptPersonalKycStep(ctx, userId, step, data = {}) {
     case "nuvion_kyc_name":
       return ctx.reply(
         `🪪 <b>Step 1/9 — Legal Full Name</b>\n──────────────────────────\n` +
-        `Enter your full legal name exactly as it appears on your government ID (e.g. <code>Chinedu Okafor</code>):`,
+        `Enter your full legal name exactly as it appears on your government ID (e.g. <code>Chinedu Okafor</code>):` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
       );
 
     case "nuvion_kyc_email":
       return ctx.reply(
         `📧 <b>Step 2/9 — Personal Email Address</b>\n──────────────────────────\n` +
-        `Enter your personal email address (must be unique to you):`,
+        `Enter your personal email address (must be unique to you):` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
       );
 
     case "nuvion_kyc_phone":
       return ctx.reply(
         `📱 <b>Step 3/9 — Phone Number</b>\n──────────────────────────\n` +
-        `Enter your phone number with country code (e.g. <code>+2348012345678</code> or <code>08012345678</code>):`,
+        `Enter your phone number with country code (e.g. <code>+2348012345678</code> or <code>08012345678</code>):` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
       );
 
     case "nuvion_kyc_dob":
       return ctx.reply(
         `🎂 <b>Step 4/9 — Date of Birth</b>\n──────────────────────────\n` +
-        `Enter your date of birth in <code>YYYY-MM-DD</code> format (e.g. <code>1994-06-15</code>):`,
+        `Enter your date of birth in <code>YYYY-MM-DD</code> format (e.g. <code>1994-06-15</code>):` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
       );
 
@@ -309,35 +347,40 @@ async function promptPersonalKycStep(ctx, userId, step, data = {}) {
     case "nuvion_kyc_address_street":
       return ctx.reply(
         `🏠 <b>Step 6/9 — Residential Address (Street)</b>\n──────────────────────────\n` +
-        `Enter your street address (e.g. <code>14 Admiralty Way, Lekki Phase 1</code>):`,
+        `Enter your street address (e.g. <code>14 Admiralty Way, Lekki Phase 1</code>):` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
       );
 
     case "nuvion_kyc_address_city":
       return ctx.reply(
         `🏙️ <b>Step 6b/9 — City, State &amp; Postal Code</b>\n──────────────────────────\n` +
-        `Send your <b>City, State, Postal Code</b> separated by commas (e.g. <code>Lagos, Lagos, 106104</code>):`,
+        `Send your <b>City, State, Postal Code</b> separated by commas (e.g. <code>Lagos, Lagos, 106104</code>):` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
       );
 
     case "nuvion_kyc_bvn":
       return ctx.reply(
         `🔒 <b>Step 7/9 — BVN (Nigerian Nationals)</b>\n──────────────────────────\n` +
-        `Enter your <b>11-digit BVN</b>.\n<i>For your privacy, your message will be deleted immediately after capture.</i>`,
+        `Enter your <b>11-digit BVN</b>:` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
       );
 
     case "nuvion_kyc_nin":
       return ctx.reply(
         `🔒 <b>Step 7b/9 — NIN (Nigerian Nationals)</b>\n──────────────────────────\n` +
-        `Enter your <b>11-digit NIN</b>.\n<i>Your message will be deleted immediately after capture.</i>`,
+        `Enter your <b>11-digit NIN</b>:` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
       );
 
     case "nuvion_kyc_ssn":
       return ctx.reply(
         `🔒 <b>Step 7/9 — SSN (U.S. Nationals)</b>\n──────────────────────────\n` +
-        `Enter your <b>SSN</b> (e.g. <code>123-45-6789</code>).\n<i>Your message will be deleted immediately after capture.</i>`,
+        `Enter your <b>SSN</b> (e.g. <code>123-45-6789</code>):` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
       );
 
@@ -358,21 +401,24 @@ async function promptPersonalKycStep(ctx, userId, step, data = {}) {
     case "nuvion_kyc_id_number":
       return ctx.reply(
         `🔢 <b>Step 8b/9 — ID Number</b>\n──────────────────────────\n` +
-        `Enter your document number (e.g. <code>A12345678</code>).\n<i>Your message will be auto-deleted.</i>`,
+        `Enter your document number (e.g. <code>A12345678</code>):` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
       );
 
     case "nuvion_kyc_id_dates":
       return ctx.reply(
         `📅 <b>Step 8c/9 — ID Issue &amp; Expiry Dates</b>\n──────────────────────────\n` +
-        `Enter <b>Issue Date, Expiry Date</b> in <code>YYYY-MM-DD</code> format (e.g. <code>2022-03-01, 2032-02-28</code>):`,
+        `Enter <b>Issue Date, Expiry Date</b> in <code>YYYY-MM-DD</code> format (e.g. <code>2022-03-01, 2032-02-28</code>):` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
       );
 
     case "nuvion_kyc_id_authority":
       return ctx.reply(
         `🏛️ <b>Step 8d/9 — Issuing Authority</b>\n──────────────────────────\n` +
-        `Tap the authority that issued your ID, or type it directly:`,
+        `Tap the authority that issued your ID, or type it directly:` +
+        NUVION_PRIVACY_FOOTER,
         {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
@@ -389,15 +435,16 @@ async function promptPersonalKycStep(ctx, userId, step, data = {}) {
     case "nuvion_kyc_doc_id_front":
       return ctx.reply(
         `📸 <b>Step 9/9 — Upload Government ID (Front)</b>\n──────────────────────────\n` +
-        `Send a clear <b>photo or PDF</b> of the front page of your ID.\n` +
-        `<i>Your upload is securely forwarded for verification and deleted from chat immediately.</i>`,
+        `Send a clear <b>photo or PDF</b> of the front page of your ID.` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
       );
 
     case "nuvion_kyc_doc_id_back":
       return ctx.reply(
         `📸 <b>Step 9b/9 — Upload Government ID (Back)</b>\n──────────────────────────\n` +
-        `Send a clear <b>photo or PDF</b> of the back of your ID, or tap Skip if single-page (like a passport):`,
+        `Send a clear <b>photo or PDF</b> of the back of your ID, or tap Skip if single-page (like a passport):` +
+        NUVION_PRIVACY_FOOTER,
         {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
@@ -410,7 +457,8 @@ async function promptPersonalKycStep(ctx, userId, step, data = {}) {
     case "nuvion_kyc_doc_poa":
       return ctx.reply(
         `🧾 <b>Final Upload — Proof of Address</b>\n──────────────────────────\n` +
-        `Send a clear <b>photo or PDF</b> of a utility bill, bank statement, or government letter dated within the <b>last 3 months</b>:`,
+        `Send a clear <b>photo or PDF</b> of a utility bill, bank statement, or government letter dated within the <b>last 3 months</b>:` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
       );
 
@@ -420,16 +468,16 @@ async function promptPersonalKycStep(ctx, userId, step, data = {}) {
         `✅ <b>Review Your Tier-1 Verification</b>\n──────────────────────────\n` +
         `• <b>Name:</b> ${escapeHtml(fullName)}\n` +
         `• <b>Email:</b> ${escapeHtml(data.email)}\n` +
-        `• <b>Phone:</b> ${escapeHtml(data.phonenumber)}\n` +
-        `• <b>DOB / Gender:</b> ${escapeHtml(data.date_of_birth)} (${data.gender === "f" ? "Female" : "Male"})\n` +
+        `• <b>Phone:</b> <code>${escapeHtml(maskSecret(data.phonenumber, 4))}</code>\n` +
+        `• <b>DOB / Gender:</b> <code>${escapeHtml(maskSecret(data.date_of_birth, 2))}</code> (${data.gender === "f" ? "Female" : "Male"})\n` +
         `• <b>Nationality:</b> ${escapeHtml(data.nationality)}\n` +
-        `• <b>Address:</b> ${escapeHtml(data.line_1)}, ${escapeHtml(data.city)}, ${escapeHtml(data.state)} ${escapeHtml(data.postal_code)}\n` +
+        `• <b>Address:</b> ${escapeHtml(data.city)}, ${escapeHtml(data.state)}\n` +
         (data.bvn ? `• <b>BVN:</b> <code>${maskSecret(data.bvn)}</code>\n` : "") +
         (data.nin ? `• <b>NIN:</b> <code>${maskSecret(data.nin)}</code>\n` : "") +
         (data.ssn ? `• <b>SSN:</b> <code>${maskSecret(data.ssn)}</code>\n` : "") +
         `• <b>ID:</b> ${escapeHtml(data.id_type)} (<code>${maskSecret(data.id_number)}</code>)\n` +
         `• <b>Documents:</b> ID Front ✅${data.doc_id_back ? " · ID Back ✅" : ""} · Proof of Address ✅\n\n` +
-        `Tap <b>Submit Verification</b> to send your application.`,
+        `🛡️ <i>Your verification is processed by <b>Nuvion</b> (100% compliant &amp; confidential — never shared with anyone). This review card will also be auto-deleted upon submission.</i>`,
         {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
@@ -451,7 +499,8 @@ async function promptBusinessKybStep(ctx, userId, step, data = {}) {
     case "nuvion_kyb_legal_name":
       return ctx.reply(
         `💼 <b>Business KYB (Step 1/9) — Legal Business Name</b>\n──────────────────────────\n` +
-        `Enter your registered company name exactly as on your Certificate of Incorporation (e.g. <code>Acme Technologies Ltd</code>):`,
+        `Enter your registered company name exactly as on your Certificate of Incorporation (e.g. <code>Acme Technologies Ltd</code>):` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
 
@@ -477,78 +526,88 @@ async function promptBusinessKybStep(ctx, userId, step, data = {}) {
     case "nuvion_kyb_reg":
       return ctx.reply(
         `📋 <b>Step 3/9 — Registration &amp; Industry</b>\n──────────────────────────\n` +
-        `Send <b>Registration Number, Tax ID, Industry</b> separated by commas (e.g. <code>RC1234567, 10293847-0001, Technology</code>):`,
+        `Send <b>Registration Number, Tax ID, Industry</b> separated by commas (e.g. <code>RC1234567, 10293847-0001, Technology</code>):` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
 
     case "nuvion_kyb_incorp":
       return ctx.reply(
         `📅 <b>Step 4/9 — Incorporation Details</b>\n──────────────────────────\n` +
-        `Send <b>Year, Month (1-12), Country Code, State</b> separated by commas (e.g. <code>2023, 5, NG, Lagos</code>):`,
+        `Send <b>Year, Month (1-12), Country Code, State</b> separated by commas (e.g. <code>2023, 5, NG, Lagos</code>):` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
 
     case "nuvion_kyb_contact":
       return ctx.reply(
         `📧 <b>Step 5/9 — Business Contact</b>\n──────────────────────────\n` +
-        `Send <b>Business Email, Phone, Website (optional)</b> separated by commas (e.g. <code>finance@acme.com, +2348012345678, https://acme.com</code> or omit website):`,
+        `Send <b>Business Email, Phone, Website (optional)</b> separated by commas (e.g. <code>finance@acme.com, +2348012345678, https://acme.com</code> or omit website):` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
 
     case "nuvion_kyb_address":
       return ctx.reply(
         `🏠 <b>Step 6/9 — Registered Business Address</b>\n──────────────────────────\n` +
-        `Send <b>Street (4+ chars), City, State, Postal Code, Country Code</b> separated by commas (e.g. <code>14 Admiralty Way, Lagos, Lagos, 106104, NG</code>):`,
+        `Send <b>Street (4+ chars), City, State, Postal Code, Country Code</b> separated by commas (e.g. <code>14 Admiralty Way, Lagos, Lagos, 106104, NG</code>):` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
 
     case "nuvion_kyb_officer":
       return ctx.reply(
         `👤 <b>Step 7/9 — Controlling Officer / Beneficial Owner (≥25%)</b>\n──────────────────────────\n` +
-        `Send <b>First Name, Last Name, Job Title, Ownership %, Email, Phone, DOB (YYYY-MM-DD), Nationality (2-letter), Gender (m/f)</b> separated by commas:`,
+        `Send <b>First Name, Last Name, Job Title, Ownership %, Email, Phone, DOB (YYYY-MM-DD), Nationality (2-letter), Gender (m/f)</b> separated by commas:` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
 
     case "nuvion_kyb_officer_ids":
       return ctx.reply(
         `🔒 <b>Step 7b/9 — Officer ID Details</b>\n──────────────────────────\n` +
-        `Send <b>ID Type (passport/national_id/drivers_license), ID Number, Issue Date, Expiry Date, BVN (if NG) / SSN (if US), NIN (if NG)</b> separated by commas.\n` +
-        `<i>Your message will be auto-deleted immediately.</i>`,
+        `Send <b>ID Type (passport/national_id/drivers_license), ID Number, Issue Date, Expiry Date, BVN (if NG) / SSN (if US), NIN (if NG)</b> separated by commas:` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
 
     case "nuvion_kyb_doc_coi":
       return ctx.reply(
         `📄 <b>Step 8/9 — Upload Certificate of Incorporation (PDF)</b>\n──────────────────────────\n` +
-        `Send the <b>PDF</b> of your company's Certificate of Incorporation:`,
+        `Send the <b>PDF</b> of your company's Certificate of Incorporation:` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
 
     case "nuvion_kyb_doc_memart":
       return ctx.reply(
         `📄 <b>Step 8b/9 — Upload Memorandum of Association (PDF/DOCX)</b>\n──────────────────────────\n` +
-        `Send the <b>PDF or DOCX</b> of your Memorandum &amp; Articles of Association:`,
+        `Send the <b>PDF or DOCX</b> of your Memorandum &amp; Articles of Association:` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
 
     case "nuvion_kyb_doc_poa":
       return ctx.reply(
         `🧾 <b>Step 8c/9 — Upload Business Proof of Address</b>\n──────────────────────────\n` +
-        `Send a <b>PDF or photo</b> of your business utility bill / bank statement (&lt; 3 months old):`,
+        `Send a <b>PDF or photo</b> of your business utility bill / bank statement (&lt; 3 months old):` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
 
     case "nuvion_kyb_doc_officer_id":
       return ctx.reply(
         `🪪 <b>Step 9/9 — Upload Officer Government ID</b>\n──────────────────────────\n` +
-        `Send a clear <b>photo or PDF</b> of the director/owner's government ID:`,
+        `Send a clear <b>photo or PDF</b> of the director/owner's government ID:` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
 
     case "nuvion_kyb_doc_officer_poa":
       return ctx.reply(
         `🧾 <b>Final Upload — Officer Proof of Address</b>\n──────────────────────────\n` +
-        `Send a clear <b>photo or PDF</b> of the director/owner's proof of address (&lt; 3 months):`,
+        `Send a clear <b>photo or PDF</b> of the director/owner's proof of address (&lt; 3 months):` +
+        NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
 
@@ -557,11 +616,11 @@ async function promptBusinessKybStep(ctx, userId, step, data = {}) {
         `✅ <b>Review Business Verification (KYB)</b>\n──────────────────────────\n` +
         `• <b>Legal Name:</b> ${escapeHtml(data.legal_name)}\n` +
         `• <b>Type / Industry:</b> ${escapeHtml(data.business_type)} · ${escapeHtml(data.industry)}\n` +
-        `• <b>Reg # / Tax ID:</b> <code>${escapeHtml(data.registration_number)}</code> / <code>${escapeHtml(data.tax_id)}</code>\n` +
+        `• <b>Reg # / Tax ID:</b> <code>${escapeHtml(maskSecret(data.registration_number, 3))}</code> / <code>${escapeHtml(maskSecret(data.tax_id, 3))}</code>\n` +
         `• <b>Email:</b> ${escapeHtml(data.business_email)}\n` +
         `• <b>Officer:</b> ${escapeHtml(data.officer_first_name)} ${escapeHtml(data.officer_last_name)} (${escapeHtml(data.officer_job_title)}, ${data.officer_ownership}%)\n` +
         `• <b>Documents:</b> COI ✅ · MemArt ✅ · Biz POA ✅ · Officer ID ✅ · Officer POA ✅\n\n` +
-        `Tap <b>Submit Business Verification</b> to send your application.`,
+        `🛡️ <i>Your KYB verification is processed by <b>Nuvion</b> (100% compliant &amp; confidential — never shared with anyone). This review card will also be auto-deleted upon submission.</i>`,
         {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
@@ -739,7 +798,8 @@ async function executePersonalKycSubmission(ctx, userId) {
 
     return ctx.reply(
       `🎉 <b>Verification Submitted!</b>\n──────────────────────────\n` +
-      `Your Tier-1 verification is now under compliance review.\n\n` +
+      `Your Tier-1 verification is now being reviewed by <b>Nuvion</b>.\n\n` +
+      `🛡️ <b>Privacy Confirmed:</b> Your application is 100% compliant and confidential, will never be shared with anyone, and your local chat inputs &amp; draft have been erased.\n\n` +
       `We'll notify you automatically right here as soon as your Global Bank Accounts, Virtual USD Cards, and International Transfers are active!`,
       {
         parse_mode: "HTML",
@@ -1016,7 +1076,8 @@ async function executeBusinessKybSubmission(ctx, userId) {
 
     return ctx.reply(
       `🎉 <b>Business Verification Submitted!</b>\n──────────────────────────\n` +
-      `<b>${escapeHtml(d.legal_name)}</b> is now under KYB compliance review.\n\n` +
+      `<b>${escapeHtml(d.legal_name)}</b> is now under KYB compliance review by <b>Nuvion</b>.\n\n` +
+      `🛡️ <b>Privacy Confirmed:</b> Your business records are 100% compliant and confidential, will never be shared with anyone, and your local chat inputs &amp; draft have been erased.\n\n` +
       `We'll notify you automatically the moment your Business Global Bank Accounts and Team Cards are live!`,
       {
         parse_mode: "HTML",
@@ -1058,13 +1119,14 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
     return true;
   }
 
-  // ── Personal KYC Text Steps ───────────────────────────────────────────────
+  // ── Personal KYC Text Steps (Delete User Message Upon Passing Each Step!) ─
   if (state.type === "nuvion_kyc_name") {
     const parts = val.split(/\s+/).filter(Boolean);
     if (parts.length < 2) {
       await ctx.reply("Please enter at least your <b>First Name</b> and <b>Last Name</b> (e.g. <code>Chinedu Okafor</code>).", { parse_mode: "HTML" });
       return true;
     }
+    await deleteUserStepMessage(ctx);
     data.first_name = parts[0];
     data.last_name = parts[parts.length - 1];
     if (parts.length > 2) data.middle_name = parts.slice(1, -1).join(" ");
@@ -1077,6 +1139,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
       await ctx.reply("Please enter a valid personal email address (e.g. <code>chinedu@gmail.com</code>).", { parse_mode: "HTML" });
       return true;
     }
+    await deleteUserStepMessage(ctx);
     data.email = val.toLowerCase();
     await promptPersonalKycStep(ctx, userId, "nuvion_kyc_phone", data);
     return true;
@@ -1088,6 +1151,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
       await ctx.reply("Please enter a valid phone number with country code (e.g. <code>+2348012345678</code>).", { parse_mode: "HTML" });
       return true;
     }
+    await deleteUserStepMessage(ctx);
     data.phonenumber = phone;
     await promptPersonalKycStep(ctx, userId, "nuvion_kyc_dob", data);
     return true;
@@ -1098,6 +1162,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
       await ctx.reply("Please enter a valid date of birth in <code>YYYY-MM-DD</code> format (must be 18+, e.g. <code>1994-06-15</code>).", { parse_mode: "HTML" });
       return true;
     }
+    await deleteUserStepMessage(ctx);
     data.date_of_birth = val;
     await promptPersonalKycStep(ctx, userId, "nuvion_kyc_gender", data);
     return true;
@@ -1109,6 +1174,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
       await ctx.reply("Please tap a country button above or enter a 2-letter ISO country code (e.g. <code>NG</code>, <code>GH</code>, <code>GB</code>).", { parse_mode: "HTML" });
       return true;
     }
+    await deleteUserStepMessage(ctx);
     data.nationality = code;
     data.country_code = code;
     await promptPersonalKycStep(ctx, userId, "nuvion_kyc_address_street", data);
@@ -1120,6 +1186,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
       await ctx.reply("Please enter your complete street address.");
       return true;
     }
+    await deleteUserStepMessage(ctx);
     data.line_1 = val;
     await promptPersonalKycStep(ctx, userId, "nuvion_kyc_address_city", data);
     return true;
@@ -1131,6 +1198,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
       await ctx.reply("Please send <b>City, State, Postal Code</b> separated by commas (e.g. <code>Lagos, Lagos, 106104</code>).", { parse_mode: "HTML" });
       return true;
     }
+    await deleteUserStepMessage(ctx);
     data.city = parts[0];
     data.state = parts[1];
     data.postal_code = parts[2] || "100001";
@@ -1147,7 +1215,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
   }
 
   if (state.type === "nuvion_kyc_bvn") {
-    if (deps.deleteSensitiveMessage) await deps.deleteSensitiveMessage(ctx).catch(() => {});
+    await deleteUserStepMessage(ctx);
     const digits = val.replace(/\D/g, "");
     if (!/^\d{11}$/.test(digits)) {
       await ctx.reply("BVN must be exactly <b>11 digits</b>. Please re-enter (message will be auto-deleted).", { parse_mode: "HTML" });
@@ -1159,7 +1227,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
   }
 
   if (state.type === "nuvion_kyc_nin") {
-    if (deps.deleteSensitiveMessage) await deps.deleteSensitiveMessage(ctx).catch(() => {});
+    await deleteUserStepMessage(ctx);
     const digits = val.replace(/\D/g, "");
     if (!/^\d{11}$/.test(digits)) {
       await ctx.reply("NIN must be exactly <b>11 digits</b>. Please re-enter (message will be auto-deleted).", { parse_mode: "HTML" });
@@ -1171,7 +1239,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
   }
 
   if (state.type === "nuvion_kyc_ssn") {
-    if (deps.deleteSensitiveMessage) await deps.deleteSensitiveMessage(ctx).catch(() => {});
+    await deleteUserStepMessage(ctx);
     const digits = val.replace(/\D/g, "");
     if (!/^\d{9}$/.test(digits)) {
       await ctx.reply("SSN must be 9 digits (e.g. <code>123-45-6789</code>). Please re-enter.", { parse_mode: "HTML" });
@@ -1183,7 +1251,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
   }
 
   if (state.type === "nuvion_kyc_id_number") {
-    if (deps.deleteSensitiveMessage) await deps.deleteSensitiveMessage(ctx).catch(() => {});
+    await deleteUserStepMessage(ctx);
     if (val.length < 4) {
       await ctx.reply("Please enter a valid document number.");
       return true;
@@ -1207,6 +1275,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
       await ctx.reply("⚠️ Issue date cannot be later than expiry date. Please re-enter <code>Issue Date, Expiry Date</code>.", { parse_mode: "HTML" });
       return true;
     }
+    await deleteUserStepMessage(ctx);
     data.id_issue_date = parts[0];
     data.id_expiry_date = parts[1];
     data.id_issuing_country = data.nationality;
@@ -1219,17 +1288,19 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
       await ctx.reply("Please enter the issuing authority (e.g. <code>NIS</code>, <code>NIMC</code>, <code>US Department of State</code>).", { parse_mode: "HTML" });
       return true;
     }
+    await deleteUserStepMessage(ctx);
     data.id_issuing_authority = val;
     await promptPersonalKycStep(ctx, userId, "nuvion_kyc_doc_id_front", data);
     return true;
   }
 
-  // ── Business KYB Text Steps ───────────────────────────────────────────────
+  // ── Business KYB Text Steps (Delete User Message Upon Passing Each Step!) ─
   if (state.type === "nuvion_kyb_legal_name") {
     if (val.length < 2) {
       await ctx.reply("Please enter your full registered legal business name.");
       return true;
     }
+    await deleteUserStepMessage(ctx);
     data.legal_name = val;
     data.trade_name = val;
     await promptBusinessKybStep(ctx, userId, "nuvion_kyb_type", data);
@@ -1242,6 +1313,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
       await ctx.reply("Send <b>Registration Number, Tax ID, Industry</b> separated by commas.", { parse_mode: "HTML" });
       return true;
     }
+    await deleteUserStepMessage(ctx);
     data.registration_number = parts[0];
     data.tax_id = parts[1];
     data.industry = parts[2];
@@ -1257,6 +1329,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
       await ctx.reply("Send <b>Year, Month (1-12), 2-letter Country Code, State</b> (e.g. <code>2023, 5, NG, Lagos</code>).", { parse_mode: "HTML" });
       return true;
     }
+    await deleteUserStepMessage(ctx);
     data.incorp_year = yr;
     data.incorp_month = mo;
     data.incorp_country = parts[2].toUpperCase();
@@ -1277,6 +1350,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
       await ctx.reply("That website URL looks invalid. Use format like <code>https://acme.com</code> or omit it.", { parse_mode: "HTML" });
       return true;
     }
+    await deleteUserStepMessage(ctx);
     data.business_email = parts[0].toLowerCase();
     data.business_phone = phone;
     data.business_website = website; // null when omitted -> omitted cleanly in payload
@@ -1290,6 +1364,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
       await ctx.reply("Send <b>Street (min 4 chars), City, State, Postal Code, 2-letter Country Code</b> separated by commas.", { parse_mode: "HTML" });
       return true;
     }
+    await deleteUserStepMessage(ctx);
     data.biz_line_1 = parts[0];
     data.biz_city = parts[1];
     data.biz_state = parts[2];
@@ -1310,6 +1385,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
       await ctx.reply("Officer phone number is invalid (must be 10–14 chars with country code, e.g. <code>+2348012345678</code>).", { parse_mode: "HTML" });
       return true;
     }
+    await deleteUserStepMessage(ctx);
     const rawGender = String(parts[8] || "m").trim().toLowerCase();
     const gender = rawGender.startsWith("f") ? "f" : "m";
 
@@ -1327,7 +1403,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
   }
 
   if (state.type === "nuvion_kyb_officer_ids") {
-    if (deps.deleteSensitiveMessage) await deps.deleteSensitiveMessage(ctx).catch(() => {});
+    await deleteUserStepMessage(ctx);
     const parts = val.split(",").map((s) => s.trim()).filter(Boolean);
     if (parts.length < 4 || !isValidIsoDate(parts[2]) || !isValidIsoDate(parts[3])) {
       await ctx.reply("Send <b>ID Type, ID Number, Issue Date (YYYY-MM-DD), Expiry Date (YYYY-MM-DD), BVN (if NG) / SSN (if US), NIN (if NG)</b> separated by commas.", { parse_mode: "HTML" });
@@ -1382,7 +1458,7 @@ async function handleNuvionKycMediaUpload(ctx, { fileId, mimeType = "image/jpeg"
   if (!state || !isUploadState(state.type)) return false;
 
   // Immediately delete sensitive upload from chat
-  if (deps.deleteSensitiveMessage) await deps.deleteSensitiveMessage(ctx).catch(() => {});
+  await deleteUserStepMessage(ctx);
 
   const normalizedMime = String(mimeType || "image/jpeg").trim().toLowerCase();
   const stepAllowed = UPLOAD_STEP_ALLOWED_MIMES[state.type] || nuvion.ALLOWED_DOCUMENT_MIME_TYPES;
@@ -1517,9 +1593,10 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
 
   bot.action("nuvion_kyc_reset", async (ctx) => {
     ctx.answerCbQuery().catch(() => {});
+    await deleteUserStepMessage(ctx);
     db.deleteNuvionKycDraft(ctx.from.id, "personal");
     convState.clearState(ctx.from.id);
-    return ctx.reply("🗑️ Verification draft cleared.", deps.backToMenu || {});
+    return ctx.reply("🗑️ Verification draft cleared and removed from chat.", deps.backToMenu || {});
   });
 
   bot.action(/^nuvion_kyc_set_gender_(m|f)$/, async (ctx) => {
@@ -1564,6 +1641,7 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
 
   bot.action("nuvion_kyc_submit", async (ctx) => {
     ctx.answerCbQuery().catch(() => {});
+    await deleteUserStepMessage(ctx);
     return executePersonalKycSubmission(ctx, ctx.from.id);
   });
 
@@ -1590,9 +1668,10 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
 
   bot.action("nuvion_kyb_reset", async (ctx) => {
     ctx.answerCbQuery().catch(() => {});
+    await deleteUserStepMessage(ctx);
     db.deleteNuvionKycDraft(ctx.from.id, "business");
     convState.clearState(ctx.from.id);
-    return ctx.reply("🗑️ Business verification draft cleared.", deps.backToMenu || {});
+    return ctx.reply("🗑️ Business verification draft cleared and removed from chat.", deps.backToMenu || {});
   });
 
   bot.action(/^nuvion_kyb_set_type_(llc|corporation|sole_proprietorship|partnership)$/, async (ctx) => {
@@ -1604,6 +1683,7 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
 
   bot.action("nuvion_kyb_submit", async (ctx) => {
     ctx.answerCbQuery().catch(() => {});
+    await deleteUserStepMessage(ctx);
     return executeBusinessKybSubmission(ctx, ctx.from.id);
   });
 }
