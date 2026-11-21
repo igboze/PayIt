@@ -529,13 +529,39 @@ async function executeSolanaCctpBurn({ userKeypair, amountUsdc, recipientArcAddr
     tx.sign(...uniqueSigners);
 
     const txSignature = await connection.sendRawTransaction(tx.serialize());
-    await connection.confirmTransaction({
-      signature: txSignature,
-      blockhash: latestBlockhash.blockhash,
-      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-    });
-
-    return { success: true, txSignature };
+    try {
+      const conf = await connection.confirmTransaction(
+        {
+          signature: txSignature,
+          blockhash: latestBlockhash.blockhash,
+          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+        },
+        "confirmed"
+      );
+      if (conf?.value?.err) {
+        return { success: false, txSignature, error: `Solana CCTP burn failed on-chain: ${JSON.stringify(conf.value.err)}` };
+      }
+      return { success: true, txSignature };
+    } catch (confirmErr) {
+      // Even when confirmTransaction throws "block height exceeded" or times out,
+      // the transaction may have already landed on-chain. Verify via getSignatureStatuses/getTransaction
+      // before treating it as a failure so we never lose track of a completed CCTP burn!
+      try {
+        await new Promise((r) => setTimeout(r, 2000));
+        const stRes = await connection.getSignatureStatuses([txSignature], { searchTransactionHistory: true });
+        const st = stRes?.value?.[0];
+        if (st && !st.err && (st.confirmationStatus === "confirmed" || st.confirmationStatus === "finalized")) {
+          console.log(`[multichain:cctp_burn] Tx ${txSignature} confirmed via fallback status check despite confirmTransaction timeout.`);
+          return { success: true, txSignature };
+        }
+        const landed = await connection.getTransaction(txSignature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+        if (landed && !landed.meta?.err) {
+          console.log(`[multichain:cctp_burn] Tx ${txSignature} confirmed via getTransaction fallback.`);
+          return { success: true, txSignature };
+        }
+      } catch (_) {}
+      throw confirmErr;
+    }
   } catch (err) {
     console.warn("[multichain:cctp_burn_error]", err.message);
     return { success: false, error: err.message };
