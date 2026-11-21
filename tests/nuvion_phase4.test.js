@@ -30,6 +30,7 @@ const db = require("../src/db");
 const nuvion = require("../src/nuvion");
 const nuvionWebhooks = require("../src/nuvion_webhooks");
 const cardsLib = require("../src/nuvion_cards");
+const cardImgGen = require("../src/card_image_generator");
 const chains = require("../src/chains");
 const walletLib = require("../src/wallet");
 const convState = require("../src/conversation_state");
@@ -329,6 +330,32 @@ test("Phase 4: Safe expiration (<= 24 months) & End-to-End Disposable + Business
   const exp = cardsLib.getSafeCardExpiration(now);
   assert.equal(exp.expirationMonth, "09");
   assert.equal(exp.expirationYear, "28"); // 22 months ahead (strictly <= 24 months!)
+
+  // 1b. Verify Proxim Custom Card Image Generator (Masked SVG & Ephemeral Buffer)
+  const maskedSvg = cardImgGen.buildProximCardSvg({
+    cardholderName: "Igboze Igboze",
+    number: "4111111111119876",
+    last4: "9876",
+    masked: true,
+    cvv: "789",
+    expirationMonth: "12",
+    expirationYear: "29",
+  });
+  assert.ok(maskedSvg.includes("Proxim"), "Card SVG must render Proxim branding");
+  assert.ok(maskedSvg.includes("mastercard"), "Card SVG must render Mastercard branding");
+  assert.ok(maskedSvg.includes("•••• •••• •••• 9876"), "Masked card SVG must mask first 12 digits");
+  assert.ok(!maskedSvg.includes("4111"), "Masked card SVG must NEVER contain full PAN");
+  assert.ok(!maskedSvg.includes("789"), "Masked card SVG must NEVER contain CVV");
+  const cardBuf = cardImgGen.generateProximCardBuffer({
+    cardholderName: "IGBOZE IGBOZE",
+    number: "1234567890123456",
+    masked: false,
+    cvv: "321",
+    expirationMonth: "12",
+    expirationYear: "29",
+    zoom: 1,
+  });
+  assert.ok(Buffer.isBuffer(cardBuf) && cardBuf.length > 10000, "Must render valid PNG buffer in memory");
 
   const mock = await startPhase4MockNuvion();
   process.env.NUVION_BASE_URL = mock.baseUrl;

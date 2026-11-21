@@ -22,6 +22,7 @@ const payouts = require("./nuvion_payouts");
 const db = require("./db");
 const idempotency = require("./idempotency");
 const walletLib = require("./wallet");
+const { generateMaskedProximCardPNG } = require("./card_image_generator");
 
 const CARD_DEBIT_PAYMENT_TYPES = new Set(["card-debit", "card-debit-recoup"]);
 const CARD_REFUND_PAYMENT_TYPES = new Set(["card-debit-reversal", "card-credit-refund"]);
@@ -729,18 +730,44 @@ async function handleUscInflowForCardJobs({ confirmed, entityRecord, bot = null 
       if (telegram && issueJob.telegram_id) {
         const kindLabel = p.cardType === "disposable" ? "Disposable 1-Time USD Card" : "Virtual USD Card";
         const tailStr = last4 ? ` (•••• ${last4})` : "";
-        await telegram.sendMessage(
-          issueJob.telegram_id,
+        const holderDisplay =
+          [p.cardholder?.first_name, p.cardholder?.last_name].filter(Boolean).join(" ") ||
+          entityRecord.legal_name ||
+          "PROXIM MEMBER";
+        const caption =
           `🎉 <b>Your ${kindLabel} Is Active!</b>\n` +
           `──────────────────────────\n` +
           `💳 <b>Card:</b> ${escapeHtml(p.cardName)}${tailStr}\n` +
+          `👤 <b>Cardholder:</b> ${escapeHtml(holderDisplay)}\n` +
           `💵 <b>Loaded Spend Cap:</b> $${Number(p.loadAmountUsd || 0).toFixed(2)}\n` +
           (p.cardType === "disposable"
             ? `🔒 <b>Single-Use Protection:</b> Auto-deactivates after 1 charge &amp; sweeps any leftover balance back to your main Proxim balance!\n\n`
             : `\n`) +
-          `<i>Open 💳 Cards anytime to reveal your PIN-protected card details, top up, freeze, or unload unused funds back to your balance.</i>`,
-          { parse_mode: "HTML" }
-        ).catch(() => {});
+          `<i>Open 💳 Cards anytime to reveal your PIN-protected card details, top up, freeze, or unload unused funds back to your balance.</i>`;
+
+        let cardImgPath = null;
+        try {
+          cardImgPath = await generateMaskedProximCardPNG({
+            cardholderName: holderDisplay,
+            last4: last4 || "••••",
+            expirationMonth: p.expirationMonth || "--",
+            expirationYear: p.expirationYear || "--",
+            cardType: p.cardType || "virtual",
+            cardName: p.cardName || null,
+            availableUsd: Number(p.loadAmountUsd || 0),
+            status: createdCard.status || "active",
+          });
+        } catch (_) {}
+
+        if (cardImgPath && typeof telegram.sendPhoto === "function") {
+          try {
+            await telegram.sendPhoto(issueJob.telegram_id, { source: cardImgPath }, { caption, parse_mode: "HTML" });
+          } catch (_) {
+            await telegram.sendMessage(issueJob.telegram_id, caption, { parse_mode: "HTML" }).catch(() => {});
+          }
+        } else {
+          await telegram.sendMessage(issueJob.telegram_id, caption, { parse_mode: "HTML" }).catch(() => {});
+        }
       }
 
       return { handled: true, jobType: "card_issue", jobId: issueJob.id, cardId: createdCard.id, last4 };

@@ -9,6 +9,7 @@ const nuvion = require("./nuvion");
 const cardsLib = require("./nuvion_cards");
 const db = require("./db");
 const convState = require("./conversation_state");
+const { generateMaskedProximCardPNG, generateProximCardBuffer } = require("./card_image_generator");
 
 const CARD_REVEAL_TTL_MS = 60 * 1000; // Auto-delete sensitive PAN/CVV message after 60 seconds!
 let deps = {};
@@ -179,19 +180,55 @@ async function showCardControlPanel(ctx, accountType, localRowId) {
     Markup.button.callback("« All Cards", `nuvion_cards_menu_${p}`),
   ]);
 
-  return ctx.reply(
+  // Look up cached cardholder name & expiration from the card_issue job metadata (zero PAN/CVV!)
+  let holderDisplay = entity.legal_name || "PROXIM MEMBER";
+  let expMonth = "--";
+  let expYear = "--";
+  try {
+    const issueJob = db.db
+      .prepare("SELECT payload_json FROM nuvion_jobs WHERE card_id = ? AND job_type = 'card_issue' ORDER BY id DESC LIMIT 1")
+      .get(card.card_id);
+    if (issueJob?.payload_json) {
+      const jp = JSON.parse(issueJob.payload_json);
+      const chName = [jp.cardholder?.first_name, jp.cardholder?.last_name].filter(Boolean).join(" ");
+      if (chName) holderDisplay = chName;
+      if (jp.expirationMonth) expMonth = jp.expirationMonth;
+      if (jp.expirationYear) expYear = jp.expirationYear;
+    }
+  } catch (_) {}
+
+  const caption =
     `${isDisposable ? "⚡" : "💳"} <b>${escapeHtml(card.card_name || "USD Card")}</b>\n` +
     `──────────────────────────\n` +
     `• <b>Type:</b> ${isDisposable ? "Disposable (Single-Use)" : "Virtual (Reusable)"}\n` +
+    `• <b>Cardholder:</b> ${escapeHtml(holderDisplay)}\n` +
     `• <b>Number:</b> <code>•••• •••• •••• ${escapeHtml(card.last4 || "••••")}</code>\n` +
     `• <b>Status:</b> ${statusBadge(card.status)}\n` +
     `• <b>Loaded Spend Limit:</b> <b>$${availableUsd.toFixed(2)}</b>\n\n` +
-    `<i>Only funds loaded onto this card can be spent. Your main Proxim balance is completely isolated.</i>`,
-    {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard(rows),
+    `<i>Only funds loaded onto this card can be spent. Your main Proxim balance is completely isolated.</i>`;
+
+  const replyOpts = {
+    parse_mode: "HTML",
+    ...Markup.inlineKeyboard(rows),
+  };
+
+  try {
+    const cardImgPath = await generateMaskedProximCardPNG({
+      cardholderName: holderDisplay,
+      last4: card.last4 || "••••",
+      expirationMonth: expMonth,
+      expirationYear: expYear,
+      cardType: card.card_type || "virtual",
+      cardName: card.card_name || null,
+      availableUsd,
+      status: card.status || "active",
+    });
+    if (cardImgPath && typeof ctx.replyWithPhoto === "function") {
+      return await ctx.replyWithPhoto({ source: cardImgPath }, { caption, ...replyOpts });
     }
-  );
+  } catch (_) {}
+
+  return ctx.reply(caption, replyOpts);
 }
 
 /**
@@ -459,7 +496,7 @@ async function handleCardsTextState(ctx, state, text, userId) {
         if (addr) billingLines.push(`• <b>Billing Address:</b> ${escapeHtml(addr)}`);
       }
 
-      const sent = await ctx.reply(
+      const revealCaption =
         `🔐 <b>Card Details (Auto-Deletes in 60s)</b>\n` +
         `──────────────────────────\n` +
         `• <b>Card Name:</b> ${escapeHtml(details.name || "USD Card")}\n` +
@@ -469,12 +506,42 @@ async function handleCardsTextState(ctx, state, text, userId) {
         `• <b>CVV:</b> <code>${escapeHtml(details.cvv || "---")}</code>\n` +
         `• <b>Spendable Limit:</b> $${details.availableUsd.toFixed(2)}\n` +
         (billingLines.length ? `${billingLines.join("\n")}\n` : "") +
-        `\n<i>⚠️ For your security, this message will disappear automatically in 60 seconds and is never saved on our servers.</i>`,
-        {
-          parse_mode: "HTML",
-          ...Markup.inlineKeyboard([[Markup.button.callback("🗑️ Hide Details Now", "nuvion_card_hide_msg")]]),
+        `\n<i>⚠️ For your security, this message will disappear automatically in 60 seconds and is never saved on our servers.</i>`;
+
+      const revealKeyboard = Markup.inlineKeyboard([[Markup.button.callback("🗑️ Hide Details Now", "nuvion_card_hide_msg")]]);
+      let sent = null;
+      try {
+        // Render full PAN & CVV onto the Proxim Virtual Card face strictly in-memory (Buffer — zero disk write!)
+        const pngBuffer = generateProximCardBuffer({
+          cardholderName: details.cardholderName || "PROXIM MEMBER",
+          number: details.number,
+          masked: false,
+          expirationMonth: details.expirationMonth || "--",
+          expirationYear: details.expirationYear || "--",
+          cvv: details.cvv || null,
+          cardType: details.type || "virtual",
+          cardName: details.name || null,
+          availableUsd: details.availableUsd,
+          status: details.status || "active",
+        });
+        if (pngBuffer && typeof ctx.replyWithPhoto === "function") {
+          sent = await ctx.replyWithPhoto(
+            { source: pngBuffer },
+            {
+              caption: revealCaption,
+              parse_mode: "HTML",
+              ...revealKeyboard,
+            }
+          );
         }
-      );
+      } catch (_) {}
+
+      if (!sent) {
+        sent = await ctx.reply(revealCaption, {
+          parse_mode: "HTML",
+          ...revealKeyboard,
+        });
+      }
 
       // Schedule automatic 60-second deletion of the sensitive PAN/CVV Telegram message
       if (sent?.message_id && ctx.chat?.id) {

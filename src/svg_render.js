@@ -23,15 +23,22 @@ const RESVG_OPTS = {
   },
 };
 
-/** Write an SVG string to a high-DPI (3x Retina) PNG file. */
-function renderSvgToPngFile(svg, outPath, options = {}) {
-  const zoom = Number(options.zoom) || 3;
+/** Render an SVG string to a high-DPI PNG Buffer in memory (zero disk writes). */
+function renderSvgToPngBuffer(svg, options = {}) {
+  const zoom = Number(options.zoom) || 2;
   const resvg = new Resvg(svg, {
     ...RESVG_OPTS,
     fitTo: { mode: "zoom", value: zoom },
   });
   const rendered = resvg.render();
-  fs.writeFileSync(outPath, rendered.asPng());
+  return rendered.asPng();
 }
 
-module.exports = { renderSvgToPngFile };
+/** Write an SVG string to a high-DPI (3x Retina) PNG file. */
+function renderSvgToPngFile(svg, outPath, options = {}) {
+  const zoom = Number(options.zoom) || 3;
+  const pngBuffer = renderSvgToPngBuffer(svg, { ...options, zoom });
+  fs.writeFileSync(outPath, pngBuffer);
+}
+
+module.exports = { renderSvgToPngFile, renderSvgToPngBuffer };
