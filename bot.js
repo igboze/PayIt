@@ -53,6 +53,7 @@ const nuvionOrchestrator = require("./src/nuvion_orchestrator");
 const nuvionPayouts     = require("./src/nuvion_payouts");
 const nuvionCards       = require("./src/nuvion_cards");
 const nuvionPoller      = require("./src/nuvion_poller");
+const nuvionHealth      = require("./src/nuvion_health");
 const flowsNuvionKyc    = require("./src/flows_nuvion_kyc");
 const flowsGlobalAccounts = require("./src/flows_global_accounts");
 const flowsGlobalPayouts  = require("./src/flows_global_payouts");
@@ -3141,6 +3142,85 @@ bot.command("cards", async (ctx) => {
   if (!user) return;
   const ctxMode = user.active_context || getContext(ctx.from.id) || "personal";
   return flowsCards.showCardsMenu(ctx, ctxMode);
+});
+
+// Admin-only Nuvion Phase 5 Production Health & Launch Readiness Monitor
+bot.command("nuvion_health", async (ctx) => {
+  if (!ADMIN_IDS.includes(String(ctx.from?.id || ""))) {
+    return ctx.reply("⛔ Admin only.");
+  }
+  await ctx.reply("⏳ Checking Nuvion production connectivity, webhook status & job queues...");
+  try {
+    const snap = await nuvionHealth.collectNuvionHealthSnapshot({ includeQuote: false });
+    return ctx.reply(nuvionHealth.formatAdminHealthCard(snap), {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback("🔄 Run Reconciler", "admin_nuvion_reconcile"),
+          Markup.button.callback("🔍 Zero-Custody Audit", "admin_nuvion_audit"),
+        ],
+        [Markup.button.callback("📡 Send Test Webhook", "admin_nuvion_test_wh")],
+      ]),
+    });
+  } catch (err) {
+    return ctx.reply(`❌ Nuvion health check error: ${escapeHtml(err.message)}`, { parse_mode: "HTML" });
+  }
+});
+
+bot.action("admin_nuvion_reconcile", async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  if (!ADMIN_IDS.includes(String(ctx.from?.id || ""))) return;
+  try {
+    const res = await nuvionPoller.runNuvionPollerCycle(bot);
+    return ctx.reply(
+      `🔄 <b>Nuvion Reconciler Completed</b>\n` +
+      `• Interac sessions polled: ${(res.interac || []).length}\n` +
+      `• Inbound sweeps retried: ${(res.sweeps || []).length}\n` +
+      `• Payout refunds retried: ${(res.payoutRefunds || []).length}`,
+      { parse_mode: "HTML" }
+    );
+  } catch (err) {
+    return ctx.reply(`❌ Reconciler error: ${escapeHtml(err.message)}`, { parse_mode: "HTML" });
+  }
+});
+
+bot.action("admin_nuvion_audit", async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  if (!ADMIN_IDS.includes(String(ctx.from?.id || ""))) return;
+  await ctx.reply("⏳ Auditing all approved child entities for stranded non-card balances...");
+  try {
+    const audit = await nuvionHealth.auditStrandedNuvionBalances();
+    const statusLine = audit.cleanZeroCustody
+      ? "✅ <b>PASS — Zero stranded non-card funds!</b>"
+      : `⚠️ <b>${audit.strandedCount} stranded non-card account(s) detected</b>`;
+    const details = audit.stranded.slice(0, 6).map((s) =>
+      `• TG:${s.telegramId} · ${s.currency || "ERR"} ${s.availableMajor ?? s.error}`
+    ).join("\n");
+    return ctx.reply(
+      `🔍 <b>Zero-Custody Audit</b>\n──────────────────────────\n` +
+      `• <b>Entities Checked:</b> ${audit.checkedEntities}\n` +
+      `• <b>Intentional Card Funds:</b> $${audit.cardAllocatedUsd.toFixed(2)}\n` +
+      `• <b>Status:</b> ${statusLine}` +
+      (details ? `\n\n${details}` : ""),
+      { parse_mode: "HTML" }
+    );
+  } catch (err) {
+    return ctx.reply(`❌ Audit error: ${escapeHtml(err.message)}`, { parse_mode: "HTML" });
+  }
+});
+
+bot.action("admin_nuvion_test_wh", async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  if (!ADMIN_IDS.includes(String(ctx.from?.id || ""))) return;
+  try {
+    const res = await nuvionHealth.dispatchWebhookTest();
+    return ctx.reply(
+      `📡 <b>Test Webhook Sent!</b>\nWebhook ID: <code>${escapeHtml(res.webhookId)}</code>\nCheck Railway logs for <code>Received test webhook event</code>.`,
+      { parse_mode: "HTML" }
+    );
+  } catch (err) {
+    return ctx.reply(`❌ Test webhook failed: ${escapeHtml(err.message)}`, { parse_mode: "HTML" });
+  }
 });
 
 nuvionOrchestrator.registerOrchestratorHooks();

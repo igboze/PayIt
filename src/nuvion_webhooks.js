@@ -254,6 +254,12 @@ async function processNuvionEvent(payload, headers = {}, bot = null) {
     normalizedHeaders[String(k).toLowerCase()] = v;
   }
 
+  // Health check ping sent by Nuvion during webhook URL updates or blacklist reactivation
+  if (event === "webhook.health") {
+    console.log("[nuvion_webhooks] Received webhook.health verification ping.");
+    return { handled: true, healthPing: true, event };
+  }
+
   // Test events created via POST /webhook-tests only contain { webhook_id }
   if (data && data.webhook_id && Object.keys(data).length === 1) {
     console.log(`[nuvion_webhooks] Received test webhook event "${event}" for webhook ${data.webhook_id}`);

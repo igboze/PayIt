@@ -790,6 +790,11 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
 
     // 1. Health check
     if (req.method === "GET" && req.url === "/health") {
+      let nuvionSummary = null;
+      try {
+        const nuvionHealth = require("./nuvion_health");
+        nuvionSummary = nuvionHealth.getPublicHealthSummary();
+      } catch (_) {}
       res.writeHead(200, { "Content-Type": "application/json" });
       return res.end(
         JSON.stringify({
@@ -797,6 +802,7 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
           service: "Proxim Gateway & Paj Webhook Server",
           time: new Date().toISOString(),
           cctpDomain: 26,
+          ...(nuvionSummary ? { nuvion: nuvionSummary } : {}),
         })
       );
     }
