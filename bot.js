@@ -1,5 +1,5 @@
 // bot.js
-// Proxim — Global AI Neobank & Fintech Platform inside Telegram
+// Proxim — Your Global Neobank in Telegram
 // Personal + Business accounts · dollar + euro wallets · Arc Testnet
 //
 // Architecture:
@@ -663,7 +663,7 @@ bot.start(async (ctx) => {
     `${referralGreeting}` +
     `👋 <b>Welcome to Proxim</b>\n` +
     `──────────────────────────\n` +
-    `Your all-in-one global neobank &amp; fintech right inside Telegram.\n\n` +
+    `Your Global Neobank right inside Telegram.\n\n` +
     `🏦 <b>Named Global Bank Accounts</b> — Receive USD, GBP, EUR, NGN, CAD &amp; more\n` +
     `💳 <b>Virtual &amp; Disposable USD Cards</b> — Spend globally on subscriptions, ads &amp; cloud\n` +
     `🌍 <b>Instant Local &amp; Global Transfers</b> — Send to 27+ currencies &amp; Nigerian banks in seconds\n` +
@@ -1626,7 +1626,7 @@ function showHelp(ctx) {
 function showFeatures(ctx) {
   const context = getContext(ctx.from?.id);
   return ctx.reply(
-    `✨ Proxim — Full-Service Global Neobank & Fintech:\n\n` +
+    `✨ Proxim — Your Global Neobank:\n\n` +
     `✅ Personal & Business Neobank Accounts (secured by your PIN)\n` +
     `✅ Named Global Bank Accounts (USD, GBP, EUR, NGN, CAD, AED, KES, GHS, TZS, MXN)\n` +
     `✅ Virtual & 1-Time Disposable USD Mastercards\n` +

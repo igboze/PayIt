@@ -31,7 +31,7 @@ const { resolvePayee }      = require("../src/payee_book");
 // ─── Classification prompt ────────────────────────────────────────────────────
 
 function buildClassifierPrompt(userContext) {
-  return `You are the intent classifier for Proxim, a global neobank and fintech platform inside Telegram.
+  return `You are the intent classifier for Proxim, a Global Neobank inside Telegram.
 Users may write in English, Pidgin English, or a mix of both.
 
 Classify the user's message into one intent and extract the key parameters.

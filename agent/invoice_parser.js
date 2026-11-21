@@ -17,7 +17,7 @@ const { getJSONCompletion } = require("./ai_provider");
 async function parseInvoiceIntent(userMessage, businessInfo) {
   const today = new Date().toISOString().split("T")[0];
 
-  const systemPrompt = `You are an invoice assistant for Proxim, a global neobank and business fintech platform.
+  const systemPrompt = `You are an invoice assistant for Proxim, a Global Neobank.
 
 Parse the user's invoice instruction into a structured JSON object.
 Respond with ONLY valid JSON matching this exact structure — no markdown, no extra text:

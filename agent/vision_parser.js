@@ -31,7 +31,7 @@ function getVisionProvider() {
 
 // ─── System prompt (shared) ───────────────────────────────────────────────────
 
-const EXTRACTION_PROMPT = `You are a payment extraction assistant for Proxim, a global neobank and fintech app.
+const EXTRACTION_PROMPT = `You are a payment extraction assistant for Proxim, a Global Neobank.
 
 Analyse the image and extract any payment or invoice details visible.
 
