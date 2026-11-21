@@ -271,7 +271,7 @@ async function collectNuvionHealthSnapshot({ includeQuote = false, baseGasProvid
     let succeeded = 0;
     let failed = 0;
     for (const l of logs) {
-      const code = Number(l.response_status || l.status_code || 0);
+      const code = Number(l.response?.status || l.response_status || l.status_code || 0);
       const ok = l.status === "delivered" || l.status === "success" || (code >= 200 && code < 300);
       if (ok) succeeded++;
       else failed++;
@@ -281,8 +281,8 @@ async function collectNuvionHealthSnapshot({ includeQuote = false, baseGasProvid
       succeeded,
       failed,
       latest: logs.slice(0, 5).map((l) => ({
-        event: l.event || l.event_type || "unknown",
-        status: l.status || l.response_status || "n/a",
+        event: l.event || l.event_type || l.request?.body?.event || "unknown",
+        status: l.status || l.response?.status || l.response_status || "n/a",
         created: l.created || l.created_at || null,
       })),
     };
