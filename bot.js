@@ -977,6 +977,19 @@ function getOrDeriveSolanaAddress(user) {
   return (isBiz ? user.biz_solana_deposit_address : user.solana_deposit_address) || null;
 }
 
+async function getOtherAccountBalanceHint(user, currentContext) {
+  if (!user || !user.business_deposit_address) return "";
+  const otherContext = currentContext === "business" ? "personal" : "business";
+  try {
+    const otherUnified = await chains.getUnifiedBalance(user, otherContext);
+    if (otherUnified && otherUnified.total >= 0.01) {
+      const otherLabel = otherContext === "business" ? "Business 💼" : "Personal 👤";
+      return `\n\n💡 <i>You also have <b>$${otherUnified.total.toFixed(2)} USDC</b> in your ${otherLabel} wallet — tap <b>Switch Account</b> to view or spend it.</i>`;
+    }
+  } catch (_) {}
+  return "";
+}
+
 async function showBalance(ctx) {
   const user = requireUser(ctx);
   if (!user) return;
@@ -1094,8 +1107,10 @@ async function showBalance(ctx) {
       btnPrimary("🔄 Refresh Balance", "action_sweep_deposits")]
     );
 
+    const otherWalletHint = await getOtherAccountBalanceHint(user, context);
+
     await ctx.reply(
-      `${balanceHeader}${savingsSection}${globalUpgradeHint}`,
+      `${balanceHeader}${savingsSection}${otherWalletHint}${globalUpgradeHint}`,
       {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard(buttonRows),
@@ -1209,8 +1224,10 @@ async function showBizBalance(ctx) {
       ...accountToggle("business")
     );
 
+    const otherWalletHint = await getOtherAccountBalanceHint(user, "business");
+
     await ctx.reply(
-      `${balanceHeader}${savingsSection}${bizGlobalHint}\n\n` +
+      `${balanceHeader}${savingsSection}${otherWalletHint}${bizGlobalHint}\n\n` +
       `📬 Unpaid invoices: ${pending}\n` +
       `📉 Expenses this month: $${expenses.toFixed(2)}`,
       {
@@ -1319,7 +1336,8 @@ async function showHistory(ctx) {
     const label = typeLabel[t.type] || t.type;
     const amount = walletLib.formatMicro(t.amount_micro);
     const status = t.status === "confirmed" ? "✅" : t.status === "failed" ? "❌" : "⏳";
-    return `${status} ${label}  $${parseFloat(amount).toFixed(2)}\n   ${t.created_at}`;
+    const acctTag = t.account_type === "business" ? " [Business]" : " [Personal]";
+    return `${status} ${label}${acctTag}  $${parseFloat(amount).toFixed(2)}\n   ${t.created_at}`;
   });
 
   await ctx.reply(
