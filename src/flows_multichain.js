@@ -19,6 +19,7 @@ const chains = require("./chains");
 const convState = require("./conversation_state");
 const { shouldReprocessConversationState } = require("./conversation_flow");
 const { moveFundsBetweenChains, executeCrossChainWithdrawal } = require("../agent/executor");
+const { generateCryptoNetworksBannerPNG } = require("./chain_logo_generator");
 
 // Bot-local helpers, injected by bot.js at registration time.
 let deps = {};
@@ -161,35 +162,35 @@ function registerNearDepositActions(bot) {
 async function showNearTokenSelection(ctx) {
   const keyboard = [
     [
-      Markup.button.callback("💵 USDC (Native NEAR)", "action_near_tok_USDC"),
-      Markup.button.callback("🟢 USDT (NEAR)", "action_near_tok_USDT"),
+      Markup.button.callback("USDC (NEAR)", "action_near_tok_USDC"),
+      Markup.button.callback("USDT (NEAR)", "action_near_tok_USDT"),
     ],
     [
-      Markup.button.callback("Ⓝ NEAR Protocol", "action_near_tok_NEAR"),
-      Markup.button.callback("🪙 WBTC", "action_near_tok_WBTC"),
+      Markup.button.callback("NEAR", "action_near_tok_NEAR"),
+      Markup.button.callback("WBTC", "action_near_tok_WBTC"),
     ],
     [
-      Markup.button.callback("💧 SWEAT", "action_near_tok_SWEAT"),
-      Markup.button.callback("🅰️ AURORA", "action_near_tok_AURORA"),
+      Markup.button.callback("SWEAT", "action_near_tok_SWEAT"),
+      Markup.button.callback("AURORA", "action_near_tok_AURORA"),
     ],
     [
-      Markup.button.callback("🔷 ETH", "action_near_tok_ETH"),
-      Markup.button.callback("🟡 DAI", "action_near_tok_DAI"),
+      Markup.button.callback("ETH", "action_near_tok_ETH"),
+      Markup.button.callback("DAI", "action_near_tok_DAI"),
     ],
     [
-      Markup.button.callback("📋 All NEAR Tokens (35+)", "action_near_all_tokens"),
-      Markup.button.callback("🔍 Custom Token", "action_near_tok_custom"),
+      Markup.button.callback("All NEAR Tokens (35+)", "action_near_all_tokens"),
+      Markup.button.callback("Custom Token", "action_near_tok_custom"),
     ],
     [
       Markup.button.callback("« Back to Networks", "action_gateway"),
-      Markup.button.callback("🏠 Main Menu", "main_menu"),
+      Markup.button.callback("Main Menu", "main_menu"),
     ],
   ];
 
   return ctx.reply(
-    `Ⓝ <b>Deposit via NEAR Protocol</b>\n──────────────────────────\n` +
-    `Send tokens from any NEAR wallet (Here, Meteor, Sender, Bitget) or exchange.\n` +
-    `NEAR Intents automatically converts your tokens to <b>USDC</b> and sweeps them to your account balance (~2–5 mins).\n\n` +
+    `<b>Deposit via NEAR Protocol</b>\n──────────────────────────\n` +
+    `Send tokens from any NEAR wallet (HERE, Meteor, Sender, Bitget) or exchange.\n` +
+    `Your deposit is automatically converted to <b>Dollars ($)</b> and credited to your Proxim account (~2–5 mins).\n\n` +
     `<b>Select a token to deposit:</b>`,
     {
       parse_mode: "HTML",
@@ -209,9 +210,9 @@ async function showAllNearTokens(ctx, page = 1) {
 
   const keyboard = [];
   for (let i = 0; i < pageTokens.length; i += 2) {
-    const row = [Markup.button.callback(`${pageTokens[i].icon || "🪙"} ${pageTokens[i].symbol}`, `action_near_tok_${pageTokens[i].symbol}`)];
+    const row = [Markup.button.callback(`${pageTokens[i].symbol}`, `action_near_tok_${pageTokens[i].symbol}`)];
     if (pageTokens[i + 1]) {
-      row.push(Markup.button.callback(`${pageTokens[i + 1].icon || "🪙"} ${pageTokens[i + 1].symbol}`, `action_near_tok_${pageTokens[i + 1].symbol}`));
+      row.push(Markup.button.callback(`${pageTokens[i + 1].symbol}`, `action_near_tok_${pageTokens[i + 1].symbol}`));
     }
     keyboard.push(row);
   }
@@ -301,31 +302,30 @@ function registerSolanaDepositActions(bot) {
 async function showSolanaTokenSelection(ctx) {
   const keyboard = [
     [
-      Markup.button.callback("☀️ SOL",   "action_sol_tok_SOL"),
-      Markup.button.callback("💵 USDC",  "action_sol_tok_USDC"),
+      Markup.button.callback("SOL",   "action_sol_tok_SOL"),
+      Markup.button.callback("USDC",  "action_sol_tok_USDC"),
     ],
     [
-      Markup.button.callback("🟢 USDT",  "action_sol_tok_USDT"),
-      Markup.button.callback("🐕 BONK",  "action_sol_tok_BONK"),
+      Markup.button.callback("USDT",  "action_sol_tok_USDT"),
+      Markup.button.callback("BONK",  "action_sol_tok_BONK"),
     ],
     [
-      Markup.button.callback("🎩 WIF",   "action_sol_tok_WIF"),
-      Markup.button.callback("🪐 JUP",   "action_sol_tok_JUP"),
+      Markup.button.callback("WIF",   "action_sol_tok_WIF"),
+      Markup.button.callback("JUP",   "action_sol_tok_JUP"),
     ],
     [
-      Markup.button.callback("🔮 PYTH",  "action_sol_tok_PYTH"),
+      Markup.button.callback("PYTH",  "action_sol_tok_PYTH"),
     ],
     [
-      Markup.button.callback("❌ Cancel", "main_menu"),
+      Markup.button.callback("Cancel", "main_menu"),
     ],
   ];
 
   return ctx.reply(
-    `☀️ <b>Deposit from Solana</b>\n──────────────────────────\n` +
-    `Send any supported Solana token to a <b>one-time deposit address</b>.\n` +
-    `NEAR Intents automatically swaps it to <b>USDC on Base</b> and sweeps it to your <b>Arc</b> balance (~2–5 min).\n\n` +
-    `<b>You just send — nothing else needed.</b>\n\n` +
-    `Select a token to deposit:`,
+    `<b>Deposit via Solana</b>\n──────────────────────────\n` +
+    `Send any supported Solana asset to a dedicated deposit address.\n` +
+    `Your deposit automatically settles as <b>Dollars ($)</b> in your Proxim account (~2–5 min).\n\n` +
+    `<b>Select a token to deposit:</b>`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard(keyboard),
@@ -381,27 +381,27 @@ function registerRobinhoodDepositActions(bot) {
 async function showRobinhoodTokenSelection(ctx) {
   const keyboard = [
     [
-      Markup.button.callback("💵 USDG",    "action_hood_tok_USDG"),
-      Markup.button.callback("🔷 ETH",     "action_hood_tok_ETH"),
+      Markup.button.callback("USDG",    "action_hood_tok_USDG"),
+      Markup.button.callback("ETH",     "action_hood_tok_ETH"),
     ],
     [
-      Markup.button.callback("🔷 WETH",    "action_hood_tok_WETH"),
-      Markup.button.callback("🟢 USDe",    "action_hood_tok_USDe"),
+      Markup.button.callback("WETH",    "action_hood_tok_WETH"),
+      Markup.button.callback("USDe",    "action_hood_tok_USDe"),
     ],
     [
-      Markup.button.callback("🪙 PONS",    "action_hood_tok_PONS"),
-      Markup.button.callback("🐱 CASHCAT", "action_hood_tok_CASHCAT"),
+      Markup.button.callback("PONS",    "action_hood_tok_PONS"),
+      Markup.button.callback("CASHCAT", "action_hood_tok_CASHCAT"),
     ],
     [
-      Markup.button.callback("❌ Cancel",  "main_menu"),
+      Markup.button.callback("Cancel",  "main_menu"),
     ],
   ];
 
   return ctx.reply(
-    `🏹 <b>Deposit from Robinhood Chain</b>\n──────────────────────────\n` +
-    `Send supported tokens on <b>Robinhood Chain</b> (Ethereum L2) to a <b>one-time deposit address</b>.\n` +
-    `NEAR Intents will automatically swap it to <b>USDC on Base</b> and sweep it to your <b>Arc</b> balance (~2–5 min).\n\n` +
-    `Select a token to deposit:`,
+    `<b>Deposit via Robinhood Chain</b>\n──────────────────────────\n` +
+    `Send supported assets on <b>Robinhood Chain</b> (Ethereum L2) to a dedicated deposit address.\n` +
+    `Your deposit automatically settles as <b>Dollars ($)</b> in your Proxim account (~2–5 min).\n\n` +
+    `<b>Select a token to deposit:</b>`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard(keyboard),
@@ -457,23 +457,23 @@ function registerStarknetDepositActions(bot) {
 async function showStarknetTokenSelection(ctx) {
   const keyboard = [
     [
-      Markup.button.callback("🐺 STRK", "action_stark_tok_STRK"),
-      Markup.button.callback("🔷 ETH",  "action_stark_tok_ETH"),
+      Markup.button.callback("STRK", "action_stark_tok_STRK"),
+      Markup.button.callback("ETH",  "action_stark_tok_ETH"),
     ],
     [
-      Markup.button.callback("🛡️ ZEC",  "action_stark_tok_ZEC"),
-      Markup.button.callback("✕ XRP",   "action_stark_tok_XRP"),
+      Markup.button.callback("ZEC",  "action_stark_tok_ZEC"),
+      Markup.button.callback("XRP",  "action_stark_tok_XRP"),
     ],
     [
-      Markup.button.callback("❌ Cancel", "main_menu"),
+      Markup.button.callback("Cancel", "main_menu"),
     ],
   ];
 
   return ctx.reply(
-    `🐺 <b>Deposit from Starknet</b>\n──────────────────────────\n` +
-    `Send supported tokens on <b>Starknet</b> (STRK, direct ETH, ZEC, XRP) to a <b>one-time deposit address</b>.\n` +
-    `NEAR Intents will automatically swap it to <b>USDC on Base</b> and sweep it to your <b>Arc</b> balance (~2–5 min).\n\n` +
-    `Select a token to deposit:`,
+    `<b>Deposit via Starknet</b>\n──────────────────────────\n` +
+    `Send supported assets on <b>Starknet</b> (STRK, ETH, ZEC, XRP) to a dedicated deposit address.\n` +
+    `Your deposit automatically settles as <b>Dollars ($)</b> in your Proxim account (~2–5 min).\n\n` +
+    `<b>Select a token to deposit:</b>`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard(keyboard),
@@ -659,16 +659,16 @@ function registerMoveFundsActions(bot) {
 // ─── Cross-Chain Withdraw / Send to Any Chain (Tier 1 CCTP + Tier 2 Intents) ─
 
 const CCW_CHAINS = {
-  solana:    { name: "Solana",     label: "☀️ Solana",     token: "USDC (SPL)",   icon: "☀️", example: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", engine: "CCTP" },
-  base:      { name: "Base",       label: "🔵 Base",       token: "USDC",         icon: "🔵", example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", engine: "CCTP" },
-  arbitrum:  { name: "Arbitrum",   label: "🔷 Arbitrum",   token: "USDC",         icon: "🔷", example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", engine: "CCTP" },
-  optimism:  { name: "Optimism",   label: "🔴 Optimism",   token: "USDC",         icon: "🔴", example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", engine: "CCTP" },
-  polygon:   { name: "Polygon",    label: "🟣 Polygon",    token: "USDC",         icon: "🟣", example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", engine: "CCTP" },
-  avalanche: { name: "Avalanche",  label: "🔺 Avalanche",  token: "USDC",         icon: "🔺", example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", engine: "CCTP" },
-  ethereum:  { name: "Ethereum",   label: "🌐 Ethereum",   token: "USDC",         icon: "🌐", example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", engine: "CCTP" },
-  bitcoin:   { name: "Bitcoin",    label: "₿ Bitcoin",     token: "BTC (Native)", icon: "₿",  example: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh", engine: "NEAR_INTENTS" },
-  tron:      { name: "Tron",       label: "💎 Tron",       token: "USDT (TRC20)", icon: "💎", example: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", engine: "NEAR_INTENTS" },
-  near:      { name: "NEAR",       label: "Ⓝ NEAR",       token: "NEAR",         icon: "Ⓝ",  example: "alice.near", engine: "NEAR_INTENTS" },
+  solana:    { name: "Solana",     label: "Solana",        token: "USDC (SPL)",   icon: "Solana",    example: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", engine: "CCTP" },
+  base:      { name: "Base",       label: "Base",          token: "USDC",         icon: "Base",      example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", engine: "CCTP" },
+  arbitrum:  { name: "Arbitrum",   label: "Arbitrum One",  token: "USDC",         icon: "Arbitrum",  example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", engine: "CCTP" },
+  optimism:  { name: "Optimism",   label: "Optimism",      token: "USDC",         icon: "Optimism",  example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", engine: "CCTP" },
+  polygon:   { name: "Polygon",    label: "Polygon",       token: "USDC",         icon: "Polygon",   example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", engine: "CCTP" },
+  avalanche: { name: "Avalanche",  label: "Avalanche",     token: "USDC",         icon: "Avalanche", example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", engine: "CCTP" },
+  ethereum:  { name: "Ethereum",   label: "Ethereum",      token: "USDC",         icon: "Ethereum",  example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", engine: "CCTP" },
+  bitcoin:   { name: "Bitcoin",    label: "Bitcoin",       token: "BTC (Native)", icon: "Bitcoin",   example: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh", engine: "NEAR_INTENTS" },
+  tron:      { name: "Tron",       label: "Tron",          token: "USDT (TRC20)", icon: "Tron",      example: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", engine: "NEAR_INTENTS" },
+  near:      { name: "NEAR",       label: "NEAR Protocol", token: "NEAR",         icon: "NEAR",      example: "alice.near", engine: "NEAR_INTENTS" },
 };
 
 function validateAddressForChain(chainKey, addr) {
@@ -746,41 +746,50 @@ function registerCrossChainWithdrawActions(bot) {
 async function showCrossChainWithdrawChainSelection(ctx) {
   const keyboard = [
     [
-      Markup.button.callback("☀️ Solana (USDC)",   "action_ccw_chain_solana"),
-      Markup.button.callback("🔵 Base (USDC)",     "action_ccw_chain_base"),
+      Markup.button.callback("Solana (USDC)",       "action_ccw_chain_solana"),
+      Markup.button.callback("Base (USDC)",         "action_ccw_chain_base"),
     ],
     [
-      Markup.button.callback("🔷 Arbitrum (USDC)", "action_ccw_chain_arbitrum"),
-      Markup.button.callback("🔴 Optimism (USDC)", "action_ccw_chain_optimism"),
+      Markup.button.callback("Arbitrum One (USDC)", "action_ccw_chain_arbitrum"),
+      Markup.button.callback("Optimism (USDC)",     "action_ccw_chain_optimism"),
     ],
     [
-      Markup.button.callback("🟣 Polygon (USDC)",  "action_ccw_chain_polygon"),
-      Markup.button.callback("🔺 Avalanche (USDC)","action_ccw_chain_avalanche"),
+      Markup.button.callback("Polygon (USDC)",      "action_ccw_chain_polygon"),
+      Markup.button.callback("Avalanche (USDC)",    "action_ccw_chain_avalanche"),
     ],
     [
-      Markup.button.callback("🌐 Ethereum (USDC)", "action_ccw_chain_ethereum"),
-      Markup.button.callback("₿ Bitcoin (BTC)",    "action_ccw_chain_bitcoin"),
+      Markup.button.callback("Ethereum (USDC)",     "action_ccw_chain_ethereum"),
+      Markup.button.callback("Bitcoin (BTC)",       "action_ccw_chain_bitcoin"),
     ],
     [
-      Markup.button.callback("💎 Tron (USDT)",     "action_ccw_chain_tron"),
-      Markup.button.callback("Ⓝ NEAR Protocol",   "action_ccw_chain_near"),
+      Markup.button.callback("Tron (USDT TRC-20)",  "action_ccw_chain_tron"),
+      Markup.button.callback("NEAR Protocol",       "action_ccw_chain_near"),
     ],
     [
-      Markup.button.callback("❌ Cancel", "main_menu"),
+      Markup.button.callback("Cancel", "main_menu"),
     ],
   ];
 
-  return ctx.reply(
-    `📤 <b>Withdraw to External Chain / Wallet</b>\n──────────────────────────\n` +
-    `Withdraw your balance to <b>any blockchain</b> with zero bridge hassle.\n\n` +
-    `• <b>Solana & Major Networks:</b> Instant Direct Transfer (100% 1:1 USDC, 0 slippage)\n` +
-    `• <b>Bitcoin, Tron & NEAR:</b> NEAR Intent routing (auto-swapped & delivered)\n\n` +
-    `Select destination chain:`,
-    {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard(keyboard),
+  const caption =
+    `<b>Withdraw to External Network</b>\n──────────────────────────\n` +
+    `Transfer from your Proxim balance to any supported external blockchain network.\n\n` +
+    `• <b>Base, Solana, Ethereum, Arbitrum, Optimism, Polygon &amp; Avalanche:</b> Instant 1:1 USDC settlement\n` +
+    `• <b>Bitcoin, Tron &amp; NEAR:</b> Automated cross-network settlement\n\n` +
+    `<b>Select destination network:</b>`;
+
+  const opts = {
+    parse_mode: "HTML",
+    ...Markup.inlineKeyboard(keyboard),
+  };
+
+  try {
+    const bannerPath = await generateCryptoNetworksBannerPNG({ mode: "withdraw" });
+    if (bannerPath && typeof ctx.replyWithPhoto === "function") {
+      return await ctx.replyWithPhoto({ source: bannerPath }, { caption, ...opts });
     }
-  );
+  } catch (_) {}
+
+  return ctx.reply(caption, opts);
 }
 
 async function handleCrossChainWithdrawAmount(ctx, user, state, amount, userId) {

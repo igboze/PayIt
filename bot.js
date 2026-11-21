@@ -58,6 +58,7 @@ const flowsNuvionKyc    = require("./src/flows_nuvion_kyc");
 const flowsGlobalAccounts = require("./src/flows_global_accounts");
 const flowsGlobalPayouts  = require("./src/flows_global_payouts");
 const flowsCards          = require("./src/flows_cards");
+const { generateCryptoNetworksBannerPNG } = require("./src/chain_logo_generator");
 const autoEarn = require("./src/auto_earn");
 const cashflow = require("./src/cashflow");
 const socialTransfers = require("./src/social_transfers");
@@ -1049,9 +1050,7 @@ async function showBalance(ctx) {
     }
     buttonRows.push(
       [btnDefault("📜 Activity History",  "action_history"),
-       btnPrimary("⚡ Check for Deposits","action_sweep_deposits")],
-      [btnPrimary("🔀 Move Funds",        "action_move_funds")],
-      [btnPrimary("🔐 Export Key",        "action_export_keys")]
+       btnPrimary("🔄 Refresh Balance",   "action_sweep_deposits")]
     );
 
     await ctx.reply(
@@ -1164,8 +1163,7 @@ async function showBizBalance(ctx) {
     buttonRows.push(
       [btnPrimary("📊 Cash Flow",     "action_cash_flow")],
       [btnPrimary("💸 Log Expense",   "action_log_expense"),
-       btnPrimary("⚡ Check for Deposits", "action_sweep_deposits")],
-      [btnPrimary("🔐 Export Keys",   "action_export_keys")],
+       btnPrimary("🔄 Refresh Balance", "action_sweep_deposits")],
       ...accountToggle("business")
     );
 
@@ -1231,13 +1229,12 @@ async function showReceive(ctx) {
       : `🌍 <b>Global Bank Accounts (USD, GBP, EUR, CAD, AED &amp; more)</b>\n🔒 <i>Tap "Verify ID" below to upgrade to Tier 1 and unlock named foreign bank accounts &amp; payment links.</i>\n\n`;
 
   await ctx.reply(
-    `📥 <b>Deposit — ${label}</b>\n──────────────────────────\n` +
-    `Choose how you would like to deposit:\n\n` +
-    `🇳🇬 <b>Bank Transfer (Naira)</b>\nPay in Naira from any bank or mobile app for instant Dollars.\n\n` +
+    `📥 <b>Deposit — ${label} Account</b>\n──────────────────────────\n` +
+    `Choose how you would like to fund your account:\n\n` +
+    `🇳🇬 <b>Bank Transfer (Naira)</b>\nTransfer Naira from any local bank or mobile app for instant settlement.\n\n` +
     globalDepositCopy +
-    `🌐 <b>Deposit Crypto (10+ Networks)</b>\nSend from Base, Solana, Ethereum, NEAR, Polygon, and more.\n\n` +
-    `💳 <b>Card or Apple Pay</b>\nBuy Dollars directly with your debit or credit card.\n\n` +
-    `📍 <b>Your Deposit Address (tap to copy):</b>\n<code>${address}</code>`,
+    `💳 <b>Card or Apple Pay</b>\nFund your balance directly with a debit card, credit card, or Apple Pay.\n\n` +
+    `🌐 <b>Deposit Crypto (10+ Networks)</b>\nTap <b>Deposit Crypto</b> below to view your dedicated blockchain deposit addresses.`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard(depositRows),
@@ -1320,16 +1317,14 @@ async function showSettings(ctx) {
         : `Verification Tier: Tier 0 (Standard) — Verify ID below to unlock Global Accounts & USD Cards 🌍\n`;
 
   await ctx.reply(
-    `⚙️ Settings\n──────────────────────────\n` +
-    `Active account: ${context === "business" ? "Business 💼" : "Personal 👤"}\n` +
-    tierLine +
-    `Personal account: ${user.deposit_address}\n` +
-    `Business account: ${hasBiz ? user.business_deposit_address : "not set up yet"}\n` +
-    `Linked account: ${user.external_wallet_address || "none"}\n` +
-    `Gas Sponsorship: ${paymasterStatus}\n` +
-    `Phone: ${phone}\n` +
-    `Rewards: ${points} points (${formatPointValue(points)})\n\n` +
-    `Proxim never holds your money. Your PIN is the only key to your funds.`,
+    `⚙️ <b>Account Settings</b>\n──────────────────────────\n` +
+    `• <b>Active Profile:</b> ${context === "business" ? "Business 💼" : "Personal 👤"}\n` +
+    (tierLine ? `• ${tierLine}` : "") +
+    `• <b>Personal Account:</b> Active ✅\n` +
+    `• <b>Business Account:</b> ${hasBiz ? "Active ✅" : "Not set up yet"}\n` +
+    `• <b>Phone Number:</b> ${phone}\n` +
+    `• <b>Rewards Balance:</b> ${points} points (${formatPointValue(points)})\n\n` +
+    `🔒 <i>Your account is protected by bank-grade encryption and your private 4-digit PIN.</i>`,
 
     Markup.inlineKeyboard([
       ...(nuvionAllowed
@@ -1849,45 +1844,45 @@ bot.action("action_my_yield", (ctx) => {
 const EVM_CHAINS_INFO = {
   base: {
     name: "Base",
-    icon: "🔵",
-    tokens: "ETH or USDC",
+    icon: "Base",
+    tokens: "USDC or ETH",
     tip: "Fastest settlement and lowest fees.",
   },
   ethereum: {
     name: "Ethereum",
-    icon: "🔷",
-    tokens: "ETH, USDT, or USDC",
-    tip: "Ethereum Mainnet.",
+    icon: "Ethereum",
+    tokens: "USDC, USDT, or ETH",
+    tip: "Ethereum Mainnet (ERC-20).",
   },
   polygon: {
     name: "Polygon",
-    icon: "🟣",
-    tokens: "POL (MATIC) or USDC",
+    icon: "Polygon",
+    tokens: "USDC or POL",
     tip: "Polygon PoS network.",
   },
   arbitrum: {
-    name: "Arbitrum",
-    icon: "🔵",
-    tokens: "ETH or USDC",
+    name: "Arbitrum One",
+    icon: "Arbitrum",
+    tokens: "USDC or ETH",
     tip: "Arbitrum One network.",
   },
   optimism: {
     name: "Optimism",
-    icon: "🔴",
-    tokens: "ETH or USDC",
+    icon: "Optimism",
+    tokens: "USDC or ETH",
     tip: "OP Mainnet.",
   },
   avalanche: {
     name: "Avalanche",
-    icon: "🔺",
-    tokens: "AVAX or USDC",
+    icon: "Avalanche",
+    tokens: "USDC or AVAX",
     tip: "Avalanche C-Chain.",
   },
   bsc: {
     name: "BNB Chain",
-    icon: "🟡",
-    tokens: "BNB, USDT, or USDC",
-    tip: "BNB Smart Chain (BEP20).",
+    icon: "BNB Chain",
+    tokens: "USDC, USDT, or BNB",
+    tip: "BNB Smart Chain (BEP-20).",
   },
 };
 
@@ -1905,48 +1900,54 @@ bot.action("action_gateway", async (ctx) => {
     console.warn("[action_gateway] Failed to resolve NEAR address:", err.message);
   }
 
-  await ctx.reply(
-    `🌐 <b>Deposit Crypto</b>\n──────────────────────────\n` +
-    `Send crypto from any wallet or exchange. Any deposit automatically arrives as <b>Dollars ($)</b> in your account.\n\n` +
-    `<b>Your Deposit Addresses (tap to copy):</b>\n` +
-    `• <b>EVM Address</b> (Base, Ethereum, Polygon, Arbitrum, Optimism):\n<code>${arcAddress}</code>\n` +
-    (solAddress ? `• <b>Solana Address</b> (SOL, USDC):\n<code>${solAddress}</code>\n` : "") +
-    (nearAddress ? `• <b>NEAR Protocol Address (Mainnet):</b>\n<code>${nearAddress}</code>\n<i>(To auto-convert NEAR to Dollars, tap Ⓝ NEAR below)</i>\n` : "") +
-    `\n<b>Choose your network:</b>`,
-    {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard([
-        [
-          btnPrimary("🔵 Base", "action_chain_base"),
-          btnSuccess("☀️ Solana", "action_solana_deposit"),
-        ],
-        [
-          btnPrimary("🔷 Ethereum", "action_chain_ethereum"),
-          btnSuccess("Ⓝ NEAR", "action_near_deposit"),
-        ],
-        [
-          btnPrimary("🟣 Polygon", "action_chain_polygon"),
-          btnPrimary("🔵 Arbitrum", "action_chain_arbitrum"),
-        ],
-        [
-          btnPrimary("⚡ Starknet", "action_starknet_deposit"),
-          btnSuccess("🏹 Robinhood", "action_robinhood_deposit"),
-        ],
-        [
-          btnPrimary("🔴 Optimism", "action_chain_optimism"),
-          btnPrimary("🔺 Avalanche", "action_chain_avalanche"),
-        ],
-        [
-          btnPrimary("⚡ Check for Deposits", "action_sweep_deposits"),
-          btnPrimary("💳 Buy with Card", "gateway_onramp"),
-        ],
-        [
-          btnDefault("« Back to Deposit", "action_receive"),
-          btnDefault("🏠 Main Menu",        "main_menu"),
-        ],
-      ]),
+  const caption =
+    `<b>Deposit Digital Assets (Crypto)</b>\n──────────────────────────\n` +
+    `Transfer from any external wallet or exchange. Every deposit automatically settles as <b>Dollars ($)</b> in your Proxim balance.\n\n` +
+    `<b>Your Dedicated Deposit Addresses (tap to copy):</b>\n` +
+    `• <b>EVM Networks</b> (Base, Ethereum, Arbitrum, Optimism, Polygon, Avalanche):\n<code>${arcAddress}</code>\n` +
+    (solAddress ? `• <b>Solana</b> (USDC, SOL):\n<code>${solAddress}</code>\n` : "") +
+    (nearAddress ? `• <b>NEAR Protocol</b> (Mainnet):\n<code>${nearAddress}</code>\n` : "") +
+    `\n<b>Select a network below for token-specific deposit routing:</b>`;
+
+  const kb = Markup.inlineKeyboard([
+    [
+      btnPrimary("Base", "action_chain_base"),
+      btnSuccess("Solana", "action_solana_deposit"),
+    ],
+    [
+      btnPrimary("Ethereum", "action_chain_ethereum"),
+      btnSuccess("NEAR Protocol", "action_near_deposit"),
+    ],
+    [
+      btnPrimary("Arbitrum One", "action_chain_arbitrum"),
+      btnPrimary("Polygon", "action_chain_polygon"),
+    ],
+    [
+      btnPrimary("Optimism", "action_chain_optimism"),
+      btnPrimary("Avalanche", "action_chain_avalanche"),
+    ],
+    [
+      btnPrimary("Starknet", "action_starknet_deposit"),
+      btnSuccess("Robinhood Chain", "action_robinhood_deposit"),
+    ],
+    [
+      btnPrimary("Check for Deposits", "action_sweep_deposits"),
+      btnPrimary("Fund with Card", "gateway_onramp"),
+    ],
+    [
+      btnDefault("« Back to Deposit", "action_receive"),
+      btnDefault("Main Menu",         "main_menu"),
+    ],
+  ]);
+
+  try {
+    const bannerPath = await generateCryptoNetworksBannerPNG({ mode: "deposit" });
+    if (bannerPath && typeof ctx.replyWithPhoto === "function") {
+      return await ctx.replyWithPhoto({ source: bannerPath }, { caption, parse_mode: "HTML", ...kb });
     }
-  );
+  } catch (_) {}
+
+  await ctx.reply(caption, { parse_mode: "HTML", ...kb });
 });
 
 bot.action(/^action_chain_(base|ethereum|polygon|arbitrum|optimism|avalanche|bsc)$/, async (ctx) => {
@@ -1954,19 +1955,19 @@ bot.action(/^action_chain_(base|ethereum|polygon|arbitrum|optimism|avalanche|bsc
   const user = requireUser(ctx);
   if (!user) return;
   const chainKey = ctx.match[1];
-  const info = EVM_CHAINS_INFO[chainKey] || { name: chainKey, icon: "🌐", tokens: "USDC or ETH", tip: "" };
+  const info = EVM_CHAINS_INFO[chainKey] || { name: chainKey, icon: chainKey, tokens: "USDC or ETH", tip: "" };
   const address = getActiveWallet(user);
 
   await ctx.reply(
-    `${info.icon} <b>Deposit via ${info.name}</b>\n──────────────────────────\n` +
-    `Send <b>${info.tokens}</b> from any wallet or exchange directly to your address below:\n\n` +
-    `📍 <b>Your ${info.name} Address (tap to copy):</b>\n<code>${address}</code>\n\n` +
-    `💡 <i>Your deposit is automatically converted to Dollars ($) and credited to your balance within seconds.</i>`,
+    `<b>Deposit via ${info.name}</b>\n──────────────────────────\n` +
+    `Send <b>${info.tokens}</b> from your external wallet or exchange directly to your dedicated ${info.name} address below:\n\n` +
+    `<b>Your ${info.name} Deposit Address (tap to copy):</b>\n<code>${address}</code>\n\n` +
+    `<i>Your deposit automatically settles as Dollars ($) in your Proxim balance within seconds.</i>`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
-        [btnPrimary("⚡ Check for Deposits", "action_sweep_deposits")],
-        [btnDefault("« Back to Networks", "action_gateway"), btnDefault("🏠 Main Menu", "main_menu")],
+        [btnPrimary("Check for Deposits", "action_sweep_deposits")],
+        [btnDefault("« Back to Networks", "action_gateway"), btnDefault("Main Menu", "main_menu")],
       ]),
     }
   );
@@ -1983,20 +1984,20 @@ bot.action("action_starknet_deposit", async (ctx) => {
   if (!user) return;
 
   await ctx.reply(
-    `⚡ <b>Deposit via Starknet</b>\n──────────────────────────\n` +
+    `<b>Deposit via Starknet</b>\n──────────────────────────\n` +
     `Send tokens from Argent, Braavos, or any Starknet wallet.\n` +
-    `Deposits automatically arrive as <b>Dollars ($)</b> in your account.\n\n` +
+    `Deposits automatically settle as <b>Dollars ($)</b> in your Proxim account.\n\n` +
     `<b>Select token to deposit:</b>`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
         [
-          btnPrimary("🐺 STRK", "starknet_dep_token_STRK"),
-          btnPrimary("🔷 ETH",  "starknet_dep_token_ETH"),
+          btnPrimary("STRK", "starknet_dep_token_STRK"),
+          btnPrimary("ETH",  "starknet_dep_token_ETH"),
         ],
         [
-          btnPrimary("🟡 ZEC",  "starknet_dep_token_ZEC"),
-          btnPrimary("✕ XRP",   "starknet_dep_token_XRP"),
+          btnPrimary("ZEC",  "starknet_dep_token_ZEC"),
+          btnPrimary("XRP",  "starknet_dep_token_XRP"),
         ],
         [
           btnDefault("« Back to Networks", "action_gateway"),
@@ -2049,23 +2050,23 @@ bot.action("action_solana_deposit", async (ctx) => {
   const solAddress = getOrDeriveSolanaAddress(user);
 
   await ctx.reply(
-    `☀️ <b>Deposit via Solana</b>\n──────────────────────────\n` +
-    (solAddress ? `📍 <b>Your Solana Address (tap to copy):</b>\n<code>${solAddress}</code>\n\n` : "") +
-    `Send <b>SOL or USDC</b> directly to this address. Funds arrive as Dollars ($) in your account.\n\n` +
-    `Or generate a one-time deposit address for other tokens:`,
+    `<b>Deposit via Solana</b>\n──────────────────────────\n` +
+    (solAddress ? `<b>Your Solana Deposit Address (tap to copy):</b>\n<code>${solAddress}</code>\n\n` : "") +
+    `Send <b>USDC or SOL</b> directly to this address. Funds settle automatically as Dollars ($) in your account.\n\n` +
+    `Or select a specific token below for a dedicated conversion route:`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
         [
-          btnPrimary("☀️ SOL", "solana_dep_token_SOL"),
-          btnPrimary("🟢 USDT", "solana_dep_token_USDT"),
+          btnPrimary("SOL", "solana_dep_token_SOL"),
+          btnPrimary("USDT", "solana_dep_token_USDT"),
         ],
         [
-          btnPrimary("⚡ Check for Deposits", "action_sweep_deposits"),
+          btnPrimary("Check for Deposits", "action_sweep_deposits"),
         ],
         [
           btnDefault("« Back to Networks", "action_gateway"),
-          btnDefault("🏠 Main Menu",        "main_menu"),
+          btnDefault("Main Menu",          "main_menu"),
         ],
       ]),
     }
@@ -6935,25 +6936,26 @@ bot.on("text", async (ctx) => {
         }
       }
 
-      // Show only relevant keys
-      let exportText = `🎉 <b>You're all set!</b>\n──────────────────────────\n`;
-      if (!existingUser) {
-        exportText += `👤 <b>Personal Account Number:</b>\n<code>${state.data.address}</code>\n\n`;
-        exportText += `🔐 <b>Private Key:</b>\n<code>${state.data.privateKey}</code>\n\n`;
-      }
-      if (isBusiness && state.data.businessAddress) {
-        exportText += `💼 <b>Business Account Number:</b>\n<code>${state.data.businessAddress}</code>\n\n`;
-        exportText += `🔐 <b>Business Private Key:</b>\n<code>${state.data.businessPrivateKey}</code>\n\n`;
-      }
-      exportText += `💡 <b>Security Note:</b> Your keys are safely encrypted with your 4-digit PIN on your device.\n`;
-      exportText += `You can view your balances or export keys anytime in <b>Settings</b>.\n\n`;
-      exportText += `<i>For your safety, this key message will be automatically cleared in 60 seconds.</i>`;
-
-      const exportMsg = await ctx.reply(exportText, { parse_mode: "HTML" });
-      scheduleDelete(ctx, exportMsg.message_id, 60000);
-
       const context = isBusiness ? "business" : "personal";
-      return ctx.reply(`What would you like to do first?`, mainMenu(context));
+      const portalAction = isBusiness ? "biz_nuvion_portal" : "action_nuvion_portal";
+      const welcomeText =
+        `🎉 <b>Your Proxim ${isBusiness ? "Business" : "Personal"} Account Is Ready!</b>\n` +
+        `──────────────────────────\n` +
+        `• <b>Account Status:</b> Active ✅\n` +
+        `• <b>Security:</b> Protected by your private 4-digit PIN\n\n` +
+        `🏦 <b>Next Step — Unlock Global Banking &amp; USD Cards:</b>\n` +
+        `Tap <b>Verify ${isBusiness ? "Business (KYB)" : "ID (KYC)"}</b> below to activate named USD, GBP, EUR &amp; NGN bank accounts, Virtual &amp; Disposable USD Mastercards, and international transfers across 27+ currencies.\n\n` +
+        `<i>(You can also deposit Naira immediately or view your security keys anytime under ⚙️ Settings.)</i>`;
+
+      await ctx.reply(welcomeText, {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [btnSuccess(isBusiness ? "💼 Verify Business (KYB) — Global Accounts & Cards" : "🪪 Verify ID — Unlock Global Accounts & USD Cards", portalAction)],
+          [btnPrimary("📥 Deposit Money", "action_receive"), btnPrimary("💰 View Balance", isBusiness ? "biz_balance" : "action_balance")],
+        ]),
+      });
+
+      return ctx.reply(`Use the menu below anytime to navigate your account:`, mainMenu(context));
     }
 
     // ── Onramp bridge PIN authorization (for legacy users lacking system_encrypted_key) ──
