@@ -17,57 +17,57 @@ const { JsonRpcProvider } = require("ethers");
 const https = require("https");
 
 // ── Src modules ───────────────────────────────────────────────────────────────
-const db            = require("./src/db");
-const walletLib     = require("./src/wallet");
-const offrampLib    = require("./src/offramp");
-const nearLib       = require("./src/near");
-const paj           = require("./src/paj");
-const multichain    = require("./src/multichain");
-const solAddrLib    = require("./src/solana_address");
-const cctpBridge    = require("./src/cctp_bridge");
-const fx            = require("./src/fx");
-const otp           = require("./src/otp");
-const savings       = require("./src/savings");
-const tokens        = require("./src/tokens");
-const swapLib       = require("./src/swap");
-const gateway       = require("./src/gateway");
-const invoiceDb     = require("./src/invoice_db");
-const bizDb         = require("./src/biz_db");
-const bizProfile    = require("./src/biz_profile");
-const payeeBook     = require("./src/payee_book");
+const db = require("./src/db");
+const walletLib = require("./src/wallet");
+const offrampLib = require("./src/offramp");
+const nearLib = require("./src/near");
+const paj = require("./src/paj");
+const multichain = require("./src/multichain");
+const solAddrLib = require("./src/solana_address");
+const cctpBridge = require("./src/cctp_bridge");
+const fx = require("./src/fx");
+const otp = require("./src/otp");
+const savings = require("./src/savings");
+const tokens = require("./src/tokens");
+const swapLib = require("./src/swap");
+const gateway = require("./src/gateway");
+const invoiceDb = require("./src/invoice_db");
+const bizDb = require("./src/biz_db");
+const bizProfile = require("./src/biz_profile");
+const payeeBook = require("./src/payee_book");
 const webhookServer = require("./src/webhook_server");
-const idempotency   = require("./src/idempotency");
-const convState     = require("./src/conversation_state");
-const { generateInvoicePNG }   = require("./src/invoice_generator");
-const { generateReceiptPNG }   = require("./src/receipt_generator");
+const idempotency = require("./src/idempotency");
+const convState = require("./src/conversation_state");
+const { generateInvoicePNG } = require("./src/invoice_generator");
+const { generateReceiptPNG } = require("./src/receipt_generator");
 const paymaster = require("./src/paymaster");
 const bankResolver = require("./src/bank_resolver");
 const evmDepositSweeper = require("./src/evm_deposit_sweeper");
-const settlementDaemon  = require("./src/settlement_daemon");
-const chains            = require("./src/chains");
-const flowsMultichain   = require("./src/flows_multichain");
-const flowsDeveloper     = require("./src/flows_developer");
-const flowsBills        = require("./src/flows_bills");
-const nuvion            = require("./src/nuvion");
+const settlementDaemon = require("./src/settlement_daemon");
+const chains = require("./src/chains");
+const flowsMultichain = require("./src/flows_multichain");
+const flowsDeveloper = require("./src/flows_developer");
+const flowsBills = require("./src/flows_bills");
+const nuvion = require("./src/nuvion");
 const nuvionOrchestrator = require("./src/nuvion_orchestrator");
-const nuvionPayouts     = require("./src/nuvion_payouts");
-const nuvionCards       = require("./src/nuvion_cards");
-const nuvionPoller      = require("./src/nuvion_poller");
-const nuvionHealth      = require("./src/nuvion_health");
-const flowsNuvionKyc    = require("./src/flows_nuvion_kyc");
+const nuvionPayouts = require("./src/nuvion_payouts");
+const nuvionCards = require("./src/nuvion_cards");
+const nuvionPoller = require("./src/nuvion_poller");
+const nuvionHealth = require("./src/nuvion_health");
+const flowsNuvionKyc = require("./src/flows_nuvion_kyc");
 const flowsGlobalAccounts = require("./src/flows_global_accounts");
-const flowsGlobalPayouts  = require("./src/flows_global_payouts");
-const flowsCards          = require("./src/flows_cards");
+const flowsGlobalPayouts = require("./src/flows_global_payouts");
+const flowsCards = require("./src/flows_cards");
 const { generateCryptoNetworksBannerPNG } = require("./src/chain_logo_generator");
 const autoEarn = require("./src/auto_earn");
 const cashflow = require("./src/cashflow");
 const socialTransfers = require("./src/social_transfers");
 
 // ── Agent modules ─────────────────────────────────────────────────────────────
-const { parsePaymentIntent }      = require("./agent/orchestrator");
+const { parsePaymentIntent } = require("./agent/orchestrator");
 const { executePlan, executeOfframp, calcMaxOfframpFromBalance, moveFundsBetweenChains, formatResults } = require("./agent/executor");
 const { startJob, cancelJob, reloadAll, describeSchedule } = require("./agent/scheduler");
-const { saveSchedule, removeSchedule, getUserSchedules }   = require("./agent/store");
+const { saveSchedule, removeSchedule, getUserSchedules } = require("./agent/store");
 const { parseSmartInvoiceIntent } = require("./agent/smart_invoice_agent");
 const { parseShoppingIntent, searchForProduct } = require("./agent/shopping_agent");
 const { classifyIntent, getMissingQuestion, buildConfirmationText } = require("./agent/intent_router");
@@ -332,11 +332,11 @@ function buildPlanFromClassifiedIntent(classified) {
       to,
       amount,
       label,
-      bank_name:     r.bank_name || null,
-      account_number:r.account_number || null,
-      account_name:  r.account_name || null,
-      narration:     r.narration || classified.params?.narration || null,
-      currency:      r.currency || (isOfframp && classified.params?.currency === "NGN" ? "NGN" : "USDC"),
+      bank_name: r.bank_name || null,
+      account_number: r.account_number || null,
+      account_name: r.account_name || null,
+      narration: r.narration || classified.params?.narration || null,
+      currency: r.currency || (isOfframp && classified.params?.currency === "NGN" ? "NGN" : "USDC"),
     };
   });
 
@@ -350,7 +350,7 @@ function buildPlanFromClassifiedIntent(classified) {
 // Delete a message after a delay (used for PIN and key exports)
 function scheduleDelete(ctx, messageId, ms = 60000) {
   setTimeout(() => {
-    ctx.telegram.deleteMessage(ctx.chat.id, messageId).catch(() => {});
+    ctx.telegram.deleteMessage(ctx.chat.id, messageId).catch(() => { });
   }, ms);
 }
 
@@ -364,9 +364,9 @@ async function deleteSensitiveMessage(ctx) {
 async function safeGetBalance(address) {
   try {
     const usdcMicro = await walletLib.getNativeBalanceMicro(address);
-    const usdc      = parseFloat(walletLib.formatMicro(usdcMicro));
+    const usdc = parseFloat(walletLib.formatMicro(usdcMicro));
     const eurcMicro = await tokens.getEurcBalance(address);
-    const eurc      = parseFloat(walletLib.formatMicro(eurcMicro));
+    const eurc = parseFloat(walletLib.formatMicro(eurcMicro));
     let line = `$${usdc.toFixed(2)}`;
     if (eurc > 0) line += ` · €${eurc.toFixed(2)}`;
     return { usdc, eurc, display: line };
@@ -382,7 +382,7 @@ async function downloadTelegramFile(ctx, fileId) {
     const chunks = [];
     https.get(fileLink.href, res => {
       res.on("data", chunk => chunks.push(chunk));
-      res.on("end",  ()    => resolve(Buffer.concat(chunks)));
+      res.on("end", () => resolve(Buffer.concat(chunks)));
       res.on("error", reject);
     }).on("error", reject);
   });
@@ -393,16 +393,16 @@ async function downloadTelegramFile(ctx, fileId) {
 function mainMenu(context) {
   if (context === "business") {
     return Markup.keyboard([
-      ["💼 Business Balance", "📥 Deposit",       "📤 Send Money"],
-      ["💡 Pay Bills",        "🧾 New Invoice",   "👥 Pay Team"],
-      ["🌍 Global & Cards",   "📋 My Invoices",   "📊 Cash Flow"],
-      ["🔁 Switch to Personal","⚙️ Settings & Help"],
+      ["💼 Business Balance", "📥 Deposit", "📤 Send Money"],
+      ["💡 Pay Bills", "🧾 New Invoice", "👥 Pay Team"],
+      ["🌍 Global & Cards", "📋 My Invoices", "📊 Cash Flow"],
+      ["🔁 Switch to Personal", "⚙️ Settings & Help"],
     ]).resize();
   }
   return Markup.keyboard([
-    ["💰 Balance",        "📥 Deposit",       "📤 Send Money"],
-    ["💡 Pay Bills",      "📈 Save & Earn",   "🌍 Global & Cards"],
-    ["🧾 Invoice",        "📋 History",       "🔁 Switch Account"],
+    ["💰 Balance", "📥 Deposit", "📤 Send Money"],
+    ["💡 Pay Bills", "📈 Save & Earn", "🌍 Global & Cards"],
+    ["🧾 Invoice", "📋 History", "🔁 Switch Account"],
     ["⚙️ Settings & Help"],
   ]).resize();
 }
@@ -425,9 +425,9 @@ function accountToggle(context) {
 // - default:   Neutral dark background
 const btnSuccess = (text, data) => ({ text, callback_data: data, style: "success" });
 const btnPrimary = (text, data) => ({ text, callback_data: data, style: "primary" });
-const btnDanger  = (text, data) => ({ text, callback_data: data, style: "danger" });
+const btnDanger = (text, data) => ({ text, callback_data: data, style: "danger" });
 const btnDefault = (text, data) => ({ text, callback_data: data });
-const btnUrl     = (text, url, style = null) => {
+const btnUrl = (text, url, style = null) => {
   const b = { text, url };
   if (style) b.style = style;
   return b;
@@ -461,7 +461,7 @@ db.awardPoints = function (telegramId, points, action, details = null, options =
     ...options,
     notify: (event) => {
       if (typeof options.notify === "function") {
-        try { options.notify(event); } catch {}
+        try { options.notify(event); } catch { }
       }
       if (event?.action === "referral_bonus") {
         try {
@@ -484,8 +484,8 @@ db.awardPoints = function (telegramId, points, action, details = null, options =
 
 const afterPaymentButtons = Markup.inlineKeyboard([
   [btnPrimary("💰 Check Balance", "action_balance"),
-   btnDefault("📋 History",       "action_history")],
-  [btnPrimary("🏠 Main Menu",    "main_menu")],
+  btnDefault("📋 History", "action_history")],
+  [btnPrimary("🏠 Main Menu", "main_menu")],
 ]);
 
 // ─── /start — onboarding ──────────────────────────────────────────────────────
@@ -547,7 +547,7 @@ bot.start(async (ctx) => {
               `@${ctx.from.username || ctx.from.first_name || "Your friend"} just claimed your <b>$${Number(claimRes.escrow.amount_usdc).toFixed(2)}</b> gift!`,
               { parse_mode: "HTML" }
             );
-          } catch (_) {}
+          } catch (_) { }
         }
       } catch (err) {
         await ctx.reply(`⚠️ ${err.message}`);
@@ -555,8 +555,8 @@ bot.start(async (ctx) => {
     }
 
     const context = existing.active_context || "personal";
-    const addr    = getActiveWallet(existing);
-    const bal     = await safeGetBalance(addr);
+    const addr = getActiveWallet(existing);
+    const bal = await safeGetBalance(addr);
     const openPos = db.getOpenYieldPosition(existing.telegram_id, context) || db.getOpenYieldPosition(existing.telegram_id);
     let balDisplay = bal.display;
     if (openPos && openPos.amount_usdc > 0) {
@@ -584,11 +584,11 @@ bot.start(async (ctx) => {
         tierStatusLine = `🏷️ <b>Current Tier:</b> Tier 0 (Standard — NGN Accounts Only)\n`;
         tierDetailBlock = isBizContext
           ? `\n🔒 <b>Unlock Business Global Accounts (Requires Tier 1):</b>\n` +
-            `Your Business account is currently on <b>Tier 0</b> (Nigerian Naira / NGN accounts, local transfers, invoicing &amp; savings only).\n` +
-            `Getting named <b>Company Global Bank Accounts (USD, GBP, EUR, CAD, AED &amp; more)</b>, <b>Team USD Cards</b>, and international payroll requires <b>Tier 1 Business Verification (KYB)</b> — tap below to verify.\n`
+          `Your Business account is currently on <b>Tier 0</b> (Nigerian Naira / NGN accounts, local transfers, invoicing &amp; savings only).\n` +
+          `Getting named <b>Company Global Bank Accounts (USD, GBP, EUR, CAD, AED &amp; more)</b>, <b>Team USD Cards</b>, and international payroll requires <b>Tier 1 Business Verification (KYB)</b> — tap below to verify.\n`
           : `\n🔒 <b>Unlock Global Bank Accounts (Requires Tier 1):</b>\n` +
-            `You are currently on <b>Tier 0</b> (Nigerian Naira / NGN accounts, local bank transfers, dollar savings &amp; bills only).\n` +
-            `Getting named <b>Global Bank Accounts (USD, GBP, EUR, CAD, AED &amp; more)</b>, <b>Virtual USD Cards</b>, and international transfers requires <b>Tier 1 ID Verification (KYC)</b> — tap below to verify.\n`;
+          `You are currently on <b>Tier 0</b> (Nigerian Naira / NGN accounts, local bank transfers, dollar savings &amp; bills only).\n` +
+          `Getting named <b>Global Bank Accounts (USD, GBP, EUR, CAD, AED &amp; more)</b>, <b>Virtual USD Cards</b>, and international transfers requires <b>Tier 1 ID Verification (KYC)</b> — tap below to verify.\n`;
       }
     }
 
@@ -599,8 +599,7 @@ bot.start(async (ctx) => {
       `${isBizContext ? "💼 <b>Account:</b> Business" : "👤 <b>Account:</b> Personal"}\n` +
       tierStatusLine +
       tierDetailBlock +
-      `\n🌐 <b>Website:</b> <a href="https://www.proximfi.xyz/">www.proximfi.xyz</a>\n\n` +
-      `What would you like to do?`,
+      `\nWhat would you like to do?`,
       { parse_mode: "HTML", disable_web_page_preview: true, ...mainMenu(context) }
     );
     const toggleMarkup = accountToggle(context);
@@ -623,7 +622,6 @@ bot.start(async (ctx) => {
         ]);
       }
     }
-    toggleRows.push([Markup.button.url("🌐 Official Website (proximfi.xyz)", "https://www.proximfi.xyz/")]);
     return ctx.reply(
       `Active account: ${context === "business" ? "Business 💼" : "Personal 👤"} (${nuvionStatus === "approved" ? "Tier 1 Global ✅" : "Tier 0 — NGN Only"})\nSwitch account or upgrade to Tier 1 below:`,
       Markup.inlineKeyboard(toggleRows)
@@ -634,7 +632,7 @@ bot.start(async (ctx) => {
   let pendingGiftAmount = null;
   let pendingGiftSender = null;
   if (claimTokenFromStart) {
-    try { db.expireStaleSocialEscrows(); } catch (_) {}
+    try { db.expireStaleSocialEscrows(); } catch (_) { }
     const escrow = db.getSocialEscrowByToken(claimTokenFromStart);
     if (escrow && escrow.status === "pending") {
       try {
@@ -658,15 +656,13 @@ bot.start(async (ctx) => {
       `──────────────────────────\n` +
       `Your money is waiting for you on <b>Proxim</b>.\n\n` +
       `Set up your free wallet in <b>10 seconds</b> (just pick a 4-digit PIN) and your <b>$${pendingGiftAmount.toFixed(2)}</b> will land in your balance immediately.\n\n` +
-      `💵 Spend, save in dollars, or cash out to your bank anytime.\n` +
-      `🌐 <a href="https://www.proximfi.xyz/">www.proximfi.xyz</a>`,
+      `💵 Spend, save in dollars, or cash out to your bank anytime.`,
       {
         parse_mode: "HTML",
         disable_web_page_preview: true,
         ...Markup.inlineKeyboard([
           [btnSuccess(`🎉 Claim $${pendingGiftAmount.toFixed(2)} Now`, "onboard_personal")],
           [Markup.button.callback("💼 Claim to a Business Account", "onboard_business")],
-          [Markup.button.url("🌐 Official Website (proximfi.xyz)", "https://www.proximfi.xyz/")],
         ]),
       }
     );
@@ -698,7 +694,6 @@ bot.start(async (ctx) => {
       ...Markup.inlineKeyboard([
         [Markup.button.callback("👤 Personal Account", "onboard_personal")],
         [Markup.button.callback("💼 Business Account", "onboard_business")],
-        [Markup.button.url("🌐 Official Website (proximfi.xyz)", "https://www.proximfi.xyz/")],
       ])
     }
   );
@@ -714,9 +709,9 @@ bot.action("onboard_personal", async (ctx) => {
   const wallet = walletLib.generateUserWallet();
   convState.setState(ctx.from.id, "onboarding_pin", {
     accountType: "personal",
-    address:     wallet.address,
-    privateKey:  wallet.privateKey,
-    username:    ctx.from.username,
+    address: wallet.address,
+    privateKey: wallet.privateKey,
+    username: ctx.from.username,
     referrerId,
     pendingClaimToken,
   }, "personal");
@@ -903,7 +898,7 @@ bot.action("switch_business", async (ctx) => {
   }
 
   db.setActiveContext(ctx.from.id, "business");
-  const bal     = await safeGetBalance(user.business_deposit_address);
+  const bal = await safeGetBalance(user.business_deposit_address);
   const pending = bizDb.getPendingInvoiceCount(ctx.from.id);
   const pendingLine = pending > 0
     ? `\n📬 ${pending} unpaid invoice${pending > 1 ? "s" : ""} waiting.`
@@ -931,7 +926,7 @@ bot.action("switch_business", async (ctx) => {
   );
 });
 
-bot.action("noop",      (ctx) => ctx.answerCbQuery());
+bot.action("noop", (ctx) => ctx.answerCbQuery());
 bot.action("action_switch_account", async (ctx) => {
   ctx.answerCbQuery();
   const user = requireUser(ctx);
@@ -985,16 +980,16 @@ async function showBalance(ctx) {
   const context = user.active_context || "personal";
   const address = getActiveWallet(user);
   const solAddress = getOrDeriveSolanaAddress(user);
-  const label   = context === "business" ? "💼 Business" : "👤 Personal";
+  const label = context === "business" ? "💼 Business" : "👤 Personal";
 
   try {
     // Unified balance read path: Arc + Base + Circle Gateway + Solana in one clean total
-    const unified   = await chains.getUnifiedBalance(user, context);
-    const eurc      = unified.arc.eurc;
-    const rate      = await fx.getUsdToNgnRate();
+    const unified = await chains.getUnifiedBalance(user, context);
+    const eurc = unified.arc.eurc;
+    const rate = await fx.getUsdToNgnRate();
 
     const totalUsdc = unified.total;
-    const eurcLine  = eurc > 0 ? `\n• <b>Euro Balance:</b> €${eurc.toFixed(2)}` : "";
+    const eurcLine = eurc > 0 ? `\n• <b>Euro Balance:</b> €${eurc.toFixed(2)}` : "";
 
     // Savings and accrued interest
     let position = db.getOpenYieldPosition(user.telegram_id, context);
@@ -1002,7 +997,7 @@ async function showBalance(ctx) {
       position = db.recoverUncreditedYieldPosition(user.telegram_id, context);
     }
     if (!position) {
-      try { position = await savings.syncOnChainVaultPositions(user, context); } catch {}
+      try { position = await savings.syncOnChainVaultPositions(user, context); } catch { }
     }
     const otherContext = context === "business" ? "personal" : "business";
     let otherPosition = !position ? db.getOpenYieldPosition(user.telegram_id, otherContext) : null;
@@ -1010,7 +1005,7 @@ async function showBalance(ctx) {
       otherPosition = db.recoverUncreditedYieldPosition(user.telegram_id, otherContext);
     }
     if (!position && !otherPosition) {
-      try { otherPosition = await savings.syncOnChainVaultPositions(user, otherContext); } catch {}
+      try { otherPosition = await savings.syncOnChainVaultPositions(user, otherContext); } catch { }
     }
 
     let savingsSection = "";
@@ -1069,20 +1064,20 @@ async function showBalance(ctx) {
     if (hasSavings) {
       buttonRows.push([
         btnPrimary("💵 Withdraw Savings", "yield_withdraw_start"),
-        btnDefault("📊 Savings Details",  "action_my_yield"),
+        btnDefault("📊 Savings Details", "action_my_yield"),
       ]);
     }
     buttonRows.push(
-      [btnSuccess("📥 Deposit",           "action_receive"),
-       btnPrimary("📤 Send Money",        "action_send_menu")],
-      [btnSuccess("💡 Pay Bills",         "action_bills_menu"),
-       btnSuccess("📈 Save & Earn",       "action_yields")],
+      [btnSuccess("📥 Deposit", "action_receive"),
+      btnPrimary("📤 Send Money", "action_send_menu")],
+      [btnSuccess("💡 Pay Bills", "action_bills_menu"),
+      btnSuccess("📈 Save & Earn", "action_yields")],
     );
     if (nuvionAllowed) {
       if (nuvionStatus === "approved") {
         buttonRows.push(
           [btnPrimary("🌍 Global Accounts", "nuvion_accounts_menu_per"),
-           btnPrimary("💳 USD Cards",       "nuvion_cards_menu_per")],
+          btnPrimary("💳 USD Cards", "nuvion_cards_menu_per")],
           [btnSuccess("✈️ Send Abroad (27 Currencies)", "nuvion_po_menu_per")]
         );
       } else if (nuvionStatus === "pending" || nuvionStatus === "incomplete") {
@@ -1092,8 +1087,8 @@ async function showBalance(ctx) {
       }
     }
     buttonRows.push(
-      [btnDefault("📜 Activity History",  "action_history"),
-       btnPrimary("🔄 Refresh Balance",   "action_sweep_deposits")]
+      [btnDefault("📜 Activity History", "action_history"),
+      btnPrimary("🔄 Refresh Balance", "action_sweep_deposits")]
     );
 
     await ctx.reply(
@@ -1120,14 +1115,14 @@ async function showBizBalance(ctx) {
   }
   try {
     // Unified balance read path: Arc + Base + Circle Gateway + Solana in one clean total
-    const unified   = await chains.getUnifiedBalance(user, "business");
-    const eurc      = unified.arc.eurc;
-    const rate      = await fx.getUsdToNgnRate();
+    const unified = await chains.getUnifiedBalance(user, "business");
+    const eurc = unified.arc.eurc;
+    const rate = await fx.getUsdToNgnRate();
 
     const totalUsdc = unified.total;
-    const eurcLine  = eurc > 0 ? `\n• <b>Euro Balance:</b> €${eurc.toFixed(2)}` : "";
-    const pending   = bizDb.getPendingInvoiceCount(ctx.from.id);
-    const expenses  = bizDb.getMonthExpenses(ctx.from.id);
+    const eurcLine = eurc > 0 ? `\n• <b>Euro Balance:</b> €${eurc.toFixed(2)}` : "";
+    const pending = bizDb.getPendingInvoiceCount(ctx.from.id);
+    const expenses = bizDb.getMonthExpenses(ctx.from.id);
 
     // Business savings and accrued interest
     const position = db.getOpenYieldPosition(user.telegram_id, "business");
@@ -1180,22 +1175,22 @@ async function showBizBalance(ctx) {
     if (hasSavings) {
       buttonRows.push([
         btnPrimary("💵 Withdraw Savings", "yield_withdraw_start"),
-        btnDefault("📊 Savings Details",  "action_my_yield"),
+        btnDefault("📊 Savings Details", "action_my_yield"),
       ]);
     }
     buttonRows.push(
-      [btnSuccess("📥 Deposit",       "action_receive"),
-       btnPrimary("📤 Send Money",    "action_send_menu")],
-      [btnSuccess("💡 Pay Bills",     "action_bills_menu"),
-       btnSuccess("🧾 New Invoice",   "action_new_biz_invoice")],
-      [btnPrimary("👥 Pay Team",      "action_pay_team"),
-       btnPrimary("📋 Invoices",      "action_list_biz_invoices")],
+      [btnSuccess("📥 Deposit", "action_receive"),
+      btnPrimary("📤 Send Money", "action_send_menu")],
+      [btnSuccess("💡 Pay Bills", "action_bills_menu"),
+      btnSuccess("🧾 New Invoice", "action_new_biz_invoice")],
+      [btnPrimary("👥 Pay Team", "action_pay_team"),
+      btnPrimary("📋 Invoices", "action_list_biz_invoices")],
     );
     if (bizNuvionAllowed) {
       if (bizNuvionStatus === "approved") {
         buttonRows.push(
           [btnPrimary("🌍 Global Accounts", "nuvion_accounts_menu_biz"),
-           btnPrimary("💳 Team USD Cards",  "nuvion_cards_menu_biz")],
+          btnPrimary("💳 Team USD Cards", "nuvion_cards_menu_biz")],
           [btnSuccess("✈️ Send Abroad (27 Currencies)", "nuvion_po_menu_biz")]
         );
       } else if (bizNuvionStatus === "pending" || bizNuvionStatus === "incomplete") {
@@ -1205,9 +1200,9 @@ async function showBizBalance(ctx) {
       }
     }
     buttonRows.push(
-      [btnPrimary("📊 Cash Flow",     "action_cash_flow")],
-      [btnPrimary("💸 Log Expense",   "action_log_expense"),
-       btnPrimary("🔄 Refresh Balance", "action_sweep_deposits")],
+      [btnPrimary("📊 Cash Flow", "action_cash_flow")],
+      [btnPrimary("💸 Log Expense", "action_log_expense"),
+      btnPrimary("🔄 Refresh Balance", "action_sweep_deposits")],
       ...accountToggle("business")
     );
 
@@ -1229,11 +1224,11 @@ async function showBizBalance(ctx) {
 // ─── Receive / Add Money ──────────────────────────────────────────────────────
 
 async function showReceive(ctx) {
-  const user    = requireUser(ctx);
+  const user = requireUser(ctx);
   if (!user) return;
   const context = user.active_context || "personal";
   const address = getActiveWallet(user);
-  const label   = context === "business" ? "Business" : "Personal";
+  const label = context === "business" ? "Business" : "Personal";
 
   const pKey = context === "business" ? "biz" : "per";
   const portalAction = context === "business" ? "biz_nuvion_portal" : "action_nuvion_portal";
@@ -1245,12 +1240,12 @@ async function showReceive(ctx) {
     ? []
     : isNuvionApproved
       ? [
-          [btnSuccess("🌍 Global Bank Accounts (USD/GBP/EUR/NGN)", `nuvion_accounts_menu_${pKey}`)],
-          [btnPrimary("🔗 Request Payment Link (UK/EU/CA/MoMo)", `nuvion_paylink_menu_${pKey}`)],
-        ]
+        [btnSuccess("🌍 Global Bank Accounts (USD/GBP/EUR/NGN)", `nuvion_accounts_menu_${pKey}`)],
+        [btnPrimary("🔗 Request Payment Link (UK/EU/CA/MoMo)", `nuvion_paylink_menu_${pKey}`)],
+      ]
       : [
-          [btnSuccess("🪪 Verify ID — Unlock USD / GBP / EUR Bank Accounts", portalAction)],
-        ];
+        [btnSuccess("🪪 Verify ID — Unlock USD / GBP / EUR Bank Accounts", portalAction)],
+      ];
 
   const depositRows = [
     [btnSuccess("🇳🇬 Bank Transfer (Naira)", "action_paj_onramp")],
@@ -1262,7 +1257,7 @@ async function showReceive(ctx) {
     ],
     [
       btnPrimary("💰 View Balance", "action_balance"),
-      btnDefault("🏠 Main Menu",    "main_menu"),
+      btnDefault("🏠 Main Menu", "main_menu"),
     ],
   ];
 
@@ -1296,9 +1291,9 @@ async function showHistory(ctx) {
   try {
     await settlementDaemon.pollPendingOfframpOrders(bot);
     await settlementDaemon.pollPendingOnrampOrders(bot);
-  } catch (_) {}
+  } catch (_) { }
 
-  const txs     = db.getTransactions(ctx.from.id, 10);
+  const txs = db.getTransactions(ctx.from.id, 10);
 
   if (!txs.length) {
     return ctx.reply(
@@ -1308,17 +1303,17 @@ async function showHistory(ctx) {
   }
 
   const typeLabel = {
-    send_usdc:                  "Sent dollars",
-    send_eurc:                  "Sent euros",
-    offramp:                    "Cashed out",
-    offramp_request:            "Cashed out",
-    autopay:                    "Auto-payment",
-    yield_deposit:              "Saved to interest pool",
-    yield_withdraw:             "Withdrew from interest pool",
+    send_usdc: "Sent dollars",
+    send_eurc: "Sent euros",
+    offramp: "Cashed out",
+    offramp_request: "Cashed out",
+    autopay: "Auto-payment",
+    yield_deposit: "Saved to interest pool",
+    yield_withdraw: "Withdrew from interest pool",
   };
 
   const lines = txs.map(t => {
-    const label  = typeLabel[t.type] || t.type;
+    const label = typeLabel[t.type] || t.type;
     const amount = walletLib.formatMicro(t.amount_micro);
     const status = t.status === "confirmed" ? "✅" : t.status === "failed" ? "❌" : "⏳";
     return `${status} ${label}  $${parseFloat(amount).toFixed(2)}\n   ${t.created_at}`;
@@ -1338,14 +1333,14 @@ async function showHistory(ctx) {
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
 async function showSettings(ctx) {
-  const user    = requireUser(ctx);
+  const user = requireUser(ctx);
   if (!user) return;
   const context = user.active_context || "personal";
-  const hasBiz  = !!user.business_deposit_address;
-  const phone   = user.phone_number
+  const hasBiz = !!user.business_deposit_address;
+  const phone = user.phone_number
     ? `${user.phone_number} ${user.phone_verified ? "✅" : "⏳"}`
     : "not set";
-  const points  = db.getPointsBalance(ctx.from.id);
+  const points = db.getPointsBalance(ctx.from.id);
   const paymasterStatus = paymaster.isPaymasterActive() ? "Arc Paymaster (Sponsored ⛽)" : "Direct (Self-paid)";
 
   const nuvionAllowed = nuvion.isUserAllowedNuvion(ctx.from.id);
@@ -1372,36 +1367,34 @@ async function showSettings(ctx) {
     `• <b>Rewards Balance:</b> ${points} points (${formatPointValue(points)})\n` +
     `• <b>Official Website:</b> <a href="https://www.proximfi.xyz/">www.proximfi.xyz</a>\n\n` +
     `🔒 <i>Your account is protected by bank-grade encryption and your private 4-digit PIN.</i>`,
-
     {
       parse_mode: "HTML",
       disable_web_page_preview: true,
       ...Markup.inlineKeyboard([
         ...(nuvionAllowed
           ? [[
-              nuvionStatus === "approved"
-                ? btnPrimary("🌍 Global Banking & USD Cards (Tier 1 ✅)", portalAction)
-                : btnSuccess(
-                    context === "business"
-                      ? "💼 Verify Business (KYB) — Upgrade to Tier 1 Global"
-                      : "🪪 Verify ID — Upgrade to Tier 1 Global",
-                    portalAction
-                  ),
-            ]]
+            nuvionStatus === "approved"
+              ? btnPrimary("🌍 Global Banking & USD Cards (Tier 1 ✅)", portalAction)
+              : btnSuccess(
+                context === "business"
+                  ? "💼 Verify Business (KYB) — Upgrade to Tier 1 Global"
+                  : "🪪 Verify ID — Upgrade to Tier 1 Global",
+                portalAction
+              ),
+          ]]
           : []),
-        [btnPrimary("🔁 Switch Account",                "action_switch_account"),
-         btnSuccess("🏅 Rewards",                       "action_rewards")],
+        [btnPrimary("🔁 Switch Account", "action_switch_account"),
+        btnSuccess("🏅 Rewards", "action_rewards")],
         [btnPrimary("🔑 Save Personal Security Phrase", "export_personal")],
         [btnPrimary("🔑 Save Business Security Phrase", "export_business")],
-        [btnPrimary("🔒 Change PIN",                    "changepin"),
-         btnDanger("🔄 Forgot / Reset PIN",             "resetpin_start")],
-        [btnDanger("🛡️ Lock Account",                  "lock_account")],
-        [btnPrimary("👛 Link External Wallet",          "setwallet_prompt"),
-         btnPrimary("📱 Verify Phone",                  "verifyphone_prompt")],
-        [btnSuccess("👥 Invite Friends",                 "action_referral"),
-         btnPrimary("💼 Business Profile",              "biz_profile_menu")],
-        [Markup.button.url("🌐 Official Website (proximfi.xyz)", "https://www.proximfi.xyz/")],
-        [btnDefault("🏠 Main Menu",                     "main_menu")],
+        [btnPrimary("🔒 Change PIN", "changepin"),
+        btnDanger("🔄 Forgot / Reset PIN", "resetpin_start")],
+        [btnDanger("🛡️ Lock Account", "lock_account")],
+        [btnPrimary("👛 Link External Wallet", "setwallet_prompt"),
+        btnPrimary("📱 Verify Phone", "verifyphone_prompt")],
+        [btnSuccess("👥 Invite Friends", "action_referral"),
+        btnPrimary("💼 Business Profile", "biz_profile_menu")],
+        [btnDefault("🏠 Main Menu", "main_menu")],
       ])
     }
   );
@@ -1480,10 +1473,10 @@ async function showRewardsMenu(ctx) {
 `,
     Markup.inlineKeyboard([
       [btnSuccess("📲 Redeem Airtime", "action_redeem_airtime"),
-       btnSuccess("🏦 Pay Bills",       "action_redeem_bills")],
-      [btnSuccess("👥 Invite Friends",  "action_referral"),
-       btnDefault("📜 Points History",  "action_rewards_history")],
-      [btnDefault("🏠 Main Menu",       "main_menu")],
+      btnSuccess("🏦 Pay Bills", "action_redeem_bills")],
+      [btnSuccess("👥 Invite Friends", "action_referral"),
+      btnDefault("📜 Points History", "action_rewards_history")],
+      [btnDefault("🏠 Main Menu", "main_menu")],
     ])
   );
 }
@@ -1561,7 +1554,7 @@ bot.hears(/^(?:👥\s*)?(?:referral(?:\s*link)?|invite(?:\s*(?:friends|link))?|s
 
 bot.action("biz_profile_menu", async (ctx) => {
   ctx.answerCbQuery();
-  const user    = requireUser(ctx);
+  const user = requireUser(ctx);
   if (!user) return;
   const profile = bizProfile.getBizProfile(ctx.from.id);
 
@@ -1570,7 +1563,7 @@ bot.action("biz_profile_menu", async (ctx) => {
       `💼 No business profile yet.\n\nSet one up to add your branding to invoices.`,
       Markup.inlineKeyboard([
         [Markup.button.callback("Set Up Profile", "onboard_business")],
-        [Markup.button.callback("« Back",         "action_settings")],
+        [Markup.button.callback("« Back", "action_settings")],
       ])
     );
   }
@@ -1584,24 +1577,24 @@ bot.action("biz_profile_menu", async (ctx) => {
     `Default payment terms: ${profile.default_due_days} days\n` +
     `Logo: ${profile.logo_path ? "uploaded ✅" : "not uploaded"}`,
     Markup.inlineKeyboard([
-      [Markup.button.callback("✏️ Update Name",         "biz_edit_name")],
-      [Markup.button.callback("✏️ Update Email",        "biz_edit_email")],
-      [Markup.button.callback("✏️ Update Phone",        "biz_edit_phone")],
-      [Markup.button.callback("✏️ Update Address",      "biz_edit_address")],
-      [Markup.button.callback("🖼️ Upload Logo",         "biz_edit_logo")],
-      [Markup.button.callback("✏️ Payment Terms",       "biz_edit_terms")],
-      [Markup.button.callback("« Back to Settings",    "action_settings")],
+      [Markup.button.callback("✏️ Update Name", "biz_edit_name")],
+      [Markup.button.callback("✏️ Update Email", "biz_edit_email")],
+      [Markup.button.callback("✏️ Update Phone", "biz_edit_phone")],
+      [Markup.button.callback("✏️ Update Address", "biz_edit_address")],
+      [Markup.button.callback("🖼️ Upload Logo", "biz_edit_logo")],
+      [Markup.button.callback("✏️ Payment Terms", "biz_edit_terms")],
+      [Markup.button.callback("« Back to Settings", "action_settings")],
     ])
   );
 });
 
 // Individual field edits
 const bizEditFields = {
-  biz_edit_name:    { field: "business_name",    prompt: "Enter your new business name:" },
-  biz_edit_email:   { field: "business_email",   prompt: "Enter your business email address:" },
-  biz_edit_phone:   { field: "phone",            prompt: "Enter your business phone number:" },
-  biz_edit_address: { field: "address",          prompt: "Enter your business address:" },
-  biz_edit_terms:   { field: "default_due_days", prompt: "How many days until invoices are due? (e.g. 14, 30)" },
+  biz_edit_name: { field: "business_name", prompt: "Enter your new business name:" },
+  biz_edit_email: { field: "business_email", prompt: "Enter your business email address:" },
+  biz_edit_phone: { field: "phone", prompt: "Enter your business phone number:" },
+  biz_edit_address: { field: "address", prompt: "Enter your business address:" },
+  biz_edit_terms: { field: "default_due_days", prompt: "How many days until invoices are due? (e.g. 14, 30)" },
 };
 
 for (const [action, { field, prompt }] of Object.entries(bizEditFields)) {
@@ -1685,18 +1678,17 @@ function showFeatures(ctx) {
     `✅ Instant Bill Payments (Airtime, Data, Electricity, Cable TV)\n` +
     `✅ AI Invoicing, Expense Ledger & Multi-Currency CSV Payroll\n` +
     `✅ Automated Recurring Transfers (Auto-Pay) & Saved Contacts\n` +
-    `✅ Photo/PDF Bill & Invoice Scanner powered by Proxim AI\n\n` +
-    `🌐 Official Website: https://www.proximfi.xyz/`,
-    { disable_web_page_preview: true, ...mainMenu(context) }
+    `✅ Photo/PDF Bill & Invoice Scanner powered by Proxim AI`,
+    mainMenu(context)
   );
 }
 
 // ─── Contacts (Payee Book) ────────────────────────────────────────────────────
 
 async function showContacts(ctx) {
-  const user    = requireUser(ctx);
+  const user = requireUser(ctx);
   if (!user) return;
-  const payees  = payeeBook.getAllPayees(ctx.from.id);
+  const payees = payeeBook.getAllPayees(ctx.from.id);
 
   if (!payees.length) {
     return ctx.reply(
@@ -1712,10 +1704,11 @@ async function showContacts(ctx) {
   const list = payeeBook.formatPayeeList(payees);
   await ctx.reply(
     `👥 Your Contacts\n──────────────────────────\n${list}`,
-    { parse_mode: "Markdown",
+    {
+      parse_mode: "Markdown",
       ...Markup.inlineKeyboard([
         [Markup.button.callback("➕ Add Contact", "add_contact")],
-        [Markup.button.callback("🏠 Main Menu",   "main_menu")],
+        [Markup.button.callback("🏠 Main Menu", "main_menu")],
       ])
     }
   );
@@ -1781,16 +1774,16 @@ async function showYields(ctx) {
     if (openPos) {
       actionButtons.push([
         btnPrimary("💵 Withdraw Savings", "yield_withdraw_start"),
-        btnDefault("📊 Savings Details",  "action_my_yield"),
+        btnDefault("📊 Savings Details", "action_my_yield"),
       ]);
       actionButtons.push([
-        btnSuccess("➕ Add More Funds",   "yield_deposit_start"),
+        btnSuccess("➕ Add More Funds", "yield_deposit_start"),
         btnPrimary(autoEarnEnabled ? "⏸️ Turn Off Auto-Earn" : "▶️ Turn On Auto-Earn", "toggle_auto_earn"),
       ]);
     } else {
       actionButtons.push([
-        btnSuccess("➕ Start Saving",     "yield_deposit_start"),
-        btnDefault("📊 My Savings",       "action_my_yield"),
+        btnSuccess("➕ Start Saving", "yield_deposit_start"),
+        btnDefault("📊 My Savings", "action_my_yield"),
       ]);
       actionButtons.push([
         btnPrimary("💵 Withdraw Savings", "yield_withdraw_start"),
@@ -1831,9 +1824,9 @@ bot.action("toggle_auto_earn", async (ctx) => {
 });
 
 async function showMyYield(ctx) {
-  const user     = requireUser(ctx);
+  const user = requireUser(ctx);
   if (!user) return;
-  const context  = getContext(ctx.from.id);
+  const context = getContext(ctx.from.id);
   let position = db.getOpenYieldPosition(ctx.from.id, context);
   let effectiveContext = context;
   if (!position) {
@@ -1856,7 +1849,7 @@ async function showMyYield(ctx) {
       const syncPromise = savings.syncOnChainVaultPositions(user, context);
       const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(null), 2500));
       position = await Promise.race([syncPromise, timeoutPromise]);
-    } catch {}
+    } catch { }
   }
   if (!position) {
     const otherContext = context === "business" ? "personal" : "business";
@@ -1868,14 +1861,14 @@ async function showMyYield(ctx) {
         position = otherPos;
         effectiveContext = otherContext;
       }
-    } catch {}
+    } catch { }
   }
   if (!position) {
     return ctx.reply(
       `📊 No active ${context === "business" ? "Business" : "Personal"} savings yet.\n\nStart earning interest on your dollars.`,
       Markup.inlineKeyboard([
         [btnSuccess("➕ Start Saving", "yield_deposit_start")],
-        [btnDefault("🏠 Main Menu",    "main_menu")],
+        [btnDefault("🏠 Main Menu", "main_menu")],
       ])
     );
   }
@@ -1883,8 +1876,8 @@ async function showMyYield(ctx) {
     savings.formatPosition(position),
     Markup.inlineKeyboard([
       [btnPrimary("💵 Withdraw Savings Immediately", "yield_withdraw_start")],
-      [btnSuccess("📈 View Rates",                   "action_yields")],
-      [btnDefault("🏠 Main Menu",                    "main_menu")],
+      [btnSuccess("📈 View Rates", "action_yields")],
+      [btnDefault("🏠 Main Menu", "main_menu")],
     ])
   );
 }
@@ -1942,8 +1935,8 @@ const EVM_CHAINS_INFO = {
 };
 
 bot.action("action_gateway", async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
-  const user    = requireUser(ctx);
+  ctx.answerCbQuery().catch(() => { });
+  const user = requireUser(ctx);
   if (!user) return;
   const context = user.active_context || "personal";
   const arcAddress = getActiveWallet(user);
@@ -1991,7 +1984,7 @@ bot.action("action_gateway", async (ctx) => {
     ],
     [
       btnDefault("« Back to Deposit", "action_receive"),
-      btnDefault("Main Menu",         "main_menu"),
+      btnDefault("Main Menu", "main_menu"),
     ],
   ]);
 
@@ -2000,13 +1993,13 @@ bot.action("action_gateway", async (ctx) => {
     if (bannerPath && typeof ctx.replyWithPhoto === "function") {
       return await ctx.replyWithPhoto({ source: bannerPath }, { caption, parse_mode: "HTML", ...kb });
     }
-  } catch (_) {}
+  } catch (_) { }
 
   await ctx.reply(caption, { parse_mode: "HTML", ...kb });
 });
 
 bot.action(/^action_chain_(base|ethereum|polygon|arbitrum|optimism|avalanche|bsc)$/, async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
+  ctx.answerCbQuery().catch(() => { });
   const user = requireUser(ctx);
   if (!user) return;
   const chainKey = ctx.match[1];
@@ -2034,7 +2027,7 @@ bot.action(/^action_chain_(base|ethereum|polygon|arbitrum|optimism|avalanche|bsc
 // with support for all 35+ native NEAR tokens, custom NEP-141 tokens, and automatic solver bridging.
 
 bot.action("action_starknet_deposit", async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
+  ctx.answerCbQuery().catch(() => { });
   const user = requireUser(ctx);
   if (!user) return;
 
@@ -2048,15 +2041,15 @@ bot.action("action_starknet_deposit", async (ctx) => {
       ...Markup.inlineKeyboard([
         [
           btnPrimary("STRK", "starknet_dep_token_STRK"),
-          btnPrimary("ETH",  "starknet_dep_token_ETH"),
+          btnPrimary("ETH", "starknet_dep_token_ETH"),
         ],
         [
-          btnPrimary("ZEC",  "starknet_dep_token_ZEC"),
-          btnPrimary("XRP",  "starknet_dep_token_XRP"),
+          btnPrimary("ZEC", "starknet_dep_token_ZEC"),
+          btnPrimary("XRP", "starknet_dep_token_XRP"),
         ],
         [
           btnDefault("« Back to Networks", "action_gateway"),
-          btnDefault("🏠 Main Menu",        "main_menu"),
+          btnDefault("🏠 Main Menu", "main_menu"),
         ],
       ]),
     }
@@ -2064,7 +2057,7 @@ bot.action("action_starknet_deposit", async (ctx) => {
 });
 
 bot.action(/^starknet_dep_token_(.+)$/, async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
+  ctx.answerCbQuery().catch(() => { });
   const tokenSym = ctx.match[1];
   const user = requireUser(ctx);
   if (!user) return;
@@ -2099,7 +2092,7 @@ bot.action(/^starknet_dep_token_(.+)$/, async (ctx) => {
 });
 
 bot.action("action_solana_deposit", async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
+  ctx.answerCbQuery().catch(() => { });
   const user = requireUser(ctx);
   if (!user) return;
   const solAddress = getOrDeriveSolanaAddress(user);
@@ -2121,7 +2114,7 @@ bot.action("action_solana_deposit", async (ctx) => {
         ],
         [
           btnDefault("« Back to Networks", "action_gateway"),
-          btnDefault("Main Menu",          "main_menu"),
+          btnDefault("Main Menu", "main_menu"),
         ],
       ]),
     }
@@ -2129,7 +2122,7 @@ bot.action("action_solana_deposit", async (ctx) => {
 });
 
 bot.action(/^solana_dep_token_(.+)$/, async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
+  ctx.answerCbQuery().catch(() => { });
   const tokenSym = ctx.match[1];
   const user = requireUser(ctx);
   if (!user) return;
@@ -2164,7 +2157,7 @@ bot.action(/^solana_dep_token_(.+)$/, async (ctx) => {
 });
 
 bot.action("action_robinhood_deposit", async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
+  ctx.answerCbQuery().catch(() => { });
   const user = requireUser(ctx);
   if (!user) return;
 
@@ -2178,7 +2171,7 @@ bot.action("action_robinhood_deposit", async (ctx) => {
       ...Markup.inlineKeyboard([
         [
           btnPrimary("💵 USDG", "hood_dep_token_USDG"),
-          btnPrimary("🔷 ETH",  "hood_dep_token_ETH"),
+          btnPrimary("🔷 ETH", "hood_dep_token_ETH"),
         ],
         [
           btnPrimary("🟢 USDe", "hood_dep_token_USDE"),
@@ -2186,7 +2179,7 @@ bot.action("action_robinhood_deposit", async (ctx) => {
         ],
         [
           btnDefault("« Back to Networks", "action_gateway"),
-          btnDefault("🏠 Main Menu",        "main_menu"),
+          btnDefault("🏠 Main Menu", "main_menu"),
         ],
       ]),
     }
@@ -2194,7 +2187,7 @@ bot.action("action_robinhood_deposit", async (ctx) => {
 });
 
 bot.action(/^hood_dep_token_(.+)$/, async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
+  ctx.answerCbQuery().catch(() => { });
   const tokenSym = ctx.match[1];
   const user = requireUser(ctx);
   if (!user) return;
@@ -2230,7 +2223,7 @@ bot.action(/^hood_dep_token_(.+)$/, async (ctx) => {
 
 async function handleSweepDeposits(ctx) {
   if (ctx.callbackQuery) {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
   }
   const user = requireUser(ctx);
   if (!user) return;
@@ -2268,7 +2261,7 @@ async function handleSweepDeposits(ctx) {
         if (rawKey) {
           payitSolAddr = multichain.deriveSolanaFromEvmKey(rawKey).solanaAddress;
         }
-      } catch (_) {}
+      } catch (_) { }
     }
     if (!payitSolAddr) payitSolAddr = solAddr;
 
@@ -2350,9 +2343,9 @@ async function handleSweepDeposits(ctx) {
       const pendingCctp = db.getPendingInboundCctpTransfers
         ? db.getPendingInboundCctpTransfers()
         : [];
-      const userPending = pendingCctp.filter(t => 
-        t.telegram_id === ctx.from.id || 
-        t.telegram_id === user.telegram_id || 
+      const userPending = pendingCctp.filter(t =>
+        t.telegram_id === ctx.from.id ||
+        t.telegram_id === user.telegram_id ||
         (arcAddr && t.arc_address && t.arc_address.toLowerCase() === arcAddr.toLowerCase())
       );
       for (const p of userPending) {
@@ -2365,7 +2358,7 @@ async function handleSweepDeposits(ctx) {
           amountUsdc: p.amount_usdc,
           telegramId: ctx.from.id,
           bot,
-        }).catch(() => {});
+        }).catch(() => { });
       }
     } catch (cctpErr) {
       console.warn("[sweep:cctp_retry_error]", cctpErr.message);
@@ -2485,7 +2478,7 @@ bot.action(["gateway_copy_contract", "gateway_myaddress"], async (ctx) => {
 
 bot.action("gateway_copy_arc", async (ctx) => {
   ctx.answerCbQuery();
-  const user       = requireUser(ctx);
+  const user = requireUser(ctx);
   if (!user) return;
   const arcAddress = getActiveWallet(user);
   await ctx.reply(
@@ -2504,11 +2497,11 @@ bot.action("gateway_copy_arc", async (ctx) => {
 
 bot.action("gateway_steps", async (ctx) => {
   ctx.answerCbQuery();
-  const user       = requireUser(ctx);
+  const user = requireUser(ctx);
   if (!user) return;
   const arcAddress = getActiveWallet(user);
-  const gwAddress  = gateway.GATEWAY_WALLET_ADDRESS;
-  const info       = await gateway.getDepositInfo(arcAddress);
+  const gwAddress = gateway.GATEWAY_WALLET_ADDRESS;
+  const info = await gateway.getDepositInfo(arcAddress);
 
   const chainList = info.chains
     .map(c => `• ${c.name}`)
@@ -2541,11 +2534,11 @@ bot.action("gateway_steps", async (ctx) => {
 
 bot.action("gateway_balance", async (ctx) => {
   ctx.answerCbQuery();
-  const user    = requireUser(ctx);
+  const user = requireUser(ctx);
   if (!user) return;
   const address = getActiveWallet(user);
   await ctx.reply("🔍 Checking for incoming transfers...");
-  const status  = await gateway.getTransferStatus(address);
+  const status = await gateway.getTransferStatus(address);
 
   if (!status || Object.keys(status).length === 0) {
     return ctx.reply(
@@ -2553,7 +2546,7 @@ bot.action("gateway_balance", async (ctx) => {
       `If you just sent from another platform, it may take a few minutes to arrive.`,
       Markup.inlineKeyboard([
         [Markup.button.callback("🔄 Check Again", "gateway_balance")],
-        [Markup.button.callback("« Back",         "action_gateway")],
+        [Markup.button.callback("« Back", "action_gateway")],
       ])
     );
   }
@@ -2569,8 +2562,8 @@ bot.action("gateway_balance", async (ctx) => {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
         [Markup.button.callback("⚡ Transfer to Arc", "gateway_transfer_arc")],
-        [Markup.button.callback("🔄 Refresh",        "gateway_balance")],
-        [Markup.button.callback("« Back",            "action_gateway")],
+        [Markup.button.callback("🔄 Refresh", "gateway_balance")],
+        [Markup.button.callback("« Back", "action_gateway")],
       ]),
     }
   );
@@ -2623,16 +2616,16 @@ bot.action(/^gateway_dep_chain_(\d+)$/, async (ctx) => {
   let usdc = "0", gas = "0";
   try {
     usdc = await walletLib.getUsdcBalance(address, chain.name);
-    gas  = await gateway.getSourceChainNativeBalance(address, chain.name);
-  } catch {}
+    gas = await gateway.getSourceChainNativeBalance(address, chain.name);
+  } catch { }
 
   convState.setState(ctx.from.id, "await_gateway_deposit_amount", { chainName: chain.name }, getContext(ctx.from.id));
 
   const gasWarning = parseFloat(gas) === 0
     ? `\n\n⚠️ You have <b>no ${chain.symbol} gas</b> on this chain. ` +
-      (netConfig.isTestnet
-        ? `Get testnet ${chain.symbol} from a faucet before depositing — gas pays transaction fees (separate from USDC).\n`
-        : `Ensure your wallet has a small amount of ${chain.symbol} to pay transaction fees.\n`)
+    (netConfig.isTestnet
+      ? `Get testnet ${chain.symbol} from a faucet before depositing — gas pays transaction fees (separate from USDC).\n`
+      : `Ensure your wallet has a small amount of ${chain.symbol} to pay transaction fees.\n`)
     : "";
 
   await ctx.reply(
@@ -2709,7 +2702,7 @@ async function showSendMoneyMenu(ctx) {
     try {
       const bal = await safeGetBalance(addr);
       balDisplay = bal.display;
-    } catch (__) {}
+    } catch (__) { }
   }
 
   const pKey = context === "business" ? "biz" : "per";
@@ -2722,21 +2715,21 @@ async function showSendMoneyMenu(ctx) {
     ? []
     : isNuvionApproved
       ? [
-          [btnSuccess("🌍 Send Abroad (27 Currencies)", `nuvion_po_menu_${pKey}`)],
-          [btnPrimary("💳 Virtual & Disposable USD Cards", `nuvion_cards_menu_${pKey}`)],
-        ]
+        [btnSuccess("🌍 Send Abroad (27 Currencies)", `nuvion_po_menu_${pKey}`)],
+        [btnPrimary("💳 Virtual & Disposable USD Cards", `nuvion_cards_menu_${pKey}`)],
+      ]
       : [
-          [btnSuccess("🪪 Verify ID — Unlock Send Abroad (27 Currencies) & USD Cards", portalAction)],
-        ];
+        [btnSuccess("🪪 Verify ID — Unlock Send Abroad (27 Currencies) & USD Cards", portalAction)],
+      ];
 
   const keyboard = Markup.inlineKeyboard([
     [btnSuccess("✈️ Send to Telegram User (@username)", "action_send_telegram_user")],
     [btnSuccess("🇳🇬 Bank Transfer (Cash Out to Naira)", "action_withdraw_menu")],
     ...globalSendRows,
-    [btnPrimary("🌐 Withdraw Crypto (10+ Chains)",        "action_crosschain_withdraw")],
-    [btnPrimary("👛 Send to Wallet Address",              "action_sendout_menu")],
-    [btnPrimary("👥 Send to Saved Contact",               "action_send_contact")],
-    [btnDefault("🏠 Main Menu",                           "main_menu")],
+    [btnPrimary("🌐 Withdraw Crypto (10+ Chains)", "action_crosschain_withdraw")],
+    [btnPrimary("👛 Send to Wallet Address", "action_sendout_menu")],
+    [btnPrimary("👥 Send to Saved Contact", "action_send_contact")],
+    [btnDefault("🏠 Main Menu", "main_menu")],
   ]);
 
   const globalSendCopy = !showGlobalPayoutsBtn
@@ -2769,13 +2762,13 @@ async function showSendMoneyMenu(ctx) {
     try {
       await ctx.editMessageText(msgText, { parse_mode: "HTML", ...keyboard });
       return;
-    } catch (_) {}
+    } catch (_) { }
   }
   return safeReplyHtml(ctx, msgText, keyboard);
 }
 
 bot.action("action_send_menu", async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
+  ctx.answerCbQuery().catch(() => { });
   return showSendMoneyMenu(ctx);
 });
 
@@ -2813,10 +2806,10 @@ async function replyInsufficientP2PBalance(ctx, userId, requestedAmount, availab
 }
 
 bot.action("action_send_telegram_user", async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
+  ctx.answerCbQuery().catch(() => { });
   const user = requireUser(ctx);
   if (!user) return;
-  try { db.expireStaleSocialEscrows(); } catch (_) {}
+  try { db.expireStaleSocialEscrows(); } catch (_) { }
   const pendingGifts = db.getPendingSocialEscrowsBySender(ctx.from.id) || [];
   convState.setState(ctx.from.id, "await_p2p_username", {}, getContext(ctx.from.id));
 
@@ -2840,10 +2833,10 @@ bot.action("action_send_telegram_user", async (ctx) => {
 });
 
 bot.action("action_pending_social_gifts", async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
+  ctx.answerCbQuery().catch(() => { });
   const user = requireUser(ctx);
   if (!user) return;
-  try { db.expireStaleSocialEscrows(); } catch (_) {}
+  try { db.expireStaleSocialEscrows(); } catch (_) { }
   const pending = db.getPendingSocialEscrowsBySender(ctx.from.id) || [];
 
   if (!pending.length) {
@@ -2961,7 +2954,7 @@ async function initiateP2PTransfer(ctx, targetUsername, amount = null) {
     const bal = await safeGetBalance(addr);
     balDisplay = bal.display;
     balNum = parseFloat(bal.usdc || "0");
-  } catch (_) {}
+  } catch (_) { }
 
   if (prep.amountUsdc !== null && prep.amountUsdc > 0) {
     if (balNum < prep.amountUsdc) {
@@ -3000,7 +2993,7 @@ async function initiateP2PTransfer(ctx, targetUsername, amount = null) {
 }
 
 bot.action(/^p2p_amt_(\d+(?:\.\d+)?|max)$/, async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
+  ctx.answerCbQuery().catch(() => { });
   const userId = ctx.from.id;
   const state = convState.getState(userId);
   if (!state || state.type !== "await_p2p_amount") {
@@ -3013,7 +3006,7 @@ bot.action(/^p2p_amt_(\d+(?:\.\d+)?|max)$/, async (ctx) => {
   try {
     const balMicro = await walletLib.getNativeBalanceMicro(address);
     balNum = parseFloat(walletLib.formatMicro(balMicro));
-  } catch (_) {}
+  } catch (_) { }
 
   let amount;
   if (ctx.match[1] === "max") {
@@ -3040,7 +3033,7 @@ bot.action(/^p2p_amt_(\d+(?:\.\d+)?|max)$/, async (ctx) => {
 });
 
 bot.action(/^action_cancel_escrow_([a-zA-Z0-9_]+)$/, async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
+  ctx.answerCbQuery().catch(() => { });
   const user = requireUser(ctx);
   if (!user) return;
   const claimToken = ctx.match[1];
@@ -3063,7 +3056,7 @@ bot.action(/^action_cancel_escrow_([a-zA-Z0-9_]+)$/, async (ctx) => {
 
 bot.action("action_send_contact", async (ctx) => {
   ctx.answerCbQuery();
-  const user   = requireUser(ctx);
+  const user = requireUser(ctx);
   if (!user) return;
   const payees = payeeBook.getAllPayees(ctx.from.id);
   if (!payees.length) {
@@ -3099,19 +3092,19 @@ function buildSendAmountKeyboard() {
 
 bot.action(/^send_to_payee_(\d+)$/, (ctx) => {
   ctx.answerCbQuery();
-  const user    = requireUser(ctx);
+  const user = requireUser(ctx);
   if (!user) return;
   const payeeId = parseInt(ctx.match[1]);
-  const payees  = payeeBook.getAllPayees(ctx.from.id);
-  const payee   = payees.find(p => p.id === payeeId);
+  const payees = payeeBook.getAllPayees(ctx.from.id);
+  const payee = payees.find(p => p.id === payeeId);
   if (!payee) return ctx.reply("Contact not found.");
   convState.setState(ctx.from.id, "await_sendout_amount", {
-    token:          "USDC",
-    recipientName:  payee.name,
-    walletAddress:  payee.wallet_address,
-    accountNumber:  payee.account_number,
-    bankName:       payee.bank_name,
-    accountName:    payee.account_name,
+    token: "USDC",
+    recipientName: payee.name,
+    walletAddress: payee.wallet_address,
+    accountNumber: payee.account_number,
+    bankName: payee.bank_name,
+    accountName: payee.account_name,
   }, getContext(ctx.from.id));
   return ctx.reply(
     `📤 <b>Send to ${payee.name}</b>\n──────────────────────────\n` +
@@ -3196,12 +3189,12 @@ async function executePajOnrampDeposit(ctx, userId, fiatAmount, context, rate) {
       try {
         const rates = await paj.getRates("NGN");
         onRampRate = rates?.onRampRate?.rate;
-      } catch (_) {}
+      } catch (_) { }
     }
     if (!onRampRate) {
       try {
         onRampRate = await fx.getUsdToNgnRate();
-      } catch (_) {}
+      } catch (_) { }
     }
     const tokenAmount = onRampRate ? (fiatAmount / onRampRate).toFixed(2) : "...";
 
@@ -3238,8 +3231,8 @@ async function executePajOnrampDeposit(ctx, userId, fiatAmount, context, rate) {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard([
           [Markup.button.callback("🔄 Refresh Status", `action_check_paj_onramp_${order.id}`)],
-          [Markup.button.callback("💰 View Balance",   "action_balance")],
-          [Markup.button.callback("🏠 Main Menu",      "main_menu")],
+          [Markup.button.callback("💰 View Balance", "action_balance")],
+          [Markup.button.callback("🏠 Main Menu", "main_menu")],
         ]),
       }
     );
@@ -3391,7 +3384,7 @@ bot.command("nuvion_health", async (ctx) => {
 });
 
 bot.action("admin_nuvion_reconcile", async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
+  ctx.answerCbQuery().catch(() => { });
   if (!ADMIN_IDS.includes(String(ctx.from?.id || ""))) return;
   try {
     const res = await nuvionPoller.runNuvionPollerCycle(bot);
@@ -3408,7 +3401,7 @@ bot.action("admin_nuvion_reconcile", async (ctx) => {
 });
 
 bot.action("admin_nuvion_audit", async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
+  ctx.answerCbQuery().catch(() => { });
   if (!ADMIN_IDS.includes(String(ctx.from?.id || ""))) return;
   await ctx.reply("⏳ Auditing all approved child entities for stranded non-card balances...");
   try {
@@ -3433,7 +3426,7 @@ bot.action("admin_nuvion_audit", async (ctx) => {
 });
 
 bot.action("admin_nuvion_test_wh", async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
+  ctx.answerCbQuery().catch(() => { });
   if (!ADMIN_IDS.includes(String(ctx.from?.id || ""))) return;
   try {
     const res = await nuvionHealth.dispatchWebhookTest();
@@ -3456,12 +3449,12 @@ nuvionCards.registerCardHooks();
 function buildWithdrawAmountKeyboard() {
   return Markup.inlineKeyboard([
     [
-      btnPrimary("₦5,000",   "cashout_ngn_5000"),
-      btnPrimary("₦10,000",  "cashout_ngn_10000"),
-      btnPrimary("₦20,000",  "cashout_ngn_20000"),
+      btnPrimary("₦5,000", "cashout_ngn_5000"),
+      btnPrimary("₦10,000", "cashout_ngn_10000"),
+      btnPrimary("₦20,000", "cashout_ngn_20000"),
     ],
     [
-      btnPrimary("₦50,000",  "cashout_ngn_50000"),
+      btnPrimary("₦50,000", "cashout_ngn_50000"),
       btnPrimary("₦100,000", "cashout_ngn_100000"),
       btnPrimary("₦200,000", "cashout_ngn_200000"),
     ],
@@ -3571,9 +3564,9 @@ async function promptForWithdrawBank(ctx, userId, amountUsdc, rail, context, ngn
   const totalNgn = ngnPayout && feeNgn != null ? Math.round(ngnPayout) + feeNgn : null;
   const nairaLine = ngnPayout
     ? `🇳🇬 <b>Recipient Gets:</b> ~<b>₦${Math.round(ngnPayout).toLocaleString("en-NG")}</b> ($${netAmountUsdc.toFixed(2)} USDC)\n` +
-      `🏷️ <b>Platform Fee (1%):</b> +$${feeUsdc.toFixed(2)}${feeNgn ? ` (~₦${feeNgn.toLocaleString("en-NG")})` : ""} <i>(from balance)</i>\n` +
-      `💳 <b>Total Deducted:</b> $${totalDebitUsdc.toFixed(2)} USDC${totalNgn ? ` (~₦${totalNgn.toLocaleString("en-NG")})` : ""}\n` +
-      (liveRate ? `📈 <b>Rate:</b> ₦${Math.round(liveRate).toLocaleString()}/$\n` : "")
+    `🏷️ <b>Platform Fee (1%):</b> +$${feeUsdc.toFixed(2)}${feeNgn ? ` (~₦${feeNgn.toLocaleString("en-NG")})` : ""} <i>(from balance)</i>\n` +
+    `💳 <b>Total Deducted:</b> $${totalDebitUsdc.toFixed(2)} USDC${totalNgn ? ` (~₦${totalNgn.toLocaleString("en-NG")})` : ""}\n` +
+    (liveRate ? `📈 <b>Rate:</b> ₦${Math.round(liveRate).toLocaleString()}/$\n` : "")
     : `💵 <b>Amount:</b> $${netAmountUsdc.toFixed(2)} · Fee (1%): +$${feeUsdc.toFixed(2)} · Total Deducted: $${totalDebitUsdc.toFixed(2)}\n`;
 
   // Look up saved bank payees for this user
@@ -3753,7 +3746,7 @@ async function handleCashOutNgn(ctx, userId, ngnAmount, context) {
 
     const canSendLine = maxInfo.maxSendNgn > 0
       ? `\n\n💡 <b>With the 1% fee included, you can send up to ₦${maxInfo.maxSendNgn.toLocaleString("en-NG")}</b> ` +
-        `(fee: ₦${maxInfo.feeNgn.toLocaleString("en-NG")} · total: ₦${maxInfo.totalNgn.toLocaleString("en-NG")}).`
+      `(fee: ₦${maxInfo.feeNgn.toLocaleString("en-NG")} · total: ₦${maxInfo.totalNgn.toLocaleString("en-NG")}).`
       : "";
 
     return ctx.reply(
@@ -3823,12 +3816,12 @@ async function showUnifiedWithdrawMenu(ctx) {
 }
 
 bot.action("action_unified_withdraw", async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
+  ctx.answerCbQuery().catch(() => { });
   return showSendMoneyMenu(ctx);
 });
 
 bot.action("action_pay_team", async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
+  ctx.answerCbQuery().catch(() => { });
   return showPayTeamMenu(ctx);
 });
 
@@ -3842,7 +3835,7 @@ bot.action("action_withdraw_menu", async (ctx) => {
   try {
     const rate = await fx.getUsdToNgnRate();
     if (rate) rateInfo = `\n📈 <b>Live Rate:</b> ₦${Math.round(rate).toLocaleString()}/$\n`;
-  } catch (_) {}
+  } catch (_) { }
 
   convState.setState(ctx.from.id, "await_withdraw_ngn_amount", {}, getContext(ctx.from.id));
   return ctx.reply(
@@ -4209,7 +4202,7 @@ bot.action("yield_deposit_start", async (ctx) => {
   let bal;
   try {
     const micro = await walletLib.getNativeBalanceMicro(targetAddress);
-    bal         = parseFloat(walletLib.formatMicro(micro));
+    bal = parseFloat(walletLib.formatMicro(micro));
   } catch {
     return ctx.reply("Couldn't check your balance right now.");
   }
@@ -4285,10 +4278,10 @@ bot.action(/^yield_amt_(\d+(?:\.\d+)?|max)$/, async (ctx) => {
 });
 
 bot.action("yield_withdraw_start", async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const user     = requireUser(ctx);
+  await ctx.answerCbQuery().catch(() => { });
+  const user = requireUser(ctx);
   if (!user) return;
-  const context  = getContext(ctx.from.id);
+  const context = getContext(ctx.from.id);
 
   // 1. Instant SQLite lookups (0ms)
   let position = db.getOpenYieldPosition(ctx.from.id, context);
@@ -4323,7 +4316,7 @@ bot.action("yield_withdraw_start", async (ctx) => {
       const syncPromise = savings.syncOnChainVaultPositions(user, context);
       const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(null), 2500));
       position = await Promise.race([syncPromise, timeoutPromise]);
-    } catch {}
+    } catch { }
   }
   if (!position) {
     const otherContext = context === "business" ? "personal" : "business";
@@ -4335,7 +4328,7 @@ bot.action("yield_withdraw_start", async (ctx) => {
         position = otherPos;
         effectiveContext = otherContext;
       }
-    } catch {}
+    } catch { }
   }
 
   if (!position) {
@@ -4356,9 +4349,9 @@ bot.action("yield_withdraw_start", async (ctx) => {
 
   const principal = Number(position.amount_usdc) || 0;
   const grossYield = savings.calcAccruedYield(position);
-  const devFee  = parseFloat((grossYield * savings.PAYIT_FEE_FRACTION).toFixed(4));
+  const devFee = parseFloat((grossYield * savings.PAYIT_FEE_FRACTION).toFixed(4));
   const netYield = parseFloat((grossYield - devFee).toFixed(4));
-  const total   = parseFloat((principal + netYield).toFixed(4));
+  const total = parseFloat((principal + netYield).toFixed(4));
   convState.setState(ctx.from.id, "confirm_yield_withdraw", { position, accrued: grossYield, devFee, netYield, total }, effectiveContext);
   return ctx.reply(
     `💵 <b>Withdraw ${effectiveContext === "business" ? "Business" : "Personal"} Savings</b>\n──────────────────────────\n` +
@@ -4464,7 +4457,7 @@ async function handleResetPinStart(ctx) {
             });
           }
           break;
-        } catch {}
+        } catch { }
       }
     } catch (sweepErr) {
       console.warn("[resetpin] sweep error:", sweepErr.message);
@@ -4518,10 +4511,10 @@ bot.action("verifyphone_prompt", (ctx) => {
 
 // ─── Shared inline shortcuts ──────────────────────────────────────────────────
 
-bot.action("action_balance",  (ctx) => { ctx.answerCbQuery(); return getContext(ctx.from?.id) === "business" ? showBizBalance(ctx) : showBalance(ctx); });
-bot.action("action_receive",  (ctx) => { ctx.answerCbQuery(); return showReceive(ctx); });
-bot.action("action_history",  (ctx) => { ctx.answerCbQuery(); return showHistory(ctx); });
-bot.action("action_yields",   (ctx) => { ctx.answerCbQuery(); return showYields(ctx); });
+bot.action("action_balance", (ctx) => { ctx.answerCbQuery(); return getContext(ctx.from?.id) === "business" ? showBizBalance(ctx) : showBalance(ctx); });
+bot.action("action_receive", (ctx) => { ctx.answerCbQuery(); return showReceive(ctx); });
+bot.action("action_history", (ctx) => { ctx.answerCbQuery(); return showHistory(ctx); });
+bot.action("action_yields", (ctx) => { ctx.answerCbQuery(); return showYields(ctx); });
 bot.action("action_my_yield", (ctx) => { ctx.answerCbQuery(); return showMyYield(ctx); });
 bot.action("action_settings", (ctx) => { ctx.answerCbQuery(); convState.clearState(ctx.from.id); return showSettings(ctx); });
 bot.action("action_referral", (ctx) => { ctx.answerCbQuery(); return showReferralMenu(ctx); });
@@ -4543,7 +4536,7 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
   if (orderId) {
     try {
       pajOrder = await paj.getOnrampOrder(orderId);
-    } catch {}
+    } catch { }
   }
 
   // Check Solana SPL USDC balance
@@ -4551,7 +4544,7 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
   if (solAddr) {
     try {
       solBalance = await multichain.getSplTokenBalance(solAddr);
-    } catch {}
+    } catch { }
   }
 
   // Check Arc balance
@@ -4559,7 +4552,7 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
   try {
     const raw = await walletLib.getNativeBalanceMicro(arcAddr);
     arcBal = parseFloat(walletLib.formatMicro(raw));
-  } catch {}
+  } catch { }
 
   const trackedOrder = orderId ? db.getOnrampOrderByOrderId(orderId) : null;
   const isPajSuccess = pajOrder?.status === "completed" || pajOrder?.status === "successful" || (trackedOrder && trackedOrder.status === "completed");
@@ -4635,7 +4628,7 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
         if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
           try {
             solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress;
-          } catch {}
+          } catch { }
         }
         if (solFeeRecipient && multichain.isSolanaAddress(solFeeRecipient)) {
           try {
@@ -4717,7 +4710,7 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
           ...Markup.inlineKeyboard([
             [Markup.button.callback("🔄 Refresh Status", `action_check_paj_onramp_${orderId || ""}`)],
             [Markup.button.callback("💰 View Balance", "action_balance")],
-            [Markup.button.callback("🏠 Main Menu",    "main_menu")],
+            [Markup.button.callback("🏠 Main Menu", "main_menu")],
           ]),
         }
       );
@@ -4737,7 +4730,7 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
       ...Markup.inlineKeyboard([
         [Markup.button.callback("🔄 Check Again", ctx.match[0])],
         [Markup.button.callback("💰 View Balance", "action_balance")],
-        [Markup.button.callback("🏠 Main Menu",    "main_menu")],
+        [Markup.button.callback("🏠 Main Menu", "main_menu")],
       ]),
     }
   );
@@ -4756,7 +4749,7 @@ bot.action("action_swap", async (ctx) => {
     const eurcMicro = await tokens.getEurcBalance(address);
     usdcBal = parseFloat(walletLib.formatMicro(usdcMicro));
     eurcBal = parseFloat(walletLib.formatMicro(eurcMicro));
-  } catch {}
+  } catch { }
 
   let ratesInfo = "";
   try {
@@ -4764,7 +4757,7 @@ bot.action("action_swap", async (ctx) => {
     const usdcRate = rates.USDC ? `$${parseFloat(rates.USDC).toFixed(4)}` : "$1.0000";
     const eurcRate = rates.EURC ? `€${parseFloat(rates.EURC).toFixed(4)}` : "€1.0900";
     ratesInfo = `\n📊 <b>Live Arc FX Rates:</b>\n• USDC: ${usdcRate}\n• EURC: ${eurcRate}\n`;
-  } catch {}
+  } catch { }
 
   return ctx.reply(
     `🔄 <b>Currency Converter</b>\n──────────────────────────\n` +
@@ -4777,7 +4770,7 @@ bot.action("action_swap", async (ctx) => {
     Markup.inlineKeyboard([
       [Markup.button.callback("💵 Convert Dollars ➔ Euros", "swap_start_usdc_eurc")],
       [Markup.button.callback("💶 Convert Euros ➔ Dollars", "swap_start_eurc_usdc")],
-      [Markup.button.callback("🏠 Main Menu",        "main_menu")],
+      [Markup.button.callback("🏠 Main Menu", "main_menu")],
     ])
   );
 });
@@ -4791,7 +4784,7 @@ bot.action("swap_start_usdc_eurc", async (ctx) => {
   try {
     const usdcMicro = await walletLib.getNativeBalanceMicro(address);
     usdcBal = parseFloat(walletLib.formatMicro(usdcMicro));
-  } catch {}
+  } catch { }
 
   if (usdcBal <= 0) {
     return ctx.reply(
@@ -4823,7 +4816,7 @@ bot.action("swap_start_eurc_usdc", async (ctx) => {
   try {
     const eurcMicro = await tokens.getEurcBalance(address);
     eurcBal = parseFloat(walletLib.formatMicro(eurcMicro));
-  } catch {}
+  } catch { }
 
   if (eurcBal <= 0) {
     return ctx.reply(
@@ -4861,16 +4854,16 @@ async function showBizInvoiceMenu(ctx) {
     `Type your instruction:`,
     Markup.inlineKeyboard([
       [Markup.button.callback("📋 All Invoices", "action_list_biz_invoices")],
-      [Markup.button.callback("❌ Cancel",        "main_menu")],
+      [Markup.button.callback("❌ Cancel", "main_menu")],
     ])
   );
 }
 
-bot.action("action_new_biz_invoice",   (ctx) => { ctx.answerCbQuery(); return showBizInvoiceMenu(ctx); });
+bot.action("action_new_biz_invoice", (ctx) => { ctx.answerCbQuery(); return showBizInvoiceMenu(ctx); });
 
 bot.action("action_list_biz_invoices", async (ctx) => {
   ctx.answerCbQuery();
-  const user     = requireUser(ctx);
+  const user = requireUser(ctx);
   if (!user) return;
   const invoices = bizDb.getBizInvoices(ctx.from.id);
   if (!invoices.length) {
@@ -4995,10 +4988,10 @@ bot.action("action_cash_flow", async (ctx) => {
   ctx.answerCbQuery();
   const user = requireUser(ctx);
   if (!user) return;
-  const income   = bizDb.getMonthIncome(ctx.from.id);
+  const income = bizDb.getMonthIncome(ctx.from.id);
   const expenses = bizDb.getMonthExpenses(ctx.from.id);
-  const net      = income - expenses;
-  const pending  = bizDb.getPendingInvoiceTotal(ctx.from.id);
+  const net = income - expenses;
+  const pending = bizDb.getPendingInvoiceTotal(ctx.from.id);
   await ctx.reply(
     `📊 This Month\n──────────────────────────\n` +
     `💚 Income (paid invoices): $${income.toFixed(2)}\n` +
@@ -5007,21 +5000,21 @@ bot.action("action_cash_flow", async (ctx) => {
     `${net >= 0 ? "✅" : "⚠️"} Net: $${net.toFixed(2)}\n\n` +
     `📬 Awaiting payment: $${pending.toFixed(2)}`,
     Markup.inlineKeyboard([
-      [Markup.button.callback("📈 Full Report",  "action_biz_reports")],
-      [Markup.button.callback("🧾 New Invoice",  "action_new_biz_invoice")],
-      [Markup.button.callback("🏠 Main Menu",    "main_menu")],
+      [Markup.button.callback("📈 Full Report", "action_biz_reports")],
+      [Markup.button.callback("🧾 New Invoice", "action_new_biz_invoice")],
+      [Markup.button.callback("🏠 Main Menu", "main_menu")],
     ])
   );
 });
 
 bot.action("action_biz_reports", async (ctx) => {
   ctx.answerCbQuery();
-  const user     = requireUser(ctx);
+  const user = requireUser(ctx);
   if (!user) return;
-  const income   = bizDb.getMonthIncome(ctx.from.id);
+  const income = bizDb.getMonthIncome(ctx.from.id);
   const expenses = bizDb.getMonthExpenses(ctx.from.id);
-  const net      = income - expenses;
-  const margin   = income > 0 ? ((net / income) * 100).toFixed(1) : "0";
+  const net = income - expenses;
+  const margin = income > 0 ? ((net / income) * 100).toFixed(1) : "0";
   const breakdown = bizDb.getExpenseBreakdown(ctx.from.id);
   const topClient = bizDb.getTopClient(ctx.from.id);
   const invoiceCount = bizDb.getMonthInvoiceCount(ctx.from.id);
@@ -5047,18 +5040,18 @@ bot.action("action_biz_reports", async (ctx) => {
 
 bot.action("action_confirm_biz_invoice", async (ctx) => {
   ctx.answerCbQuery();
-  const user    = requireUser(ctx);
+  const user = requireUser(ctx);
   if (!user) return;
-  const state   = convState.getState(ctx.from.id);
+  const state = convState.getState(ctx.from.id);
   if (!state || state.type !== "confirm_biz_invoice") {
     return ctx.reply("Session expired. Start again with 🧾 New Invoice.");
   }
 
   const invoiceNumber = bizDb.getNextBizInvoiceNumber(ctx.from.id);
-  const issueDate     = new Date().toISOString().split("T")[0];
+  const issueDate = new Date().toISOString().split("T")[0];
   convState.setState(ctx.from.id, "confirm_biz_invoice_pin", {
-    parsed:       state.data.parsed,
-    total:        state.data.total,
+    parsed: state.data.parsed,
+    total: state.data.total,
     walletAddress: state.data.walletAddress,
     invoiceNumber,
     issueDate,
@@ -5089,7 +5082,7 @@ bot.action(/^action_bizpaid_(\d+)$/, async (ctx) => {
 
 bot.action("action_confirm_invoice", async (ctx) => {
   ctx.answerCbQuery();
-  const user  = requireUser(ctx);
+  const user = requireUser(ctx);
   if (!user) return;
   const state = convState.getState(ctx.from.id);
   if (!state || state.type !== "confirm_invoice") {
@@ -5101,8 +5094,8 @@ bot.action("action_confirm_invoice", async (ctx) => {
   await ctx.reply("⏳ Generating your invoice...");
   try {
     const invoiceNumber = invoiceDb.getNextInvoiceNumber(ctx.from.id);
-    const issueDate     = new Date().toISOString().split("T")[0];
-    
+    const issueDate = new Date().toISOString().split("T")[0];
+
     // Request PIN to decrypt private key for HD wallet derivation
     convState.setState(ctx.from.id, "confirm_invoice_pin", {
       invoiceNumber,
@@ -5110,7 +5103,7 @@ bot.action("action_confirm_invoice", async (ctx) => {
       parsed,
       total,
     }, "personal");
-    
+
     return ctx.reply(
       "Enter your PIN to create the invoice with a unique payment address:",
       Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
@@ -5138,7 +5131,7 @@ bot.action(/^action_paid_(\d+)$/, async (ctx) => {
 
 bot.action("action_list_invoices", async (ctx) => {
   ctx.answerCbQuery();
-  const user     = requireUser(ctx);
+  const user = requireUser(ctx);
   if (!user) return;
   const invoices = invoiceDb.getUserInvoices(ctx.from.id);
   if (!invoices.length) {
@@ -5234,7 +5227,7 @@ async function showAutoPay(ctx) {
     `Type your instruction:` + jobLine,
     Markup.inlineKeyboard([
       [Markup.button.callback("📅 View Schedules", "action_schedules")],
-      [Markup.button.callback("🏠 Main Menu",      "main_menu")],
+      [Markup.button.callback("🏠 Main Menu", "main_menu")],
     ])
   );
 }
@@ -5279,7 +5272,7 @@ bot.command("points", async (ctx) => {
 });
 
 bot.hears(/^\/cancelschedule_(.+)$/, async (ctx) => {
-  const jobId   = ctx.match[1];
+  const jobId = ctx.match[1];
   cancelJob(jobId);
   const removed = removeSchedule(ctx.from.id.toString(), jobId);
   await ctx.reply(
@@ -5302,7 +5295,7 @@ bot.action("action_new_invoice", (ctx) => {
     `Type your instruction:`,
     Markup.inlineKeyboard([
       [Markup.button.callback("📋 My Invoices", "action_list_invoices")],
-      [Markup.button.callback("❌ Cancel",       "main_menu")],
+      [Markup.button.callback("❌ Cancel", "main_menu")],
     ])
   );
 });
@@ -5340,7 +5333,7 @@ bot.on("photo", async (ctx) => {
 
   // ── Logo upload helper ────────────────────────────────────────────────────
   async function handleLogoSave() {
-    const photo  = ctx.message.photo[ctx.message.photo.length - 1];
+    const photo = ctx.message.photo[ctx.message.photo.length - 1];
     const buffer = await downloadTelegramFile(ctx, photo.file_id);
     return await bizProfile.saveLogo(ctx.from.id, buffer);
   }
@@ -5372,18 +5365,18 @@ bot.on("photo", async (ctx) => {
       const personalWallet = walletLib.generateUserWallet();
       const businessWallet = walletLib.generateUserWallet();
       convState.setState(ctx.from.id, "onboarding_pin", {
-        accountType:        "business",
-        address:            personalWallet.address,
-        privateKey:         personalWallet.privateKey,
-        businessAddress:    businessWallet.address,
+        accountType: "business",
+        address: personalWallet.address,
+        privateKey: personalWallet.privateKey,
+        businessAddress: businessWallet.address,
         businessPrivateKey: businessWallet.privateKey,
-        username:           ctx.from.username,
+        username: ctx.from.username,
         logoPath,
         bizProfile: {
-          businessName:   d.businessName,
-          businessEmail:  d.businessEmail,
-          phone:          d.businessPhone,
-          address:        d.businessAddress,
+          businessName: d.businessName,
+          businessEmail: d.businessEmail,
+          phone: d.businessPhone,
+          address: d.businessAddress,
           defaultDueDays: d.defaultDueDays,
         },
         referrerId: d.referrerId || null,
@@ -5406,10 +5399,10 @@ bot.on("photo", async (ctx) => {
   // Otherwise: treat as a payment document
   await ctx.reply("📷 Reading your image...");
   try {
-    const photo    = ctx.message.photo[ctx.message.photo.length - 1];
-    const buffer   = await downloadTelegramFile(ctx, photo.file_id);
-    const parsed   = await parseImagePayment(buffer, "image/jpeg");
-    const preview  = formatExtractionPreview(parsed);
+    const photo = ctx.message.photo[ctx.message.photo.length - 1];
+    const buffer = await downloadTelegramFile(ctx, photo.file_id);
+    const parsed = await parseImagePayment(buffer, "image/jpeg");
+    const preview = formatExtractionPreview(parsed);
 
     if (parsed.unreadable || parsed.error === "no_vision_provider") {
       return ctx.reply(preview, backToMenu);
@@ -5423,11 +5416,12 @@ bot.on("photo", async (ctx) => {
 
     await ctx.reply(
       preview,
-      { parse_mode: "Markdown",
+      {
+        parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
           [Markup.button.callback("✅ Yes, use these details", "image_payment_confirm")],
-          [Markup.button.callback("✏️ Enter details manually",  "image_payment_manual")],
-          [Markup.button.callback("❌ Cancel",                  "main_menu")],
+          [Markup.button.callback("✏️ Enter details manually", "image_payment_manual")],
+          [Markup.button.callback("❌ Cancel", "main_menu")],
         ])
       }
     );
@@ -5454,9 +5448,9 @@ bot.action("image_payment_confirm", async (ctx) => {
       `How would you like to handle this ${parsed.document_type}?\n\n` +
       `Amount: ${parsed.currency} ${parsed.amount}`,
       Markup.inlineKeyboard([
-        [Markup.button.callback("💸 Pay It Now",       "image_pay_now")],
+        [Markup.button.callback("💸 Pay It Now", "image_pay_now")],
         [Markup.button.callback("🧾 Create My Invoice", "image_create_invoice")],
-        [Markup.button.callback("❌ Cancel",            "main_menu")],
+        [Markup.button.callback("❌ Cancel", "main_menu")],
       ])
     );
   }
@@ -5485,7 +5479,7 @@ bot.action("image_payment_manual", (ctx) => {
 // ─── Document handler — PDF and Excel/CSV ─────────────────────────────────────
 
 bot.on("document", async (ctx) => {
-  const doc      = ctx.message.document;
+  const doc = ctx.message.document;
   const mimeType = doc.mime_type || "";
   const fileName = (doc.file_name || "").toLowerCase();
 
@@ -5509,13 +5503,13 @@ bot.on("document", async (ctx) => {
     if (handled) return;
   }
 
-  const isPdf  = mimeType === "application/pdf" || fileName.endsWith(".pdf");
-  const isCsv  = mimeType === "text/csv"        || fileName.endsWith(".csv");
+  const isPdf = mimeType === "application/pdf" || fileName.endsWith(".pdf");
+  const isCsv = mimeType === "text/csv" || fileName.endsWith(".csv");
   const isXlsx = mimeType.includes("spreadsheet") ||
     fileName.endsWith(".xlsx") || fileName.endsWith(".xls");
   const isPptx = fileName.endsWith('.pptx') || mimeType.includes('presentation');
   const isDocx = fileName.endsWith('.docx') || mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-  const isTxt  = fileName.endsWith('.txt') || mimeType === 'text/plain';
+  const isTxt = fileName.endsWith('.txt') || mimeType === 'text/plain';
 
   if (!isPdf && !isCsv && !isXlsx && !isPptx && !isDocx && !isTxt) {
     return ctx.reply(
@@ -5567,8 +5561,8 @@ bot.on("document", async (ctx) => {
     await ctx.reply(
       replyText,
       Markup.inlineKeyboard([
-        [Markup.button.callback("✅ Confirm Payments",    "file_payment_confirm")],
-        [Markup.button.callback("❌ Cancel",              "main_menu")],
+        [Markup.button.callback("✅ Confirm Payments", "file_payment_confirm")],
+        [Markup.button.callback("❌ Cancel", "main_menu")],
       ])
     );
   } catch (err) {
@@ -5756,19 +5750,19 @@ bot.on('audio', async (ctx) => {
 bot.hears(["💰 Balance", "💰 My Money"], (ctx) => showBalance(ctx));
 bot.hears("💼 Business Balance", (ctx) => showBizBalance(ctx));
 bot.hears(["📥 Deposit", "📥 Add Money"], (ctx) => showReceive(ctx));
-bot.hears("📋 History",          (ctx) => showHistory(ctx));
+bot.hears("📋 History", (ctx) => showHistory(ctx));
 bot.hears(/^(?:⚙️?|⚙)\s*settings$/i, (ctx) => { convState.clearState(ctx.from.id); return showSettings(ctx); });
-bot.hears(/^settings$/i,         (ctx) => { convState.clearState(ctx.from.id); return showSettings(ctx); });
-bot.hears(/settings/i,           (ctx) => { convState.clearState(ctx.from.id); return showSettings(ctx); });
-bot.hears("📖 Help",             (ctx) => showHelp(ctx));
-bot.hears("✨ What's New",       (ctx) => showFeatures(ctx));
-bot.hears("📈 Save & Earn",      (ctx) => showYields(ctx));
-bot.hears("👥 Contacts",         (ctx) => showContacts(ctx));
-bot.hears("🤖 Auto-Pay",         (ctx) => showAutoPay(ctx));
-bot.hears("💰 Balance",          (ctx) => getContext(ctx.from?.id) === "business" ? showBizBalance(ctx) : showBalance(ctx));
-bot.hears("💼 Biz Balance",      (ctx) => showBizBalance(ctx));
-bot.hears("📊 This Month",       (ctx) => bot.handleUpdate({ ...ctx.update }));
-bot.hears("📈 Reports",          (ctx) => bot.handleUpdate({ ...ctx.update }));
+bot.hears(/^settings$/i, (ctx) => { convState.clearState(ctx.from.id); return showSettings(ctx); });
+bot.hears(/settings/i, (ctx) => { convState.clearState(ctx.from.id); return showSettings(ctx); });
+bot.hears("📖 Help", (ctx) => showHelp(ctx));
+bot.hears("✨ What's New", (ctx) => showFeatures(ctx));
+bot.hears("📈 Save & Earn", (ctx) => showYields(ctx));
+bot.hears("👥 Contacts", (ctx) => showContacts(ctx));
+bot.hears("🤖 Auto-Pay", (ctx) => showAutoPay(ctx));
+bot.hears("💰 Balance", (ctx) => getContext(ctx.from?.id) === "business" ? showBizBalance(ctx) : showBalance(ctx));
+bot.hears("💼 Biz Balance", (ctx) => showBizBalance(ctx));
+bot.hears("📊 This Month", (ctx) => bot.handleUpdate({ ...ctx.update }));
+bot.hears("📈 Reports", (ctx) => bot.handleUpdate({ ...ctx.update }));
 
 bot.hears(["📤 Send Money", "📤 Send Payment", /^(?:📤\s*)?send(?:\s*(?:money|payment))?$/i], async (ctx) => {
   return showSendMoneyMenu(ctx);
@@ -5784,7 +5778,7 @@ bot.hears(["🇳🇬 Cash Out to Naira", /cash\s*out\s*to\s*naira/i], async (ctx
   try {
     const rate = await fx.getUsdToNgnRate();
     if (rate) rateInfo = `\n📈 <b>Live Rate:</b> ₦${Math.round(rate).toLocaleString()}/$\n`;
-  } catch (_) {}
+  } catch (_) { }
 
   convState.setState(ctx.from.id, "await_withdraw_ngn_amount", {}, getContext(ctx.from.id));
   return ctx.reply(
@@ -5863,7 +5857,7 @@ function promptForPersonalInvoice(ctx) {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
         [Markup.button.callback("📋 My Invoices", "action_list_invoices")],
-        [Markup.button.callback("❌ Cancel",       "main_menu")],
+        [Markup.button.callback("❌ Cancel", "main_menu")],
       ])
     }
   );
@@ -5938,9 +5932,13 @@ bot.hears("📋 My Invoices", (ctx) => {
   const context = getContext(ctx.from?.id);
   if (context === "business") {
     ctx.callbackQuery = { data: "action_list_biz_invoices" };
-    return bot.handleUpdate({ update_id: ctx.update.update_id,
-      callback_query: { id: "0", from: ctx.from, chat_instance: "0",
-        data: "action_list_biz_invoices", message: ctx.message } });
+    return bot.handleUpdate({
+      update_id: ctx.update.update_id,
+      callback_query: {
+        id: "0", from: ctx.from, chat_instance: "0",
+        data: "action_list_biz_invoices", message: ctx.message
+      }
+    });
   }
   return ctx.reply("📋 Invoices", Markup.inlineKeyboard([[Markup.button.callback("📋 Open", "action_list_invoices")]]));
 });
@@ -5962,10 +5960,10 @@ bot.hears("💸 Log Expense", (ctx) => {
 bot.hears("👥 Pay Team", (ctx) => showPayTeamMenu(ctx));
 
 bot.hears("💰 Business Savings", async (ctx) => {
-  const user   = requireUser(ctx);
+  const user = requireUser(ctx);
   if (!user) return;
-  const goal   = bizDb.getSavingsGoal(ctx.from.id);
-  const saved  = bizDb.getBizSavingsBalance(ctx.from.id);
+  const goal = bizDb.getSavingsGoal(ctx.from.id);
+  const saved = bizDb.getBizSavingsBalance(ctx.from.id);
   const position = db.getOpenYieldPosition(ctx.from.id, "business");
 
   let yieldInfo = "";
@@ -5994,11 +5992,11 @@ bot.hears("💰 Business Savings", async (ctx) => {
 
   buttons.push([
     Markup.button.callback("➕ Deposit to Savings", "yield_deposit_start"),
-    Markup.button.callback("📈 View Earn Rates",    "action_yields"),
+    Markup.button.callback("📈 View Earn Rates", "action_yields"),
   ]);
   buttons.push([
     Markup.button.callback("⚙️ Set Auto-Save Rule", "set_savings_goal"),
-    Markup.button.callback("🏠 Main Menu",          "main_menu"),
+    Markup.button.callback("🏠 Main Menu", "main_menu"),
   ]);
 
   await ctx.reply(
@@ -6044,35 +6042,35 @@ async function handleExportKeys(ctx) {
 
 bot.command(["export", "export_keys", "exportkeys"], (ctx) => handleExportKeys(ctx));
 bot.action("action_export_keys", (ctx) => {
-  if (ctx.callbackQuery) ctx.answerCbQuery().catch(() => {});
+  if (ctx.callbackQuery) ctx.answerCbQuery().catch(() => { });
   return handleExportKeys(ctx);
 });
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
-bot.command("menu",     (ctx) => ctx.reply("What would you like to do?", mainMenu(getContext(ctx.from?.id))));
-bot.command("help",     showHelp);
-bot.command("balance",  showBalance);
-bot.command("history",  showHistory);
+bot.command("menu", (ctx) => ctx.reply("What would you like to do?", mainMenu(getContext(ctx.from?.id))));
+bot.command("help", showHelp);
+bot.command("balance", showBalance);
+bot.command("history", showHistory);
 bot.command("settings", (ctx) => { convState.clearState(ctx.from.id); return showSettings(ctx); });
-bot.command("lock",     async (ctx) => {
+bot.command("lock", async (ctx) => {
   const user = requireUser(ctx);
   if (!user) return;
   if (user.is_blocked) return ctx.reply("Your account is already locked. Send /unlock to restore access.");
   convState.setState(ctx.from.id, "confirm_lock", {}, getContext(ctx.from.id));
   return ctx.reply("Enter your PIN to lock your account.");
 });
-bot.command("unlock",   async (ctx) => {
+bot.command("unlock", async (ctx) => {
   const user = db.getUser(ctx.from.id);
   if (!user) return ctx.reply("Send /start to set up your wallet first.");
   if (!user.is_blocked) return ctx.reply("Your account is not locked.");
   convState.setState(ctx.from.id, "confirm_unlock", {}, getContext(ctx.from.id));
   return ctx.reply("Enter your PIN to unlock your account.");
 });
-bot.command("yields",   showYields);
-bot.command("deposit",  showReceive);
+bot.command("yields", showYields);
+bot.command("deposit", showReceive);
 bot.command("contacts", showContacts);
-bot.command("autopay",  showAutoPay);
+bot.command("autopay", showAutoPay);
 bot.command(["send", "withdraw", "cashout"], async (ctx) => {
   const text = ctx.message?.text?.trim() || "";
   const parsed = socialTransfers.parseTransferInstruction(text);
@@ -6089,8 +6087,8 @@ bot.command("pay", async (ctx) => {
   }
   return showSendMoneyMenu(ctx);
 });
-bot.command("switch",   (ctx) => handleSwitchAccount(ctx));
-bot.command("invoice",  (ctx) => {
+bot.command("switch", (ctx) => handleSwitchAccount(ctx));
+bot.command("invoice", (ctx) => {
   const context = getContext(ctx.from?.id);
   if (context === "business") return showBizInvoiceMenu(ctx);
   convState.setState(ctx.from.id, "await_invoice_instruction", {}, context);
@@ -6364,17 +6362,17 @@ bot.command(["user", "lookup"], async (ctx) => {
         console.warn("[user:inspect] vault sync error:", syncErr.message);
       }
       positions = db.db.prepare("SELECT * FROM yield_positions WHERE telegram_id = ? OR telegram_id = ? ORDER BY id DESC LIMIT 10").all(tgId, targetUser.telegram_id);
-    } catch {}
+    } catch { }
 
     let txs = [];
     try {
       txs = db.db.prepare("SELECT * FROM transactions WHERE telegram_id = ? OR telegram_id = ? OR telegram_id = ? ORDER BY id DESC LIMIT 25").all(tgId, targetUser.telegram_id, String(tgId));
-    } catch {}
+    } catch { }
 
     let cctpBurns = [];
     try {
       cctpBurns = db.db.prepare("SELECT * FROM cctp_pending_burns WHERE telegram_id = ? OR telegram_id = ? ORDER BY id DESC LIMIT 5").all(tgId, targetUser.telegram_id);
-    } catch {}
+    } catch { }
 
     let nearAddr = null;
     let nearBal = { exists: false, balanceNear: 0 };
@@ -6396,9 +6394,9 @@ bot.command(["user", "lookup"], async (ctx) => {
 
     const txLines = txs.length
       ? txs.map(t => {
-          const hashShort = t.tx_hash ? (t.tx_hash.length > 20 ? `${t.tx_hash.slice(0, 10)}...${t.tx_hash.slice(-8)}` : t.tx_hash) : null;
-          return `• #${t.id} ${t.type} [${t.status}] $${t.amount_micro ? (Number(t.amount_micro) / 1e18).toFixed(2) : '0.00'} USDC (${t.created_at || 'n/a'})${hashShort ? `\n  hash: <code>${hashShort}</code>` : ''}`;
-        }).join("\n")
+        const hashShort = t.tx_hash ? (t.tx_hash.length > 20 ? `${t.tx_hash.slice(0, 10)}...${t.tx_hash.slice(-8)}` : t.tx_hash) : null;
+        return `• #${t.id} ${t.type} [${t.status}] $${t.amount_micro ? (Number(t.amount_micro) / 1e18).toFixed(2) : '0.00'} USDC (${t.created_at || 'n/a'})${hashShort ? `\n  hash: <code>${hashShort}</code>` : ''}`;
+      }).join("\n")
       : "None";
 
     const burnLines = cctpBurns.length
@@ -6550,7 +6548,7 @@ bot.command("complete_withdraw", async (ctx) => {
 
     const cctpBridge = require("./src/cctp_bridge");
     let pendingBurns = [];
-    try { pendingBurns = db.getPendingCctpBurns() || []; } catch {}
+    try { pendingBurns = db.getPendingCctpBurns() || []; } catch { }
     const userBurns = pendingBurns.filter(b => b.telegram_id === telegramId || b.telegram_id === 0);
 
     const targetBurn = userBurns[0];
@@ -6646,7 +6644,7 @@ bot.action("admin_cctp_retry", async (ctx) => {
 
 bot.on("text", async (ctx) => {
   const state = convState.getState(ctx.from.id);
-  const text  = ctx.message.text.trim();
+  const text = ctx.message.text.trim();
   const userId = ctx.from.id;
 
   // ── Fixed Menu Button & Navigation Interceptor ─────────────────────────────
@@ -6867,7 +6865,7 @@ bot.on("text", async (ctx) => {
 
     if (state.type === "onboard_biz_terms") {
       const days = parseInt(text) || 14;
-      const d    = state.data;
+      const d = state.data;
       convState.setState(userId, "onboard_biz_logo", { ...d, defaultDueDays: days }, "business");
       return ctx.reply(
         `Almost done.\n\n` +
@@ -6890,18 +6888,18 @@ bot.on("text", async (ctx) => {
       const personalWallet = walletLib.generateUserWallet();
       const businessWallet = walletLib.generateUserWallet();
       convState.setState(userId, "onboarding_pin", {
-        accountType:      "business",
-        address:          personalWallet.address,
-        privateKey:       personalWallet.privateKey,
-        businessAddress:  businessWallet.address,
+        accountType: "business",
+        address: personalWallet.address,
+        privateKey: personalWallet.privateKey,
+        businessAddress: businessWallet.address,
         businessPrivateKey: businessWallet.privateKey,
-        username:         ctx.from.username,
+        username: ctx.from.username,
         bizProfile: {
-          businessName:    d.businessName,
-          businessEmail:   d.businessEmail,
-          phone:           d.businessPhone,
-          address:         d.businessAddress,
-          defaultDueDays:  d.defaultDueDays,
+          businessName: d.businessName,
+          businessEmail: d.businessEmail,
+          phone: d.businessPhone,
+          address: d.businessAddress,
+          defaultDueDays: d.defaultDueDays,
         },
         referrerId: d.referrerId || null,
         pendingClaimToken: d.pendingClaimToken || null,
@@ -6920,7 +6918,7 @@ bot.on("text", async (ctx) => {
       await deleteSensitiveMessage(ctx);
       if (!/^\d{4}$/.test(text)) return ctx.reply("PIN must be exactly 4 digits. Try again.");
 
-      const isBusiness   = state.data.accountType === "business";
+      const isBusiness = state.data.accountType === "business";
       const existingUser = db.getUser(userId);
 
       if (existingUser) {
@@ -6940,7 +6938,7 @@ bot.on("text", async (ctx) => {
           state.data.address,
           state.data.privateKey,
           text,
-          isBusiness ? state.data.businessAddress    : null,
+          isBusiness ? state.data.businessAddress : null,
           isBusiness ? state.data.businessPrivateKey : null,
           state.data.referrerId || null
         );
@@ -6984,7 +6982,7 @@ bot.on("text", async (ctx) => {
                 `@${ctx.from.username || ctx.from.first_name || "Your friend"} just joined Proxim and claimed your <b>$${Number(claimRes.escrow.amount_usdc).toFixed(2)}</b> gift!`,
                 { parse_mode: "HTML" }
               );
-            } catch (_) {}
+            } catch (_) { }
           }
         } catch (err) {
           console.error("[onboarding_claim_gift_error]", err.message);
@@ -7066,7 +7064,7 @@ bot.on("text", async (ctx) => {
         try {
           const refreshed = await walletLib.getNativeBalanceMicro(arcAddr);
           arcBal = parseFloat(walletLib.formatMicro(refreshed));
-        } catch {}
+        } catch { }
 
         const isSettled = bridgeRes && bridgeRes.status === "completed" && bridgeRes.arcTxHash;
         if (isSettled || (arcBal > 0 && bridgeRes?.status === "completed")) {
@@ -7084,7 +7082,7 @@ bot.on("text", async (ctx) => {
               parse_mode: "HTML",
               ...Markup.inlineKeyboard([
                 [Markup.button.callback("💰 View Balance", "action_balance")],
-                [Markup.button.callback("🏠 Main Menu",    "main_menu")],
+                [Markup.button.callback("🏠 Main Menu", "main_menu")],
               ]),
             }
           );
@@ -7102,7 +7100,7 @@ bot.on("text", async (ctx) => {
               ...Markup.inlineKeyboard([
                 [Markup.button.callback("🔄 Refresh Status", `action_check_paj_onramp_${stateData.orderId || ""}`)],
                 [Markup.button.callback("💰 View Balance", "action_balance")],
-                [Markup.button.callback("🏠 Main Menu",    "main_menu")],
+                [Markup.button.callback("🏠 Main Menu", "main_menu")],
               ]),
             }
           );
@@ -7255,7 +7253,7 @@ bot.on("text", async (ctx) => {
       if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
       const user = db.getUser(userId);
       try {
-        const pk    = state.data.walletType === "business"
+        const pk = state.data.walletType === "business"
           ? db.decryptBusinessPrivateKey(text, user)
           : db.decryptPrivateKey(text, user);
         const label = state.data.walletType === "business" ? "Business" : "Personal";
@@ -7318,7 +7316,7 @@ bot.on("text", async (ctx) => {
       const user = db.getUser(userId);
       let pk, bizPk;
       try {
-        pk    = db.decryptPrivateKey(text, user);
+        pk = db.decryptPrivateKey(text, user);
         if (user.business_deposit_address) bizPk = db.decryptBusinessPrivateKey(text, user);
       } catch {
         convState.clearState(userId);
@@ -7388,7 +7386,7 @@ bot.on("text", async (ctx) => {
         `✅ Wallet linked!\n${text}`,
         Markup.inlineKeyboard([
           [Markup.button.callback("📤 Send Dollars", "action_sendout_menu")],
-          [Markup.button.callback("« Settings",      "action_settings")],
+          [Markup.button.callback("« Settings", "action_settings")],
         ])
       );
     }
@@ -7474,7 +7472,7 @@ bot.on("text", async (ctx) => {
             parse_mode: "HTML",
             ...Markup.inlineKeyboard([
               [Markup.button.callback("⚡ Transfer to Arc", "gateway_transfer_arc")],
-              [Markup.button.callback("🏠 Main Menu",      "main_menu")],
+              [Markup.button.callback("🏠 Main Menu", "main_menu")],
             ]),
           }
         );
@@ -7534,7 +7532,7 @@ bot.on("text", async (ctx) => {
           `\nTap Check Balance to confirm.`,
           Markup.inlineKeyboard([
             [Markup.button.callback("💰 Check Balance", "action_balance")],
-            [Markup.button.callback("🏠 Main Menu",     "main_menu")],
+            [Markup.button.callback("🏠 Main Menu", "main_menu")],
           ])
         );
       } catch (err) {
@@ -7546,7 +7544,7 @@ bot.on("text", async (ctx) => {
           `• Sepolia ~12 min · Base ~2 min · Fuji instant`,
           Markup.inlineKeyboard([
             [Markup.button.callback("🔍 Check Balance", "gateway_balance")],
-            [Markup.button.callback("« Back",           "action_gateway")],
+            [Markup.button.callback("« Back", "action_gateway")],
           ])
         );
       }
@@ -7634,12 +7632,12 @@ bot.on("text", async (ctx) => {
           try {
             const rates = await paj.getRates("NGN");
             onRampRate = rates?.onRampRate?.rate;
-          } catch (_) {}
+          } catch (_) { }
         }
         if (!onRampRate) {
           try {
             onRampRate = await fx.getUsdToNgnRate();
-          } catch (_) {}
+          } catch (_) { }
         }
         const tokenAmount = onRampRate ? (fiatAmount / onRampRate).toFixed(2) : "...";
 
@@ -7676,8 +7674,8 @@ bot.on("text", async (ctx) => {
             parse_mode: "HTML",
             ...Markup.inlineKeyboard([
               [Markup.button.callback("🔄 Refresh Status", `action_check_paj_onramp_${order.id}`)],
-              [Markup.button.callback("💰 View Balance",   "action_balance")],
-              [Markup.button.callback("🏠 Main Menu",      "main_menu")],
+              [Markup.button.callback("💰 View Balance", "action_balance")],
+              [Markup.button.callback("🏠 Main Menu", "main_menu")],
             ]),
           }
         );
@@ -7990,65 +7988,65 @@ bot.on("text", async (ctx) => {
       return promptForWithdrawNarration(ctx, userId, withdrawData, state.context);
     }
 
-function formatCustomerFriendlyOfframpError(rawError) {
-  const err = String(rawError || "").toLowerCase();
-  let reason = "An unexpected issue occurred while communicating with the banking settlement network.";
-  let tip = "Please check your network connection and retry in a few moments.";
+    function formatCustomerFriendlyOfframpError(rawError) {
+      const err = String(rawError || "").toLowerCase();
+      let reason = "An unexpected issue occurred while communicating with the banking settlement network.";
+      let tip = "Please check your network connection and retry in a few moments.";
 
-  if (err.includes("you can send up to")) {
-    reason = String(rawError).replace(/^Transfer failed:\s*/i, "").trim();
-    tip = "Try sending the suggested maximum amount above so your balance covers both the transfer and the 1% fee.";
-  } else if (err.includes("not enough") || err.includes("insufficient") || err.includes("balance")) {
-    reason = "Your wallet balance is insufficient to cover this cash-out amount and the 1% fee.";
-    tip = "Please check your balance or move funds between chains before trying again.";
-  } else if (err.includes("minimum") || err.includes("at least") || err.includes("below")) {
-    reason = "The cash-out amount is below the provider minimum threshold ($1.00 USDC).";
-    tip = "Please enter an amount of at least $1.00 USDC.";
-  } else if (err.includes("bankcode") || err.includes("missing bank") || err.includes("could not identify bank") || err.includes("invalid bank")) {
-    reason = "The destination bank could not be recognized or is not supported.";
-    tip = "Please select a supported Nigerian bank (e.g. GTBank, Kuda, Access, Zenith, OPay).";
-  } else if (err.includes("offline") || err.includes("maintenance") || err.includes("switch")) {
-    reason = "The destination bank is temporarily offline on the banking settlement switch.";
-    tip = "Please try sending to another bank account or try again in a few minutes.";
-  } else if (err.includes("solana transfer") || err.includes("custom program error") || err.includes("simulation failed") || err.includes("0x1")) {
-    reason = "The blockchain transfer on Solana could not be executed (insufficient SOL for rent/fees or token account issue).";
-    tip = "Your funds remain untouched. Please wait 1–2 minutes and retry.";
-  } else if (err.includes("reverted") || err.includes("status: 0")) {
-    reason = "The blockchain network transaction reverted during execution.";
-    tip = "No funds moved from your wallet. Please retry your cash out.";
-  } else if (err.includes("invalid account") || err.includes("account number") || err.includes("account_number") || err.includes("could not find account") || err.includes("nibss")) {
-    reason = "The destination bank account details could not be validated by the interbank switch (NIBSS).";
-    tip = "Please verify your 10-digit account number and bank selection, or try another bank account.";
-  } else if (err.includes("limit") || err.includes("exceed")) {
-    reason = "This cash out exceeds transaction or daily banking limits for the account.";
-    tip = "Try a smaller amount or check your account tier.";
-  } else if (err.includes("paymaster") || err.includes("gas")) {
-    reason = "Network gas fee could not be paid by your wallet.";
-    tip = "Please ensure you have enough USDC for network gas or wait a moment for gas sponsorship.";
-  } else if (err.includes("500") || err.includes("502") || err.includes("503") || err.includes("gateway") || err.includes("paj") || err.includes("partner")) {
-    reason = "Our settlement banking partner is temporarily undergoing maintenance or experiencing downtime.";
-    tip = "Your dollars remain completely safe in your wallet. Please retry in 5–10 minutes.";
-  } else if (err.includes("timeout") || err.includes("timed out")) {
-    reason = "The interbank transfer timed out waiting for confirmation.";
-    tip = "No money left your account. Please retry your cash out.";
-  } else if (err.includes("already processing")) {
-    reason = "A cash out with these exact details is already currently processing.";
-    tip = "Please wait a moment for the current request to finalize.";
-  } else if (rawError) {
-    reason = String(rawError).replace(/^Transfer failed:\s*/i, "").replace(/^Paj createOfframpOrder failed \(\d+\):\s*/i, "").replace(/[{"}]/g, "").slice(0, 160);
-  }
+      if (err.includes("you can send up to")) {
+        reason = String(rawError).replace(/^Transfer failed:\s*/i, "").trim();
+        tip = "Try sending the suggested maximum amount above so your balance covers both the transfer and the 1% fee.";
+      } else if (err.includes("not enough") || err.includes("insufficient") || err.includes("balance")) {
+        reason = "Your wallet balance is insufficient to cover this cash-out amount and the 1% fee.";
+        tip = "Please check your balance or move funds between chains before trying again.";
+      } else if (err.includes("minimum") || err.includes("at least") || err.includes("below")) {
+        reason = "The cash-out amount is below the provider minimum threshold ($1.00 USDC).";
+        tip = "Please enter an amount of at least $1.00 USDC.";
+      } else if (err.includes("bankcode") || err.includes("missing bank") || err.includes("could not identify bank") || err.includes("invalid bank")) {
+        reason = "The destination bank could not be recognized or is not supported.";
+        tip = "Please select a supported Nigerian bank (e.g. GTBank, Kuda, Access, Zenith, OPay).";
+      } else if (err.includes("offline") || err.includes("maintenance") || err.includes("switch")) {
+        reason = "The destination bank is temporarily offline on the banking settlement switch.";
+        tip = "Please try sending to another bank account or try again in a few minutes.";
+      } else if (err.includes("solana transfer") || err.includes("custom program error") || err.includes("simulation failed") || err.includes("0x1")) {
+        reason = "The blockchain transfer on Solana could not be executed (insufficient SOL for rent/fees or token account issue).";
+        tip = "Your funds remain untouched. Please wait 1–2 minutes and retry.";
+      } else if (err.includes("reverted") || err.includes("status: 0")) {
+        reason = "The blockchain network transaction reverted during execution.";
+        tip = "No funds moved from your wallet. Please retry your cash out.";
+      } else if (err.includes("invalid account") || err.includes("account number") || err.includes("account_number") || err.includes("could not find account") || err.includes("nibss")) {
+        reason = "The destination bank account details could not be validated by the interbank switch (NIBSS).";
+        tip = "Please verify your 10-digit account number and bank selection, or try another bank account.";
+      } else if (err.includes("limit") || err.includes("exceed")) {
+        reason = "This cash out exceeds transaction or daily banking limits for the account.";
+        tip = "Try a smaller amount or check your account tier.";
+      } else if (err.includes("paymaster") || err.includes("gas")) {
+        reason = "Network gas fee could not be paid by your wallet.";
+        tip = "Please ensure you have enough USDC for network gas or wait a moment for gas sponsorship.";
+      } else if (err.includes("500") || err.includes("502") || err.includes("503") || err.includes("gateway") || err.includes("paj") || err.includes("partner")) {
+        reason = "Our settlement banking partner is temporarily undergoing maintenance or experiencing downtime.";
+        tip = "Your dollars remain completely safe in your wallet. Please retry in 5–10 minutes.";
+      } else if (err.includes("timeout") || err.includes("timed out")) {
+        reason = "The interbank transfer timed out waiting for confirmation.";
+        tip = "No money left your account. Please retry your cash out.";
+      } else if (err.includes("already processing")) {
+        reason = "A cash out with these exact details is already currently processing.";
+        tip = "Please wait a moment for the current request to finalize.";
+      } else if (rawError) {
+        reason = String(rawError).replace(/^Transfer failed:\s*/i, "").replace(/^Paj createOfframpOrder failed \(\d+\):\s*/i, "").replace(/[{"}]/g, "").slice(0, 160);
+      }
 
-  const safeReason = escapeHtml(reason);
-  const safeTip = escapeHtml(tip);
+      const safeReason = escapeHtml(reason);
+      const safeTip = escapeHtml(tip);
 
-  return (
-    `❌ <b>Cash Out Unsuccessful</b>\n` +
-    `──────────────────────────\n` +
-    `⚠️ <b>Reason:</b> ${safeReason}\n\n` +
-    `🔒 <b>Status:</b> <b>No funds were deducted.</b> Your USDC balance is safe in your wallet.\n\n` +
-    `💡 <b>Next Step:</b> ${safeTip}`
-  );
-}
+      return (
+        `❌ <b>Cash Out Unsuccessful</b>\n` +
+        `──────────────────────────\n` +
+        `⚠️ <b>Reason:</b> ${safeReason}\n\n` +
+        `🔒 <b>Status:</b> <b>No funds were deducted.</b> Your USDC balance is safe in your wallet.\n\n` +
+        `💡 <b>Next Step:</b> ${safeTip}`
+      );
+    }
 
     if (state.type === "await_withdraw_narration") {
       const rawText = String(text || "").trim();
@@ -8226,7 +8224,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
     if (state.type === "await_sendout_amount") {
       const amount = parseFloat(text.replace(/[^0-9.]/g, ""));
       if (isNaN(amount) || amount <= 0) return ctx.reply("Enter a valid amount:");
-      const user    = requireUser(ctx);
+      const user = requireUser(ctx);
       if (!user) return;
       const address = getActiveWallet(user);
       let amountMicro;
@@ -8260,8 +8258,8 @@ function formatCustomerFriendlyOfframpError(rawError) {
       }
       const recipient = state.data.recipientName || state.data.walletAddress;
       convState.setState(userId, "confirm_sendout", {
-        amountUsdc:    amount,
-        token:         state.data.token || "USDC",
+        amountUsdc: amount,
+        token: state.data.token || "USDC",
         walletAddress: state.data.walletAddress,
         recipientName: state.data.recipientName || null,
       }, state.context);
@@ -8277,16 +8275,16 @@ function formatCustomerFriendlyOfframpError(rawError) {
       await deleteSensitiveMessage(ctx);
       if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
       if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
-      const user    = db.getUser(userId);
+      const user = db.getUser(userId);
       const context = state.context || "personal";
       convState.clearState(userId);
       await ctx.reply("⏳ Sending...");
 
       const plan = {
         payments: [{
-          to:       state.data.walletAddress,
-          amount:   state.data.amountUsdc,
-          label:    `Send to ${state.data.recipientName || state.data.walletAddress}`,
+          to: state.data.walletAddress,
+          amount: state.data.amountUsdc,
+          label: `Send to ${state.data.recipientName || state.data.walletAddress}`,
           currency: state.data.token || "USDC",
         }],
       };
@@ -8300,17 +8298,17 @@ function formatCustomerFriendlyOfframpError(rawError) {
         }
         try {
           const receiptPath = await generateReceiptPNG({
-            receiptId:        results[0].txHash?.slice(0, 10) || `TX-${Date.now()}`,
-            senderName:       "Proxim Wallet",
-            senderAddress:    getActiveWallet(user),
-            recipientName:    state.data.recipientName || state.data.walletAddress,
+            receiptId: results[0].txHash?.slice(0, 10) || `TX-${Date.now()}`,
+            senderName: "Proxim Wallet",
+            senderAddress: getActiveWallet(user),
+            recipientName: state.data.recipientName || state.data.walletAddress,
             recipientAddress: state.data.walletAddress,
-            amountUsdc:       state.data.amountUsdc,
-            token:            state.data.token || "USDC",
-            type:             "Payment",
-            timestamp:        new Date().toISOString(),
-            status:           "Confirmed",
-            txHash:           results[0].txHash,
+            amountUsdc: state.data.amountUsdc,
+            token: state.data.token || "USDC",
+            type: "Payment",
+            timestamp: new Date().toISOString(),
+            status: "Confirmed",
+            txHash: results[0].txHash,
           });
           await ctx.replyWithPhoto({ source: receiptPath }, { caption: "✅ Payment sent!", ...afterPaymentButtons });
         } catch {
@@ -8347,7 +8345,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
       try {
         const balMicro = await walletLib.getNativeBalanceMicro(address);
         balNum = parseFloat(walletLib.formatMicro(balMicro));
-      } catch (_) {}
+      } catch (_) { }
 
       if (amount > balNum) {
         return replyInsufficientP2PBalance(ctx, userId, amount, balNum, state.context);
@@ -8405,7 +8403,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
           if (results[0]?.success) {
             try {
               db.awardPoints(userId, POINTS.sendout || 10, "p2p_send", `Sent $${amountUsdc.toFixed(2)} to @${targetUsername}`);
-            } catch (_) {}
+            } catch (_) { }
 
             try {
               const receiptPath = await generateReceiptPNG({
@@ -8569,7 +8567,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
               db.updateBizSystemEncryptedKey(userId, bizSysEnc);
               user.biz_system_encrypted_key = bizSysEnc;
             }
-          } catch (_) {}
+          } catch (_) { }
         }
       } catch (err) {
         console.warn("[sweep_auth_pin] Failed to backfill system_encrypted_key:", err.message);
@@ -8817,7 +8815,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
         explorerLink,
         Markup.inlineKeyboard([
           [Markup.button.callback("📊 My Savings", "action_my_yield")],
-          [Markup.button.callback("🏠 Main Menu",  "main_menu")],
+          [Markup.button.callback("🏠 Main Menu", "main_menu")],
         ])
       );
     }
@@ -8982,7 +8980,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
             parse_mode: "HTML",
             ...afterPaymentButtons,
           });
-        } catch (_) {}
+        } catch (_) { }
       }
 
       return ctx.reply(caption, {
@@ -9105,7 +9103,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
       }
       try {
         db.awardPoints(userId, POINTS.swap || 4, "token_swap", `Swapped ${state.data.amountIn} ${state.data.fromToken}`);
-      } catch (e) {}
+      } catch (e) { }
 
       const explorerLink = swapTxHash ? `\n\n🔗 <a href="${netConfig.explorerUrl}/tx/${swapTxHash}">View on Arc Explorer</a>` : "";
       const soldLabel = state.data.fromToken === "USDC" ? `$${state.data.amountIn.toFixed(2)} Dollars` : `€${state.data.amountIn.toFixed(2)} Euros`;
@@ -9209,7 +9207,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
       }
       return;
     }
-    
+
     if (state.type === "confirm_biz_invoice_pin") {
       await deleteSensitiveMessage(ctx);
       if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
@@ -9291,9 +9289,9 @@ function formatCustomerFriendlyOfframpError(rawError) {
           caption,
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
-            [Markup.button.callback("📋 All Invoices",  "action_list_biz_invoices")],
-            [Markup.button.callback(`✅ Mark as Paid`,  `action_bizpaid_${fullBizInvoice.invoiceId}`)],
-            [Markup.button.callback("🏠 Main Menu",     "main_menu")],
+            [Markup.button.callback("📋 All Invoices", "action_list_biz_invoices")],
+            [Markup.button.callback(`✅ Mark as Paid`, `action_bizpaid_${fullBizInvoice.invoiceId}`)],
+            [Markup.button.callback("🏠 Main Menu", "main_menu")],
           ]),
         });
       } catch (err) {
@@ -9367,10 +9365,10 @@ function formatCustomerFriendlyOfframpError(rawError) {
           prev.params.recipients[0].name_or_address = input;
           prev.params.recipients[0]._resolved = true;
           const missingNow = getMissingQuestion(prev);
-          if (missingNow) return ctx.reply(missingNow, Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+          if (missingNow) return ctx.reply(missingNow, Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'main_menu')]]));
           convState.setState(userId, 'confirm_intent_pin', { classified: prev }, getContext(userId));
           const confirmText = buildConfirmationText(prev, prev.params.recipients);
-          return ctx.reply(`${confirmText}\n\nEnter your PIN to confirm:`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]) });
+          return ctx.reply(`${confirmText}\n\nEnter your PIN to confirm:`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'main_menu')]]) });
         }
       }
 
@@ -9382,14 +9380,14 @@ function formatCustomerFriendlyOfframpError(rawError) {
           prev.params.recipients[0].account_number = digits;
           prev.params.recipients[0].name_or_address = input;
           const missingNow = getMissingQuestion(prev);
-          if (missingNow) return ctx.reply(missingNow, Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+          if (missingNow) return ctx.reply(missingNow, Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'main_menu')]]));
           convState.setState(userId, 'confirm_intent_pin', { classified: prev }, getContext(userId));
           const confirmText = buildConfirmationText(prev, prev.params.recipients);
-          return ctx.reply(`${confirmText}\n\nEnter your PIN to confirm:`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]) });
+          return ctx.reply(`${confirmText}\n\nEnter your PIN to confirm:`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'main_menu')]]) });
         }
       }
 
-      return ctx.reply("I couldn't recognise that address or account number. Paste a full 0x address or a 10-digit Naira account number.", Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+      return ctx.reply("I couldn't recognise that address or account number. Paste a full 0x address or a 10-digit Naira account number.", Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'main_menu')]]));
     }
 
     // ── Clarification: enter amount ────────────────────────────────────────
@@ -9406,17 +9404,17 @@ function formatCustomerFriendlyOfframpError(rawError) {
         const justNum = parseFloat(amtText.replace(/[^0-9.]/g, ''));
         if (!isNaN(justNum)) { amount = justNum; currency = 'USDC'; }
       }
-      if (!amount || amount <= 0) return ctx.reply("Couldn't read that amount. Try: $50 or 5000 NGN", Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+      if (!amount || amount <= 0) return ctx.reply("Couldn't read that amount. Try: $50 or 5000 NGN", Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'main_menu')]]));
       if (prev && prev.params && prev.params.recipients && prev.params.recipients[0]) {
         prev.params.recipients[0].amount = amount;
         prev.params.recipients[0].currency = currency || prev.params.recipients[0].currency || 'USDC';
         const missingNow = getMissingQuestion(prev);
-        if (missingNow) return ctx.reply(missingNow, Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+        if (missingNow) return ctx.reply(missingNow, Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'main_menu')]]));
         convState.setState(userId, 'confirm_intent_pin', { classified: prev }, getContext(userId));
         const confirmText = buildConfirmationText(prev, prev.params.recipients);
-        return ctx.reply(`${confirmText}\n\nEnter your PIN to confirm:`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]) });
+        return ctx.reply(`${confirmText}\n\nEnter your PIN to confirm:`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'main_menu')]]) });
       }
-      return ctx.reply("Couldn't attach that amount to a pending instruction.", Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+      return ctx.reply("Couldn't attach that amount to a pending instruction.", Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'main_menu')]]));
     }
 
     // ── Clarification: bank details ────────────────────────────────────────
@@ -9427,18 +9425,18 @@ function formatCustomerFriendlyOfframpError(rawError) {
       const bank = parts[0] || null;
       const acct = (parts[1] || '').replace(/\D/g, '') || null;
       const name = parts[2] || null;
-      if (!acct || acct.length < 6) return ctx.reply('Could not read an account number. Format: Bank · 0123456789 · Account Name', Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+      if (!acct || acct.length < 6) return ctx.reply('Could not read an account number. Format: Bank · 0123456789 · Account Name', Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'main_menu')]]));
       if (prev && prev.params && prev.params.recipients && prev.params.recipients[0]) {
         prev.params.recipients[0].bank_name = bank;
         prev.params.recipients[0].account_number = acct;
         prev.params.recipients[0].account_name = name;
         const missingNow = getMissingQuestion(prev);
-        if (missingNow) return ctx.reply(missingNow, Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+        if (missingNow) return ctx.reply(missingNow, Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'main_menu')]]));
         convState.setState(userId, 'confirm_intent_pin', { classified: prev }, getContext(userId));
         const confirmText = buildConfirmationText(prev, prev.params.recipients);
-        return ctx.reply(`${confirmText}\n\nEnter your PIN to confirm:`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]) });
+        return ctx.reply(`${confirmText}\n\nEnter your PIN to confirm:`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'main_menu')]]) });
       }
-      return ctx.reply('Could not attach those bank details to a pending instruction.', Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel','main_menu')]]));
+      return ctx.reply('Could not attach those bank details to a pending instruction.', Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'main_menu')]]));
     }
 
     // ── Business invoice instruction ─────────────────────────────────────────
@@ -9449,9 +9447,9 @@ function formatCustomerFriendlyOfframpError(rawError) {
       if (!user) return;
       await ctx.reply("⏳ Parsing your invoice...");
       const walletAddress = user.business_deposit_address || user.deposit_address;
-      const profile       = bizProfile.getBizProfile(userId);
+      const profile = bizProfile.getBizProfile(userId);
       const parsed = await parseSmartInvoiceIntent(text, {
-        businessName:  profile?.business_name || ctx.from.username || `User ${userId}`,
+        businessName: profile?.business_name || ctx.from.username || `User ${userId}`,
         walletAddress,
       });
       if (parsed.error) {
@@ -9460,7 +9458,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
           Markup.inlineKeyboard([[Markup.button.callback("🧾 Try Again", "action_new_biz_invoice")]])
         );
       }
-      const total     = parsed.items.reduce((s, i) => s + Number(i.quantity || 1) * Number(i.unitPrice || 0), 0);
+      const total = parsed.items.reduce((s, i) => s + Number(i.quantity || 1) * Number(i.unitPrice || 0), 0);
       const itemLines = parsed.items.map(i => `• ${i.description} × ${i.quantity || 1} @ $${Number(i.unitPrice).toFixed(2)}`).join("\n");
       convState.setState(userId, "confirm_biz_invoice", { parsed, total, walletAddress }, "business");
       return ctx.reply(
@@ -9472,8 +9470,8 @@ function formatCustomerFriendlyOfframpError(rawError) {
         `\nLooks right?`,
         Markup.inlineKeyboard([
           [Markup.button.callback("✅ Generate Invoice", "action_confirm_biz_invoice")],
-          [Markup.button.callback("✏️ Edit",             "action_new_biz_invoice")],
-          [Markup.button.callback("❌ Cancel",            "main_menu")],
+          [Markup.button.callback("✏️ Edit", "action_new_biz_invoice")],
+          [Markup.button.callback("❌ Cancel", "main_menu")],
         ])
       );
     }
@@ -9486,7 +9484,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
       if (!user) return;
       await ctx.reply("⏳ Parsing your invoice...");
       const parsed = await parseSmartInvoiceIntent(text, {
-        businessName:  user.username || `User ${userId}`,
+        businessName: user.username || `User ${userId}`,
         walletAddress: user.deposit_address,
       });
       if (parsed.error) {
@@ -9495,7 +9493,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
           Markup.inlineKeyboard([[Markup.button.callback("🧾 Try Again", "action_new_invoice")]])
         );
       }
-      const total     = parsed.items.reduce((s, i) => s + Number(i.quantity || 1) * Number(i.unitPrice || 0), 0);
+      const total = parsed.items.reduce((s, i) => s + Number(i.quantity || 1) * Number(i.unitPrice || 0), 0);
       const itemLines = parsed.items.map(i => `• ${i.description} × ${i.quantity || 1} @ $${Number(i.unitPrice).toFixed(2)}`).join("\n");
       convState.setState(userId, "confirm_invoice", { parsed, total }, "personal");
       return ctx.reply(
@@ -9505,8 +9503,8 @@ function formatCustomerFriendlyOfframpError(rawError) {
         (parsed.dueDate ? `Due: ${parsed.dueDate}\n` : ""),
         Markup.inlineKeyboard([
           [Markup.button.callback("✅ Generate Invoice", "action_confirm_invoice")],
-          [Markup.button.callback("✏️ Edit",             "action_new_invoice")],
-          [Markup.button.callback("❌ Cancel",            "main_menu")],
+          [Markup.button.callback("✏️ Edit", "action_new_invoice")],
+          [Markup.button.callback("❌ Cancel", "main_menu")],
         ])
       );
     }
@@ -9530,12 +9528,12 @@ function formatCustomerFriendlyOfframpError(rawError) {
 
       const context = state.context || "personal";
       convState.setState(userId, "confirm_shopping_purchase", { parsed, product }, context);
-      
-      const discountText = product.originalPrice && product.discountPercentage 
-        ? ` (${product.discountPercentage}% OFF — Original $${product.originalPrice})` 
+
+      const discountText = product.originalPrice && product.discountPercentage
+        ? ` (${product.discountPercentage}% OFF — Original $${product.originalPrice})`
         : "";
 
-      const cardText = 
+      const cardText =
         `🛒 Found a verified match!\n` +
         `──────────────────────────\n\n` +
         `📦 Product: ${product.name}\n` +
@@ -9581,7 +9579,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
       const { product } = state.data;
       const context = state.context || "personal";
       convState.clearState(userId);
-      
+
       await ctx.reply("⏳ Processing payment...");
       const plan = {
         payments: [{
@@ -9604,9 +9602,9 @@ function formatCustomerFriendlyOfframpError(rawError) {
     if (state.type === "await_expense_entry") {
       convState.clearState(userId);
       const nairaMatch = text.match(/[₦]?\s*(\d[\d,]*)\s*(naira|ngn)/i);
-      const usdcMatch  = text.match(/\$?\s*(\d+(?:\.\d+)?)\s*(usdc|\$|dollar)/i);
+      const usdcMatch = text.match(/\$?\s*(\d+(?:\.\d+)?)\s*(usdc|\$|dollar)/i);
       let amount = 0, currency = "NGN";
-      if (usdcMatch)  { amount = parseFloat(usdcMatch[1]);  currency = "USDC"; }
+      if (usdcMatch) { amount = parseFloat(usdcMatch[1]); currency = "USDC"; }
       else if (nairaMatch) { amount = parseFloat(nairaMatch[1].replace(/,/g, "")); }
       else {
         const numMatch = text.match(/^[\$₦]?(\d+(?:\.\d+)?)\s+(.+)/);
@@ -9622,9 +9620,9 @@ function formatCustomerFriendlyOfframpError(rawError) {
       return ctx.reply(
         `✅ Expense logged!\n${currency === "USDC" ? "$" : "₦"}${amount.toLocaleString()} — ${text}`,
         Markup.inlineKeyboard([
-          [Markup.button.callback("💸 Log Another",  "action_log_expense")],
-          [Markup.button.callback("📊 This Month",   "action_cash_flow")],
-          [Markup.button.callback("🏠 Main Menu",    "main_menu")],
+          [Markup.button.callback("💸 Log Another", "action_log_expense")],
+          [Markup.button.callback("📊 This Month", "action_cash_flow")],
+          [Markup.button.callback("🏠 Main Menu", "main_menu")],
         ])
       );
     }
@@ -9633,7 +9631,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
 
     if (state.type === "await_savings_goal") {
       convState.clearState(userId);
-      const pct   = parseInt((text.match(/(\d+)%/) || [])[1]) || 10;
+      const pct = parseInt((text.match(/(\d+)%/) || [])[1]) || 10;
       const label = text.replace(/set aside|save|of every invoice/gi, "").trim() || "Savings";
       bizDb.setSavingsGoal(userId, pct, label);
       return ctx.reply(
@@ -9650,7 +9648,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
       if (!user) return;
       await ctx.reply("🤖 Working out your payment plan...");
       let balMicro = BigInt(0);
-      try { balMicro = await walletLib.getNativeBalanceMicro(user.deposit_address); } catch {}
+      try { balMicro = await walletLib.getNativeBalanceMicro(user.deposit_address); } catch { }
       const plan = await parsePaymentIntent(text, {
         balance: walletLib.formatMicro(balMicro),
         address: user.deposit_address,
@@ -9673,9 +9671,9 @@ function formatCustomerFriendlyOfframpError(rawError) {
       await deleteSensitiveMessage(ctx);
       if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
       if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
-      const user     = db.getUser(userId);
+      const user = db.getUser(userId);
       const { plan } = state.data;
-      const context  = state.context || "personal";
+      const context = state.context || "personal";
       convState.clearState(userId);
 
       if (plan.schedule?.frequency) {
@@ -9811,7 +9809,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
       await deleteSensitiveMessage(ctx);
       if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
       if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
-      const user    = db.getUser(userId);
+      const user = db.getUser(userId);
       const context = state.context || "personal";
       const { parsed, plan } = state.data;
       convState.clearState(userId);
@@ -9846,16 +9844,16 @@ function formatCustomerFriendlyOfframpError(rawError) {
       const fallbackPlan = {
         batchId,
         payments: parsed.rows.map((r, idx) => ({
-          to:             r.wallet_address || "__offramp__",
-          amount:         r.amount,
-          label:          r.name || r.description || "Payment",
-          currency:       r.currency || "USDC",
+          to: r.wallet_address || "__offramp__",
+          amount: r.amount,
+          label: r.name || r.description || "Payment",
+          currency: r.currency || "USDC",
           account_number: r.account_number || null,
-          bank_name:      r.bank_name      || null,
-          bank_code:      r.bank_code      || null,
-          account_name:   r.account_name   || null,
-          chain:          r.chain          || null,
-          method:         r.method         || null,
+          bank_name: r.bank_name || null,
+          bank_code: r.bank_code || null,
+          account_name: r.account_name || null,
+          chain: r.chain || null,
+          method: r.method || null,
           idempotency_key: r.idempotency_key || null,
         })),
       };
@@ -9873,7 +9871,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
       await deleteSensitiveMessage(ctx);
       if (!/^\d{4}$/.test(text)) return ctx.reply("Enter your 4-digit PIN.");
       if (!db.verifyPin(userId, text)) { convState.clearState(userId); return ctx.reply("Incorrect PIN."); }
-      const user    = db.getUser(userId);
+      const user = db.getUser(userId);
       const context = state.context || "personal";
       const { parsed } = state.data;
       convState.clearState(userId);
@@ -9881,13 +9879,13 @@ function formatCustomerFriendlyOfframpError(rawError) {
       const isOfframp = !parsed.recipient_wallet && parsed.recipient_account;
       const plan = {
         payments: [{
-          to:             isOfframp ? "__offramp__" : (parsed.recipient_wallet || "__offramp__"),
-          amount:         parsed.amount,
-          label:          parsed.description || "Payment from image",
-          currency:       "USDC",
-          account_number: parsed.recipient_account  || null,
-          bank_name:      parsed.recipient_bank      || null,
-          account_name:   parsed.recipient_name      || null,
+          to: isOfframp ? "__offramp__" : (parsed.recipient_wallet || "__offramp__"),
+          amount: parsed.amount,
+          label: parsed.description || "Payment from image",
+          currency: "USDC",
+          account_number: parsed.recipient_account || null,
+          bank_name: parsed.recipient_bank || null,
+          account_name: parsed.recipient_name || null,
         }],
       };
       try {
@@ -9936,15 +9934,15 @@ function formatCustomerFriendlyOfframpError(rawError) {
 
   await ctx.reply("⏳ On it...");
 
-  const context   = user.active_context || "personal";
-  const address   = getActiveWallet(user);
-  let balMicro    = BigInt(0);
-  try { balMicro  = await walletLib.getNativeBalanceMicro(address); } catch {}
+  const context = user.active_context || "personal";
+  const address = getActiveWallet(user);
+  let balMicro = BigInt(0);
+  try { balMicro = await walletLib.getNativeBalanceMicro(address); } catch { }
 
   const classified = await classifyIntent(text, userId, {
-    balance:         walletLib.formatMicro(balMicro),
+    balance: walletLib.formatMicro(balMicro),
     address,
-    active_context:  context,
+    active_context: context,
   });
 
   // Handle unclassifiable
@@ -10010,12 +10008,20 @@ function formatCustomerFriendlyOfframpError(rawError) {
 
     case "invoice_list":
       return context === "business"
-        ? bot.handleUpdate({ update_id: ctx.update.update_id,
-            callback_query: { id: "0", from: ctx.from, chat_instance: "0",
-              data: "action_list_biz_invoices", message: ctx.message } })
-        : bot.handleUpdate({ update_id: ctx.update.update_id,
-            callback_query: { id: "0", from: ctx.from, chat_instance: "0",
-              data: "action_list_invoices", message: ctx.message } });
+        ? bot.handleUpdate({
+          update_id: ctx.update.update_id,
+          callback_query: {
+            id: "0", from: ctx.from, chat_instance: "0",
+            data: "action_list_biz_invoices", message: ctx.message
+          }
+        })
+        : bot.handleUpdate({
+          update_id: ctx.update.update_id,
+          callback_query: {
+            id: "0", from: ctx.from, chat_instance: "0",
+            data: "action_list_invoices", message: ctx.message
+          }
+        });
 
     case "invoice_create": {
       const instruction = classified.params?.invoice_instruction || text;
@@ -10027,13 +10033,13 @@ function formatCustomerFriendlyOfframpError(rawError) {
       convState.clearState(userId);
       // Parse directly here
       const walletAddress = getActiveWallet(user);
-      const profile       = bizProfile.getBizProfile(userId);
+      const profile = bizProfile.getBizProfile(userId);
       const parsed = await parseSmartInvoiceIntent(instruction, {
-        businessName:  profile?.business_name || user.username || `User ${userId}`,
+        businessName: profile?.business_name || user.username || `User ${userId}`,
         walletAddress,
       });
       if (parsed.error) return ctx.reply(`❌ ${parsed.error}`);
-      const total     = parsed.items.reduce((s, i) => s + Number(i.quantity || 1) * Number(i.unitPrice || 0), 0);
+      const total = parsed.items.reduce((s, i) => s + Number(i.quantity || 1) * Number(i.unitPrice || 0), 0);
       const itemLines = parsed.items.map(i => `• ${i.description} × ${i.quantity || 1} @ $${Number(i.unitPrice).toFixed(2)}`).join("\n");
       const stateType = context === "business" ? "confirm_biz_invoice" : "confirm_invoice";
       convState.setState(userId, stateType, { parsed, total, walletAddress }, context);
@@ -10056,31 +10062,31 @@ function formatCustomerFriendlyOfframpError(rawError) {
       return showContacts(ctx);
 
     case "save_payee": {
-      const r       = classified.params?.recipients?.[0] || {};
+      const r = classified.params?.recipients?.[0] || {};
       const saveName = classified.params?.save_as || r.name_or_address;
-      const addr    = r.wallet_address;
-      const acct    = r.account_number;
+      const addr = r.wallet_address;
+      const acct = r.account_number;
       if (!saveName) return ctx.reply("What name should I save this contact as?");
       if (!addr && !acct) return ctx.reply(`What's the account number or bank details for ${saveName}?`);
       payeeBook.upsertPayee(userId, {
-        name:          saveName,
-        walletAddress: addr   || null,
-        bankName:      r.bank_name      || null,
-        accountNumber: acct   || null,
-        accountName:   r.account_name   || null,
+        name: saveName,
+        walletAddress: addr || null,
+        bankName: r.bank_name || null,
+        accountNumber: acct || null,
+        accountName: r.account_name || null,
       });
       return ctx.reply(
         `✅ ${saveName} saved to your contacts!\n\n` +
         `Now you can say "send $50 to ${saveName}" and Proxim knows who you mean.`,
         Markup.inlineKeyboard([
           [Markup.button.callback("👥 All Contacts", "add_contact")],
-          [Markup.button.callback("🏠 Main Menu",    "main_menu")],
+          [Markup.button.callback("🏠 Main Menu", "main_menu")],
         ])
       );
     }
 
     case "delete_payee": {
-      const r    = classified.params?.recipients?.[0] || {};
+      const r = classified.params?.recipients?.[0] || {};
       const name = r.name_or_address;
       if (!name) return ctx.reply("Who would you like to remove from contacts?");
       payeeBook.deletePayee(userId, name);
@@ -10092,9 +10098,9 @@ function formatCustomerFriendlyOfframpError(rawError) {
       convState.setState(userId, "await_expense_entry", {}, context);
       // Re-process as expense
       const nairaMatch = desc.match(/[₦]?\s*(\d[\d,]*)\s*(naira|ngn)/i);
-      const usdcMatch  = desc.match(/\$?\s*(\d+(?:\.\d+)?)\s*(usdc|\$|dollar)/i);
+      const usdcMatch = desc.match(/\$?\s*(\d+(?:\.\d+)?)\s*(usdc|\$|dollar)/i);
       let amount = 0, currency = "NGN";
-      if (usdcMatch)  { amount = parseFloat(usdcMatch[1]);  currency = "USDC"; }
+      if (usdcMatch) { amount = parseFloat(usdcMatch[1]); currency = "USDC"; }
       else if (nairaMatch) { amount = parseFloat(nairaMatch[1].replace(/,/g, "")); }
       convState.clearState(userId);
       if (amount > 0) {
@@ -10103,7 +10109,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
           `✅ Expense logged!\n${currency === "USDC" ? "$" : "₦"}${amount.toLocaleString()} — ${desc}`,
           Markup.inlineKeyboard([
             [Markup.button.callback("📊 This Month", "action_cash_flow")],
-            [Markup.button.callback("🏠 Main Menu",  "main_menu")],
+            [Markup.button.callback("🏠 Main Menu", "main_menu")],
           ])
         );
       }
@@ -10112,9 +10118,13 @@ function formatCustomerFriendlyOfframpError(rawError) {
     }
 
     case "cash_flow":
-      return bot.handleUpdate({ update_id: ctx.update.update_id,
-        callback_query: { id: "0", from: ctx.from, chat_instance: "0",
-          data: "action_cash_flow", message: ctx.message } });
+      return bot.handleUpdate({
+        update_id: ctx.update.update_id,
+        callback_query: {
+          id: "0", from: ctx.from, chat_instance: "0",
+          data: "action_cash_flow", message: ctx.message
+        }
+      });
 
     case "savings_view": {
       const pos = db.getOpenYieldPosition(userId, context) || db.getOpenYieldPosition(userId);
@@ -10140,15 +10150,23 @@ function formatCustomerFriendlyOfframpError(rawError) {
           Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "action_yields")]])
         );
       }
-      return bot.handleUpdate({ update_id: ctx.update.update_id,
-        callback_query: { id: "0", from: ctx.from, chat_instance: "0",
-          data: "yield_deposit_start", message: ctx.message } });
+      return bot.handleUpdate({
+        update_id: ctx.update.update_id,
+        callback_query: {
+          id: "0", from: ctx.from, chat_instance: "0",
+          data: "yield_deposit_start", message: ctx.message
+        }
+      });
     }
 
     case "savings_withdraw":
-      return bot.handleUpdate({ update_id: ctx.update.update_id,
-        callback_query: { id: "0", from: ctx.from, chat_instance: "0",
-          data: "yield_withdraw_start", message: ctx.message } });
+      return bot.handleUpdate({
+        update_id: ctx.update.update_id,
+        callback_query: {
+          id: "0", from: ctx.from, chat_instance: "0",
+          data: "yield_withdraw_start", message: ctx.message
+        }
+      });
 
     case "help":
       return showHelp(ctx);
@@ -10162,8 +10180,10 @@ function formatCustomerFriendlyOfframpError(rawError) {
       convState.setState(userId, "confirm_intent_pin", { classified }, context);
       return ctx.reply(
         `${confirmText}\n\nEnter your PIN to confirm:`,
-        { parse_mode: "Markdown",
-          ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]) }
+        {
+          parse_mode: "Markdown",
+          ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]])
+        }
       );
     }
 
@@ -10177,7 +10197,7 @@ function formatCustomerFriendlyOfframpError(rawError) {
 
 // ── Intent PIN confirmation (from natural language routing) ───────────────────
 
-bot.on("text", async (ctx) => {}); // placeholder — handled above
+bot.on("text", async (ctx) => { }); // placeholder — handled above
 
 // Handle confirm_intent_pin state — needs to be caught in main text handler
 // This is already handled by the state check at the top of bot.on("text")
@@ -10220,14 +10240,14 @@ async function startBot() {
       console.error("[bot] Failed to set webhook, falling back to polling:", whErr.message);
       try {
         await bot.telegram.deleteWebhook({ drop_pending_updates: false });
-      } catch {}
+      } catch { }
       await bot.launch();
       console.log("Proxim is running via polling fallback.");
     }
   } else {
     try {
       await bot.telegram.deleteWebhook({ drop_pending_updates: false });
-    } catch {}
+    } catch { }
     await bot.launch();
     console.log("Proxim is running via polling.");
   }
@@ -10246,7 +10266,7 @@ async function startBot() {
   console.log(
     "Personal + Business · Dollar + Euro wallets · Image and file reading active."
   );
-  reloadAll(() => {});
+  reloadAll(() => { });
   try {
     await invoiceListener.startInvoiceListener(bot, arcProvider, 10000);
   } catch (err) {
