@@ -394,14 +394,15 @@ function mainMenu(context) {
     return Markup.keyboard([
       ["💼 Business Balance", "📥 Deposit",       "📤 Send Money"],
       ["💡 Pay Bills",        "🧾 New Invoice",   "👥 Pay Team"],
-      ["📋 My Invoices",      "📊 Cash Flow",     "🔁 Switch to Personal"],
-      ["⚙️ Settings & Help"],
+      ["🌍 Global & Cards",   "📋 My Invoices",   "📊 Cash Flow"],
+      ["🔁 Switch to Personal","⚙️ Settings & Help"],
     ]).resize();
   }
   return Markup.keyboard([
     ["💰 Balance",        "📥 Deposit",       "📤 Send Money"],
-    ["💡 Pay Bills",      "📈 Save & Earn",   "🧾 Invoice"],
-    ["📋 History",        "🔁 Switch Account","⚙️ Settings & Help"],
+    ["💡 Pay Bills",      "📈 Save & Earn",   "🌍 Global & Cards"],
+    ["🧾 Invoice",        "📋 History",       "🔁 Switch Account"],
+    ["⚙️ Settings & Help"],
   ]).resize();
 }
 
@@ -562,16 +563,52 @@ bot.start(async (ctx) => {
       const netProfit = grossYield * (1 - savings.PAYIT_FEE_FRACTION);
       balDisplay += ` (+$${(openPos.amount_usdc + netProfit).toFixed(2)} in savings vault)`;
     }
+    const nuvionAllowed = nuvion.isUserAllowedNuvion(ctx.from.id);
+    const nuvionEnt = nuvionAllowed ? db.getNuvionEntityByUser(ctx.from.id, context) : null;
+    const nuvionStatus = String(nuvionEnt?.status || "").toLowerCase();
+    const portalAction = context === "business" ? "biz_nuvion_portal" : "action_nuvion_portal";
+    let tierWelcomeHint = "";
+    if (nuvionAllowed) {
+      if (nuvionStatus === "approved") {
+        tierWelcomeHint = `🌍 Tier: Tier-1 Global Verified ✅ (Global Accounts, 27 Currencies & USD Cards Active)\n`;
+      } else if (nuvionStatus === "pending" || nuvionStatus === "incomplete") {
+        tierWelcomeHint = `⏳ Tier: Verification in progress — tap below to check status\n`;
+      } else {
+        tierWelcomeHint = `🪪 Tier: Standard (Tier 0) — Verify your ID below to unlock USD/GBP/EUR Bank Accounts, Virtual USD Cards & Global Transfers!\n`;
+      }
+    }
+
     await ctx.reply(
       `👋 Welcome back, ${ctx.from.first_name || "there"}!\n\n` +
       `Your balance: ${balDisplay}\n` +
-      `Account: ${context === "business" ? "Business 💼" : "Personal 👤"}\n\n` +
+      `Account: ${context === "business" ? "Business 💼" : "Personal 👤"}\n` +
+      tierWelcomeHint + `\n` +
       `What would you like to do?`,
       mainMenu(context)
     );
+    const toggleMarkup = accountToggle(context);
+    const toggleRows = [...(toggleMarkup.reply_markup?.inline_keyboard || [])];
+    if (nuvionAllowed) {
+      if (nuvionStatus === "approved") {
+        const pKey = context === "business" ? "biz" : "per";
+        toggleRows.unshift([
+          btnPrimary("🌍 Global Accounts", `nuvion_accounts_menu_${pKey}`),
+          btnPrimary("💳 USD Cards", `nuvion_cards_menu_${pKey}`),
+        ]);
+      } else {
+        toggleRows.unshift([
+          btnSuccess(
+            context === "business"
+              ? "💼 Verify Business (KYB) — Unlock Global Accounts & Cards"
+              : "🪪 Verify ID — Unlock Global Accounts & USD Cards",
+            portalAction
+          ),
+        ]);
+      }
+    }
     return ctx.reply(
-      `Active account: ${context === "business" ? "Business 💼" : "Personal 👤"}\nSwitch below:`,
-      accountToggle(context)
+      `Active account: ${context === "business" ? "Business 💼" : "Personal 👤"}\nSwitch or upgrade below:`,
+      Markup.inlineKeyboard(toggleRows)
     );
   }
 
@@ -862,7 +899,22 @@ bot.action("action_switch_account", async (ctx) => {
 bot.action("main_menu", (ctx) => {
   ctx.answerCbQuery();
   const context = getContext(ctx.from?.id);
-  return ctx.reply("What would you like to do?", mainMenu(context));
+  const nuvionAllowed = nuvion.isUserAllowedNuvion(ctx.from?.id);
+  const nuvionEnt = nuvionAllowed ? db.getNuvionEntityByUser(ctx.from?.id, context) : null;
+  const isApproved = String(nuvionEnt?.status || "").toLowerCase() === "approved";
+  const hint = !nuvionAllowed
+    ? ""
+    : isApproved
+      ? "\n\n🌍 Tap '🌍 Global & Cards' below for your USD/GBP/EUR accounts, 27-currency transfers & USD cards."
+      : "\n\n🪪 Tap '🌍 Global & Cards' below (or /verify) to upgrade to Tier 1 and unlock USD/GBP/EUR bank accounts, Virtual USD Cards & international transfers.";
+  return ctx.reply(`What would you like to do?${hint}`, mainMenu(context));
+});
+
+bot.hears("🌍 Global & Cards", async (ctx) => {
+  const user = requireUser(ctx);
+  if (!user) return;
+  convState.clearState(ctx.from.id);
+  return flowsNuvionKyc.showGlobalPortal(ctx, user.active_context || "personal");
 });
 
 bot.hears("🔁 Switch Account", async (ctx) => {
@@ -953,6 +1005,22 @@ async function showBalance(ctx) {
       ? `💰 <b>${label} Balance: $${effectiveTotalUsdc.toFixed(2)}</b>\n${netWorthNaira}\n──────────────────────────\n• <b>Available:</b> $${totalUsdc.toFixed(2)}${cardLine}${eurcLine}`
       : `💰 <b>${label} Balance</b>\n──────────────────────────\n<b>$${totalUsdc.toFixed(2)}</b>${eurcLine}\n${netWorthNaira}`;
 
+    let globalUpgradeHint = "";
+    const nuvionAllowed = nuvion.isUserAllowedNuvion(ctx.from.id);
+    const nuvionEnt = nuvionAllowed ? db.getNuvionEntityByUser(ctx.from.id, context) : null;
+    const nuvionStatus = String(nuvionEnt?.status || "").toLowerCase();
+
+    if (nuvionAllowed) {
+      if (nuvionStatus === "approved") {
+        globalUpgradeHint = `\n• <b>Global Banking:</b> ✅ Tier-1 Verified (USD/GBP/EUR Accounts &amp; Cards Active)`;
+      } else if (nuvionStatus === "pending" || nuvionStatus === "incomplete") {
+        globalUpgradeHint = `\n\n⏳ <b>Tier-1 Global Verification:</b> In review — tap below to check status.`;
+      } else {
+        globalUpgradeHint =
+          `\n\n🪪 <b>Upgrade to Tier-1 Global:</b> <i>Tap "Verify ID" below to unlock named USD, GBP &amp; EUR bank accounts, Virtual USD Cards, and transfers to 27 currencies.</i>`;
+      }
+    }
+
     const buttonRows = [];
     if (hasSavings) {
       buttonRows.push([
@@ -965,17 +1033,29 @@ async function showBalance(ctx) {
        btnPrimary("📤 Send Money",        "action_send_menu")],
       [btnSuccess("💡 Pay Bills",         "action_bills_menu"),
        btnSuccess("📈 Save & Earn",       "action_yields")],
+    );
+    if (nuvionAllowed) {
+      if (nuvionStatus === "approved") {
+        buttonRows.push(
+          [btnPrimary("🌍 Global Accounts", "nuvion_accounts_menu_per"),
+           btnPrimary("💳 USD Cards",       "nuvion_cards_menu_per")],
+          [btnSuccess("✈️ Send Abroad (27 Currencies)", "nuvion_po_menu_per")]
+        );
+      } else if (nuvionStatus === "pending" || nuvionStatus === "incomplete") {
+        buttonRows.push([btnPrimary("⏳ Check Tier-1 Verification Status", "action_nuvion_portal")]);
+      } else {
+        buttonRows.push([btnSuccess("🪪 Verify ID — Unlock Global Accounts & USD Cards", "action_nuvion_portal")]);
+      }
+    }
+    buttonRows.push(
       [btnDefault("📜 Activity History",  "action_history"),
        btnPrimary("⚡ Check for Deposits","action_sweep_deposits")],
       [btnPrimary("🔀 Move Funds",        "action_move_funds")],
       [btnPrimary("🔐 Export Key",        "action_export_keys")]
     );
-    if (nuvion.isUserAllowedNuvion(ctx.from.id)) {
-      buttonRows.push([btnPrimary("🌍 Global Banking (Beta)", "action_nuvion_portal")]);
-    }
 
     await ctx.reply(
-      `${balanceHeader}${savingsSection}`,
+      `${balanceHeader}${savingsSection}${globalUpgradeHint}`,
       {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard(buttonRows),
@@ -1038,6 +1118,21 @@ async function showBizBalance(ctx) {
       ? `💼 <b>Business Balance: $${effectiveTotalUsdc.toFixed(2)}</b>\n${netWorthNaira}\n──────────────────────────\n• <b>Available:</b> $${totalUsdc.toFixed(2)}${bizCardLine}${eurcLine}`
       : `💼 <b>Business Balance</b>\n──────────────────────────\n<b>$${totalUsdc.toFixed(2)}</b>${eurcLine}\n${netWorthNaira}`;
 
+    const bizNuvionAllowed = nuvion.isUserAllowedNuvion(ctx.from.id);
+    const bizNuvionEnt = bizNuvionAllowed ? db.getNuvionEntityByUser(ctx.from.id, "business") : null;
+    const bizNuvionStatus = String(bizNuvionEnt?.status || "").toLowerCase();
+    let bizGlobalHint = "";
+    if (bizNuvionAllowed) {
+      if (bizNuvionStatus === "approved") {
+        bizGlobalHint = `\n• <b>Global Banking:</b> ✅ KYB Verified (Global Accounts, Team Cards &amp; 27-Currency Payroll Active)`;
+      } else if (bizNuvionStatus === "pending" || bizNuvionStatus === "incomplete") {
+        bizGlobalHint = `\n\n⏳ <b>Business KYB Verification:</b> In review — tap below to check status.`;
+      } else {
+        bizGlobalHint =
+          `\n\n💼 <b>Upgrade Business to Tier-1 Global (KYB):</b> <i>Tap "Verify Business" below to unlock named USD/GBP/EUR company accounts, Team USD Cards &amp; 27-currency payroll.</i>`;
+      }
+    }
+
     const buttonRows = [];
     if (hasSavings) {
       buttonRows.push([
@@ -1052,16 +1147,30 @@ async function showBizBalance(ctx) {
        btnSuccess("🧾 New Invoice",   "action_new_biz_invoice")],
       [btnPrimary("👥 Pay Team",      "action_pay_team"),
        btnPrimary("📋 Invoices",      "action_list_biz_invoices")],
+    );
+    if (bizNuvionAllowed) {
+      if (bizNuvionStatus === "approved") {
+        buttonRows.push(
+          [btnPrimary("🌍 Global Accounts", "nuvion_accounts_menu_biz"),
+           btnPrimary("💳 Team USD Cards",  "nuvion_cards_menu_biz")],
+          [btnSuccess("✈️ Send Abroad (27 Currencies)", "nuvion_po_menu_biz")]
+        );
+      } else if (bizNuvionStatus === "pending" || bizNuvionStatus === "incomplete") {
+        buttonRows.push([btnPrimary("⏳ Check Business KYB Status", "biz_nuvion_portal")]);
+      } else {
+        buttonRows.push([btnSuccess("💼 Verify Business (KYB) — Global Accounts & Cards", "biz_nuvion_portal")]);
+      }
+    }
+    buttonRows.push(
       [btnPrimary("📊 Cash Flow",     "action_cash_flow")],
       [btnPrimary("💸 Log Expense",   "action_log_expense"),
        btnPrimary("⚡ Check for Deposits", "action_sweep_deposits")],
       [btnPrimary("🔐 Export Keys",   "action_export_keys")],
-      ...(nuvion.isUserAllowedNuvion(ctx.from.id) ? [[btnPrimary("🌍 Business Global Banking (Beta)", "biz_nuvion_portal")]] : []),
       ...accountToggle("business")
     );
 
     await ctx.reply(
-      `${balanceHeader}${savingsSection}\n\n` +
+      `${balanceHeader}${savingsSection}${bizGlobalHint}\n\n` +
       `📬 Unpaid invoices: ${pending}\n` +
       `📉 Expenses this month: $${expenses.toFixed(2)}`,
       {
@@ -1085,10 +1194,25 @@ async function showReceive(ctx) {
   const label   = context === "business" ? "Business" : "Personal";
 
   const pKey = context === "business" ? "biz" : "per";
+  const portalAction = context === "business" ? "biz_nuvion_portal" : "action_nuvion_portal";
   const showGlobalAccountsBtn = nuvion.isUserAllowedNuvion(ctx.from.id);
+  const nuvionEnt = showGlobalAccountsBtn ? db.getNuvionEntityByUser(ctx.from.id, context) : null;
+  const isNuvionApproved = String(nuvionEnt?.status || "").toLowerCase() === "approved";
+
+  const globalDepositRows = !showGlobalAccountsBtn
+    ? []
+    : isNuvionApproved
+      ? [
+          [btnSuccess("🌍 Global Bank Accounts (USD/GBP/EUR/NGN)", `nuvion_accounts_menu_${pKey}`)],
+          [btnPrimary("🔗 Request Payment Link (UK/EU/CA/MoMo)", `nuvion_paylink_menu_${pKey}`)],
+        ]
+      : [
+          [btnSuccess("🪪 Verify ID — Unlock USD / GBP / EUR Bank Accounts", portalAction)],
+        ];
+
   const depositRows = [
     [btnSuccess("🇳🇬 Bank Transfer (Naira)", "action_paj_onramp")],
-    ...(showGlobalAccountsBtn ? [[btnSuccess("🌍 Global Bank Accounts (USD/GBP/EUR/NGN)", `nuvion_accounts_menu_${pKey}`)]] : []),
+    ...globalDepositRows,
     [btnSuccess("🌐 Deposit Crypto (10+ Networks)", "action_gateway")],
     [
       btnPrimary("💳 Card / Apple Pay", "gateway_onramp"),
@@ -1100,11 +1224,17 @@ async function showReceive(ctx) {
     ],
   ];
 
+  const globalDepositCopy = !showGlobalAccountsBtn
+    ? ""
+    : isNuvionApproved
+      ? `🌍 <b>Global Bank Accounts &amp; Payment Links</b>\nReceive USD, GBP, EUR, CAD, NGN, KES, GHS, AED or hosted payment links straight into your balance.\n\n`
+      : `🌍 <b>Global Bank Accounts (USD, GBP, EUR, CAD, AED &amp; more)</b>\n🔒 <i>Tap "Verify ID" below to upgrade to Tier 1 and unlock named foreign bank accounts &amp; payment links.</i>\n\n`;
+
   await ctx.reply(
     `📥 <b>Deposit — ${label}</b>\n──────────────────────────\n` +
     `Choose how you would like to deposit:\n\n` +
     `🇳🇬 <b>Bank Transfer (Naira)</b>\nPay in Naira from any bank or mobile app for instant Dollars.\n\n` +
-    (showGlobalAccountsBtn ? `🌍 <b>Global Bank Accounts</b>\nReceive USD, GBP, EUR, NGN, KES, GHS, AED or payment links straight into your balance.\n\n` : "") +
+    globalDepositCopy +
     `🌐 <b>Deposit Crypto (10+ Networks)</b>\nSend from Base, Solana, Ethereum, NEAR, Polygon, and more.\n\n` +
     `💳 <b>Card or Apple Pay</b>\nBuy Dollars directly with your debit or credit card.\n\n` +
     `📍 <b>Your Deposit Address (tap to copy):</b>\n<code>${address}</code>`,
@@ -1177,9 +1307,22 @@ async function showSettings(ctx) {
   const points  = db.getPointsBalance(ctx.from.id);
   const paymasterStatus = paymaster.isPaymasterActive() ? "Arc Paymaster (Sponsored ⛽)" : "Direct (Self-paid)";
 
+  const nuvionAllowed = nuvion.isUserAllowedNuvion(ctx.from.id);
+  const nuvionEnt = nuvionAllowed ? db.getNuvionEntityByUser(ctx.from.id, context) : null;
+  const nuvionStatus = String(nuvionEnt?.status || "").toLowerCase();
+  const portalAction = context === "business" ? "biz_nuvion_portal" : "action_nuvion_portal";
+  const tierLine = !nuvionAllowed
+    ? ""
+    : nuvionStatus === "approved"
+      ? `Verification Tier: Tier 1 Global Verified ✅\n`
+      : nuvionStatus === "pending" || nuvionStatus === "incomplete"
+        ? `Verification Tier: Tier 1 Under Review ⏳\n`
+        : `Verification Tier: Tier 0 (Standard) — Verify ID below to unlock Global Accounts & USD Cards 🌍\n`;
+
   await ctx.reply(
     `⚙️ Settings\n──────────────────────────\n` +
     `Active account: ${context === "business" ? "Business 💼" : "Personal 👤"}\n` +
+    tierLine +
     `Personal account: ${user.deposit_address}\n` +
     `Business account: ${hasBiz ? user.business_deposit_address : "not set up yet"}\n` +
     `Linked account: ${user.external_wallet_address || "none"}\n` +
@@ -1189,6 +1332,18 @@ async function showSettings(ctx) {
     `Proxim never holds your money. Your PIN is the only key to your funds.`,
 
     Markup.inlineKeyboard([
+      ...(nuvionAllowed
+        ? [[
+            nuvionStatus === "approved"
+              ? btnPrimary("🌍 Global Banking & USD Cards (Tier 1 ✅)", portalAction)
+              : btnSuccess(
+                  context === "business"
+                    ? "💼 Verify Business (KYB) — Upgrade to Tier 1 Global"
+                    : "🪪 Verify ID — Upgrade to Tier 1 Global",
+                  portalAction
+                ),
+          ]]
+        : []),
       [btnPrimary("🔁 Switch Account",                "action_switch_account"),
        btnSuccess("🏅 Rewards",                       "action_rewards")],
       [btnPrimary("🔑 Save Personal Security Phrase", "export_personal")],
@@ -2509,16 +2664,37 @@ async function showSendMoneyMenu(ctx) {
   }
 
   const pKey = context === "business" ? "biz" : "per";
+  const portalAction = context === "business" ? "biz_nuvion_portal" : "action_nuvion_portal";
   const showGlobalPayoutsBtn = nuvion.isUserAllowedNuvion(ctx.from.id);
+  const nuvionEnt = showGlobalPayoutsBtn ? db.getNuvionEntityByUser(ctx.from.id, context) : null;
+  const isNuvionApproved = String(nuvionEnt?.status || "").toLowerCase() === "approved";
+
+  const globalSendRows = !showGlobalPayoutsBtn
+    ? []
+    : isNuvionApproved
+      ? [
+          [btnSuccess("🌍 Send Abroad (27 Currencies)", `nuvion_po_menu_${pKey}`)],
+          [btnPrimary("💳 Virtual & Disposable USD Cards", `nuvion_cards_menu_${pKey}`)],
+        ]
+      : [
+          [btnSuccess("🪪 Verify ID — Unlock Send Abroad (27 Currencies) & USD Cards", portalAction)],
+        ];
+
   const keyboard = Markup.inlineKeyboard([
     [btnSuccess("✈️ Send to Telegram User (@username)", "action_send_telegram_user")],
     [btnSuccess("🇳🇬 Bank Transfer (Cash Out to Naira)", "action_withdraw_menu")],
-    ...(showGlobalPayoutsBtn ? [[btnSuccess("🌍 Send Abroad (27 Currencies)", `nuvion_po_menu_${pKey}`)]] : []),
+    ...globalSendRows,
     [btnPrimary("🌐 Withdraw Crypto (10+ Chains)",        "action_crosschain_withdraw")],
     [btnPrimary("👛 Send to Wallet Address",              "action_sendout_menu")],
     [btnPrimary("👥 Send to Saved Contact",               "action_send_contact")],
     [btnDefault("🏠 Main Menu",                           "main_menu")],
   ]);
+
+  const globalSendCopy = !showGlobalPayoutsBtn
+    ? ""
+    : isNuvionApproved
+      ? `🌍 <b>Send Abroad (27 Currencies) &amp; Virtual USD Cards</b>\n• Bank transfers &amp; mobile money to UK, US, Europe, Canada, China, Africa, UAE, Asia-Pacific &amp; SWIFT + Virtual USD Cards\n\n`
+      : `🌍 <b>Send Abroad (27 Currencies) &amp; Virtual USD Cards</b>\n• 🔒 <i>Tap "Verify ID" below to upgrade to Tier 1 and unlock transfers to UK, US, Europe, China, Canada &amp; 27 currencies + Virtual USD Cards</i>\n\n`;
 
   const msgText =
     `📤 <b>Send & Withdraw — ${context === "business" ? "Business 💼" : "Personal 👤"}</b>\n` +
@@ -2531,9 +2707,7 @@ async function showSendMoneyMenu(ctx) {
     `🇳🇬 <b>Bank Transfer (Cash Out to Naira)</b>\n` +
     `• Instant payout to 100+ Nigerian commercial banks & neobanks\n` +
     `• Direct NIBSS settlement into bank accounts in under 35 seconds\n\n` +
-    (showGlobalPayoutsBtn
-      ? `🌍 <b>Send Abroad (27 Currencies)</b>\n• Bank transfers & mobile money to UK, US, Europe, Canada, China, Africa, UAE, Asia-Pacific & SWIFT\n\n`
-      : "") +
+    globalSendCopy +
     `🌐 <b>Withdraw Crypto (Multi-Chain)</b>\n` +
     `• Supports Solana, NEAR, Base, Arbitrum, Polygon, Ethereum, Bitcoin, Tron & more\n` +
     `• 1:1 USDC & cross-chain intent settlement with 0 slippage\n\n` +
@@ -6473,6 +6647,11 @@ bot.on("text", async (ctx) => {
   if (/^(?:pay\s*team)$/i.test(cleanNav)) {
     convState.clearState(userId);
     return showPayTeamMenu(ctx);
+  }
+
+  if (/^(?:global(?:\s*&\s*cards|\s*banking|\s*accounts)?|verify(?:\s*(?:id|account|business))?|upgrade(?:\s*(?:account|tier))?|kyc|kyb|usd\s*cards?|virtual\s*cards?)$/i.test(cleanNav)) {
+    convState.clearState(userId);
+    return flowsNuvionKyc.showGlobalPortal(ctx, getContext(userId));
   }
 
   if (/^(?:history)$/i.test(cleanNav)) {

@@ -19,6 +19,7 @@ test("Fixed Bottom Keyboards: Unified Send and Cashout removal", () => {
   assert.ok(menuCode.includes('"📥 Deposit"'), "Must include '📥 Deposit' on main menus");
   assert.ok(menuCode.includes('"📤 Send Money"'), "Must include '📤 Send Money' on main menus");
   assert.ok(menuCode.includes('"💡 Pay Bills"'), "Must include '💡 Pay Bills' on main menus");
+  assert.ok(menuCode.includes('"🌍 Global & Cards"'), "Must include '🌍 Global & Cards' on main menus");
 
   // Must not have standalone Cash Out / Withdraw on the main menu rows (unified into Send Money)
   assert.ok(!menuCode.includes('"💵 Cash Out / Withdraw"'), "Must not have separate Cash Out / Withdraw button on mainMenu");
@@ -117,4 +118,7 @@ test("Conversation Flow: isLikelyNewIntent recognizes emoji-prefixed and plain n
   assert.equal(isLikelyNewIntent("👥 Pay Team"), true, "Should recognize 👥 Pay Team");
   assert.equal(isLikelyNewIntent("🔁 Switch Account"), true, "Should recognize 🔁 Switch Account");
   assert.equal(isLikelyNewIntent("⚙️ Settings & Help"), true, "Should recognize ⚙️ Settings & Help");
+  assert.equal(isLikelyNewIntent("🌍 Global & Cards"), true, "Should recognize 🌍 Global & Cards");
+  assert.equal(isLikelyNewIntent("verify"), true, "Should recognize verify");
+  assert.equal(isLikelyNewIntent("upgrade"), true, "Should recognize upgrade");
 });

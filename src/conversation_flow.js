@@ -14,11 +14,11 @@ function isLikelyNewIntent(text) {
   const lower = raw.replace(/^[^\p{L}\p{N}]+/u, "").toLowerCase();
   if (!lower) return false;
   if (/^\//.test(raw)) return true;
-  if (/^(?:help|balance|history|invoice|invoices|contacts|settings|deposit|bank|send|pay|cash\s*out|withdraw|add\s*money|my\s*money|business|team|cash\s*flow|save|switch)/.test(lower)) {
+  if (/^(?:help|balance|history|invoice|invoices|contacts|settings|deposit|bank|send|pay|cash\s*out|withdraw|add\s*money|my\s*money|business|team|cash\s*flow|save|switch|global|verify|upgrade|kyc|kyb|cards?|virtual\s*cards?|usd\s*cards?)/.test(lower)) {
     return true;
   }
   if (/0x[a-fA-F0-9]{40}/.test(raw)) return true;
-  if (/\b(send|pay|invoice|cash\s*out|withdraw|schedule|autopay|auto-pay|deposit|balance|history|savings|switch)\b/.test(lower)) return true;
+  if (/\b(send|pay|invoice|cash\s*out|withdraw|schedule|autopay|auto-pay|deposit|balance|history|savings|switch|global|verify|upgrade|kyc|kyb)\b/.test(lower)) return true;
   return false;
 }
 
