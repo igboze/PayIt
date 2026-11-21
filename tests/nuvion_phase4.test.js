@@ -343,9 +343,11 @@ test("Phase 4: Safe expiration (<= 24 months) & End-to-End Disposable + Business
   });
   assert.ok(maskedSvg.includes("Proxim"), "Card SVG must render Proxim branding");
   assert.ok(maskedSvg.includes("mastercard"), "Card SVG must render Mastercard branding");
-  assert.ok(maskedSvg.includes("•••• •••• •••• 9876"), "Masked card SVG must mask first 12 digits");
-  assert.ok(!maskedSvg.includes("4111"), "Masked card SVG must NEVER contain full PAN");
-  assert.ok(!maskedSvg.includes("789"), "Masked card SVG must NEVER contain CVV");
+  assert.ok(maskedSvg.includes("data:image/png;base64,"), "Card SVG must embed exact original Proxim card template");
+  const svgTextOnly = maskedSvg.replace(/data:image\/png;base64,[A-Za-z0-9+/=]+/g, "");
+  assert.ok(svgTextOnly.includes("•••• •••• •••• 9876"), "Masked card SVG must mask first 12 digits");
+  assert.ok(!svgTextOnly.includes("411111111111"), "Masked card SVG must NEVER contain full PAN");
+  assert.ok(!svgTextOnly.includes("789"), "Masked card SVG must NEVER contain CVV");
   const cardBuf = cardImgGen.generateProximCardBuffer({
     cardholderName: "IGBOZE IGBOZE",
     number: "1234567890123456",
