@@ -1027,7 +1027,7 @@ function defaultDeadline() {
  * @param {boolean} [p.dry=false]
  * @param {Array<{recipient: string, fee: number}>} [p.appFees]
  */
-async function getQuote({ originAsset, destinationAsset, amount, recipient, refundTo, dry = false, appFees = null }) {
+async function getQuote({ originAsset, destinationAsset, amount, recipient, refundTo, dry = false, appFees = null, swapType = "FLEX_INPUT" }) {
   let resolvedAppFees = appFees;
   if (!resolvedAppFees) {
     const feeRecipient = getNearFeeRecipient();
@@ -1044,8 +1044,8 @@ async function getQuote({ originAsset, destinationAsset, amount, recipient, refu
 
   const payload = {
     dry,
-    swapType: "EXACT_INPUT",
-    slippageTolerance: Number(process.env.NEAR_INTENT_SLIPPAGE_BPS || 100),
+    swapType,
+    slippageTolerance: Number(process.env.NEAR_INTENT_SLIPPAGE_BPS || 200),
     originAsset,
     depositType: "ORIGIN_CHAIN",
     destinationAsset,
@@ -1186,8 +1186,14 @@ async function pollPendingNearDeposits(bot = null) {
       updated++;
 
       if (status === "INCOMPLETE_DEPOSIT" && bot && row.telegram_id) {
+        const swap = st?.swapDetails || {};
+        const quoteObj = st?.quoteResponse?.quote || {};
         const inAmount = row.amount_token !== undefined && row.amount_token !== null ? Number(row.amount_token) : Number(row.amount_usdc);
         const inSymbol = row.origin_symbol || (row.origin_asset?.includes("usdc") ? "USDC" : "tokens");
+        const receivedStr = swap.depositedAmountFormatted ? `${swap.depositedAmountFormatted} ${inSymbol}` : "a smaller amount than required";
+        const minRequiredStr = quoteObj.minAmountIn
+          ? `${(Number(quoteObj.minAmountIn) / Math.pow(10, inSymbol === "NEAR" || inSymbol === "wNEAR" ? 24 : 6)).toFixed(6).replace(/\.?0+$/, "")} ${inSymbol}`
+          : `${inAmount} ${inSymbol}`;
         const isHood = row.origin_asset && (row.origin_asset.includes("hood-") || row.origin_asset.includes("hood."));
         const isSol = row.origin_asset && row.origin_asset.includes("sol-");
         const isStark = row.origin_asset && (row.origin_asset.includes("starknet") || row.origin_asset.includes("strk") || row.origin_symbol === "STRK");
@@ -1195,10 +1201,11 @@ async function pollPendingNearDeposits(bot = null) {
         const refundChainName = isHood ? "Robinhood/EVM" : (isSol ? "Solana" : (isStark ? "Starknet" : "NEAR Mainnet"));
         await bot.telegram.sendMessage(
           row.telegram_id,
-          `⚠️ <b>${chainName} Deposit Amount Mismatch Detected</b>\n` +
+          `⚠️ <b>${chainName} Deposit Below Minimum Quote Threshold</b>\n` +
           `──────────────────────────\n` +
-          `The amount received did not match your exact quote.\n` +
-          `1Click Defuse solvers cannot fulfill an incomplete amount and are issuing an automatic refund to your ${refundChainName} address:\n` +
+          `📥 <b>Received:</b> ${receivedStr}\n` +
+          `🎯 <b>Minimum Required:</b> ${minRequiredStr}\n\n` +
+          `1Click Defuse solvers cannot fulfill a deposit below the quote minimum and are issuing an automatic refund to your ${refundChainName} address:\n` +
           `<code>${row.refund_to}</code>\n\n` +
           `🔑 <b>Your Funds Are Safe & In Your Control:</b>\n` +
           `1. Go to <b>Settings & Help → Export Private Keys</b> (or /export_keys).\n` +
@@ -1213,6 +1220,7 @@ async function pollPendingNearDeposits(bot = null) {
         if (bot && row.telegram_id) {
           const swap = st?.swapDetails || {};
           const inAmount = row.amount_token !== undefined && row.amount_token !== null ? Number(row.amount_token) : Number(row.amount_usdc);
+          const actualIn = swap.depositedAmountFormatted || inAmount;
           const inSymbol = row.origin_symbol || (row.origin_asset?.includes("usdc") ? "USDC" : "tokens");
 
           const isHood = row.origin_asset && (row.origin_asset.includes("hood-") || row.origin_asset.includes("hood."));
@@ -1229,12 +1237,13 @@ async function pollPendingNearDeposits(bot = null) {
           const refundChainName = isHood ? "Robinhood/EVM" : (isSol ? "Solana" : (isStark ? "Starknet" : "NEAR Mainnet"));
 
           if (status === "SUCCESS") {
-            const out = row.amount_out ? `$${row.amount_out.toFixed(2)}` : "your USDC";
+            const actualOutNum = swap.amountOutFormatted ? Number(swap.amountOutFormatted) : (row.amount_out ? Number(row.amount_out) : null);
+            const out = actualOutNum ? `$${actualOutNum.toFixed(2)}` : "your USDC";
             await bot.telegram.sendMessage(
               row.telegram_id,
               `🎉 <b>${chainName} Deposit Bridged!</b>\n` +
               `──────────────────────────\n` +
-              `📥 <b>Deposited:</b> ${inAmount} ${inSymbol}\n` +
+              `📥 <b>Deposited:</b> ${actualIn} ${inSymbol}\n` +
               `💰 <b>Converted to:</b> ${out} USDC arriving on Base\n` +
               `🌉 <b>Route:</b> ${routeName}\n` +
               `⏳ <b>Next:</b> Auto-sweeping to your Arc balance — you'll get a credit confirmation in about a minute.\n\n` +

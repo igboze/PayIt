@@ -333,3 +333,26 @@ test("Personal and Business account isolation for NEAR deposits", () => {
   assert.match(personalNear.nearAddress, /^[0-9a-f]{64}$/);
   assert.match(businessNear.nearAddress, /^[0-9a-f]{64}$/);
 });
+
+test("getQuote uses FLEX_INPUT by default so minor fee/refund deductions still auto-convert", async () => {
+  const originalApiRequest = near.apiRequest;
+  let capturedBody = null;
+  try {
+    near.apiRequest = async (method, path, body) => {
+      capturedBody = { method, path, body };
+      return { quote: { depositAddress: "flexAddr.near", amountOut: "2040000" } };
+    };
+    await near.getQuote({
+      originAsset: near.ASSETS.NEAR_USDC,
+      destinationAsset: near.ASSETS.BASE_USDC,
+      amount: "2049704",
+      recipient: "0x1111111111111111111111111111111111111111",
+      refundTo: "26991fb39861d946f32f21f88576647ee44b47f74f4590257af48356cb40dd5a",
+    });
+    assert.ok(capturedBody, "Must invoke apiRequest");
+    assert.equal(capturedBody.body.swapType, "FLEX_INPUT", "Must default to FLEX_INPUT");
+    assert.ok(capturedBody.body.slippageTolerance >= 100, "Must include slippageTolerance buffer");
+  } finally {
+    near.apiRequest = originalApiRequest;
+  }
+});

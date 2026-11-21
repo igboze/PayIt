@@ -976,13 +976,13 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
     const expireIn = process.env.NEAR_INTENT_DEADLINE_MIN || 30;
     return ctx.reply(
       `Ⓝ <b>NEAR Deposit Instructions</b>\n──────────────────────────\n` +
-      `💰 <b>Send exactly:</b> ${amount} ${tokenSymbol}\n` +
+      `💰 <b>Send:</b> ~${amount} ${tokenSymbol} <i>(Flex-Input enabled)</i>\n` +
       (row.amount_out ? `💵 <b>Estimated Received:</b> ~$${Number(row.amount_out).toFixed(2)} USDC on Arc\n` : "") +
       `📍 <b>NEAR address (one-time):</b> <code>${row.deposit_address}</code>\n` +
       (row.deposit_memo ? `📝 <b>Memo (required):</b> <code>${row.deposit_memo}</code>\n` : "") +
       `⏰ <b>Valid for:</b> ${expireIn} minutes\n\n` +
-      `🔄 <b>Auto-Conversion:</b> NEAR Intents will auto-convert your ${tokenSymbol} into Base USDC and auto-sweep it to Arc.\n` +
-      `⚠️ <i>Send ${tokenSymbol} on NEAR only, exact amount, before expiry. ` +
+      `🔄 <b>Auto-Conversion:</b> NEAR Intents will auto-convert the actual ${tokenSymbol} received into Base USDC and auto-sweep it to Arc (small fee differences are handled automatically).\n` +
+      `⚠️ <i>Send ${tokenSymbol} on NEAR only, before expiry. ` +
       `If anything goes wrong, funds auto-refund to your NEAR address: <code>${refundTo}</code></i>`,
       {
         parse_mode: "HTML",
@@ -1061,13 +1061,13 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
     const expireIn = process.env.NEAR_INTENT_DEADLINE_MIN || 30;
     return ctx.reply(
       `☀️ <b>Solana Deposit Instructions</b>\n──────────────────────────\n` +
-      `💰 <b>Send exactly:</b> ${amount} ${tokenSymbol}\n` +
+      `💰 <b>Send:</b> ~${amount} ${tokenSymbol} <i>(Flex-Input enabled)</i>\n` +
       (row.amount_out ? `💵 <b>Estimated Received:</b> ~$${Number(row.amount_out).toFixed(2)} USDC on Arc\n` : "") +
       `📍 <b>Solana address (one-time):</b>\n<code>${row.deposit_address}</code>\n` +
       (row.deposit_memo ? `📝 <b>Memo (required):</b> <code>${row.deposit_memo}</code>\n` : "") +
       `⏰ <b>Valid for:</b> ${expireIn} minutes\n\n` +
-      `🔄 <b>Auto-Conversion:</b> NEAR Intents swaps your ${tokenSymbol} → USDC on Base → sweeps to Arc.\n` +
-      `⚠️ <i>Send ${tokenSymbol} on Solana only, exact amount, before expiry.\n` +
+      `🔄 <b>Auto-Conversion:</b> NEAR Intents swaps the actual ${tokenSymbol} received → USDC on Base → sweeps to Arc (small fee differences are handled automatically).\n` +
+      `⚠️ <i>Send ${tokenSymbol} on Solana only, before expiry.\n` +
       `If anything goes wrong, funds auto-refund to your Solana address: <code>${refundTo}</code></i>`,
       {
         parse_mode: "HTML",
@@ -1135,13 +1135,13 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
     const expireIn = process.env.NEAR_INTENT_DEADLINE_MIN || 30;
     return ctx.reply(
       `🏹 <b>Robinhood Chain Deposit Instructions</b>\n──────────────────────────\n` +
-      `💰 <b>Send exactly:</b> ${amount} ${tokenSymbol}\n` +
+      `💰 <b>Send:</b> ~${amount} ${tokenSymbol} <i>(Flex-Input enabled)</i>\n` +
       (row.amount_out ? `💵 <b>Estimated Received:</b> ~$${Number(row.amount_out).toFixed(2)} USDC on Arc\n` : "") +
       `📍 <b>Robinhood Chain deposit address (one-time):</b>\n<code>${row.deposit_address}</code>\n` +
       (row.deposit_memo ? `📝 <b>Memo (required):</b> <code>${row.deposit_memo}</code>\n` : "") +
       `⏰ <b>Valid for:</b> ${expireIn} minutes\n\n` +
-      `🔄 <b>Auto-Conversion:</b> NEAR Intents swaps your ${tokenSymbol} → USDC on Base → sweeps to Arc.\n` +
-      `⚠️ <i>Send ${tokenSymbol} on Robinhood Chain only, exact amount, before expiry.\n` +
+      `🔄 <b>Auto-Conversion:</b> NEAR Intents swaps the actual ${tokenSymbol} received → USDC on Base → sweeps to Arc (small fee differences are handled automatically).\n` +
+      `⚠️ <i>Send ${tokenSymbol} on Robinhood Chain only, before expiry.\n` +
       `If anything goes wrong, funds auto-refund to your address: <code>${refundTo}</code></i>`,
       {
         parse_mode: "HTML",
@@ -1217,13 +1217,13 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
     const expireIn = process.env.NEAR_INTENT_DEADLINE_MIN || 30;
     return ctx.reply(
       `🐺 <b>Starknet Deposit Instructions</b>\n──────────────────────────\n` +
-      `💰 <b>Send exactly:</b> ${amount} ${tokenSymbol}\n` +
+      `💰 <b>Send:</b> ~${amount} ${tokenSymbol} <i>(Flex-Input enabled)</i>\n` +
       (row.amount_out ? `💵 <b>Estimated Received:</b> ~$${Number(row.amount_out).toFixed(2)} USDC on Arc\n` : "") +
       `📍 <b>Starknet deposit address (one-time):</b>\n<code>${row.deposit_address}</code>\n` +
       (row.deposit_memo ? `📝 <b>Memo (required):</b> <code>${row.deposit_memo}</code>\n` : "") +
       `⏰ <b>Valid for:</b> ${expireIn} minutes\n\n` +
-      `🔄 <b>Auto-Conversion:</b> NEAR Intents swaps your ${tokenSymbol} → USDC on Base → sweeps to Arc.\n` +
-      `⚠️ <i>Send ${tokenSymbol} on Starknet only, exact amount, before expiry.\n` +
+      `🔄 <b>Auto-Conversion:</b> NEAR Intents swaps the actual ${tokenSymbol} received → USDC on Base → sweeps to Arc (small fee differences are handled automatically).\n` +
+      `⚠️ <i>Send ${tokenSymbol} on Starknet only, before expiry.\n` +
       `If anything goes wrong, funds auto-refund to your address: <code>${refundTo}</code></i>`,
       {
         parse_mode: "HTML",
