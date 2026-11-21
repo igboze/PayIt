@@ -357,8 +357,8 @@ async function showGlobalPortal(ctx, forcedContext = null) {
       `• ✈️ <b>Global Transfers</b> (27+ currencies via bank &amp; mobile money rails)\n` +
       (isBiz ? `• 🧾 <b>Global Client Invoicing &amp; 27-Currency Payroll</b>\n` : "") +
       `\n<i>All deposits automatically settle straight into your main Proxim balance.</i>\n\n` +
-      `🌍 <b>Supported Countries for KYC &amp; KYB (150+ Countries Worldwide):</b>\n` +
-      `🇺🇸 US · 🇬🇧 UK · 🇨🇦 Canada · 🇪🇺 Europe (DE, FR &amp; EU) · 🇦🇪 UAE · 🇳🇬 Nigeria · 🇬🇭 Ghana · 🇰🇪 Kenya · 🇿🇦 South Africa · 🇹🇿 Tanzania · 🇷🇼 Rwanda · 🇲🇽 Mexico · 🇧🇷 Brazil · 🇮🇳 India · 🇦🇺 Australia &amp; more — simply select your country in Step 1.\n\n` +
+      `🌍 <b>Supported Countries for KYC &amp; KYB (Powered by Nuvion):</b>\n` +
+      `🇳🇬 Nigeria · 🇺🇸 US · 🇬🇧 UK · 🇨🇦 Canada · 🇪🇺 Eurozone (DE, FR, NL, ES, IT &amp; EU) · 🇦🇪 UAE · 🇬🇭 Ghana · 🇰🇪 Kenya · 🇹🇿 Tanzania · 🇺🇬 Uganda · 🇿🇦 South Africa · 🇲🇽 Mexico · 🇧🇷 Brazil · 🇨🇭 Switzerland · 🇸🇪 Sweden · 🇳🇴 Norway · 🇩🇰 Denmark · 🇦🇺 Australia · 🇳🇿 New Zealand · 🇸🇬 Singapore · 🇭🇰 Hong Kong · 🇯🇵 Japan · 🇰🇷 South Korea · 🇵🇭 Philippines · 🇹🇭 Thailand · 🇮🇱 Israel &amp; global ISO jurisdictions — select your country in Step 1.\n\n` +
       `<b>What you'll need:</b>\n` +
       (isBiz
         ? `• Certificate of Incorporation &amp; Articles/Memorandum of Association (PDF)\n• Business proof of address (&lt; 3 months)\n• Director / Owner Government ID &amp; proof of address\n\n`
