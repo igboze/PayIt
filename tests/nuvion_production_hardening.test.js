@@ -241,7 +241,8 @@ function startStrictSpecMockServer() {
       // Card Creation Fee & Card Creation
       const feeMatch = pathname.match(/^\/card-creation-fee\/([^/]+)$/);
       if (req.method === "GET" && feeMatch) {
-        return send(200, { status: "success", data: { fee: 50, currency: "USD" } });
+        const feeMinor = store.cardCreationFeeMinor !== undefined ? store.cardCreationFeeMinor : 50;
+        return send(200, { status: "success", data: { fee: feeMinor, currency: "USD" } });
       }
       if (req.method === "GET" && pathname === "/cards") {
         const rows = [...store.cards.values()].filter((c) => !query.account_id || c.account_id === query.account_id);
@@ -989,6 +990,98 @@ test("Hardening 7: EIP-3009 Base USDC gasless TransferWithAuthorization & Base R
   } finally {
     if (origRelayerKey === undefined) delete process.env.RELAYER_PRIVATE_KEY;
     else process.env.RELAYER_PRIVATE_KEY = origRelayerKey;
+  }
+});
+
+// ── TEST 8: Proxim Card Issuance Fee ($0 Nuvion Live Fee) + 1% FX Spread Collection ─
+
+test("Hardening 8: Live $0.00 Nuvion card fee + Proxim Card Fee ($1.00 Virtual / $0.50 Disposable) + 1% FX spread collection", async () => {
+  const mock = await startStrictSpecMockServer();
+  process.env.NUVION_BASE_URL = mock.baseUrl;
+  // Simulate live production Nuvion account where GET /card-creation-fee returns { fee: 0, currency: "USD" }
+  mock.store.cardCreationFeeMinor = 0;
+
+  const tgId = 888001;
+  const user = db.getUser(tgId);
+  const origUnified = chains.getUnifiedBalance;
+  const origSponsored = walletLib.sendSponsoredOrDirectTransaction;
+  const origBurn = cctpBridge.executeArcToEvmCctpBurn;
+
+  let arcFeeCalls = [];
+  walletLib.sendSponsoredOrDirectTransaction = async (wallet, to, amountMicro) => {
+    arcFeeCalls.push({ from: wallet.address, to, amountMicro: amountMicro.toString() });
+    // wallet.sendSponsoredOrDirectTransaction returns { txHash, sponsored } in production!
+    return { txHash: `0xarc_fee_tx_${arcFeeCalls.length}`, sponsored: true };
+  };
+  cctpBridge.executeArcToEvmCctpBurn = async ({ amountUsdc }) => ({
+    success: true,
+    txHash: `0xcctp_burn_${amountUsdc}`,
+    messageHash: "0xmsg_fee_test",
+  });
+  chains.getUnifiedBalance = async () => ({
+    arc: { usdc: 500, eurc: 0 },
+    base: { usdc: 0 },
+    gateway: { usdc: 0 },
+    solana: { usdc: 0 },
+    total: 500,
+  });
+
+  try {
+    // 1. Virtual Card ($25.00 load): Nuvion fee = $0.00, Proxim Virtual Card fee = $1.00, 1% spread = $0.25
+    const vQuote = await cards.quoteCardIssuance({
+      telegramId: tgId,
+      accountType: "personal",
+      cardType: "virtual",
+      loadAmountUsd: 25,
+    });
+    assert.equal(vQuote.nuvionCreationFeeUsd, 0, "Live production Nuvion card creation fee is $0.00");
+    assert.equal(vQuote.proximCardFeeUsd, 1.0, "Proxim Virtual Card issuance fee defaults to $1.00");
+    assert.equal(vQuote.creationFeeUsd, 1.0, "Total card creation fee shown to user = $1.00");
+    assert.equal(vQuote.marginUsd, 0.25, "1% FX/load spread on $25 = $0.25");
+    assert.equal(vQuote.nuvionNeededUsd, 25.0, "Only $25.00 goes to Nuvion's Base bridge when Nuvion fee is $0.00");
+    assert.equal(vQuote.proximRevenueUsd, 1.25, "Proxim collects $1.00 card fee + $0.25 (1% spread) = $1.25");
+    assert.equal(vQuote.userTotalUsd, 26.25, "User total = $25.00 load + $1.00 card fee + $0.25 (1% spread) = $26.25");
+
+    // 2. Disposable Card ($20.00 load): Nuvion fee = $0.00, Proxim Disposable Card fee = $0.50, 1% spread = $0.20
+    const dQuote = await cards.quoteCardIssuance({
+      telegramId: tgId,
+      accountType: "personal",
+      cardType: "disposable",
+      loadAmountUsd: 20,
+    });
+    assert.equal(dQuote.nuvionCreationFeeUsd, 0);
+    assert.equal(dQuote.proximCardFeeUsd, 0.5, "Proxim Disposable Card issuance fee defaults to $0.50");
+    assert.equal(dQuote.creationFeeUsd, 0.5);
+    assert.equal(dQuote.marginUsd, 0.2);
+    assert.equal(dQuote.nuvionNeededUsd, 20.0);
+    assert.equal(dQuote.proximRevenueUsd, 0.7);
+    assert.equal(dQuote.userTotalUsd, 20.7);
+
+    // 3. Initiate Virtual Card without mock fundingExecutor -> verify fundNuvionBaseBridge sends $25.00 to Nuvion
+    //    AND collects $1.25 ($1.00 card fee + $0.25 1% spread) into Proxim's fee wallet with non-null marginTxHash!
+    const issued = await cards.initiateCardIssuance({
+      telegramId: tgId,
+      pin: "1234",
+      accountType: "personal",
+      cardType: "virtual",
+      cardName: "Production Fee Test Card",
+      loadAmountUsd: 25,
+    });
+    assert.equal(issued.nuvionNeededUsd, 25.0);
+    assert.equal(issued.proximRevenueUsd, 1.25);
+    assert.equal(issued.funding.txHash, "0xcctp_burn_25", "Only $25.00 is bridged to Nuvion Base USC address");
+    assert.equal(issued.funding.marginTxHash, "0xarc_fee_tx_1", "marginTxHash MUST capture feeRes.txHash (not null)!");
+    assert.equal(arcFeeCalls.length, 1, "Must transfer $1.25 ($1.00 card fee + $0.25 1% spread) to Proxim fee wallet");
+    assert.equal(
+      arcFeeCalls[0].amountMicro,
+      walletLib.parseToMicro("1.250000").toString(),
+      "Exact $1.25 collected into Proxim fee wallet"
+    );
+  } finally {
+    chains.getUnifiedBalance = origUnified;
+    walletLib.sendSponsoredOrDirectTransaction = origSponsored;
+    cctpBridge.executeArcToEvmCctpBurn = origBurn;
+    mock.server.close();
   }
 });
 

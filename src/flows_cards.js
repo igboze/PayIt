@@ -292,6 +292,7 @@ async function handleCardsTextState(ctx, state, text, userId) {
         `• <b>Card Name:</b> ${escapeHtml(cardName)}\n` +
         `• <b>Loaded Spend Cap:</b> <b>$${q.loadAmountUsd.toFixed(2)}</b>\n` +
         (q.creationFeeUsd > 0 ? `• <b>Card Issuance Fee:</b> $${q.creationFeeUsd.toFixed(2)}\n` : "") +
+        (q.marginUsd > 0 ? `• <b>Load / FX Spread (1%):</b> $${q.marginUsd.toFixed(2)}\n` : "") +
         `• <b>Total From Your Balance:</b> <b>$${q.userTotalUsd.toFixed(2)}</b>\n` +
         (d.cardType === "disposable"
           ? `\n<i>Single-use card: auto-deactivates after 1 purchase &amp; sweeps any leftover balance back to your main Proxim balance.</i>\n`
@@ -379,6 +380,7 @@ async function handleCardsTextState(ctx, state, text, userId) {
         `──────────────────────────\n` +
         `• <b>Card:</b> ${escapeHtml(q.card.card_name || "Virtual Card")}\n` +
         `• <b>Add to Card Limit:</b> <b>+$${q.loadAmountUsd.toFixed(2)}</b>\n` +
+        (q.marginUsd > 0 ? `• <b>Load / FX Spread (1%):</b> $${q.marginUsd.toFixed(2)}\n` : "") +
         `• <b>Total From Your Balance:</b> <b>$${q.userTotalUsd.toFixed(2)}</b>\n\n` +
         `🔐 <b>Enter your 4-digit PIN</b> to top up:`,
         {

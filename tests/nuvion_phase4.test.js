@@ -398,10 +398,14 @@ test("Phase 4: Safe expiration (<= 24 months) & End-to-End Disposable + Business
       fundingExecutor: mockFunding,
     });
 
-    assert.equal(dispInit.creationFeeUsd, 0.5, "Must read live $0.50 card creation fee");
+    assert.equal(dispInit.nuvionCreationFeeUsd, 0.5, "Must read live $0.50 Nuvion card creation fee");
+    assert.equal(dispInit.proximCardFeeUsd, 0.5, "Must include $0.50 Proxim disposable card fee");
+    assert.equal(dispInit.creationFeeUsd, 1.0, "Total card creation fee = $0.50 Nuvion + $0.50 Proxim = $1.00");
     assert.equal(dispInit.loadAmountUsd, 20);
     assert.equal(dispInit.marginUsd, 0.2, "1% spread on $20 load = $0.20");
-    assert.equal(dispInit.userTotalUsd, 20.7);
+    assert.equal(dispInit.proximRevenueUsd, 0.7, "Proxim collects $0.50 card fee + $0.20 1% spread = $0.70");
+    assert.equal(dispInit.nuvionNeededUsd, 20.5, "Only $20 load + $0.50 Nuvion fee goes to Nuvion bridge");
+    assert.equal(dispInit.userTotalUsd, 21.2);
 
     // Anti-duplicate lock MUST reject a duplicate concurrent card issuance request!
     await assert.rejects(

@@ -193,12 +193,30 @@ async function ensureCardAccountBookTransferTarget(entity, cardAccountId, cardAc
   return { counterpartyId: ensuredEntity.self_counterparty_id, paymentDetailId: pd.id };
 }
 
-// ── 2. Live Card Creation & Top-Up Quote (Fee Check + 1% Spread) ─────────────
+// ── 2. Live Card Creation & Top-Up Quote (Fee Check + Proxim Card Fee + 1% Spread) ──
+
+/**
+ * Resolve Proxim's own Card Issuance Fee (in USD) added on top of Nuvion's fee.
+ * - Reusable Virtual Card: `NUVION_PROXIM_VIRTUAL_CARD_FEE_USD` (or `NUVION_PROXIM_CARD_FEE_USD`, default $1.00)
+ * - 1-Time Disposable Card: `NUVION_PROXIM_DISPOSABLE_CARD_FEE_USD` (or `NUVION_PROXIM_CARD_FEE_USD`, default $0.50)
+ */
+function getProximCardIssuanceFeeUsd(cardType = "virtual") {
+  const isDisposable = String(cardType).toLowerCase() === "disposable";
+  const raw = isDisposable
+    ? (process.env.NUVION_PROXIM_DISPOSABLE_CARD_FEE_USD ?? process.env.NUVION_PROXIM_CARD_FEE_USD)
+    : (process.env.NUVION_PROXIM_VIRTUAL_CARD_FEE_USD ?? process.env.NUVION_PROXIM_CARD_FEE_USD);
+  const defaultFee = isDisposable ? 0.5 : 1.0;
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    return defaultFee;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? round2(parsed) : defaultFee;
+}
 
 /**
  * Quote creating a new Virtual or Disposable USD Card:
  *  - Ensures dedicated Card USD sub-account (or checks live `GET /card-creation-fee/{account_id}?currency=USD`)
- *  - Computes creation fee + desired card spend load + 1% FX/load spread (`NUVION_FX_MARGIN_BPS=100`)
+ *  - Computes Nuvion's creation fee + Proxim's card issuance fee + desired card spend load + 1% FX/load spread (`NUVION_FX_MARGIN_BPS=100`)
  */
 async function quoteCardIssuance({
   telegramId,
@@ -224,29 +242,42 @@ async function quoteCardIssuance({
     feeCheckAccountId = tmp.account.id;
   }
 
-  let creationFeeMinor = 0;
+  let nuvionCreationFeeMinor = 0;
   try {
     const feeRes = await nuvion.getCardCreationFee(feeCheckAccountId, {
       currency: "USD",
       entityId: entity.entity_id,
     });
-    creationFeeMinor = Math.max(0, Math.round(Number(feeRes?.fee || 0)));
+    nuvionCreationFeeMinor = Math.max(0, Math.round(Number(feeRes?.fee || 0)));
   } catch (err) {
     console.warn("[nuvion_cards] getCardCreationFee fallback note:", err.message);
   }
 
-  const creationFeeUsd = nuvion.fromNuvionMinor(creationFeeMinor);
-  const nuvionNeededUsd = round2(loadAmt + creationFeeUsd);
+  const nuvionCreationFeeUsd = nuvion.fromNuvionMinor(nuvionCreationFeeMinor);
+  const proximCardFeeUsd = getProximCardIssuanceFeeUsd(cardType);
+  const proximCardFeeMinor = nuvion.toNuvionMinor(proximCardFeeUsd);
+  const creationFeeUsd = round2(nuvionCreationFeeUsd + proximCardFeeUsd);
+  const creationFeeMinor = nuvionCreationFeeMinor + proximCardFeeMinor;
+
+  // Only Nuvion's fee + the card's spend load needs to be bridged to Nuvion's USC Base address
+  const nuvionNeededUsd = round2(loadAmt + nuvionCreationFeeUsd);
   const marginBps = nuvion.getFxMarginBps("outbound");
   const marginMinor = marginBps > 0 ? Math.max(1, nuvion.calcMarginMinor(nuvion.toNuvionMinor(loadAmt), marginBps)) : 0;
   const marginUsd = nuvion.fromNuvionMinor(marginMinor);
-  const userTotalUsd = round2(nuvionNeededUsd + marginUsd);
+  // Proxim collects both Proxim's card issuance fee AND the 1% FX/load spread into the Proxim fee wallet
+  const proximRevenueUsd = round2(proximCardFeeUsd + marginUsd);
+  const proximRevenueMinor = proximCardFeeMinor + marginMinor;
+  const userTotalUsd = round2(nuvionNeededUsd + proximRevenueUsd);
 
   return {
     entity,
     cardType,
     loadAmountUsd: round2(loadAmt),
     loadAmountMinor: nuvion.toNuvionMinor(loadAmt),
+    nuvionCreationFeeMinor,
+    nuvionCreationFeeUsd,
+    proximCardFeeMinor,
+    proximCardFeeUsd,
     creationFeeMinor,
     creationFeeUsd,
     nuvionNeededUsd,
@@ -254,6 +285,8 @@ async function quoteCardIssuance({
     marginBps,
     marginMinor,
     marginUsd,
+    proximRevenueMinor,
+    proximRevenueUsd,
     userTotalUsd,
   };
 }
@@ -334,13 +367,13 @@ async function initiateCardIssuance({
   // Dedicated USD sub-account per card so its balance.available IS this card's exact spend limit!
   const { account: cardSubAcc, bookTransferTarget } = await createCardUsdSubAccount(entity, cleanCardName, cardType);
 
-  let creationFeeMinor = 0;
+  let nuvionCreationFeeMinor = 0;
   try {
     const feeRes = await nuvion.getCardCreationFee(cardSubAcc.id, {
       currency: "USD",
       entityId: entity.entity_id,
     });
-    creationFeeMinor = Math.max(0, Math.round(Number(feeRes?.fee || 0)));
+    nuvionCreationFeeMinor = Math.max(0, Math.round(Number(feeRes?.fee || 0)));
   } catch (err) {
     console.warn("[nuvion_cards] getCardCreationFee note:", err.message);
   }
@@ -350,12 +383,19 @@ async function initiateCardIssuance({
     throw new Error("Initial card load amount must be at least $1.00.");
   }
 
-  const creationFeeUsd = nuvion.fromNuvionMinor(creationFeeMinor);
-  const nuvionNeededUsd = round2(loadAmt + creationFeeUsd);
+  const nuvionCreationFeeUsd = nuvion.fromNuvionMinor(nuvionCreationFeeMinor);
+  const proximCardFeeUsd = getProximCardIssuanceFeeUsd(cardType);
+  const proximCardFeeMinor = nuvion.toNuvionMinor(proximCardFeeUsd);
+  const creationFeeUsd = round2(nuvionCreationFeeUsd + proximCardFeeUsd);
+  const creationFeeMinor = nuvionCreationFeeMinor + proximCardFeeMinor;
+
+  const nuvionNeededUsd = round2(loadAmt + nuvionCreationFeeUsd);
   const marginBps = nuvion.getFxMarginBps("outbound");
   const marginMinor = marginBps > 0 ? Math.max(1, nuvion.calcMarginMinor(nuvion.toNuvionMinor(loadAmt), marginBps)) : 0;
   const marginUsd = nuvion.fromNuvionMinor(marginMinor);
-  const userTotalUsd = round2(nuvionNeededUsd + marginUsd);
+  const proximRevenueUsd = round2(proximCardFeeUsd + marginUsd);
+  const proximRevenueMinor = proximCardFeeMinor + marginMinor;
+  const userTotalUsd = round2(nuvionNeededUsd + proximRevenueUsd);
 
   const cardholder = await resolveCardholder(entity, cardholderOverrides);
   const { expirationMonth, expirationYear } = getSafeCardExpiration();
@@ -369,8 +409,16 @@ async function initiateCardIssuance({
     bookTransferCounterpartyId: bookTransferTarget.counterpartyId,
     bookTransferPaymentDetailId: bookTransferTarget.paymentDetailId,
     loadAmountUsd: loadAmt,
+    nuvionCreationFeeUsd,
+    nuvionCreationFeeMinor,
+    proximCardFeeUsd,
+    proximCardFeeMinor,
     creationFeeUsd,
     creationFeeMinor,
+    marginUsd,
+    marginMinor,
+    proximRevenueUsd,
+    proximRevenueMinor,
     nuvionNeededUsd,
     nuvionNeededMinor: nuvion.toNuvionMinor(nuvionNeededUsd),
     userTotalUsd,
@@ -379,6 +427,7 @@ async function initiateCardIssuance({
     expirationYear,
     fundingRoute: null,
     fundingTxHash: null,
+    marginTxHash: null,
   };
 
   // CRITICAL: Insert durable job row BEFORE broadcasting funds so <500ms Gateway settlement
@@ -391,13 +440,14 @@ async function initiateCardIssuance({
     state: "funding_in_transit",
     currency: "USD",
     amountMinor: nuvion.toNuvionMinor(nuvionNeededUsd),
-    marginMinor,
+    marginMinor: proximRevenueMinor,
     uniqueReference,
     sourceTxHash: null,
     payload: basePayload,
   });
 
   // Fund user's Nuvion USC Base deposit address from unified balance (zero Base ETH needed on user wallet!)
+  // and collect Proxim's Card Issuance Fee + 1% load spread into Proxim's fee wallet!
   let funding;
   try {
     funding = await payouts.fundNuvionBaseBridge({
@@ -406,7 +456,7 @@ async function initiateCardIssuance({
       accountType,
       nuvionBaseAddress: entity.usc_base_address,
       nuvionCostUsd: nuvionNeededUsd,
-      marginUsd,
+      marginUsd: proximRevenueUsd,
       bot,
       fundingExecutor,
     });
@@ -421,6 +471,7 @@ async function initiateCardIssuance({
       ...basePayload,
       fundingRoute: funding.route,
       fundingTxHash: funding.txHash || null,
+      marginTxHash: funding.marginTxHash || null,
     },
   });
 
@@ -428,8 +479,12 @@ async function initiateCardIssuance({
     job,
     cardAccountId: cardSubAcc.id,
     loadAmountUsd: loadAmt,
+    nuvionCreationFeeUsd,
+    proximCardFeeUsd,
     creationFeeUsd,
     marginUsd,
+    proximRevenueUsd,
+    nuvionNeededUsd,
     userTotalUsd,
     funding,
     uniqueReference,
@@ -1267,6 +1322,7 @@ function registerCardHooks() {
 
 module.exports = {
   getSafeCardExpiration,
+  getProximCardIssuanceFeeUsd,
   resolveCardholder,
   createCardUsdSubAccount,
   ensureCardAccountBookTransferTarget,

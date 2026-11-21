@@ -469,7 +469,7 @@ async function fundNuvionBaseBridge({
 
   let fundingResult = null;
   let arcAvailable = Number(unified.arc?.usdc || 0);
-  const baseAvailable = Number(unified.base?.usdc || 0);
+  let baseAvailable = Number(unified.base?.usdc || 0);
   const gwAvailable = Number(unified.gateway?.usdc || 0);
 
   // Route 1 (Fastest <500ms): Circle Gateway unified USDC -> mint straight onto Base Nuvion address
@@ -507,6 +507,7 @@ async function fundNuvionBaseBridge({
         });
         const refreshed = await chains.getUnifiedBalance(user, accountType, { strictBusiness: true });
         arcAvailable = Number(refreshed.arc?.usdc || 0);
+        baseAvailable = Number(refreshed.base?.usdc || 0);
       } catch (consolidateErr) {
         console.warn("[nuvion_payouts] Split Base+Arc auto-consolidation note:", consolidateErr.message);
       }
@@ -555,25 +556,53 @@ async function fundNuvionBaseBridge({
     }
   }
 
-  // Collect 1% FX margin to Proxim fee wallet (non-blocking if fee wallet is unset)
+  // Collect 1% FX margin (plus any Proxim card issuance fee) to Proxim's fee wallet across Arc, Base, or Gateway!
   const feeRecipient = (
     process.env.APP_FEE_RECIPIENT_ADDRESS ||
     process.env.PAYIT_DEV_FEE_ADDRESS ||
     process.env.FEE_RECIPIENT_ADDRESS ||
-    ""
+    "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359"
   ).trim();
 
   let marginTxHash = null;
   if (marginUsd >= 0.01 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
     try {
       const arcWallet = walletLib.walletFromPrivateKey(privateKey);
-      if (feeRecipient.toLowerCase() !== arcWallet.address.toLowerCase() && arcAvailable >= marginUsd) {
-        const feeRes = await walletLib.sendSponsoredOrDirectTransaction(
-          arcWallet,
-          feeRecipient,
-          walletLib.parseToMicro(marginUsd.toFixed(6))
+      if (feeRecipient.toLowerCase() !== arcWallet.address.toLowerCase()) {
+        const arcRemaining = round2(
+          arcAvailable - (fundingResult?.route === "arc_cctp_base" ? Number(nuvionCostUsd) : 0)
         );
-        marginTxHash = feeRes?.hash || null;
+        const baseRemaining = round2(
+          baseAvailable -
+            (fundingResult?.route === "base_direct" || fundingResult?.route === "base_eip3009_sponsored"
+              ? Number(nuvionCostUsd)
+              : 0)
+        );
+        const gwRemaining = round2(
+          gwAvailable - (fundingResult?.route === "circle_gateway" ? Number(nuvionCostUsd) : 0)
+        );
+
+        if (arcRemaining + 0.001 >= marginUsd) {
+          const feeRes = await walletLib.sendSponsoredOrDirectTransaction(
+            arcWallet,
+            feeRecipient,
+            walletLib.parseToMicro(marginUsd.toFixed(6))
+          );
+          marginTxHash = feeRes?.txHash || feeRes?.hash || (typeof feeRes === "string" ? feeRes : null);
+        } else if (baseRemaining + 0.001 >= marginUsd) {
+          const baseFeeRes = await sendDirectBaseUsdc(privateKey, feeRecipient, marginUsd);
+          marginTxHash = baseFeeRes?.txHash || null;
+        } else if (gwRemaining + 0.001 >= marginUsd) {
+          const signer = new Wallet(privateKey);
+          const gwFeeRes = await gateway.transferBetweenChains({
+            signer,
+            sourceChain: "Arc",
+            destinationChain: "Base",
+            amountUsdc: marginUsd,
+            recipientAddress: feeRecipient,
+          });
+          marginTxHash = gwFeeRes?.txHash || gwFeeRes?.transferId || null;
+        }
       }
     } catch (feeErr) {
       console.warn("[nuvion_payouts] FX margin collection note:", feeErr.message);
