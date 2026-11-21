@@ -439,17 +439,13 @@ async function executeSolanaCctpBurn({ userKeypair, amountUsdc, recipientArcAddr
       SOLANA_CCTP_TOKEN_MESSENGER
     );
 
-    const [remoteTokenMessengerPda] = PublicKey.findProgramAddressSync(
-      [Buffer.from("remote_token_messenger"), Buffer.from("26", "utf8")],
+    const [denylistAccountPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("denylist_account"), userKeypair.publicKey.toBuffer()],
       SOLANA_CCTP_TOKEN_MESSENGER
     );
 
-    const arcUsdc32 = Buffer.concat([
-      Buffer.alloc(12, 0),
-      Buffer.from("3600000000000000000000000000000000000000", "hex"),
-    ]);
-    const [tokenPairPda] = PublicKey.findProgramAddressSync(
-      [Buffer.from("token_pair"), Buffer.from("26", "utf8"), arcUsdc32],
+    const [remoteTokenMessengerPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("remote_token_messenger"), Buffer.from("26", "utf8")],
       SOLANA_CCTP_TOKEN_MESSENGER
     );
 
@@ -480,7 +476,9 @@ async function executeSolanaCctpBurn({ userKeypair, amountUsdc, recipientArcAddr
     destDomainBuf.writeUInt32LE(26, 0); // Domain 26 = Arc Mainnet
 
     const destCallerBuf = Buffer.alloc(32, 0); // Anyone can call receiveMessage
-    const extraPaddingBuf = Buffer.alloc(12, 0);
+    const maxFeeBuf = Buffer.alloc(8, 0); // 0 maxFee for standard finalized attestation
+    const minFinalityBuf = Buffer.alloc(4);
+    minFinalityBuf.writeUInt32LE(2000, 0); // 2000 = finalized attestation
 
     const data = Buffer.concat([
       discriminator,
@@ -488,19 +486,20 @@ async function executeSolanaCctpBurn({ userKeypair, amountUsdc, recipientArcAddr
       destDomainBuf,
       recipientBuffer,
       destCallerBuf,
-      extraPaddingBuf,
+      maxFeeBuf,
+      minFinalityBuf,
     ]);
 
     const keys = [
-      { pubkey: userKeypair.publicKey, isSigner: true, isWritable: true },
+      { pubkey: userKeypair.publicKey, isSigner: true, isWritable: false },
       { pubkey: payer.publicKey, isSigner: true, isWritable: true },
       { pubkey: senderAuthorityPda, isSigner: false, isWritable: false },
       { pubkey: userAta, isSigner: false, isWritable: true },
+      { pubkey: denylistAccountPda, isSigner: false, isWritable: false },
       { pubkey: messageTransmitterPda, isSigner: false, isWritable: true },
       { pubkey: tokenMessengerPda, isSigner: false, isWritable: false },
       { pubkey: remoteTokenMessengerPda, isSigner: false, isWritable: false },
-      { pubkey: tokenPairPda, isSigner: false, isWritable: true },
-      { pubkey: tokenMinterPda, isSigner: false, isWritable: true },
+      { pubkey: tokenMinterPda, isSigner: false, isWritable: false },
       { pubkey: localTokenPda, isSigner: false, isWritable: true },
       { pubkey: mint, isSigner: false, isWritable: true },
       { pubkey: eventDataKeypair.publicKey, isSigner: true, isWritable: true },
