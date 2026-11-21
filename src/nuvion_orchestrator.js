@@ -598,9 +598,20 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null }) {
       }
     }
 
-    // Step 2: Convert remaining fiat -> USC and fire straight to User's 0x wallet on BASE_MAINNET
+    // Step 2: Convert remaining fiat (including any prior sub-$1.00 accumulated balance in this account!) -> USC
+    // and fire straight to User's 0x wallet on BASE_MAINNET.
     const configuredFeeBuffer = Math.max(0, Math.round(Number(process.env.NUVION_STABLECOIN_OUTFLOW_FEE_MINOR || 0)));
-    let sweepMinor = netMinor - collectedMarginMinor - configuredFeeBuffer;
+    let singleInflowNetMinor = netMinor - collectedMarginMinor;
+    let liveAvailableMinor = singleInflowNetMinor;
+    try {
+      const liveAcc = await nuvion.getAccount(accountId, entityId);
+      const avail = Math.round(Number(liveAcc?.balance?.available || 0));
+      if (avail > liveAvailableMinor) {
+        liveAvailableMinor = avail;
+      }
+    } catch (_) {}
+
+    let sweepMinor = liveAvailableMinor - configuredFeeBuffer;
     if (sweepMinor <= 0) {
       db.updateNuvionJob(job.id, { state: "failed", error_message: "Net amount too small after fee buffer" });
       idempotency.failOperationIdempotency(sweepLockKey, "amount_too_small");
@@ -619,6 +630,63 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null }) {
           amountFrom: sweepMinor,
           accountId,
         });
+
+        // Nuvion's POST /transfers (`stablecoin-transfer` to BASE_MAINNET) enforces a strict minimum
+        // destination amount of 100 minor units ($1.00 USC). If the converted amount is < $1.00 USC,
+        // hold it in the user's fiat receiving account to accumulate with their next deposit and notify them!
+        const quotedUscMinor = Math.round(Number(quote?.amount_to || 0));
+        if (quotedUscMinor > 0 && quotedUscMinor < 100) {
+          const grossMajorSub = nuvion.fromNuvionMinor(grossMinor);
+          const accumMajorSub = nuvion.fromNuvionMinor(sweepMinor);
+          const quotedUsdSub = nuvion.fromNuvionMinor(quotedUscMinor);
+          db.updateNuvionJob(job.id, {
+            state: "accumulating_min_sweep",
+            margin_minor: collectedMarginMinor,
+            fx_quote_id: quote.id,
+            error_message: `Below $1.00 USC on-chain sweep minimum ($${quotedUsdSub.toFixed(2)} USC); accumulating in ${currency} account`,
+            payload_json: {
+              ...jobPayload,
+              fxQuoteId: quote.id,
+              sweepMinor,
+              quotedUscMinor,
+              collectedMarginMinor,
+            },
+          });
+          idempotency.completeOperationIdempotency(sweepLockKey, { txHash: `accum_${confirmed.id}` });
+
+          const telegramSub = getBotTelegram(bot);
+          if (telegramSub && entity.telegram_id) {
+            const isNgnSub = currency === "NGN";
+            const acctLabelSub = entity.account_type === "business" ? "Business Account" : "Personal Account";
+            const grossStr = formatFiatAmount(currency, grossMajorSub);
+            const accumStr = formatFiatAmount(currency, accumMajorSub);
+            await telegramSub.sendMessage(
+              entity.telegram_id,
+              `📥 <b>Deposit Received (${grossStr}) — Accumulating for Settlement</b>\n` +
+              `──────────────────────────\n` +
+              `• <b>Amount Received:</b> ${grossStr}\n` +
+              `• <b>Available in ${currency} Account:</b> <b>${accumStr}</b>` +
+              (isNgnSub ? `\n` : ` (~$${quotedUsdSub.toFixed(2)} USD)\n`) +
+              `• <b>Account:</b> ${acctLabelSub}\n` +
+              `• <b>Reference:</b> <code>${escapeHtml(confirmed.id)}</code>\n\n` +
+              `ℹ️ <i>On-chain wallet settlement requires a minimum net balance of <b>$1.00 USD</b>` +
+              (isNgnSub ? ` (approx. ₦1,550)` : ``) +
+              `. Your <b>${accumStr}</b> is safely held in your ${currency} account and will automatically combine and sweep into your Proxim wallet on your next deposit!</i>`,
+              { parse_mode: "HTML" }
+            ).catch(() => {});
+          }
+
+          return {
+            swept: false,
+            accumulating: true,
+            reason: "below_min_1_usd_sweep",
+            jobId: job.id,
+            currency,
+            sweepMinor,
+            quotedUscMinor,
+            collectedMarginMinor,
+          };
+        }
 
         outflow = await nuvion.createTransfer({
           entityId,
@@ -819,6 +887,111 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null }) {
 }
 
 /**
+ * If external USDC (`USC`) is sent directly to the user's Nuvion-issued Base crypto address
+ * (`entity.usc_base_address`) when there is NO pending outbound payout or card load job,
+ * automatically forward it 1:1 via `stablecoin-transfer` straight to the user's self-custodial
+ * Proxim wallet (`user.deposit_address` / `user.business_deposit_address`)!
+ */
+async function handleUnallocatedUscInflowSweep({ confirmed, entityRecord, bot = null }) {
+  if (!confirmed || !confirmed.id || !entityRecord) {
+    return { swept: false, reason: "missing_context" };
+  }
+  const currency = String(confirmed.currency || "").toUpperCase();
+  const status = String(confirmed.status || "").toLowerCase();
+  const paymentType = String(confirmed.payment_type || "").toLowerCase();
+  if (currency !== "USC" || status !== "successful") {
+    return { swept: false, reason: "not_settled_usc" };
+  }
+  if (paymentType === "book-transfer") {
+    return { swept: false, reason: "internal_book_transfer_ignored" };
+  }
+
+  // If Payouts or Cards already claimed this USC inflow for a pending job, do nothing!
+  const inflowClaimKey = `nuvion_usc_inflow:${confirmed.id}`;
+  if (idempotency.isWebhookProcessed(inflowClaimKey)) {
+    return { swept: false, reason: "already_claimed_by_payout_or_card_job" };
+  }
+
+  const netMinor = Math.max(0, Math.round(Number(confirmed.amount || 0)) - Math.round(Number(confirmed.applicable_fee || 0)));
+  if (netMinor < 100) {
+    return { swept: false, reason: "below_min_1_usd_sweep" };
+  }
+
+  // Double-check no pending payout or card job matches this USC inflow
+  try {
+    const payouts = require("./nuvion_payouts");
+    const candidate = payouts.selectBestMatchingUscCandidate(entityRecord.entity_id, netMinor);
+    if (candidate) {
+      return { swept: false, reason: "reserved_for_pending_job" };
+    }
+  } catch (_) {}
+
+  // Atomically claim the USC inflow so it cannot be double-swept
+  if (!idempotency.tryClaimWebhookEvent(inflowClaimKey, "usc_direct_passthrough", entityRecord.entity_id)) {
+    return { swept: false, duplicate: true, reason: "inflow_already_claimed" };
+  }
+
+  let entity = entityRecord;
+  if (!entity.self_counterparty_id || !entity.self_base_payment_detail_id) {
+    entity = await nuvionWebhooks.bootstrapApprovedEntity(entity);
+  }
+  if (!entity.self_counterparty_id || !entity.self_base_payment_detail_id) {
+    return { swept: false, reason: "missing_self_counterparty" };
+  }
+
+  const ref = `sweep-usc-${confirmed.id}`;
+  const outflow = await nuvion.createTransfer({
+    entityId: entity.entity_id,
+    accountId: confirmed.account_id || entity.usc_account_id,
+    counterpartyId: entity.self_counterparty_id,
+    paymentDetailId: entity.self_base_payment_detail_id,
+    amountMinor: netMinor,
+    currency: "USC",
+    narration: `Proxim Base wallet pass-through ${confirmed.id}`,
+    paymentType: "stablecoin-transfer",
+    uniqueReference: ref,
+  });
+
+  const creditedUsd = nuvion.fromNuvionMinor(netMinor);
+  try {
+    const amountMicro = walletLib.parseToMicro(creditedUsd.toFixed(6));
+    db.recordTransaction(
+      entity.telegram_id,
+      "deposit_crypto",
+      String(amountMicro),
+      "confirmed",
+      outflow.id || confirmed.id,
+      entity.account_type || "personal",
+      18,
+      "base",
+      "Base USDC deposit via Nuvion bridge"
+    );
+  } catch (_) {}
+
+  const telegram = getBotTelegram(bot);
+  if (telegram && entity.telegram_id) {
+    const acctLabel = entity.account_type === "business" ? "Business Account" : "Personal Account";
+    await telegram.sendMessage(
+      entity.telegram_id,
+      `🎉 <b>Crypto Deposit Forwarded to Your Proxim Wallet!</b>\n` +
+      `──────────────────────────\n` +
+      `💰 <b>Credited to Balance:</b> +$${creditedUsd.toFixed(2)} USDC\n` +
+      `💼 <b>Account:</b> ${acctLabel}\n` +
+      `🔖 <b>Reference:</b> <code>${escapeHtml(confirmed.id)}</code>\n` +
+      `──────────────────────────\n` +
+      `<i>Automatically swept from your Nuvion Base bridge address directly into your self-custodial Proxim wallet.</i>`,
+      { parse_mode: "HTML" }
+    ).catch(() => {});
+  }
+
+  return {
+    swept: true,
+    outflowId: outflow.id,
+    creditedUsd,
+  };
+}
+
+/**
  * Wire Phase 2 inbound auto-sweep hooks onto nuvionWebhooks (idempotent).
  */
 function registerOrchestratorHooks() {
@@ -828,7 +1001,12 @@ function registerOrchestratorHooks() {
   nuvionWebhooks.onNuvionEvent("inflows.completed", async ({ confirmed, entityRecord, bot }) => {
     if (!entityRecord) return;
     const currency = String(confirmed?.currency || "").toUpperCase();
-    if (!currency || STABLECOIN_CODES.has(currency)) return;
+    if (!currency) return;
+    if (currency === "USC") {
+      await handleUnallocatedUscInflowSweep({ confirmed, entityRecord, bot });
+      return;
+    }
+    if (STABLECOIN_CODES.has(currency)) return;
     await handleInboundFiatSweep({ confirmed, entityRecord, bot });
   });
 
@@ -854,6 +1032,7 @@ module.exports = {
   createHostedPaymentLink,
   ensureChildToParentMarginTarget,
   handleInboundFiatSweep,
+  handleUnallocatedUscInflowSweep,
   registerOrchestratorHooks,
   formatFiatAmount,
   sanitizeInteracName,

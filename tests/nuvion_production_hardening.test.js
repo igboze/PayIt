@@ -265,7 +265,7 @@ function startStrictSpecMockServer() {
       if (req.method === "POST" && pathname === "/fx-quotes") {
         const from = body.from_currency;
         const to = body.to_currency;
-        const rate = (from === "USC" && to === "GBP") ? 0.8 : 1.0;
+        const rate = (from === "USC" && to === "GBP") ? 0.8 : (from === "NGN" && to === "USC" ? 0.00068 : 1.0);
         let amount_from = body.amount_from;
         let amount_to = body.amount_to;
         if (amount_to != null) {
@@ -1077,10 +1077,103 @@ test("Hardening 8: Live $0.00 Nuvion card fee + Proxim Card Fee ($1.00 Virtual /
       walletLib.parseToMicro("1.250000").toString(),
       "Exact $1.25 collected into Proxim fee wallet"
     );
+    db.updateNuvionJob(issued.job.id, { state: "completed" });
   } finally {
     chains.getUnifiedBalance = origUnified;
     walletLib.sendSponsoredOrDirectTransaction = origSponsored;
     cctpBridge.executeArcToEvmCctpBurn = origBurn;
+    mock.server.close();
+  }
+});
+
+// ── TEST 9: Sub-$1.00 NGN Deposit Accumulate-and-Sweep + Unallocated Nuvion Crypto Address Pass-Through ─
+
+test("Hardening 9: Sub-$1.00 NGN deposit (₦500 -> $0.30 USC) notifies user & accumulates; next NGN deposit sweeps combined balance; unallocated USC on Nuvion crypto address forwards 1:1 to Proxim wallet", async () => {
+  const mock = await startStrictSpecMockServer();
+  process.env.NUVION_BASE_URL = mock.baseUrl;
+  orchestrator._clearParentAccountCache();
+
+  try {
+    const tgId = 888001;
+    const entity = db.getNuvionEntityByUser(tgId, "personal");
+    const ngnAcc = await nuvion.createAccount({ entityId: entity.entity_id, currency: "NGN", displayName: "Personal NGN Receiving" });
+    const tgMessages = [];
+    const fakeBot = {
+      telegram: {
+        sendMessage: async (chatId, text) => tgMessages.push({ chatId, text }),
+      },
+    };
+
+    // 1. Live reproduction: User deposits ₦500.00 (50000 kobo), applicable_fee = 5000 (₦50), 1% margin = 450 (₦4.50) -> net 44550 kobo (₦445.50 = $0.30 USC < $1.00 minimum)
+    mock.store.accounts.get(ngnAcc.id).balance = { available: 44550, current: 44550 };
+    const smallNgnInflow = {
+      id: "01M7YNB09GJ98Z6FXFZQ58ZY0J",
+      entity_id: entity.entity_id,
+      account_id: ngnAcc.id,
+      currency: "NGN",
+      amount: 50000,
+      applicable_fee: 5000,
+      payment_type: "bank-transfer",
+      status: "successful",
+    };
+
+    const subRes = await orchestrator.handleInboundFiatSweep({
+      confirmed: smallNgnInflow,
+      entityRecord: entity,
+      bot: fakeBot,
+    });
+    assert.equal(subRes.swept, false);
+    assert.equal(subRes.accumulating, true, "Must enter accumulating state when converted USC is < $1.00 (30 minor)");
+    assert.equal(subRes.quotedUscMinor, 30, "44550 kobo @ 0.00068 = 30 minor ($0.30 USC)");
+    assert.equal(db.getNuvionJobById(subRes.jobId).state, "accumulating_min_sweep");
+    assert.ok(
+      tgMessages.some((m) => m.text.includes("Accumulating for Settlement") && m.text.includes("₦500")),
+      "Must notify user on Telegram that ₦500 deposit was received and is accumulating toward $1.00 minimum!"
+    );
+
+    // 2. Second NGN deposit arrives (₦2,000.00 gross, ₦50 fee -> net ₦1,950.00, 1% margin = ₦19.50 -> +193050 kobo)
+    //    Account available balance after margin is now 44550 + 193050 = 237600 kobo (₦2,376.00 = $1.62 USC >= $1.00)!
+    mock.store.accounts.get(ngnAcc.id).balance = { available: 237600, current: 237600 };
+    const secondNgnInflow = {
+      id: "01M7YNB_SECOND_NGN_DEPOSIT",
+      entity_id: entity.entity_id,
+      account_id: ngnAcc.id,
+      currency: "NGN",
+      amount: 200000,
+      applicable_fee: 5000,
+      payment_type: "bank-transfer",
+      status: "successful",
+    };
+    const combinedRes = await orchestrator.handleInboundFiatSweep({
+      confirmed: secondNgnInflow,
+      entityRecord: entity,
+      bot: fakeBot,
+    });
+    assert.equal(combinedRes.swept, true, "Second deposit must sweep the combined NGN balance!");
+    const combinedTransferReq = mock.store.requests.find(
+      (r) => r.method === "POST" && r.pathname === "/transfers" && r.body.unique_reference === `sweep-base-${secondNgnInflow.id}`
+    );
+    assert.equal(combinedTransferReq.body.amount, 237600, "Must sweep the full combined 237,600 kobo (₦445.50 prior + ₦1,930.50 new)!");
+
+    // 3. Direct external crypto (USC) deposit to Nuvion's issued Base address when NO payout/card job is pending
+    const directUscInflow = {
+      id: "01M7YN_DIRECT_USC_DEPOSIT",
+      entity_id: entity.entity_id,
+      account_id: entity.usc_account_id,
+      currency: "USC",
+      amount: 2500, // $25.00 USC
+      applicable_fee: 0,
+      payment_type: "stablecoin-transfer",
+      status: "successful",
+    };
+    const directRes = await orchestrator.handleUnallocatedUscInflowSweep({
+      confirmed: directUscInflow,
+      entityRecord: entity,
+      bot: fakeBot,
+    });
+    assert.equal(directRes.swept, true, "Unallocated USC on Nuvion crypto address must forward 1:1 to user's Proxim wallet!");
+    assert.equal(directRes.creditedUsd, 25);
+  } finally {
     mock.server.close();
   }
 });
