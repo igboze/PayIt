@@ -620,23 +620,27 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
       }
 
       // Ensure signer has micro-gas to broadcast Relay approve and deposit transactions
+      // CRITICAL: Always sponsor from RELAYER_PRIVATE_KEY (never from user's overridePrivateKey!)
       try {
         const gasBal = await provider.getBalance(signer.address);
-        if (gasBal < parseUnits("0.00008", 18)) {
-          const relayerKey = options?.overridePrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
+        const isBase = Number(effectiveChainId) === 8453;
+        const isL2 = isBase || Number(effectiveChainId) === 42161 || Number(effectiveChainId) === 10 || Number(effectiveChainId) === 137;
+        const minGasThreshold = isBase ? parseUnits("0.000015", 18) : (isL2 ? parseUnits("0.00005", 18) : parseUnits("0.0002", 18));
+        if (gasBal < minGasThreshold) {
+          const relayerKey = options?.relayerPrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
           if (relayerKey) {
             const relayer = new Wallet(relayerKey, provider);
-            const isL2 = Number(chainId) === 8453 || Number(chainId) === 42161 || Number(chainId) === 137;
-            const dripAmount = isL2 ? parseUnits("0.00008", 18) : parseUnits("0.0003", 18);
+            // Right-sized Base L2 micro-drip: 0.000025 ETH (~$0.07) covers ~10+ Base Relay txs without stranding ETH dust
+            const dripAmount = isBase ? parseUnits("0.000025", 18) : (isL2 ? parseUnits("0.00008", 18) : parseUnits("0.0003", 18));
             const relayerBal = await provider.getBalance(relayer.address).catch(() => 0n);
-            if (relayerBal >= dripAmount) {
-              console.log(`[evm_sweeper:relay] Sponsoring micro-gas for ${signer.address} on ${chainName}...`);
+            if (relayerBal >= dripAmount && relayer.address.toLowerCase() !== signer.address.toLowerCase()) {
+              console.log(`[evm_sweeper:relay] Sponsoring micro-gas (${formatUnits(dripAmount, 18)} ETH) for ${signer.address} on ${chainName}...`);
               const sponsorTx = await relayer.sendTransaction({
                 to: signer.address,
                 value: dripAmount,
               });
               await sponsorTx.wait(1);
-            } else {
+            } else if (relayerBal < dripAmount) {
               console.warn(`[evm_sweeper:relay] Relayer ${relayer.address} has insufficient ${chainName} gas (${formatUnits(relayerBal, 18)} ETH) to sponsor micro-gas for deposit sweep.`);
             }
           }
@@ -841,7 +845,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
   // Reimburse relayer gas fee + protocol deposit fee from deposit address if direct token deposit
   const totalDeductedFee = parseFloat((networkFee + (protocolDepositFee || 0)).toFixed(6));
   if (totalDeductedFee > 0 && signer) {
-    const relayerKey = options?.overridePrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
+    const relayerKey = options?.relayerPrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
     const feeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.PAYIT_DEV_FEE_ADDRESS || process.env.FEE_RECIPIENT_ADDRESS || (relayerKey ? new Wallet(relayerKey).address : null);
     if (feeRecipient && feeRecipient.toLowerCase() !== signer.address.toLowerCase()) {
       try {

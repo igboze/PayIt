@@ -917,6 +917,81 @@ test("Hardening 6: Nuvion Base deposit -> Paj Arc Off-Ramp auto-sweep AND Split 
   }
 });
 
+const { verifyTypedData, parseUnits } = require("ethers");
+const nuvionHealth = require("../src/nuvion_health");
+
+// ── TEST 7: Zero-ETH Base Gas Architecture (EIP-3009 Signing + Relayer Gas Health) ─
+
+test("Hardening 7: EIP-3009 Base USDC gasless TransferWithAuthorization & Base Relayer ETH health monitor", async () => {
+  // 1. Cryptographically verify EIP-3009 TransferWithAuthorization signature for Base Mainnet USDC
+  const generated = walletLib.generateUserWallet();
+  const userWallet = walletLib.walletFromPrivateKey(generated.privateKey);
+  const nuvionBaseDest = "0x5555555555555555555555555555555555555555";
+
+  const auth = await payouts.signBaseUsdcTransferAuthorization({
+    userWallet,
+    toAddress: nuvionBaseDest,
+    amountUsdc: 42.5,
+    validForSeconds: 600,
+  });
+
+  assert.equal(auth.from.toLowerCase(), generated.address.toLowerCase());
+  assert.equal(auth.to.toLowerCase(), nuvionBaseDest.toLowerCase());
+  assert.equal(auth.value, 42500000n, "Base USDC must encode 6 decimals");
+  assert.ok(auth.nonce.startsWith("0x") && auth.nonce.length === 66, "Nonce must be 32-byte hex");
+  assert.ok(auth.validBefore > auth.validAfter);
+
+  const recovered = verifyTypedData(
+    payouts.BASE_USDC_EIP3009_DOMAIN,
+    payouts.TRANSFER_WITH_AUTH_TYPES,
+    {
+      from: auth.from,
+      to: auth.to,
+      value: auth.value,
+      validAfter: auth.validAfter,
+      validBefore: auth.validBefore,
+      nonce: auth.nonce,
+    },
+    auth.signature
+  );
+  assert.equal(recovered.toLowerCase(), generated.address.toLowerCase(), "EIP-3009 signature must recover exact user EOA");
+
+  // 2. Verify Base Relayer ETH gas health monitor (healthy & low-balance alert, zero private key leak)
+  const origRelayerKey = process.env.RELAYER_PRIVATE_KEY;
+  const relW = walletLib.generateUserWallet();
+  process.env.RELAYER_PRIVATE_KEY = relW.privateKey;
+  try {
+    const healthy = await nuvionHealth.getBaseRelayerGasStatus({
+      provider: { getBalance: async () => parseUnits("0.02", 18) },
+    });
+    assert.equal(healthy.configured, true);
+    assert.equal(healthy.address.toLowerCase(), relW.address.toLowerCase());
+    assert.equal(healthy.ethBalance, 0.02);
+    assert.equal(healthy.lowBalance, false);
+    assert.equal(healthy.estimatedTxs, 4000);
+
+    const low = await nuvionHealth.getBaseRelayerGasStatus({
+      provider: { getBalance: async () => parseUnits("0.001", 18) },
+    });
+    assert.equal(low.lowBalance, true, "0.001 ETH must trigger lowBalance warning (< 0.005 ETH)");
+
+    const htmlCard = nuvionHealth.formatAdminHealthCard({
+      launch: nuvionHealth.getLaunchModeSummary(),
+      local: nuvionHealth.getLocalNuvionStats(),
+      baseRelayerGas: low,
+      apiReachable: true,
+      rootAccountsCount: 1,
+      primaryWebhook: { id: "01WH", status: "active" },
+      recentLogs: { total: 1, succeeded: 1, failed: 0 },
+    });
+    assert.ok(htmlCard.includes("LOW 0.00100 ETH"), "Admin health card must surface low Base relayer ETH alert");
+    assert.ok(!htmlCard.includes(relW.privateKey), "Private key must NEVER appear in health output");
+  } finally {
+    if (origRelayerKey === undefined) delete process.env.RELAYER_PRIVATE_KEY;
+    else process.env.RELAYER_PRIVATE_KEY = origRelayerKey;
+  }
+});
+
 test.after(() => {
   try { fs.unlinkSync(tmpDbPath); } catch (_) {}
 });

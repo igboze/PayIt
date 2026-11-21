@@ -14,7 +14,7 @@
 // 7. Business Multi-Currency CSV Payroll with deterministic batch idempotency.
 
 const crypto = require("node:crypto");
-const { Contract, JsonRpcProvider, Wallet, parseUnits } = require("ethers");
+const { Contract, JsonRpcProvider, Signature, Wallet, getAddress, parseUnits } = require("ethers");
 const nuvion = require("./nuvion");
 const nuvionWebhooks = require("./nuvion_webhooks");
 const corridors = require("./nuvion_corridors");
@@ -28,9 +28,26 @@ const { generateReceiptPNG } = require("./receipt_generator");
 
 const BASE_USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const BASE_DOMAIN_ID = 6;
+const BASE_USDC_EIP3009_DOMAIN = {
+  name: "USD Coin",
+  version: "2",
+  chainId: 8453,
+  verifyingContract: BASE_USDC_ADDRESS,
+};
+const TRANSFER_WITH_AUTH_TYPES = {
+  TransferWithAuthorization: [
+    { name: "from", type: "address" },
+    { name: "to", type: "address" },
+    { name: "value", type: "uint256" },
+    { name: "validAfter", type: "uint256" },
+    { name: "validBefore", type: "uint256" },
+    { name: "nonce", type: "bytes32" },
+  ],
+};
 const ERC20_TRANSFER_ABI = [
   "function transfer(address to, uint256 amount) returns (bool)",
   "function balanceOf(address owner) view returns (uint256)",
+  "function transferWithAuthorization(address from, address to, uint256 value, uint256 validAfter, uint256 validBefore, bytes32 nonce, uint8 v, bytes32 r, bytes32 s) external",
 ];
 
 let _payoutHooksRegistered = false;
@@ -319,33 +336,94 @@ async function ensurePayoutRecipient(entityId, rail, details) {
 
 // ── 3. Smart Chain-Abstracted Funding (Circle Gateway / Base / Arc->Base CCTP) ─
 
+/**
+ * Sign an off-chain EIP-3009 `TransferWithAuthorization` for native Base USDC
+ * so the platform relayer submits a single gasless transaction with ZERO Base ETH on the user's wallet!
+ */
+async function signBaseUsdcTransferAuthorization({ userWallet, toAddress, amountUsdc, validForSeconds = 600 }) {
+  const from = getAddress(await userWallet.getAddress());
+  const to = getAddress(toAddress);
+  const value = parseUnits(Number(amountUsdc).toFixed(6), 6);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const validAfter = Math.max(0, nowSec - 60);
+  const validBefore = nowSec + Math.max(60, Number(validForSeconds) || 600);
+  const nonce = "0x" + crypto.randomBytes(32).toString("hex");
+
+  const message = { from, to, value, validAfter, validBefore, nonce };
+  const signature = await userWallet.signTypedData(BASE_USDC_EIP3009_DOMAIN, TRANSFER_WITH_AUTH_TYPES, message);
+  const sig = Signature.from(signature);
+  return {
+    from,
+    to,
+    value,
+    validAfter,
+    validBefore,
+    nonce,
+    v: sig.v,
+    r: sig.r,
+    s: sig.s,
+    signature,
+  };
+}
+
 async function sendDirectBaseUsdc(privateKey, toAddress, amountUsdc) {
   const baseCfg = chains.getChain("base");
   const rpcUrl = baseCfg?.rpcUrl || process.env.BASE_RPC_URL || "https://mainnet.base.org";
   const provider = new JsonRpcProvider(rpcUrl, 8453, { staticNetwork: true });
-  const signer = new Wallet(privateKey, provider);
+  const userSigner = new Wallet(privateKey, provider);
+  const relayerKey = process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
 
-  // Sponsor micro-gas from Base relayer if user has no Base ETH
+  // Preferred Path (Zero ETH dust on user wallet, 1 single Base tx):
+  // User signs off-chain EIP-3009 TransferWithAuthorization; relayer broadcasts directly to Base USDC!
+  if (relayerKey) {
+    try {
+      const relayer = new Wallet(relayerKey, provider);
+      const relBal = await provider.getBalance(relayer.address).catch(() => 0n);
+      const minRelayerGas = parseUnits("0.00001", 18);
+      if (relBal >= minRelayerGas) {
+        const auth = await signBaseUsdcTransferAuthorization({
+          userWallet: userSigner,
+          toAddress,
+          amountUsdc,
+        });
+        const usdcAsRelayer = new Contract(BASE_USDC_ADDRESS, ERC20_TRANSFER_ABI, relayer);
+        const tx = await usdcAsRelayer.transferWithAuthorization(
+          auth.from,
+          auth.to,
+          auth.value,
+          auth.validAfter,
+          auth.validBefore,
+          auth.nonce,
+          auth.v,
+          auth.r,
+          auth.s
+        );
+        await tx.wait(1);
+        return { route: "base_eip3009_gasless", txHash: tx.hash };
+      }
+    } catch (eipErr) {
+      console.warn("[nuvion_payouts] EIP-3009 gasless Base transfer fallback:", eipErr.message);
+    }
+  }
+
+  // Fallback Path: Micro-gas drip (0.000025 ETH on Base) + standard ERC-20 transfer
   try {
-    const ethBal = await provider.getBalance(signer.address);
-    const minGas = parseUnits("0.00004", 18);
-    if (ethBal < minGas) {
-      const relayerKey = process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
-      if (relayerKey) {
-        const relayer = new Wallet(relayerKey, provider);
-        const drip = parseUnits("0.00008", 18);
-        const relBal = await provider.getBalance(relayer.address).catch(() => 0n);
-        if (relBal >= drip) {
-          const dripTx = await relayer.sendTransaction({ to: signer.address, value: drip });
-          await dripTx.wait(1);
-        }
+    const ethBal = await provider.getBalance(userSigner.address);
+    const minGas = parseUnits("0.000015", 18);
+    if (ethBal < minGas && relayerKey) {
+      const relayer = new Wallet(relayerKey, provider);
+      const drip = parseUnits("0.000025", 18);
+      const relBal = await provider.getBalance(relayer.address).catch(() => 0n);
+      if (relBal >= drip) {
+        const dripTx = await relayer.sendTransaction({ to: userSigner.address, value: drip });
+        await dripTx.wait(1);
       }
     }
   } catch (gasErr) {
     console.warn("[nuvion_payouts] Base gas sponsor note:", gasErr.message);
   }
 
-  const usdc = new Contract(BASE_USDC_ADDRESS, ERC20_TRANSFER_ABI, signer);
+  const usdc = new Contract(BASE_USDC_ADDRESS, ERC20_TRANSFER_ABI, userSigner);
   const units = parseUnits(Number(amountUsdc).toFixed(6), 6);
   const tx = await usdc.transfer(toAddress, units);
   await tx.wait(1);
@@ -1265,6 +1343,10 @@ function registerPayoutHooks() {
 }
 
 module.exports = {
+  BASE_USDC_EIP3009_DOMAIN,
+  TRANSFER_WITH_AUTH_TYPES,
+  signBaseUsdcTransferAuthorization,
+  sendDirectBaseUsdc,
   getUserPrivateKey,
   selectBestMatchingUscCandidate,
   shouldUseNuvionForNgnPayout,

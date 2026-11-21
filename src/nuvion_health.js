@@ -8,9 +8,92 @@
 //
 // Zero secrets or raw PAN/CVV are ever returned or logged.
 
+const { JsonRpcProvider, Wallet, formatUnits } = require("ethers");
 const nuvion = require("./nuvion");
 const db = require("./db");
 const apiRoutes = require("./api_routes");
+
+const DEFAULT_BASE_RELAYER_MIN_ETH = 0.005;
+const EST_BASE_GAS_ETH_PER_TX = 0.000005;
+
+/**
+ * Inspect the platform Relayer wallet's live ETH balance on Base Mainnet (chainId 8453)
+ * used to sponsor zero-gas EIP-3009 USDC transfers, CCTP mints, and Relay sweeps for users.
+ * Never exposes private keys — only public address + ETH float!
+ */
+async function getBaseRelayerGasStatus({ provider = null } = {}) {
+  const relayerKey = (process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY || "").trim();
+  const minEth = Math.max(0.0005, Number(process.env.BASE_RELAYER_MIN_ETH || DEFAULT_BASE_RELAYER_MIN_ETH));
+
+  if (!relayerKey) {
+    return {
+      configured: false,
+      address: null,
+      ethBalance: 0,
+      minEth,
+      lowBalance: true,
+      estimatedTxs: 0,
+      error: "RELAYER_PRIVATE_KEY is not configured",
+    };
+  }
+
+  let address = null;
+  try {
+    address = new Wallet(relayerKey).address;
+  } catch (err) {
+    return {
+      configured: false,
+      address: null,
+      ethBalance: 0,
+      minEth,
+      lowBalance: true,
+      estimatedTxs: 0,
+      error: "Invalid RELAYER_PRIVATE_KEY format",
+    };
+  }
+
+  // Avoid hitting live Base RPC in unit tests unless explicitly requested or custom provider injected
+  if (!provider && process.env.NODE_ENV === "test" && process.env.ENABLE_BASE_GAS_HEALTH_CHECK !== "true") {
+    return {
+      configured: true,
+      address,
+      ethBalance: null,
+      minEth,
+      lowBalance: false,
+      estimatedTxs: null,
+      skippedInTest: true,
+    };
+  }
+
+  try {
+    const rpcUrl = process.env.BASE_RPC_URL || "https://mainnet.base.org";
+    const rpc = provider || new JsonRpcProvider(rpcUrl, 8453, { staticNetwork: true });
+    const balWei = await Promise.race([
+      rpc.getBalance(address),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("base_rpc_timeout")), 3000)),
+    ]);
+    const ethBalance = parseFloat(Number(formatUnits(balWei, 18)).toFixed(6));
+    return {
+      configured: true,
+      address,
+      ethBalance,
+      minEth,
+      lowBalance: ethBalance < minEth,
+      estimatedTxs: Math.floor((ethBalance + 1e-12) / EST_BASE_GAS_ETH_PER_TX),
+      error: null,
+    };
+  } catch (err) {
+    return {
+      configured: true,
+      address,
+      ethBalance: null,
+      minEth,
+      lowBalance: false,
+      estimatedTxs: null,
+      error: err.message,
+    };
+  }
+}
 
 function escapeHtml(str) {
   if (!str) return "";
@@ -126,12 +209,14 @@ function getPublicHealthSummary() {
  *  - GET /webhook-logs?limit=10 (recent delivery success/fail metrics)
  *  - Optional non-mutating indicative FX quote (`includeQuote: true`)
  */
-async function collectNuvionHealthSnapshot({ includeQuote = false } = {}) {
+async function collectNuvionHealthSnapshot({ includeQuote = false, baseGasProvider = null } = {}) {
   const launch = getLaunchModeSummary();
   const local = getLocalNuvionStats();
+  const baseRelayerGas = await getBaseRelayerGasStatus({ provider: baseGasProvider });
   const snapshot = {
     launch,
     local,
+    baseRelayerGas,
     apiReachable: false,
     apiError: null,
     rootAccountsCount: 0,
@@ -382,6 +467,21 @@ function formatAdminHealthCard(snapshot) {
     `• <b>Jobs:</b> ${loc.jobs.funding_in_transit} in-transit · ${loc.jobs.interac_open} open Interac · ${stuckCount > 0 ? `⚠️ ${stuckCount} retry/refund pending` : "✅ 0 stuck"}`,
   ];
 
+  if (snapshot.baseRelayerGas) {
+    const bg = snapshot.baseRelayerGas;
+    if (!bg.configured) {
+      lines.push(`• <b>Base Relayer Gas:</b> 🚨 Not configured (set RELAYER_PRIVATE_KEY)`);
+    } else if (bg.ethBalance != null) {
+      const shortAddr = bg.address ? `${bg.address.slice(0, 6)}...${bg.address.slice(-4)}` : "";
+      const statusStr = bg.lowBalance
+        ? `🚨 <b>LOW ${bg.ethBalance.toFixed(5)} ETH</b> (top up <code>${escapeHtml(shortAddr)}</code> on Base!)`
+        : `✅ ${bg.ethBalance.toFixed(5)} ETH (~${bg.estimatedTxs.toLocaleString("en-US")} Base txs · <code>${escapeHtml(shortAddr)}</code>)`;
+      lines.push(`• <b>Base Relayer Gas:</b> ${statusStr}`);
+    } else if (bg.error) {
+      lines.push(`• <b>Base Relayer Gas:</b> ⚠️ RPC check error (${escapeHtml(bg.error)})`);
+    }
+  }
+
   if (snapshot.indicativeQuote) {
     lines.push(`• <b>Live Indicative FX:</b> 1 USD = ₦${Number(snapshot.indicativeQuote.rate || 0).toLocaleString("en-NG")}`);
   }
@@ -394,6 +494,7 @@ module.exports = {
   getLaunchModeSummary,
   getLocalNuvionStats,
   getPublicHealthSummary,
+  getBaseRelayerGasStatus,
   collectNuvionHealthSnapshot,
   ensureProductionWebhook,
   dispatchWebhookTest,

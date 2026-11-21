@@ -93,6 +93,16 @@ async function main() {
       console.log(`      - ${wh.id} | ${wh.status} | ${wh.url}${wh.statusReason ? ` (${wh.statusReason})` : ""}`);
     }
     console.log(`    Recent Deliveries : ${snap.recentLogs.succeeded}/${snap.recentLogs.total} OK (${snap.recentLogs.failed} failed)`);
+    if (snap.baseRelayerGas) {
+      const bg = snap.baseRelayerGas;
+      if (!bg.configured) {
+        console.log(`    Base Relayer Gas  : NOT CONFIGURED (set RELAYER_PRIVATE_KEY)`);
+      } else if (bg.ethBalance != null) {
+        console.log(`    Base Relayer Gas  : ${bg.ethBalance.toFixed(5)} ETH (~${bg.estimatedTxs} Base txs) ${bg.lowBalance ? "[LOW! TOP UP ON BASE]" : "[OK]"} (${bg.address})`);
+      } else if (bg.error) {
+        console.log(`    Base Relayer Gas  : RPC error (${bg.error})`);
+      }
+    }
     if (snap.indicativeQuote) {
       console.log(`    Indicative Quote  : $${snap.indicativeQuote.amountFrom} USD -> ₦${snap.indicativeQuote.amountTo.toLocaleString("en-NG")} (rate: ${snap.indicativeQuote.rate})`);
     }

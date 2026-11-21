@@ -1989,13 +1989,28 @@ async function completeCctpWithdrawalOnEvm({
   }
 
   const destProvider = new JsonRpcProvider(targetConfig.rpcUrl);
+  // Circle CCTP V2 receiveMessage() is permissionless: prefer the funded platform relayer
+  // so users NEVER need native gas (e.g. Base ETH) to complete Arc -> Base/EVM settlements!
   let signer = null;
-  if (userWallet && userWallet.privateKey) {
+  const relayerKey = process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
+  if (relayerKey) {
+    const relayerSigner = new Wallet(relayerKey, destProvider);
+    try {
+      const relBal = await destProvider.getBalance(relayerSigner.address);
+      if (relBal > 0n) {
+        signer = relayerSigner;
+      }
+    } catch (_) {
+      // If balance pre-check fails transiently, still prefer relayer unless a user key fallback is needed
+      signer = relayerSigner;
+    }
+  }
+  if (!signer && userWallet && userWallet.privateKey) {
     signer = new Wallet(userWallet.privateKey, destProvider);
-  } else if (userPrivateKey) {
+  } else if (!signer && userPrivateKey) {
     signer = new Wallet(userPrivateKey, destProvider);
-  } else if (process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY) {
-    signer = new Wallet(process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY, destProvider);
+  } else if (!signer && relayerKey) {
+    signer = new Wallet(relayerKey, destProvider);
   }
 
   if (!signer) {
