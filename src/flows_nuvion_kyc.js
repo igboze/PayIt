@@ -153,6 +153,156 @@ async function deleteUserStepMessage(ctx) {
 const NUVION_PRIVACY_FOOTER =
   `\n\n🔒 <i>Handled securely by <b>Nuvion</b> · 100% compliant &amp; confidential (never shared with anyone) · Your reply is auto-deleted after capture.</i>`;
 
+const COUNTRY_KYC_PRESETS = {
+  US: {
+    label: "🇺🇸 United States",
+    sampleName: "Alex Johnson",
+    samplePhone: "+12125550198",
+    sampleStreet: "350 Fifth Avenue, Suite 2100",
+    sampleCityStateZip: "New York, NY, 10118",
+    sampleBizName: "Acme Technologies LLC",
+    sampleBizReg: "47-7654334, 47-1234589, Technology",
+    sampleIncorp: "2023, 5, US, Delaware",
+    authorities: [
+      [
+        { label: "U.S. Dept of State (Passport)", code: "US_DOS", full: "US Department of State" },
+        { label: "State DMV (Driver's License)", code: "US_DMV", full: "Department of Motor Vehicles" },
+      ],
+    ],
+  },
+  GB: {
+    label: "🇬🇧 United Kingdom",
+    sampleName: "Oliver Smith",
+    samplePhone: "+447700900123",
+    sampleStreet: "221B Baker Street",
+    sampleCityStateZip: "London, England, NW1 6XE",
+    sampleBizName: "Acme Technologies Ltd",
+    sampleBizReg: "12345678, GB123456789, Technology",
+    sampleIncorp: "2023, 5, GB, England",
+    authorities: [
+      [
+        { label: "HM Passport Office", code: "GB_HMPO", full: "HM Passport Office" },
+        { label: "DVLA (Driving Licence)", code: "GB_DVLA", full: "Driver and Vehicle Licensing Agency" },
+      ],
+    ],
+  },
+  CA: {
+    label: "🇨🇦 Canada",
+    sampleName: " Liam Tremblay",
+    samplePhone: "+14165550199",
+    sampleStreet: "100 Queen Street West",
+    sampleCityStateZip: "Toronto, Ontario, M5H 2N2",
+    sampleBizName: "Acme Technologies Inc",
+    sampleBizReg: "1234567-8, 123456789RC0001, Technology",
+    sampleIncorp: "2023, 5, CA, Ontario",
+    authorities: [
+      [
+        { label: "IRCC / Passport Canada", code: "CA_IRCC", full: "Immigration, Refugees and Citizenship Canada" },
+        { label: "Provincial Ministry", code: "CA_PROV", full: "Provincial Licensing Authority" },
+      ],
+    ],
+  },
+  NG: {
+    label: "🇳🇬 Nigeria",
+    sampleName: "Chinedu Okafor",
+    samplePhone: "+2348012345678",
+    sampleStreet: "14 Admiralty Way, Lekki Phase 1",
+    sampleCityStateZip: "Lagos, Lagos, 106104",
+    sampleBizName: "Acme Technologies Ltd",
+    sampleBizReg: "RC1234567, 10293847-0001, Technology",
+    sampleIncorp: "2023, 5, NG, Lagos",
+    authorities: [
+      [
+        { label: "NIS (Nigeria Passport)", code: "NIS", full: "Nigeria Immigration Service" },
+        { label: "NIMC (National ID)", code: "NIMC", full: "National Identity Management Commission" },
+      ],
+      [{ label: "FRSC (Driver's License)", code: "FRSC", full: "Federal Road Safety Corps" }],
+    ],
+  },
+  GH: {
+    label: "🇬🇭 Ghana",
+    sampleName: "Kwame Mensah",
+    samplePhone: "+233241234567",
+    sampleStreet: "14 Independence Avenue, Ridge",
+    sampleCityStateZip: "Accra, Greater Accra, GA-100",
+    sampleBizName: "Acme Technologies Ghana Ltd",
+    sampleBizReg: "CS123452023, C0012345678, Technology",
+    sampleIncorp: "2023, 5, GH, Greater Accra",
+    authorities: [
+      [
+        { label: "Passport Office Ghana", code: "GH_PASS", full: "Passport Office Ghana" },
+        { label: "NIA (Ghana Card)", code: "GH_NIA", full: "National Identification Authority" },
+      ],
+      [{ label: "DVLA Ghana", code: "GH_DVLA", full: "Driver and Vehicle Licensing Authority" }],
+    ],
+  },
+  KE: {
+    label: "🇰🇪 Kenya",
+    sampleName: "Kamau Njoroge",
+    samplePhone: "+254712345678",
+    sampleStreet: "Delta Corner, Westlands",
+    sampleCityStateZip: "Nairobi, Nairobi, 00100",
+    sampleBizName: "Acme Technologies Kenya Ltd",
+    sampleBizReg: "PVT-123456, P051234567A, Technology",
+    sampleIncorp: "2023, 5, KE, Nairobi",
+    authorities: [
+      [
+        { label: "Directorate of Immigration", code: "KE_IMM", full: "Directorate of Immigration Services" },
+        { label: "NRB (National ID)", code: "KE_NRB", full: "National Registration Bureau" },
+      ],
+      [{ label: "NTSA (Driving Licence)", code: "KE_NTSA", full: "National Transport and Safety Authority" }],
+    ],
+  },
+};
+
+const DEFAULT_KYC_PRESET = {
+  label: "🌍 International",
+  sampleName: "Alex Johnson",
+  samplePhone: "+447700900123",
+  sampleStreet: "100 Main Street, Suite 4",
+  sampleCityStateZip: "London, England, SW1A 1AA",
+  sampleBizName: "Acme Technologies Ltd",
+  sampleBizReg: "REG-1234567, TAX-9876543, Technology",
+  sampleIncorp: "2023, 5, GB, London",
+  authorities: [
+    [
+      { label: "National Passport Office", code: "INTL_PASS", full: "National Passport Office" },
+      { label: "National ID Authority", code: "INTL_NID", full: "National Identity Authority" },
+    ],
+    [{ label: "Driver Licensing Authority", code: "INTL_DL", full: "Driver Licensing Authority" }],
+  ],
+};
+
+function getCountryKycPreset(countryCode) {
+  const code = String(countryCode || "").trim().toUpperCase();
+  return COUNTRY_KYC_PRESETS[code] || DEFAULT_KYC_PRESET;
+}
+
+function buildCountrySelectionRows(actionPrefix) {
+  return [
+    [
+      Markup.button.callback("🇺🇸 United States (US)", `${actionPrefix}_US`),
+      Markup.button.callback("🇬🇧 United Kingdom (GB)", `${actionPrefix}_GB`),
+    ],
+    [
+      Markup.button.callback("🇨🇦 Canada (CA)", `${actionPrefix}_CA`),
+      Markup.button.callback("🇳🇬 Nigeria (NG)", `${actionPrefix}_NG`),
+    ],
+    [
+      Markup.button.callback("🇬🇭 Ghana (GH)", `${actionPrefix}_GH`),
+      Markup.button.callback("🇰🇪 Kenya (KE)", `${actionPrefix}_KE`),
+    ],
+    [
+      Markup.button.callback("🇿🇦 South Africa (ZA)", `${actionPrefix}_ZA`),
+      Markup.button.callback("🇦🇪 UAE (AE)", `${actionPrefix}_AE`),
+    ],
+    [
+      Markup.button.callback("🇩🇪 Germany (DE)", `${actionPrefix}_DE`),
+      Markup.button.callback("🇫🇷 France (FR)", `${actionPrefix}_FR`),
+    ],
+  ];
+}
+
 function wizardControls(accountType) {
   const prefix = accountType === "business" ? "nuvion_kyb" : "nuvion_kyc";
   return [
@@ -198,16 +348,17 @@ async function showGlobalPortal(ctx, forcedContext = null) {
 
     return ctx.reply(
       `🌍 <b>${label} (Tier 1)</b>\n──────────────────────────\n` +
-      `Upgrade beyond your Tier-0 Naira wallet to unlock:\n\n` +
-      `• 🏦 <b>Named Global Bank Accounts</b> (USD, GBP, EUR, NGN, AED, KES, GHS)\n` +
+      `Upgrade your account to unlock full Global Neobank capabilities:\n\n` +
+      `• 🏦 <b>Named Global Bank Accounts</b> (USD, GBP, EUR, NGN, CAD, AED, KES, GHS)\n` +
       `• 💳 <b>Virtual &amp; Disposable USD Cards</b> (Netflix, AWS, Ads, Online Shopping)\n` +
-      `• ✈️ <b>Global Transfers</b> (24+ bank &amp; mobile money rails)\n` +
+      `• ✈️ <b>Global Transfers</b> (27+ currencies via bank &amp; mobile money rails)\n` +
       (isBiz ? `• 🧾 <b>Global Client Invoicing &amp; Team Cards</b>\n` : "") +
-      `\n<i>All fiat deposits automatically settle straight into your main Proxim balance.</i>\n\n` +
+      `\n<i>All deposits automatically settle straight into your main Proxim balance.</i>\n\n` +
+      `🌍 <b>Supported Worldwide:</b> Choose your country when you begin.\n` +
       `<b>What you'll need:</b>\n` +
       (isBiz
-        ? `• Company registration (CAC) &amp; MemArt PDFs\n• Business proof of address\n• Director/owner ID + BVN/NIN (for Nigerian nationals)\n\n`
-        : `• Government ID (Passport, National ID, or Driver's License)\n• Proof of address (utility bill / bank statement &lt; 3 months)\n• BVN &amp; NIN (for Nigerian nationals)\n\n`) +
+        ? `• Certificate of Incorporation &amp; Articles/Memorandum of Association (PDF)\n• Business proof of address (&lt; 3 months)\n• Director / Owner Government ID &amp; proof of address\n\n`
+        : `• Valid Government ID (Passport, National ID, or Driver's License)\n• Proof of address (utility bill or bank statement &lt; 3 months)\n• Local tax/identity number where required by your country (e.g. SSN for US, BVN/NIN for NG)\n\n`) +
       `🛡️ <b>Privacy &amp; Compliance Guarantee (Powered by Nuvion)</b>\n` +
       `• Your KYC/KYB verification is handled directly by <b>Nuvion</b>, our regulated global banking &amp; compliance infrastructure partner.\n` +
       `• <b>100% Compliant &amp; Confidential:</b> Your data and documents are encrypted, used strictly for regulatory verification, and <b>will never be shared with anyone</b>.\n` +
@@ -272,19 +423,34 @@ async function showGlobalPortal(ctx, forcedContext = null) {
 
 async function promptPersonalKycStep(ctx, userId, step, data = {}) {
   saveDraftAndState(userId, "personal", step, data);
+  const preset = getCountryKycPreset(data.nationality || data.country_code);
 
   switch (step) {
+    case "nuvion_kyc_country":
+      return ctx.reply(
+        `🌍 <b>Step 1/9 — Choose Your Country of Verification</b>\n──────────────────────────\n` +
+        `Select the country you are verifying from below, or type any <b>2-letter country code</b> (e.g. <code>US</code>, <code>GB</code>, <code>CA</code>, <code>NG</code>, <code>GH</code>, <code>KE</code>, <code>AU</code>, <code>SG</code>):` +
+        NUVION_PRIVACY_FOOTER,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([
+            ...buildCountrySelectionRows("nuvion_kyc_pick_country"),
+            ...wizardControls("personal"),
+          ]),
+        }
+      );
+
     case "nuvion_kyc_name":
       return ctx.reply(
-        `🪪 <b>Step 1/9 — Legal Full Name</b>\n──────────────────────────\n` +
-        `Enter your full legal name exactly as it appears on your government ID (e.g. <code>Chinedu Okafor</code>):` +
+        `🪪 <b>Step 2/9 — Legal Full Name</b>\n──────────────────────────\n` +
+        `Enter your full legal name exactly as it appears on your government ID (e.g. <code>${escapeHtml(preset.sampleName)}</code>):` +
         NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
       );
 
     case "nuvion_kyc_email":
       return ctx.reply(
-        `📧 <b>Step 2/9 — Personal Email Address</b>\n──────────────────────────\n` +
+        `📧 <b>Step 3/9 — Personal Email Address</b>\n──────────────────────────\n` +
         `Enter your personal email address (must be unique to you):` +
         NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
@@ -292,15 +458,15 @@ async function promptPersonalKycStep(ctx, userId, step, data = {}) {
 
     case "nuvion_kyc_phone":
       return ctx.reply(
-        `📱 <b>Step 3/9 — Phone Number</b>\n──────────────────────────\n` +
-        `Enter your phone number with country code (e.g. <code>+2348012345678</code> or <code>08012345678</code>):` +
+        `📱 <b>Step 4/9 — Phone Number</b>\n──────────────────────────\n` +
+        `Enter your phone number with country code (e.g. <code>${escapeHtml(preset.samplePhone)}</code>):` +
         NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
       );
 
     case "nuvion_kyc_dob":
       return ctx.reply(
-        `🎂 <b>Step 4/9 — Date of Birth</b>\n──────────────────────────\n` +
+        `🎂 <b>Step 5/9 — Date of Birth</b>\n──────────────────────────\n` +
         `Enter your date of birth in <code>YYYY-MM-DD</code> format (e.g. <code>1994-06-15</code>):` +
         NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
@@ -308,7 +474,7 @@ async function promptPersonalKycStep(ctx, userId, step, data = {}) {
 
     case "nuvion_kyc_gender":
       return ctx.reply(
-        `👤 <b>Step 4b/9 — Gender</b>\n──────────────────────────\nSelect your gender as printed on your ID:`,
+        `👤 <b>Step 5b/9 — Gender</b>\n──────────────────────────\nSelect your gender as printed on your ID:`,
         {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
@@ -323,22 +489,11 @@ async function promptPersonalKycStep(ctx, userId, step, data = {}) {
 
     case "nuvion_kyc_nationality":
       return ctx.reply(
-        `🌍 <b>Step 5/9 — Nationality</b>\n──────────────────────────\nSelect your country of citizenship (or type a 2-letter ISO code like <code>CA</code>):`,
+        `🌍 <b>Choose Your Country / Nationality</b>\n──────────────────────────\nSelect your country of citizenship (or type any 2-letter ISO code like <code>CA</code>, <code>AU</code>, <code>SG</code>):`,
         {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback("🇳🇬 Nigeria (NG)", "nuvion_kyc_set_nat_NG"),
-              Markup.button.callback("🇬🇭 Ghana (GH)", "nuvion_kyc_set_nat_GH"),
-            ],
-            [
-              Markup.button.callback("🇰🇪 Kenya (KE)", "nuvion_kyc_set_nat_KE"),
-              Markup.button.callback("🇬🇧 UK (GB)", "nuvion_kyc_set_nat_GB"),
-            ],
-            [
-              Markup.button.callback("🇺🇸 USA (US)", "nuvion_kyc_set_nat_US"),
-              Markup.button.callback("🇨🇦 Canada (CA)", "nuvion_kyc_set_nat_CA"),
-            ],
+            ...buildCountrySelectionRows("nuvion_kyc_set_nat"),
             ...wizardControls("personal"),
           ]),
         }
@@ -347,15 +502,15 @@ async function promptPersonalKycStep(ctx, userId, step, data = {}) {
     case "nuvion_kyc_address_street":
       return ctx.reply(
         `🏠 <b>Step 6/9 — Residential Address (Street)</b>\n──────────────────────────\n` +
-        `Enter your street address (e.g. <code>14 Admiralty Way, Lekki Phase 1</code>):` +
+        `Enter your street address (e.g. <code>${escapeHtml(preset.sampleStreet)}</code>):` +
         NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
       );
 
     case "nuvion_kyc_address_city":
       return ctx.reply(
-        `🏙️ <b>Step 6b/9 — City, State &amp; Postal Code</b>\n──────────────────────────\n` +
-        `Send your <b>City, State, Postal Code</b> separated by commas (e.g. <code>Lagos, Lagos, 106104</code>):` +
+        `🏙️ <b>Step 6b/9 — City, State/Province &amp; Postal Code</b>\n──────────────────────────\n` +
+        `Send your <b>City, State/Province, Postal Code</b> separated by commas (e.g. <code>${escapeHtml(preset.sampleCityStateZip)}</code>):` +
         NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
       );
@@ -414,23 +569,23 @@ async function promptPersonalKycStep(ctx, userId, step, data = {}) {
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("personal")) }
       );
 
-    case "nuvion_kyc_id_authority":
+    case "nuvion_kyc_id_authority": {
+      const authRows = preset.authorities.map((row) =>
+        row.map((btn) => Markup.button.callback(btn.label, `nuvion_kyc_set_auth_${btn.code}`))
+      );
       return ctx.reply(
         `🏛️ <b>Step 8d/9 — Issuing Authority</b>\n──────────────────────────\n` +
-        `Tap the authority that issued your ID, or type it directly:` +
+        `Tap the authority that issued your ID, or type it directly into the chat:` +
         NUVION_PRIVACY_FOOTER,
         {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback("NIS (Nigeria Passport)", "nuvion_kyc_set_auth_NIS"),
-              Markup.button.callback("NIMC (National ID)", "nuvion_kyc_set_auth_NIMC"),
-            ],
-            [Markup.button.callback("FRSC (Driver's License)", "nuvion_kyc_set_auth_FRSC")],
+            ...authRows,
             ...wizardControls("personal"),
           ]),
         }
       );
+    }
 
     case "nuvion_kyc_doc_id_front":
       return ctx.reply(
@@ -494,19 +649,34 @@ async function promptPersonalKycStep(ctx, userId, step, data = {}) {
 
 async function promptBusinessKybStep(ctx, userId, step, data = {}) {
   saveDraftAndState(userId, "business", step, data);
+  const preset = getCountryKycPreset(data.incorp_country || data.biz_country_code);
 
   switch (step) {
+    case "nuvion_kyb_country":
+      return ctx.reply(
+        `🌍 <b>Business KYB (Step 1/9) — Country of Registration</b>\n──────────────────────────\n` +
+        `Select the country where your business is registered, or type any <b>2-letter country code</b> (e.g. <code>US</code>, <code>GB</code>, <code>CA</code>, <code>NG</code>, <code>GH</code>, <code>KE</code>, <code>AE</code>):` +
+        NUVION_PRIVACY_FOOTER,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([
+            ...buildCountrySelectionRows("nuvion_kyb_pick_country"),
+            ...wizardControls("business"),
+          ]),
+        }
+      );
+
     case "nuvion_kyb_legal_name":
       return ctx.reply(
-        `💼 <b>Business KYB (Step 1/9) — Legal Business Name</b>\n──────────────────────────\n` +
-        `Enter your registered company name exactly as on your Certificate of Incorporation (e.g. <code>Acme Technologies Ltd</code>):` +
+        `💼 <b>Business KYB (Step 2/9) — Legal Business Name</b>\n──────────────────────────\n` +
+        `Enter your registered company name exactly as on your Certificate of Incorporation (e.g. <code>${escapeHtml(preset.sampleBizName)}</code>):` +
         NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
 
     case "nuvion_kyb_type":
       return ctx.reply(
-        `🏢 <b>Step 2/9 — Business Entity Type</b>\n──────────────────────────\nSelect your company structure:`,
+        `🏢 <b>Step 2b/9 — Business Entity Type</b>\n──────────────────────────\nSelect your company structure:`,
         {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
@@ -526,7 +696,7 @@ async function promptBusinessKybStep(ctx, userId, step, data = {}) {
     case "nuvion_kyb_reg":
       return ctx.reply(
         `📋 <b>Step 3/9 — Registration &amp; Industry</b>\n──────────────────────────\n` +
-        `Send <b>Registration Number, Tax ID, Industry</b> separated by commas (e.g. <code>RC1234567, 10293847-0001, Technology</code>):` +
+        `Send <b>Registration Number, Tax ID, Industry</b> separated by commas (e.g. <code>${escapeHtml(preset.sampleBizReg)}</code>):` +
         NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
@@ -534,7 +704,7 @@ async function promptBusinessKybStep(ctx, userId, step, data = {}) {
     case "nuvion_kyb_incorp":
       return ctx.reply(
         `📅 <b>Step 4/9 — Incorporation Details</b>\n──────────────────────────\n` +
-        `Send <b>Year, Month (1-12), Country Code, State</b> separated by commas (e.g. <code>2023, 5, NG, Lagos</code>):` +
+        `Send <b>Year, Month (1-12), Country Code, State/Province</b> separated by commas (e.g. <code>${escapeHtml(preset.sampleIncorp)}</code>):` +
         NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
@@ -542,7 +712,7 @@ async function promptBusinessKybStep(ctx, userId, step, data = {}) {
     case "nuvion_kyb_contact":
       return ctx.reply(
         `📧 <b>Step 5/9 — Business Contact</b>\n──────────────────────────\n` +
-        `Send <b>Business Email, Phone, Website (optional)</b> separated by commas (e.g. <code>finance@acme.com, +2348012345678, https://acme.com</code> or omit website):` +
+        `Send <b>Business Email, Phone, Website (optional)</b> separated by commas (e.g. <code>finance@acme.com, ${escapeHtml(preset.samplePhone)}, https://acme.com</code> or omit website):` +
         NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
@@ -550,7 +720,7 @@ async function promptBusinessKybStep(ctx, userId, step, data = {}) {
     case "nuvion_kyb_address":
       return ctx.reply(
         `🏠 <b>Step 6/9 — Registered Business Address</b>\n──────────────────────────\n` +
-        `Send <b>Street (4+ chars), City, State, Postal Code, Country Code</b> separated by commas (e.g. <code>14 Admiralty Way, Lagos, Lagos, 106104, NG</code>):` +
+        `Send <b>Street (4+ chars), City, State/Province, Postal Code, Country Code</b> separated by commas (e.g. <code>${escapeHtml(preset.sampleStreet)}, ${escapeHtml(preset.sampleCityStateZip)}, ${escapeHtml(data.incorp_country || "US")}</code>):` +
         NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
@@ -1120,10 +1290,33 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
   }
 
   // ── Personal KYC Text Steps (Delete User Message Upon Passing Each Step!) ─
+  if (state.type === "nuvion_kyc_country") {
+    const code = val.toUpperCase();
+    if (/^[A-Z]{2}$/.test(code)) {
+      await deleteUserStepMessage(ctx);
+      data.nationality = code;
+      data.country_code = code;
+      await promptPersonalKycStep(ctx, userId, "nuvion_kyc_name", data);
+      return true;
+    }
+    // Backwards-compatible fallback if a caller/test sends full name directly on step 1
+    const nameParts = val.split(/\s+/).filter(Boolean);
+    if (nameParts.length >= 2) {
+      await deleteUserStepMessage(ctx);
+      data.first_name = nameParts[0];
+      data.last_name = nameParts[nameParts.length - 1];
+      if (nameParts.length > 2) data.middle_name = nameParts.slice(1, -1).join(" ");
+      await promptPersonalKycStep(ctx, userId, "nuvion_kyc_email", data);
+      return true;
+    }
+    await ctx.reply("Please tap your country button above or enter a 2-letter ISO country code (e.g. <code>US</code>, <code>GB</code>, <code>CA</code>, <code>NG</code>, <code>GH</code>, <code>KE</code>).", { parse_mode: "HTML" });
+    return true;
+  }
+
   if (state.type === "nuvion_kyc_name") {
     const parts = val.split(/\s+/).filter(Boolean);
     if (parts.length < 2) {
-      await ctx.reply("Please enter at least your <b>First Name</b> and <b>Last Name</b> (e.g. <code>Chinedu Okafor</code>).", { parse_mode: "HTML" });
+      await ctx.reply("Please enter at least your <b>First Name</b> and <b>Last Name</b>.", { parse_mode: "HTML" });
       return true;
     }
     await deleteUserStepMessage(ctx);
@@ -1136,7 +1329,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
 
   if (state.type === "nuvion_kyc_email") {
     if (!isValidEmail(val)) {
-      await ctx.reply("Please enter a valid personal email address (e.g. <code>chinedu@gmail.com</code>).", { parse_mode: "HTML" });
+      await ctx.reply("Please enter a valid personal email address (e.g. <code>alex@example.com</code>).", { parse_mode: "HTML" });
       return true;
     }
     await deleteUserStepMessage(ctx);
@@ -1146,9 +1339,10 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
   }
 
   if (state.type === "nuvion_kyc_phone") {
-    const phone = normalizePhone(val);
+    const phone = normalizePhone(val, data.nationality || "NG");
     if (!phone) {
-      await ctx.reply("Please enter a valid phone number with country code (e.g. <code>+2348012345678</code>).", { parse_mode: "HTML" });
+      const preset = getCountryKycPreset(data.nationality);
+      await ctx.reply(`Please enter a valid phone number with country code (e.g. <code>${escapeHtml(preset.samplePhone)}</code>).`, { parse_mode: "HTML" });
       return true;
     }
     await deleteUserStepMessage(ctx);
@@ -1295,6 +1489,26 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
   }
 
   // ── Business KYB Text Steps (Delete User Message Upon Passing Each Step!) ─
+  if (state.type === "nuvion_kyb_country") {
+    const code = val.toUpperCase();
+    if (/^[A-Z]{2}$/.test(code)) {
+      await deleteUserStepMessage(ctx);
+      data.incorp_country = code;
+      data.biz_country_code = code;
+      await promptBusinessKybStep(ctx, userId, "nuvion_kyb_legal_name", data);
+      return true;
+    }
+    if (val.length >= 3) {
+      await deleteUserStepMessage(ctx);
+      data.legal_name = val;
+      data.trade_name = val;
+      await promptBusinessKybStep(ctx, userId, "nuvion_kyb_type", data);
+      return true;
+    }
+    await ctx.reply("Please tap your business country button above or enter a 2-letter ISO country code (e.g. <code>US</code>, <code>GB</code>, <code>CA</code>, <code>NG</code>, <code>GH</code>, <code>KE</code>).", { parse_mode: "HTML" });
+    return true;
+  }
+
   if (state.type === "nuvion_kyb_legal_name") {
     if (val.length < 2) {
       await ctx.reply("Please enter your full registered legal business name.");
@@ -1575,13 +1789,21 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
     ctx.answerCbQuery().catch(() => {});
     if (!nuvion.isUserAllowedNuvion(ctx.from.id)) return showGlobalPortal(ctx, "personal");
     db.deleteNuvionKycDraft(ctx.from.id, "personal");
-    return promptPersonalKycStep(ctx, ctx.from.id, "nuvion_kyc_name", {});
+    return promptPersonalKycStep(ctx, ctx.from.id, "nuvion_kyc_country", {});
+  });
+
+  bot.action(/^nuvion_kyc_pick_country_([A-Z]{2})$/, async (ctx) => {
+    ctx.answerCbQuery().catch(() => {});
+    const nat = ctx.match[1];
+    const draft = db.getNuvionKycDraft(ctx.from.id, "personal");
+    const data = { ...(draft?.data || {}), nationality: nat, country_code: nat };
+    return promptPersonalKycStep(ctx, ctx.from.id, "nuvion_kyc_name", data);
   });
 
   bot.action("nuvion_kyc_resume", async (ctx) => {
     ctx.answerCbQuery().catch(() => {});
     const draft = db.getNuvionKycDraft(ctx.from.id, "personal");
-    if (!draft) return promptPersonalKycStep(ctx, ctx.from.id, "nuvion_kyc_name", {});
+    if (!draft) return promptPersonalKycStep(ctx, ctx.from.id, "nuvion_kyc_country", {});
     return promptPersonalKycStep(ctx, ctx.from.id, draft.step, draft.data);
   });
 
@@ -1603,6 +1825,10 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
     ctx.answerCbQuery().catch(() => {});
     const draft = db.getNuvionKycDraft(ctx.from.id, "personal");
     const data = { ...(draft?.data || {}), gender: ctx.match[1] };
+    // If the user already selected their country at Step 1, skip straight to Residential Address!
+    if (data.nationality && /^[A-Z]{2}$/.test(data.nationality)) {
+      return promptPersonalKycStep(ctx, ctx.from.id, "nuvion_kyc_address_street", data);
+    }
     return promptPersonalKycStep(ctx, ctx.from.id, "nuvion_kyc_nationality", data);
   });
 
@@ -1627,6 +1853,21 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
       NIS: "Nigeria Immigration Service",
       NIMC: "National Identity Management Commission",
       FRSC: "Federal Road Safety Corps",
+      US_DOS: "US Department of State",
+      US_DMV: "Department of Motor Vehicles",
+      GB_HMPO: "HM Passport Office",
+      GB_DVLA: "Driver and Vehicle Licensing Agency",
+      CA_IRCC: "Immigration, Refugees and Citizenship Canada",
+      CA_PROV: "Provincial Licensing Authority",
+      GH_PASS: "Passport Office Ghana",
+      GH_NIA: "National Identification Authority",
+      GH_DVLA: "Driver and Vehicle Licensing Authority",
+      KE_IMM: "Directorate of Immigration Services",
+      KE_NRB: "National Registration Bureau",
+      KE_NTSA: "National Transport and Safety Authority",
+      INTL_PASS: "National Passport Office",
+      INTL_NID: "National Identity Authority",
+      INTL_DL: "Driver Licensing Authority",
     };
     const draft = db.getNuvionKycDraft(ctx.from.id, "personal");
     const data = { ...(draft?.data || {}), id_issuing_authority: authMap[ctx.match[1]] || ctx.match[1] };
@@ -1650,13 +1891,21 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
     ctx.answerCbQuery().catch(() => {});
     if (!nuvion.isUserAllowedNuvion(ctx.from.id)) return showGlobalPortal(ctx, "business");
     db.deleteNuvionKycDraft(ctx.from.id, "business");
-    return promptBusinessKybStep(ctx, ctx.from.id, "nuvion_kyb_legal_name", {});
+    return promptBusinessKybStep(ctx, ctx.from.id, "nuvion_kyb_country", {});
+  });
+
+  bot.action(/^nuvion_kyb_pick_country_([A-Z]{2})$/, async (ctx) => {
+    ctx.answerCbQuery().catch(() => {});
+    const country = ctx.match[1];
+    const draft = db.getNuvionKycDraft(ctx.from.id, "business");
+    const data = { ...(draft?.data || {}), incorp_country: country, biz_country_code: country };
+    return promptBusinessKybStep(ctx, ctx.from.id, "nuvion_kyb_legal_name", data);
   });
 
   bot.action("nuvion_kyb_resume", async (ctx) => {
     ctx.answerCbQuery().catch(() => {});
     const draft = db.getNuvionKycDraft(ctx.from.id, "business");
-    if (!draft) return promptBusinessKybStep(ctx, ctx.from.id, "nuvion_kyb_legal_name", {});
+    if (!draft) return promptBusinessKybStep(ctx, ctx.from.id, "nuvion_kyb_country", {});
     return promptBusinessKybStep(ctx, ctx.from.id, draft.step, draft.data);
   });
 
