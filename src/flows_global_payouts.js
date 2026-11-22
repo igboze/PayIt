@@ -259,6 +259,8 @@ async function presentPayoutQuoteAndAskPin(ctx, userId, draft) {
     const rateLine = draft.currency === "USD"
       ? ""
       : `• <b>Exchange Rate:</b> 1 USD = ${q.effectiveRate.toFixed(4)} ${draft.currency}\n`;
+    const principalUsd = Number(q.nuvionPrincipalUsd ?? q.nuvionCostUsd ?? 0);
+    const totalFeeUsd = Number(q.nuvionRailFeeUsd ?? 0) + Number(q.marginUsd ?? 0);
 
     return ctx.reply(
       `📋 <b>Confirm International Transfer</b>\n` +
@@ -267,6 +269,8 @@ async function presentPayoutQuoteAndAskPin(ctx, userId, draft) {
       `• <b>Method:</b> ${escapeHtml(q.rail.label)} (${escapeHtml(q.rail.settlement)})\n` +
       `• <b>Recipient Gets:</b> <b>${destDisplay}</b>\n` +
       rateLine +
+      `• <b>Transfer Amount:</b> $${principalUsd.toFixed(2)}\n` +
+      `• <b>Transfer Fee:</b> +$${totalFeeUsd.toFixed(2)}\n` +
       `• <b>Total From Your Balance:</b> <b>$${q.userTotalUsd.toFixed(2)}</b>\n` +
       (draft.narration ? `• <b>Note:</b> <i>${escapeHtml(draft.narration)}</i>\n` : "") +
       `──────────────────────────\n` +

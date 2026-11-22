@@ -434,7 +434,11 @@ test("Phase 3: End-to-End Global Payouts (CNY Wire, Tier-1 NGN NIP Naira-only, S
     const cnyJobDispatched = db.getNuvionJobById(cnyInit.job.id);
     assert.equal(cnyJobDispatched.state, "dispatched");
     assert.ok(cnyJobDispatched.nuvion_transfer_id, "Nuvion CNY transfer must be dispatched automatically");
-    assert.equal(perUscAcc.balance.available, 0, "Nuvion USC account must sweep cleanly back to 0.00!");
+    assert.equal(
+      perUscAcc.balance.available,
+      cnyInit.quote.nuvionRailFeeMinor,
+      "Nuvion USC account must sweep principal cleanly and leave only the reserved Nuvion rail fee!"
+    );
 
     // Simulate `outflows.completed` -> HD Receipt PNG delivered
     const cnyTx = mock.store.transfers.get(cnyJobDispatched.nuvion_transfer_id);

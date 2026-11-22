@@ -791,6 +791,82 @@ function parseMultiCurrencyCsv(csvText) {
   return { rows, errors };
 }
 
+/**
+ * Estimate Nuvion's outbound payout rail fee in USD (`applicable_fee`) for a given corridor/rail
+ * so Proxim captures and bridges `principal + Nuvion rail fee` upfront instead of failing on dispatch.
+ */
+function estimateNuvionRailFeeUsd(railKey, currency, principalUsd, targetAmountMajor = null, fxRate = null) {
+  const code = String(currency || "").toUpperCase();
+  const rKey = String(railKey || "").toLowerCase();
+  const principal = Math.max(0, Number(principalUsd) || 0);
+  const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
+  // Derive effective local-per-USD rate (fallback to ~1 when unknown)
+  let rateLocalPerUsd = Number(fxRate || 0);
+  if (rateLocalPerUsd <= 0 && targetAmountMajor && principal > 0) {
+    rateLocalPerUsd = Number(targetAmountMajor) / principal;
+  }
+  const toUsd = (localAmt, fallbackUsd) =>
+    rateLocalPerUsd > 0 ? round2(localAmt / rateLocalPerUsd) : fallbackUsd;
+
+  if (rKey.startsWith("swift_")) {
+    const fee = round2(50.0 + principal * 0.005);
+    return { nuvionRailFeeUsd: fee, feeLabel: `$${fee.toFixed(2)} (SWIFT Wire)` };
+  }
+
+  switch (code) {
+    case "GBP": {
+      const targetGbp = Number(targetAmountMajor || 0);
+      const minUsd = toUsd(5.0, 6.7);
+      const pctUsd = targetGbp > 400 ? round2(principal * 0.0125) : 0;
+      const fee = Math.max(minUsd, pctUsd);
+      return { nuvionRailFeeUsd: fee, feeLabel: `$${fee.toFixed(2)} (UK FPS £5.00 min)` };
+    }
+    case "EUR": {
+      const fee = Math.max(toUsd(5.0, 5.5), round2(principal * 0.005));
+      return { nuvionRailFeeUsd: fee, feeLabel: `$${fee.toFixed(2)} (SEPA €5.00 min)` };
+    }
+    case "USD": {
+      const fee = rKey === "usd_wire" ? Math.max(15.0, round2(principal * 0.005)) : 5.0;
+      return { nuvionRailFeeUsd: fee, feeLabel: `$${fee.toFixed(2)} (${rKey === "usd_wire" ? "US Wire" : "US ACH/RTP"})` };
+    }
+    case "CAD": {
+      const fee = Math.max(toUsd(5.0, 3.7), round2(principal * 0.005));
+      return { nuvionRailFeeUsd: fee, feeLabel: `$${fee.toFixed(2)} (CA$5.00 min)` };
+    }
+    case "NGN": {
+      const ngnAmt = Number(targetAmountMajor || 0);
+      const localFee = ngnAmt > 10000 ? 200 : 50;
+      const fee = Math.max(0.15, toUsd(localFee, 0.25));
+      return { nuvionRailFeeUsd: fee, feeLabel: `$${fee.toFixed(2)} (NGN NIP ₦${localFee})` };
+    }
+    case "GHS": {
+      const fee = Math.max(1.5, toUsd(25, 2.2));
+      return { nuvionRailFeeUsd: fee, feeLabel: `$${fee.toFixed(2)} (GHS Rail)` };
+    }
+    case "KES": {
+      const fee = Math.max(2.5, toUsd(450, 3.5));
+      return { nuvionRailFeeUsd: fee, feeLabel: `$${fee.toFixed(2)} (KES Rail)` };
+    }
+    case "AED": {
+      const fee = Math.max(2.5, toUsd(10, 2.75));
+      return { nuvionRailFeeUsd: fee, feeLabel: `$${fee.toFixed(2)} (AED Local)` };
+    }
+    case "ZAR": {
+      const fee = Math.max(2.0, toUsd(40, 2.5));
+      return { nuvionRailFeeUsd: fee, feeLabel: `$${fee.toFixed(2)} (ZAR RTC/EFT)` };
+    }
+    case "CNY": {
+      const fee = Math.max(6.5, toUsd(50, 7.0));
+      return { nuvionRailFeeUsd: fee, feeLabel: `$${fee.toFixed(2)} (CNY Local)` };
+    }
+    default: {
+      const fee = Math.max(5.0, round2(principal * 0.005));
+      return { nuvionRailFeeUsd: fee, feeLabel: `$${fee.toFixed(2)} (${code} Rail)` };
+    }
+  }
+}
+
 module.exports = {
   ALL_NUVION_FIAT_CURRENCIES,
   ALL_NUVION_RECEIVING_CURRENCIES,
@@ -802,6 +878,7 @@ module.exports = {
   isSupportedFiatCurrency,
   validateCorridorAmount,
   formatCurrencyMajor,
+  estimateNuvionRailFeeUsd,
   parseRecipientInputForRail,
   buildCounterpartyPayload,
   buildPaymentDetailPayload,

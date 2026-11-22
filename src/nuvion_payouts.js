@@ -230,16 +230,33 @@ async function quoteGlobalPayout({
     accountId: entity.usc_account_id,
   });
 
-  const nuvionCostMinor = Math.round(Number(quote.amount_from) || 0);
-  if (nuvionCostMinor <= 0) {
+  const nuvionPrincipalMinor = Math.round(Number(quote.amount_from) || 0);
+  if (nuvionPrincipalMinor <= 0) {
     throw new Error("Unable to retrieve a valid live exchange rate for this corridor right now.");
   }
 
+  const nuvionPrincipalUsd = nuvion.fromNuvionMinor(nuvionPrincipalMinor);
+  const railFeeInfo = corridors.estimateNuvionRailFeeUsd(
+    rail.key,
+    code,
+    nuvionPrincipalUsd,
+    targetAmountMajor,
+    quote.rate
+  );
+  const nuvionRailFeeUsd = railFeeInfo.nuvionRailFeeUsd;
+  const nuvionRailFeeMinor = nuvion.toNuvionMinor(nuvionRailFeeUsd);
+
+  // Total USC that must land on Nuvion = FX principal + Nuvion's outbound rail fee
+  const nuvionCostMinor = nuvionPrincipalMinor + nuvionRailFeeMinor;
+  const nuvionCostUsd = nuvion.fromNuvionMinor(nuvionCostMinor);
+
+  // Proxim platform fee: enforced strictly (default 1.00% with $0.50 minimum on international payouts)
   const marginBps = nuvion.getFxMarginBps("outbound");
-  const marginMinor = marginBps > 0 ? Math.max(1, nuvion.calcMarginMinor(nuvionCostMinor, marginBps)) : 0;
+  const minProximFeeMinor = Math.max(0, Math.round(Number(process.env.PROXIM_MIN_PAYOUT_FEE_USD ?? 0.5) * 100));
+  const rawMarginMinor = marginBps > 0 ? nuvion.calcMarginMinor(nuvionPrincipalMinor, marginBps) : 0;
+  const marginMinor = marginBps > 0 ? Math.max(minProximFeeMinor, rawMarginMinor) : 0;
   const userTotalMinor = nuvionCostMinor + marginMinor;
 
-  const nuvionCostUsd = nuvion.fromNuvionMinor(nuvionCostMinor);
   const marginUsd = nuvion.fromNuvionMinor(marginMinor);
   const userTotalUsd = nuvion.fromNuvionMinor(userTotalMinor);
   const effectiveRate = userTotalUsd > 0 ? (Number(targetAmountMajor) / userTotalUsd) : Number(quote.rate || 0);
@@ -252,6 +269,11 @@ async function quoteGlobalPayout({
     targetAmountMinor,
     nuvionQuoteId: quote.id,
     nuvionRawRate: Number(quote.rate || 0),
+    nuvionPrincipalMinor,
+    nuvionPrincipalUsd,
+    nuvionRailFeeMinor,
+    nuvionRailFeeUsd,
+    nuvionFeeLabel: railFeeInfo.feeLabel,
     nuvionCostMinor,
     nuvionCostUsd,
     marginBps,
@@ -566,47 +588,54 @@ async function fundNuvionBaseBridge({
   ).trim();
 
   let marginTxHash = null;
-  if (marginUsd >= 0.01 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
-    try {
-      const arcWallet = walletLib.walletFromPrivateKey(privateKey);
-      if (feeRecipient.toLowerCase() !== arcWallet.address.toLowerCase()) {
-        const arcRemaining = round2(
-          arcAvailable - (fundingResult?.route === "arc_cctp_base" ? Number(nuvionCostUsd) : 0)
-        );
-        const baseRemaining = round2(
-          baseAvailable -
-            (fundingResult?.route === "base_direct" || fundingResult?.route === "base_eip3009_sponsored"
-              ? Number(nuvionCostUsd)
-              : 0)
-        );
-        const gwRemaining = round2(
-          gwAvailable - (fundingResult?.route === "circle_gateway" ? Number(nuvionCostUsd) : 0)
-        );
+  if (marginUsd >= 0.01) {
+    if (!feeRecipient || !walletLib.isValidAddress(feeRecipient)) {
+      throw new Error("Proxim fee recipient wallet is not configured; payout blocked.");
+    }
+    const arcWallet = walletLib.walletFromPrivateKey(privateKey);
+    if (feeRecipient.toLowerCase() !== arcWallet.address.toLowerCase()) {
+      const arcRemaining = round2(
+        arcAvailable - (fundingResult?.route === "arc_cctp_base" ? Number(nuvionCostUsd) : 0)
+      );
+      const baseRemaining = round2(
+        baseAvailable -
+          (fundingResult?.route === "base_direct" || fundingResult?.route === "base_eip3009_sponsored"
+            ? Number(nuvionCostUsd)
+            : 0)
+      );
+      const gwRemaining = round2(
+        gwAvailable - (fundingResult?.route === "circle_gateway" ? Number(nuvionCostUsd) : 0)
+      );
 
-        if (arcRemaining + 0.001 >= marginUsd) {
-          const feeRes = await walletLib.sendSponsoredOrDirectTransaction(
-            arcWallet,
-            feeRecipient,
-            walletLib.parseToMicro(marginUsd.toFixed(6))
-          );
-          marginTxHash = feeRes?.txHash || feeRes?.hash || (typeof feeRes === "string" ? feeRes : null);
-        } else if (baseRemaining + 0.001 >= marginUsd) {
-          const baseFeeRes = await sendDirectBaseUsdc(privateKey, feeRecipient, marginUsd);
-          marginTxHash = baseFeeRes?.txHash || null;
-        } else if (gwRemaining + 0.001 >= marginUsd) {
-          const signer = new Wallet(privateKey);
-          const gwFeeRes = await gateway.transferBetweenChains({
-            signer,
-            sourceChain: "Arc",
-            destinationChain: "Base",
-            amountUsdc: marginUsd,
-            recipientAddress: feeRecipient,
-          });
-          marginTxHash = gwFeeRes?.txHash || gwFeeRes?.transferId || null;
-        }
+      if (arcRemaining + 0.001 >= marginUsd) {
+        const feeRes = await walletLib.sendSponsoredOrDirectTransaction(
+          arcWallet,
+          feeRecipient,
+          walletLib.parseToMicro(marginUsd.toFixed(6))
+        );
+        marginTxHash = feeRes?.txHash || feeRes?.hash || (typeof feeRes === "string" ? feeRes : null);
+      } else if (baseRemaining + 0.001 >= marginUsd) {
+        const baseFeeRes = await sendDirectBaseUsdc(privateKey, feeRecipient, marginUsd);
+        marginTxHash = baseFeeRes?.txHash || null;
+      } else if (gwRemaining + 0.001 >= marginUsd) {
+        const signer = new Wallet(privateKey);
+        const gwFeeRes = await gateway.transferBetweenChains({
+          signer,
+          sourceChain: "Arc",
+          destinationChain: "Base",
+          amountUsdc: marginUsd,
+          recipientAddress: feeRecipient,
+        });
+        marginTxHash = gwFeeRes?.txHash || gwFeeRes?.transferId || null;
+      } else {
+        throw new Error(
+          `Insufficient balance to cover Proxim platform fee ($${marginUsd.toFixed(2)}). Please top up and try again.`
+        );
       }
-    } catch (feeErr) {
-      console.warn("[nuvion_payouts] FX margin collection note:", feeErr.message);
+
+      if (!marginTxHash) {
+        throw new Error("Proxim platform fee collection did not return a transaction hash; payout aborted.");
+      }
     }
   }
 
@@ -689,6 +718,8 @@ async function initiateGlobalPayout({
     targetCurrency: quoteInfo.targetCurrency,
     targetAmountMajor: quoteInfo.targetAmountMajor,
     targetAmountMinor: quoteInfo.targetAmountMinor,
+    nuvionPrincipalMinor: quoteInfo.nuvionPrincipalMinor,
+    nuvionRailFeeMinor: quoteInfo.nuvionRailFeeMinor,
     expectedUscMinor: quoteInfo.nuvionCostMinor,
     userTotalUsd: quoteInfo.userTotalUsd,
     effectiveRate: quoteInfo.effectiveRate,
