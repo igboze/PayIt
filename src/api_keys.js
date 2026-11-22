@@ -62,6 +62,16 @@ const AVAILABLE_FEATURES = {
     name: "🧾 Proof & Receipts",
     description: "Generate cryptographic payment receipts and downloadable receipt PNG cards.",
   },
+  global_payouts: {
+    id: "global_payouts",
+    name: "🌍 Global Banking & 27-Currency Payouts",
+    description: "Named USD/GBP/EUR/CAD/NGN accounts & international payouts with upfront transfer fees.",
+  },
+  virtual_cards: {
+    id: "virtual_cards",
+    name: "💳 Virtual USD Cards",
+    description: "Quote, issue, and top up Tier-1 verified Virtual USD Cards with fees included.",
+  },
 };
 
 // In-memory rate limiting tracker (sliding 60-second window)
@@ -235,11 +245,55 @@ function revokeApiKey(keyId, telegramId = null) {
   return db.revokeApiKey(keyId, telegramId);
 }
 
+/**
+ * Non-blocking webhook dispatcher for external Builders/Neobanks that configured `webhook_url`.
+ * Signs payload with HMAC-SHA256 using the API key's SHA-256 hash (`X-Proxim-Signature`).
+ */
+async function dispatchBuilderWebhook(telegramId, event, data = {}) {
+  if (!telegramId || process.env.NODE_ENV === "test") return false;
+  try {
+    const ownerRow = db.db
+      .prepare(`
+        SELECT ak.key_id, ak.key_hash, ak.webhook_url
+        FROM api_keys ak
+        LEFT JOIN api_key_wallets akw ON akw.key_id = ak.key_id AND akw.telegram_id = ?
+        WHERE ak.is_active = 1 AND ak.webhook_url IS NOT NULL AND ak.webhook_url != ''
+          AND (akw.telegram_id IS NOT NULL OR ak.telegram_id = ?)
+        LIMIT 1
+      `)
+      .get(Number(telegramId), Number(telegramId));
+
+    if (!ownerRow || !ownerRow.webhook_url) return false;
+
+    const axios = require("axios");
+    const payloadStr = JSON.stringify({
+      event,
+      timestamp: new Date().toISOString(),
+      data,
+    });
+    const sig = crypto.createHmac("sha256", ownerRow.key_hash).update(payloadStr).digest("hex");
+
+    await axios.post(ownerRow.webhook_url, payloadStr, {
+      timeout: 5000,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Proxim-Event": event,
+        "X-Proxim-Signature": sig,
+      },
+    });
+    return true;
+  } catch (err) {
+    console.warn(`[api_keys:webhook] Delivery failed for TG:${telegramId} (${event}):`, err.message);
+    return false;
+  }
+}
+
 module.exports = {
   AVAILABLE_FEATURES,
   hashApiKey,
   generateApiKey,
   verifyApiKey,
+  dispatchBuilderWebhook,
   listApiKeys,
   updateApiKeyFeatures,
   revokeApiKey,

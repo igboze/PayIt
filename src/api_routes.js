@@ -20,8 +20,15 @@ const savings = require("./savings");
 const cctpBridge = require("./cctp_bridge");
 const evmDepositSweeper = require("./evm_deposit_sweeper");
 const { generateReceiptPNG } = require("./receipt_generator");
+const fraudGuard = require("./fraud_guard");
+const nuvion = require("./nuvion");
+const nuvionCorridors = require("./nuvion_corridors");
+const nuvionPayouts = require("./nuvion_payouts");
+const nuvionCards = require("./nuvion_cards");
+const compliance = require("./compliance");
 
 const DOCS_PATH = path.join(__dirname, "..", "BUILDER_API.md");
+const MAX_API_BODY_BYTES = 1024 * 1024; // 1 MB hard cap against DoS payloads
 
 function getPublicBaseUrl(req = null) {
   if (process.env.PUBLIC_API_URL && process.env.PUBLIC_API_URL.trim()) {
@@ -55,11 +62,24 @@ function sendJson(res, statusCode, data) {
   res.end(JSON.stringify(data));
 }
 
-function parseBody(req) {
+function parseBody(req, maxBytes = MAX_API_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on("data", (chunk) => chunks.push(chunk));
+    let totalBytes = 0;
+    let aborted = false;
+    req.on("data", (chunk) => {
+      if (aborted) return;
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
+        aborted = true;
+        const err = new Error("Request body exceeds 1MB limit");
+        err.statusCode = 413;
+        return reject(err);
+      }
+      chunks.push(chunk);
+    });
     req.on("end", () => {
+      if (aborted) return;
       const raw = Buffer.concat(chunks).toString("utf8").trim();
       if (!raw) return resolve({});
       try {
@@ -185,6 +205,8 @@ async function handleApiRequest(req, res, bot = null) {
   else if (pathname.startsWith("/api/v1/bridge")) requiredFeature = "bridge";
   else if (pathname.startsWith("/api/v1/savings")) requiredFeature = "savings";
   else if (pathname.startsWith("/api/v1/receipts")) requiredFeature = "receipts";
+  else if (pathname.startsWith("/api/v1/global/cards")) requiredFeature = "virtual_cards";
+  else if (pathname.startsWith("/api/v1/global")) requiredFeature = "global_payouts";
 
   const authResult = apiKeys.verifyApiKey(rawKey, requiredFeature);
   if (!authResult.valid) {
@@ -324,6 +346,15 @@ async function handleApiRequest(req, res, bot = null) {
         const user = db.getUser(Number(fromUserId));
         if (!user) return sendJson(res, 404, { success: false, error: "User wallet not found" });
         if (!assertWalletAccess(apiKey, user.telegram_id, res)) return;
+
+        await fraudGuard.assertOutboundAllowed({
+          telegramId: user.telegram_id,
+          accountType: "personal",
+          action: "api_transfer",
+          amountUsd: parsedAmount,
+          reference: toAddress,
+          bot,
+        });
 
         const privateKey = resolvePrivateKey(user, pin);
         const signer = walletLib.walletFromPrivateKey(privateKey);
@@ -529,19 +560,34 @@ async function handleApiRequest(req, res, bot = null) {
           user = db.getUser(Number(userId));
           if (!user) return sendJson(res, 404, { success: false, error: "User wallet not found" });
           if (!assertWalletAccess(apiKey, user.telegram_id, res)) return;
+
+          await fraudGuard.assertOutboundAllowed({
+            telegramId: user.telegram_id,
+            accountType: "personal",
+            action: "api_offramp_ngn",
+            amountUsd: parsedUsdc,
+            reference: `${bankCode}:${accountNumber}`,
+            bot,
+          });
         }
 
         const effectiveSenderName = senderName || body.sender_name || (user ? db.resolveSenderName(user.telegram_id, "personal") : undefined);
         const effectiveNarration = narration || body.description || undefined;
 
-        const order = await paj.createOfframpPayout({
-          amountUsdc: parsedUsdc,
-          bankCode,
-          accountNumber,
-          accountName,
-          narration: effectiveNarration,
-          senderName: effectiveSenderName,
-        });
+        let order;
+        try {
+          order = await paj.createOfframpPayout({
+            amountUsdc: parsedUsdc,
+            bankCode,
+            accountNumber,
+            accountName,
+            narration: effectiveNarration,
+            senderName: effectiveSenderName,
+          });
+        } catch (pajErr) {
+          const cleanMsg = String(pajErr.message || "Bank transfer validation failed").replace(/^Paj createOfframpOrder failed \(\d+\):\s*/i, "");
+          return sendJson(res, 400, { success: false, error: cleanMsg });
+        }
 
         const fundingAddress = order.address || null;
         const fundingAmount = Number(order.amount || parsedUsdc);
@@ -1140,6 +1186,366 @@ async function handleApiRequest(req, res, bot = null) {
       }
     }
 
+    // ── 12. Global Banking, 27-Currency Payouts & Virtual Cards (/api/v1/global) ─
+    if (pathname.startsWith("/api/v1/global")) {
+      // GET /api/v1/global/corridors — Supported 27 currencies, rails, and limits
+      if (method === "GET" && pathname === "/api/v1/global/corridors") {
+        const rails = Object.values(nuvionCorridors.PAYOUT_RAILS).map((r) => ({
+          railKey: r.key,
+          currency: r.currency,
+          country: r.country,
+          label: r.label,
+          paymentMethod: r.paymentMethod,
+          settlement: r.settlement,
+          minAmount: r.minAmount || null,
+          maxAmount: r.maxAmount || null,
+          requiredFields: r.fields,
+        }));
+        return sendJson(res, 200, {
+          success: true,
+          currencies: nuvionCorridors.ALL_NUVION_FIAT_CURRENCIES,
+          receivingCurrencies: nuvionCorridors.ALL_NUVION_RECEIVING_CURRENCIES,
+          rails,
+        });
+      }
+
+      // POST /api/v1/global/payouts/quote — Live FX + Nuvion rail fee + Proxim transfer fee
+      if (method === "POST" && pathname === "/api/v1/global/payouts/quote") {
+        const body = await parseBody(req);
+        const targetUserId = Number(body.userId || apiKey.telegram_id);
+        const accountType = body.accountType === "business" ? "business" : "personal";
+        const { railKey, targetCurrency, targetAmountMajor } = body;
+        if (!targetUserId || !railKey || !targetCurrency || !Number.isFinite(Number(targetAmountMajor)) || Number(targetAmountMajor) <= 0) {
+          return sendJson(res, 400, {
+            success: false,
+            error: "userId, railKey, targetCurrency, and positive targetAmountMajor are required",
+          });
+        }
+        if (!assertWalletAccess(apiKey, targetUserId, res)) return;
+
+        const q = await nuvionPayouts.quoteGlobalPayout({
+          telegramId: targetUserId,
+          accountType,
+          railKey,
+          targetCurrency,
+          targetAmountMajor: Number(targetAmountMajor),
+        });
+        const transferFeeUsd = Number((Number(q.nuvionRailFeeUsd || 0) + Number(q.marginUsd || 0)).toFixed(2));
+        return sendJson(res, 200, {
+          success: true,
+          quote: {
+            quoteId: q.nuvionQuoteId,
+            railKey: q.rail.key,
+            railLabel: q.rail.label,
+            targetCurrency: q.targetCurrency,
+            targetAmountMajor: q.targetAmountMajor,
+            transferAmountUsd: q.nuvionPrincipalUsd,
+            transferFeeUsd,
+            totalDebitUsd: q.userTotalUsd,
+            effectiveRate: q.effectiveRate,
+            expiresAt: q.expiresAt,
+            validForSec: q.validForSec,
+          },
+        });
+      }
+
+      // POST /api/v1/global/payouts — Execute fee-captured international payout (Tier-1 KYC required)
+      if (method === "POST" && pathname === "/api/v1/global/payouts") {
+        const body = await parseBody(req);
+        const targetUserId = Number(body.userId || apiKey.telegram_id);
+        const accountType = body.accountType === "business" ? "business" : "personal";
+        const { pin, railKey, targetCurrency, targetAmountMajor, recipientDetails, narration } = body;
+        if (!targetUserId || !pin || !railKey || !targetCurrency || !Number.isFinite(Number(targetAmountMajor)) || Number(targetAmountMajor) <= 0 || !recipientDetails) {
+          return sendJson(res, 400, {
+            success: false,
+            error: "userId, pin, railKey, targetCurrency, positive targetAmountMajor, and recipientDetails are required",
+          });
+        }
+        if (!assertWalletAccess(apiKey, targetUserId, res)) return;
+
+        const result = await nuvionPayouts.initiateGlobalPayout({
+          telegramId: targetUserId,
+          pin: String(pin),
+          accountType,
+          railKey,
+          targetCurrency,
+          targetAmountMajor: Number(targetAmountMajor),
+          recipientDetails,
+          narration: narration || null,
+          bot,
+        });
+
+        const transferFeeUsd = Number((Number(result.quote.nuvionRailFeeUsd || 0) + Number(result.quote.marginUsd || 0)).toFixed(2));
+        return sendJson(res, 201, {
+          success: true,
+          reference: result.uniqueReference,
+          jobId: result.job.id,
+          status: result.job.state,
+          transferAmountUsd: result.quote.nuvionPrincipalUsd,
+          transferFeeUsd,
+          totalDebitUsd: result.quote.userTotalUsd,
+          targetCurrency: result.quote.targetCurrency,
+          targetAmountMajor: result.quote.targetAmountMajor,
+          fundingTxHash: result.funding?.txHash || null,
+          feeTxHash: result.funding?.marginTxHash || null,
+        });
+      }
+
+      // GET /api/v1/global/payouts/:reference — Check payout status
+      const payoutRefMatch = pathname.match(/^\/api\/v1\/global\/payouts\/([^/]+)$/);
+      if (method === "GET" && payoutRefMatch) {
+        const ref = decodeURIComponent(payoutRefMatch[1]);
+        const job = db.db
+          .prepare("SELECT * FROM nuvion_jobs WHERE job_type = 'outbound_fiat_payout' AND unique_reference = ? LIMIT 1")
+          .get(ref);
+        if (!job) return sendJson(res, 404, { success: false, error: "Payout reference not found" });
+        if (!assertWalletAccess(apiKey, job.telegram_id, res)) return;
+
+        let payload = {};
+        try { payload = job.payload_json ? JSON.parse(job.payload_json) : {}; } catch (_) {}
+        return sendJson(res, 200, {
+          success: true,
+          payout: {
+            reference: job.unique_reference,
+            status: job.state,
+            currency: job.currency,
+            targetAmountMajor: payload.targetAmountMajor || null,
+            totalDebitUsd: payload.userTotalUsd || null,
+            nuvionTransferId: job.nuvion_transfer_id || null,
+            fundingTxHash: job.source_tx_hash || null,
+            error: job.error_message || null,
+            createdAt: job.created_at,
+            updatedAt: job.updated_at,
+          },
+        });
+      }
+
+      // GET /api/v1/global/accounts/:userId — Tier-1 Global Virtual Bank Accounts & KYC status
+      const globalAcctMatch = pathname.match(/^\/api\/v1\/global\/accounts\/([^/]+)$/);
+      if (method === "GET" && globalAcctMatch) {
+        const targetUserId = Number(decodeURIComponent(globalAcctMatch[1]));
+        if (!assertWalletAccess(apiKey, targetUserId, res)) return;
+        const accountType = parsedUrl.query.accountType === "business" ? "business" : "personal";
+        const entity = db.getNuvionEntityByUser(targetUserId, accountType);
+        if (!entity) {
+          return sendJson(res, 200, { success: true, kycStatus: "not_started", accounts: [] });
+        }
+        const accounts = db.getNuvionVirtualAccountsByEntity(entity.entity_id);
+        return sendJson(res, 200, {
+          success: true,
+          kycStatus: entity.status,
+          entityId: entity.entity_id,
+          accounts: accounts.map((a) => ({
+            id: a.account_id,
+            currency: a.currency,
+            bankName: a.bank_name,
+            accountNumber: a.account_number,
+            routingNumber: a.routing_number,
+            iban: a.iban,
+            status: a.status,
+          })),
+        });
+      }
+
+      // GET /api/v1/global/cards/:userId — List user's Virtual USD Cards
+      const globalCardsMatch = pathname.match(/^\/api\/v1\/global\/cards\/([^/]+)$/);
+      if (method === "GET" && globalCardsMatch) {
+        const targetUserId = Number(decodeURIComponent(globalCardsMatch[1]));
+        if (!assertWalletAccess(apiKey, targetUserId, res)) return;
+        const accountType = parsedUrl.query.accountType === "business" ? "business" : "personal";
+        const cards = await nuvionCards.getUserCardsWithBalances(targetUserId, accountType);
+        return sendJson(res, 200, { success: true, cards });
+      }
+
+      // POST /api/v1/global/kyc — Submit Tier-1 Personal KYC for an API-provisioned customer wallet
+      if (method === "POST" && pathname === "/api/v1/global/kyc") {
+        const body = await parseBody(req);
+        const targetUserId = Number(body.userId || apiKey.telegram_id);
+        if (!targetUserId) {
+          return sendJson(res, 400, { success: false, error: "userId is required" });
+        }
+        if (!assertWalletAccess(apiKey, targetUserId, res)) return;
+
+        const countryCode = compliance.normalizeCountryCode(body.countryCode || body.nationality || body.country_code);
+        if (!/^[A-Z]{2}$/.test(countryCode)) {
+          return sendJson(res, 400, { success: false, error: "Valid 2-letter ISO countryCode is required" });
+        }
+        if (compliance.isSanctionedCountry(countryCode)) {
+          return sendJson(res, 403, {
+            success: false,
+            error: `Jurisdiction ${countryCode} is not supported due to international compliance restrictions.`,
+          });
+        }
+
+        const { firstName, lastName, email, phoneNumber, dateOfBirth, address, idDocument } = body;
+        if (!firstName || !lastName || !email || !phoneNumber || !dateOfBirth || !address || !idDocument) {
+          return sendJson(res, 400, {
+            success: false,
+            error: "firstName, lastName, email, phoneNumber, dateOfBirth, address, and idDocument are required",
+          });
+        }
+
+        const entityRes = await nuvion.createIndividualEntity({
+          nationality: countryCode,
+          firstName,
+          lastName,
+          middleName: body.middleName || undefined,
+          email,
+          phoneNumber,
+          dateOfBirth,
+          gender: body.gender || "male",
+          address,
+          idDocument,
+        });
+
+        db.upsertNuvionEntity({
+          telegramId: targetUserId,
+          accountType: "personal",
+          entityId: entityRes.id,
+          entityType: "individual",
+          status: entityRes.status || "pending",
+          countryCode,
+        });
+
+        return sendJson(res, 201, {
+          success: true,
+          entityId: entityRes.id,
+          kycStatus: entityRes.status || "pending",
+        });
+      }
+
+      // POST /api/v1/global/kyb — Submit Tier-1 Business KYB for an API-provisioned company wallet
+      if (method === "POST" && pathname === "/api/v1/global/kyb") {
+        const body = await parseBody(req);
+        const targetUserId = Number(body.userId || apiKey.telegram_id);
+        if (!targetUserId) {
+          return sendJson(res, 400, { success: false, error: "userId is required" });
+        }
+        if (!assertWalletAccess(apiKey, targetUserId, res)) return;
+
+        const countryCode = compliance.normalizeCountryCode(body.incorporationCountry || body.countryCode);
+        if (!/^[A-Z]{2}$/.test(countryCode)) {
+          return sendJson(res, 400, { success: false, error: "Valid 2-letter ISO incorporationCountry is required" });
+        }
+        if (compliance.isSanctionedCountry(countryCode)) {
+          return sendJson(res, 403, {
+            success: false,
+            error: `Jurisdiction ${countryCode} is not supported due to international compliance restrictions.`,
+          });
+        }
+
+        const { legalName, registrationNumber, taxId, email, phoneNumber, address, officer } = body;
+        if (!legalName || !registrationNumber || !email || !phoneNumber || !address || !officer) {
+          return sendJson(res, 400, {
+            success: false,
+            error: "legalName, registrationNumber, email, phoneNumber, address, and officer are required",
+          });
+        }
+
+        const entityRes = await nuvion.createBusinessEntity({
+          legalName,
+          tradeName: body.tradeName || legalName,
+          registrationNumber,
+          taxId: taxId || registrationNumber,
+          incorporationCountry: countryCode,
+          incorporationState: body.incorporationState || address.state || "",
+          incorporationYear: body.incorporationYear || 2022,
+          incorporationMonth: body.incorporationMonth || 1,
+          email,
+          phoneNumber,
+          website: body.website || undefined,
+          industry: body.industry || "Financial Technology",
+          entityType: body.businessType || "llc",
+          address,
+          officer,
+        });
+
+        db.upsertNuvionEntity({
+          telegramId: targetUserId,
+          accountType: "business",
+          entityId: entityRes.id,
+          entityType: "business",
+          status: entityRes.status || "pending",
+          countryCode,
+        });
+
+        return sendJson(res, 201, {
+          success: true,
+          entityId: entityRes.id,
+          kycStatus: entityRes.status || "pending",
+        });
+      }
+
+      // POST /api/v1/global/cards/quote — Quote Virtual USD Card issuance or top-up (fees included)
+      if (method === "POST" && pathname === "/api/v1/global/cards/quote") {
+        const body = await parseBody(req);
+        const targetUserId = Number(body.userId || apiKey.telegram_id);
+        const accountType = body.accountType === "business" ? "business" : "personal";
+        const action = body.action === "topup" ? "topup" : "issue";
+        const amountUsd = Number(body.loadAmountUsd ?? body.initialLoadUsd ?? body.amountUsd ?? 0);
+        if (!assertWalletAccess(apiKey, targetUserId, res)) return;
+        if (!Number.isFinite(amountUsd) || amountUsd < 1) {
+          return sendJson(res, 400, { success: false, error: "loadAmountUsd must be at least $1.00" });
+        }
+        const q = action === "topup"
+          ? await nuvionCards.quoteCardTopUp({ telegramId: targetUserId, accountType, loadAmountUsd: amountUsd })
+          : await nuvionCards.quoteCardIssuance({
+              telegramId: targetUserId,
+              accountType,
+              cardType: body.cardType === "disposable" ? "disposable" : "virtual",
+              loadAmountUsd: amountUsd,
+              cardName: body.cardName || null,
+            });
+        return sendJson(res, 200, { success: true, quote: q });
+      }
+
+      // POST /api/v1/global/cards/issue — Issue Virtual USD Card (Tier-1 KYC + PIN + fees enforced)
+      if (method === "POST" && pathname === "/api/v1/global/cards/issue") {
+        const body = await parseBody(req);
+        const targetUserId = Number(body.userId || apiKey.telegram_id);
+        const accountType = body.accountType === "business" ? "business" : "personal";
+        const loadUsd = Number(body.loadAmountUsd ?? body.initialLoadUsd ?? body.amountUsd ?? 0);
+        const { pin } = body;
+        if (!assertWalletAccess(apiKey, targetUserId, res)) return;
+        if (!pin || !Number.isFinite(loadUsd) || loadUsd < 1) {
+          return sendJson(res, 400, { success: false, error: "pin and loadAmountUsd (>= $1.00) are required" });
+        }
+        const resIssue = await nuvionCards.initiateCardIssuance({
+          telegramId: targetUserId,
+          pin: String(pin),
+          accountType,
+          cardType: body.cardType === "disposable" ? "disposable" : "virtual",
+          loadAmountUsd: loadUsd,
+          cardName: body.cardName || null,
+          bot,
+        });
+        return sendJson(res, 201, { success: true, ...resIssue });
+      }
+
+      // POST /api/v1/global/cards/:cardId/topup — Top up Virtual USD Card (PIN + fees enforced)
+      const cardTopupMatch = pathname.match(/^\/api\/v1\/global\/cards\/([^/]+)\/topup$/);
+      if (method === "POST" && cardTopupMatch) {
+        const cardId = decodeURIComponent(cardTopupMatch[1]);
+        const body = await parseBody(req);
+        const targetUserId = Number(body.userId || apiKey.telegram_id);
+        const accountType = body.accountType === "business" ? "business" : "personal";
+        const { pin, amountUsd } = body;
+        if (!assertWalletAccess(apiKey, targetUserId, res)) return;
+        if (!pin || !Number.isFinite(Number(amountUsd)) || Number(amountUsd) <= 0) {
+          return sendJson(res, 400, { success: false, error: "pin and positive amountUsd are required" });
+        }
+        const resTopup = await nuvionCards.initiateCardTopUp({
+          telegramId: targetUserId,
+          pin: String(pin),
+          accountType,
+          cardId,
+          loadAmountUsd: Number(amountUsd),
+          bot,
+        });
+        return sendJson(res, 200, { success: true, ...resTopup });
+      }
+    }
+
     // Fallthrough: 404 for unknown endpoint
     return sendJson(res, 404, {
       success: false,
@@ -1147,9 +1553,19 @@ async function handleApiRequest(req, res, bot = null) {
     });
   } catch (err) {
     console.error("[api_routes] Error handling API request:", err);
-    return sendJson(res, 500, {
+    const msg = String(err.message || "Internal server error");
+    let statusCode = Number(err.statusCode || err.status) || 0;
+    if (!statusCode) {
+      if (/Tier-1 verification|Forbidden|Sanctioned|Jurisdiction Not Supported/i.test(msg)) statusCode = 403;
+      else if (/Incorrect PIN|Unable to unlock wallet private key/i.test(msg)) statusCode = 401;
+      else if (/not found/i.test(msg)) statusCode = 404;
+      else if (/velocity|daily limit|hourly limit|circuit breaker|paused/i.test(msg)) statusCode = 429;
+      else if (/Malformed JSON|must be|required|Invalid|Insufficient balance|at least/i.test(msg)) statusCode = 400;
+      else statusCode = 500;
+    }
+    return sendJson(res, statusCode, {
       success: false,
-      error: err.message || "Internal server error",
+      error: msg,
     });
   }
 }

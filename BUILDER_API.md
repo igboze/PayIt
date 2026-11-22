@@ -70,6 +70,8 @@ GET /api/v1/docs
 | `bridge` | **CCTP Cross-Chain Bridge** | Native USDC bridging between Arc and Solana / EVM |
 | `savings` | **Yield & Savings Vaults** | Live Circle EarnKit / ERC-4626 vaults, real on-chain deposits & withdrawals |
 | `receipts` | **Proof & Receipts** | Transaction receipt JSON and HD PNG receipt cards |
+| `global_payouts` | **Global Banking & 27-Currency Payouts** | Tier-1 virtual bank accounts & 27-currency payouts with transfer fees captured upfront |
+| `virtual_cards` | **Virtual USD Cards** | Quote, issue, and top up Virtual USD Cards with fees included |
 
 *Calling an endpoint outside the key's enabled features returns `403 Forbidden`.*
 
@@ -116,7 +118,7 @@ POST /api/v1/wallets
   "pin": "1234"
 }
 ```
-*(If `pin` is omitted, a cryptographically random secret is generated automatically.)*
+*(If `pin` is omitted, a cryptographically random secret is generated automatically — pass an explicit `pin` if you plan to call `POST /api/v1/global/payouts` or `POST /api/v1/global/cards/issue` for this wallet.)*
 
 **Response (201 Created):**
 ```json
@@ -363,6 +365,95 @@ Redeems all on-chain vault shares, routes the 10% performance fee on profits, an
 
 - `GET /api/v1/receipts/:txHash` — Transaction receipt metadata JSON.
 - `GET /api/v1/receipts/:txHash?format=png` — Downloadable HD branded PNG receipt card (`image/png`) with real account & counterparty details.
+
+---
+
+### 11. Global Banking & 27-Currency Payouts (`feature: "global_payouts"`)
+
+All international payouts require **Tier-1 KYC/KYB verification** and automatically capture **transfer fees upfront** (`transferAmountUsd + transferFeeUsd = totalDebitUsd`).
+
+#### Tier-1 KYC / KYB Submission (For API-Only Integrations)
+- `POST /api/v1/global/kyc` — Submit Personal Tier-1 KYC (`userId`, `countryCode`, `firstName`, `lastName`, `email`, `phoneNumber`, `dateOfBirth`, `address`, `idDocument`).
+- `POST /api/v1/global/kyb` — Submit Business Tier-1 KYB (`userId`, `incorporationCountry`, `legalName`, `registrationNumber`, `email`, `phoneNumber`, `address`, `officer`).
+> Note: Always pass a `pin` when calling `POST /api/v1/wallets` if you plan to execute payouts or issue cards for that wallet via API.
+
+#### List Supported Corridors & Rails
+```http
+GET /api/v1/global/corridors
+```
+Returns all 27 fiat currencies (`USD`, `GBP`, `EUR`, `CAD`, `NGN`, `GHS`, `KES`, `AED`, `CNY`, etc.), local/SWIFT rail keys, limits, and required recipient fields.
+
+#### Quote an International Payout (Fees Included)
+```http
+POST /api/v1/global/payouts/quote
+```
+```json
+{
+  "userId": 123456789,
+  "railKey": "gbp_fps",
+  "targetCurrency": "GBP",
+  "targetAmountMajor": 50
+}
+```
+Response includes:
+```json
+{
+  "success": true,
+  "quote": {
+    "quoteId": "01M8...",
+    "railKey": "gbp_fps",
+    "targetCurrency": "GBP",
+    "targetAmountMajor": 50,
+    "transferAmountUsd": 66.98,
+    "transferFeeUsd": 7.37,
+    "totalDebitUsd": 74.35,
+    "effectiveRate": 0.6725
+  }
+}
+```
+
+#### Execute an International Payout
+```http
+POST /api/v1/global/payouts
+```
+```json
+{
+  "userId": 123456789,
+  "pin": "1234",
+  "railKey": "gbp_fps",
+  "targetCurrency": "GBP",
+  "targetAmountMajor": 50,
+  "recipientDetails": {
+    "account_holder_name": "Jane Doe",
+    "sort_code": "040075",
+    "account_number": "12345678"
+  },
+  "narration": "Invoice 42"
+}
+```
+
+#### Check Payout Status & Global Accounts
+- `GET /api/v1/global/payouts/:reference` — Live settlement status (`funding_in_transit`, `dispatched`, `completed`, `refunded`, `failed`).
+- `GET /api/v1/global/accounts/:userId` — List Tier-1 verified Global Virtual Bank Accounts (USD, GBP, EUR, CAD, AED, NGN, etc.).
+
+---
+
+### 12. Virtual USD Cards (`feature: "virtual_cards"`)
+
+- `GET /api/v1/global/cards/:userId` — List Virtual USD Cards and live balances.
+- `POST /api/v1/global/cards/quote` — Quote card issuance or top-up (`{ userId, action: "issue"|"topup", loadAmountUsd, cardType?: "virtual"|"disposable" }`, fees included).
+- `POST /api/v1/global/cards/issue` — Issue a Virtual USD Card (`{ userId, pin, loadAmountUsd, cardType?: "virtual"|"disposable", cardName? }`).
+- `POST /api/v1/global/cards/:cardId/topup` — Top up an existing card (`{ userId, pin, amountUsd }`).
+
+---
+
+## 🛡️ Production Security Guarantees (Public Railway Host)
+
+1. **Tenant Isolation:** Every API key is strictly bound to wallets it provisioned (`api_key_wallets`) plus its owner's account. Cross-tenant access returns `403 Forbidden`.
+2. **Tier-1 KYC Enforcement:** Unverified wallets cannot call global banking, 27-currency payouts, or virtual card issuance endpoints (`403 Forbidden`).
+3. **Anti-Fraud & Velocity Limits:** All transfers and payouts pass through Proxim's burst velocity tripwire, Tier-0/Tier-1 daily limits, and global circuit breaker (`429 Too Many Requests`).
+4. **Payload & Rate Limits:** Requests are capped at **1 MB** (`413 Payload Too Large`) and **120 req/min** per API key (`429 Too Many Requests`).
+5. **Webhook Signature Verification:** Production inbound webhooks (`/webhook/paj`, `/webhook/nuvion`, `/webhook/alchemy`) are fail-closed (`401` on missing/invalid HMAC signatures). Outbound builder webhooks (when `webhookUrl` is configured) include `X-Proxim-Event` and `X-Proxim-Signature` (HMAC-SHA256 of the raw JSON body keyed by `sha256(your_api_key)`).
 
 ---
 

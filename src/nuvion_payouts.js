@@ -1019,6 +1019,19 @@ async function handleOutboundPayoutCompleted({ confirmed, entityRecord, bot = nu
     console.warn("[nuvion_payouts] recordTransaction note:", txErr.message);
   }
 
+  // Notify external Builder webhook (if wallet belongs to an API key with webhook_url)
+  try {
+    const apiKeys = require("./api_keys");
+    apiKeys.dispatchBuilderWebhook(job.telegram_id, "payout.completed", {
+      reference: job.unique_reference,
+      currency: targetCurrency,
+      targetAmountMajor: targetMajor,
+      totalDebitUsd: userTotalUsd,
+      transferId: confirmed.id,
+      status: "completed",
+    }).catch(() => {});
+  } catch (_) {}
+
   // Send HD Receipt PNG in Telegram
   const telegram = getBotTelegram(bot);
   if (telegram && job.telegram_id) {
