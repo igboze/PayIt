@@ -28,11 +28,14 @@ async function provisionNuvionBankForInvoice({
   telegramId,
   accountType = "personal",
   bankCurrency = "USD",
+  invoiceCurrency = "USD",
+  totalNative = null,
   totalUsdc = 0,
   totalNgn = 0,
   fallbackBeneficiary = "Proxim Account",
 }) {
   const code = String(bankCurrency || "USD").toUpperCase();
+  const invCur = String(invoiceCurrency || "USD").toUpperCase();
   const res = await nuvionOrchestrator.provisionGlobalReceivingAccount(telegramId, accountType, code);
   const d = res?.detail;
   if (!d || (!d.account_number && !d.iban)) {
@@ -41,6 +44,7 @@ async function provisionNuvionBankForInvoice({
   const meta = nuvionOrchestrator.CURRENCY_META?.[code] || { railHint: "Bank Transfer" };
   let fiatAmount = null;
   if (code === "NGN") fiatAmount = totalNgn;
+  else if (code === invCur && totalNative != null) fiatAmount = Number(totalNative);
   else if (code === "USD") fiatAmount = totalUsdc;
 
   return {
@@ -297,7 +301,7 @@ function createHDInvoice(telegramId, decryptedPrivateKey, invoiceData) {
   const derived = walletLib.deriveInvoiceAddress(decryptedPrivateKey, derivationIndex);
   const paymentAddress = derived.address;
   let nearAddress = null;
-  try { nearAddress = nearLib.deriveNearAddress(derived.childPrivateKey).nearAddress; } catch (_) {}
+  try { nearAddress = nearLib.deriveNearAddress(derived.childPrivateKey).nearAddress; } catch (_) { }
   const invoicePrivateKeyEncrypted = walletLib.encryptSensitiveValue(
     derived.childPrivateKey,
     process.env.INVOICE_FORWARDING_SECRET
@@ -357,7 +361,7 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
     businessName,
   } = invoiceData;
 
-  const invoiceCurrency = String(rawCurrency || "USD").toUpperCase() === "NGN" ? "NGN" : "USD";
+  const invoiceCurrency = String(rawCurrency || "USD").toUpperCase();
   const wantPajFiat = paymentChannel === "ngn_bank" || paymentChannel === "both";
   const wantNuvionBank = paymentChannel === "nuvion_bank" || paymentChannel === "both_nuvion";
   const wantCrypto = paymentChannel === "crypto_intent" || paymentChannel === "both" || paymentChannel === "both_nuvion";
@@ -377,6 +381,7 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
     (s, i) => s + (Number(i.quantity || 1) || 1) * (Number(i.unitPrice || 0) || 0),
     0
   );
+  const totalNative = Number((rawTotalNgn != null && invoiceCurrency === "NGN" ? Number(rawTotalNgn) : (rawTotalUsdc != null ? Number(rawTotalUsdc) : itemsSum)).toFixed(2));
   const totalNgn = invoiceCurrency === "NGN"
     ? Math.round(rawTotalNgn != null ? Number(rawTotalNgn) : itemsSum)
     : Math.round(Number(rawTotalUsdc || itemsSum) * rate);
@@ -389,7 +394,7 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
   const derived = walletLib.deriveInvoiceAddress(decryptedPrivateKey, derivationIndex);
   const paymentAddress = derived.address;
   let nearAddress = null;
-  try { nearAddress = nearLib.deriveNearAddress(derived.childPrivateKey).nearAddress; } catch (_) {}
+  try { nearAddress = nearLib.deriveNearAddress(derived.childPrivateKey).nearAddress; } catch (_) { }
   const invoicePrivateKeyEncrypted = walletLib.encryptSensitiveValue(
     derived.childPrivateKey,
     process.env.INVOICE_FORWARDING_SECRET
@@ -407,6 +412,8 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
         telegramId,
         accountType: "personal",
         bankCurrency: nuvionBankCurrency,
+        invoiceCurrency,
+        totalNative,
         totalUsdc,
         totalNgn,
         fallbackBeneficiary: senderDisplayName,
@@ -498,7 +505,7 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
     invoicePrivateKeyEncrypted,
   });
 
-  if (nearAddress) { try { invoiceDb.db.prepare("UPDATE invoices SET near_address = ? WHERE id = ?").run(nearAddress, invoiceId); } catch (_) {} }
+  if (nearAddress) { try { invoiceDb.db.prepare("UPDATE invoices SET near_address = ? WHERE id = ?").run(nearAddress, invoiceId); } catch (_) { } }
   if (fiatDetails && (fiatDetails.accountNumber || fiatDetails.iban)) {
     invoiceDb.updateInvoiceFiatDetails(invoiceId, {
       fiatAccountNumber: fiatDetails.accountNumber || fiatDetails.iban,
@@ -570,7 +577,7 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
     issueDate = new Date().toISOString().split("T")[0],
   } = invoiceData;
 
-  const invoiceCurrency = String(rawCurrency || "USD").toUpperCase() === "NGN" ? "NGN" : "USD";
+  const invoiceCurrency = String(rawCurrency || "USD").toUpperCase();
   const wantPajFiat = paymentChannel === "ngn_bank" || paymentChannel === "both";
   const wantNuvionBank = paymentChannel === "nuvion_bank" || paymentChannel === "both_nuvion";
   const wantCrypto = paymentChannel === "crypto_intent" || paymentChannel === "both" || paymentChannel === "both_nuvion";
@@ -589,6 +596,7 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
     (s, i) => s + (Number(i.quantity || 1) || 1) * (Number(i.unitPrice || 0) || 0),
     0
   );
+  const totalNative = Number((rawTotalNgn != null && invoiceCurrency === "NGN" ? Number(rawTotalNgn) : (rawTotalUsdc != null ? Number(rawTotalUsdc) : itemsSum)).toFixed(2));
   const totalNgn = invoiceCurrency === "NGN"
     ? Math.round(rawTotalNgn != null ? Number(rawTotalNgn) : itemsSum)
     : Math.round(Number(rawTotalUsdc || itemsSum) * rate);
@@ -601,7 +609,7 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
   const derived = walletLib.deriveInvoiceAddress(decryptedBizKey, derivationIndex);
   const paymentAddress = derived.address;
   let nearAddress = null;
-  try { nearAddress = nearLib.deriveNearAddress(derived.childPrivateKey).nearAddress; } catch (_) {}
+  try { nearAddress = nearLib.deriveNearAddress(derived.childPrivateKey).nearAddress; } catch (_) { }
   const invoicePrivateKeyEncrypted = walletLib.encryptSensitiveValue(
     derived.childPrivateKey,
     process.env.INVOICE_FORWARDING_SECRET
@@ -619,6 +627,8 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
         telegramId,
         accountType: "business",
         bankCurrency: nuvionBankCurrency,
+        invoiceCurrency,
+        totalNative,
         totalUsdc,
         totalNgn,
         fallbackBeneficiary: bizDisplayName,
@@ -712,7 +722,7 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
     expectedAmountMicro: expectedAmountMicro.toString(),
   });
 
-  if (nearAddress) { try { bizDb.db.prepare("UPDATE biz_invoices SET near_address = ? WHERE id = ?").run(nearAddress, invoiceId); } catch (_) {} }
+  if (nearAddress) { try { bizDb.db.prepare("UPDATE biz_invoices SET near_address = ? WHERE id = ?").run(nearAddress, invoiceId); } catch (_) { } }
   if (fiatDetails && (fiatDetails.accountNumber || fiatDetails.iban)) {
     bizDb.updateBizInvoiceFiatDetails(invoiceId, {
       fiatAccountNumber: fiatDetails.accountNumber || fiatDetails.iban,

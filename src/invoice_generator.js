@@ -34,16 +34,34 @@ function formatMoney(num) {
   });
 }
 
+const CURRENCY_SYMBOLS = {
+  NGN: "₦",
+  USD: "$",
+  USDC: "$",
+  USDT: "$",
+  USDG: "$",
+  GBP: "£",
+  EUR: "€",
+  EURC: "€",
+  AED: "AED ",
+  KES: "KSh ",
+  GHS: "GH₵",
+  TZS: "TSh ",
+  MXN: "MX$",
+  CAD: "CA$",
+};
+
 function formatCurrencyAmount(num, currency = "USDC") {
   const cur = String(currency || "USDC").toUpperCase();
+  const sym = CURRENCY_SYMBOLS[cur];
   if (cur === "NGN") {
     return `₦${Number(num || 0).toLocaleString("en-NG", {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     })}`;
   }
-  if (cur === "USD") {
-    return `$${formatMoney(num)}`;
+  if (sym) {
+    return `${sym}${formatMoney(num)}`;
   }
   return `${formatMoney(num)} ${cur}`;
 }
@@ -219,6 +237,7 @@ function buildSvg(opts) {
 
   const displayCur = String(currency || "USDC").toUpperCase();
   const isNgn = displayCur === "NGN";
+  const curSym = CURRENCY_SYMBOLS[displayCur] || "";
 
   const W = 760;
   const total = items.reduce(
@@ -237,8 +256,8 @@ function buildSvg(opts) {
       const price = safeNum(item.unitPrice);
       const lineTotal = qty * price;
       const descText = truncateText(item.description || "Item", 44);
-      const priceStr = isNgn ? `₦${formatMoney(price)}` : formatMoney(price);
-      const lineStr = isNgn ? `₦${formatMoney(lineTotal)}` : formatMoney(lineTotal);
+      const priceStr = curSym ? `${curSym}${formatMoney(price)}` : formatMoney(price);
+      const lineStr = curSym ? `${curSym}${formatMoney(lineTotal)}` : formatMoney(lineTotal);
       const priceFont = fitFontSize(priceStr, 108, 12.5, 9.0);
       const lineFont = fitFontSize(lineStr, 124, 13, 9.0);
       const rowBg = idx % 2 === 1 ? `<rect x="36" y="${y - 22}" width="${W - 72}" height="${ROW}" fill="#f8fafc" rx="4"/>` : "";
@@ -258,8 +277,8 @@ function buildSvg(opts) {
   const totalY = y + 20;
   const totalDisplayStr = isNgn
     ? `₦${formatMoney(total)}`
-    : displayCur === "USD"
-      ? `$${formatMoney(total)} USD`
+    : curSym && !curSym.trim().endsWith(displayCur)
+      ? `${curSym}${formatMoney(total)} ${displayCur}`
       : `${formatMoney(total)} ${displayCur}`;
   const totalCardW = Math.min(360, Math.max(255, totalDisplayStr.length * 14 + 95));
   const totalCardX = W - 36 - totalCardW;
@@ -320,15 +339,7 @@ function buildSvg(opts) {
     const primaryNumVal = fiatDetails.accountNumber || fiatDetails.iban;
 
     const fiatAmtFormatted = fiatDetails.fiatAmount != null
-      ? (fiatCur === "NGN"
-        ? `₦${Number(fiatDetails.fiatAmount).toLocaleString("en-NG", { maximumFractionDigits: 2 })}`
-        : fiatCur === "USD"
-          ? `$${formatMoney(fiatDetails.fiatAmount)}`
-          : fiatCur === "GBP"
-            ? `£${formatMoney(fiatDetails.fiatAmount)}`
-            : fiatCur === "EUR"
-              ? `€${formatMoney(fiatDetails.fiatAmount)}`
-              : `${formatMoney(fiatDetails.fiatAmount)} ${fiatCur}`)
+      ? formatCurrencyAmount(fiatDetails.fiatAmount, fiatCur)
       : null;
     const fiatAmtFont = fiatAmtFormatted ? fitFontSize(fiatAmtFormatted, 200, 12.5, 10) : 12;
 
@@ -505,7 +516,7 @@ function buildClientInvoiceCopyText(opts) {
       ? `₦${Number(totalNgn).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
       : cur === "USD"
         ? `$${formatMoney(totalUsdc)} USD`
-        : `$${formatMoney(totalUsdc)} ${cur}`);
+        : `${formatCurrencyAmount(totalUsdc, cur)}${CURRENCY_SYMBOLS[cur] && !CURRENCY_SYMBOLS[cur].trim().endsWith(cur) ? ` ${cur}` : ""}`);
 
   const hasFiat = Boolean(fiatDetails && (fiatDetails.accountNumber || fiatDetails.iban));
   const cryptoAddr = cryptoPaymentDetails?.depositAddress || walletAddress || null;
@@ -527,15 +538,7 @@ function buildClientInvoiceCopyText(opts) {
       : `🏦 <b>${hasCrypto ? "Option 1: " : ""}Pay via ${escape(fiatCur)} Bank Transfer${escape(railLabel)}</b>`;
 
     const fiatAmtStr = fiatDetails.fiatAmount != null
-      ? (fiatCur === "NGN"
-        ? `₦${Number(fiatDetails.fiatAmount).toLocaleString("en-NG", { maximumFractionDigits: 2 })}`
-        : fiatCur === "USD"
-          ? `$${formatMoney(fiatDetails.fiatAmount)}`
-          : fiatCur === "GBP"
-            ? `£${formatMoney(fiatDetails.fiatAmount)}`
-            : fiatCur === "EUR"
-              ? `€${formatMoney(fiatDetails.fiatAmount)}`
-              : `${formatMoney(fiatDetails.fiatAmount)} ${fiatCur}`)
+      ? formatCurrencyAmount(fiatDetails.fiatAmount, fiatCur)
       : null;
 
     text += `\n${bankHeading}\n`;

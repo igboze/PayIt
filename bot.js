@@ -5108,10 +5108,14 @@ bot.action("swap_start_eurc_usdc", async (ctx) => {
 
 function formatInvoiceAmt(amount, currency = "USD") {
   const num = Number(amount || 0);
-  if (String(currency).toUpperCase() === "NGN") {
+  const cur = String(currency || "USD").toUpperCase();
+  const syms = { NGN: "₦", USD: "$", USDC: "$", GBP: "£", EUR: "€", AED: "AED ", KES: "KSh ", GHS: "GH₵", TZS: "TSh ", MXN: "MX$", CAD: "CA$" };
+  if (cur === "NGN") {
     return `₦${num.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }
-  return `$${num.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const sym = syms[cur];
+  const fmt = num.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return sym ? `${sym}${fmt}` : `${fmt} ${cur}`;
 }
 
 function buildInvoiceChannelKeyboard(mode /* "biz" | "per" */, isTier1Verified = false) {
@@ -5191,22 +5195,64 @@ function buildInvoiceChainKeyboard(mode /* "biz" | "per" */, channel /* "crypto_
 }
 
 function showInvoiceCurrencyPicker(ctx, mode /* "biz" | "per" */) {
+  const accountType = mode === "biz" ? "business" : "personal";
+  const verified = isTier1VerifiedForInvoice(ctx.from.id, accountType);
   const listAction = mode === "biz" ? "action_list_biz_invoices" : "action_list_invoices";
   const listLabel = mode === "biz" ? "📋 All Invoices" : "📋 My Invoices";
+  const intlLabel = verified
+    ? "🌍 International Currency (USD / GBP / EUR…)"
+    : "🔒 International Currency (Tier 1)";
+
   return ctx.reply(
     `🧾 <b>Create ${mode === "biz" ? "Business " : ""}Invoice</b>\n` +
     `──────────────────────────\n` +
-    `Step 1 of 3 · <b>Choose invoice currency</b>\n\n` +
-    `Select whether to bill your client in <b>Nigerian Naira (₦)</b> or <b>US Dollars ($)</b>:`,
+    `Step 1 of 3 · <b>How will your client pay?</b>\n\n` +
+    `• 🇳🇬 <b>Naira (₦ NGN):</b> Local Nigerian bank transfer\n` +
+    `• 🌍 <b>International Currency:</b> Named global bank accounts ${verified ? "(USD, GBP, EUR, AED & more)" : "(requires Tier 1 verification)"}\n` +
+    `• 🌐 <b>Crypto (NEAR Intents):</b> Exact-amount checkout on Solana, NEAR, Robinhood, or Arc`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
-        [
-          Markup.button.callback("🇳🇬 Naira (₦ NGN)", `inv_cur_${mode}_NGN`),
-          Markup.button.callback("🇺🇸 US Dollars ($ USD)", `inv_cur_${mode}_USD`),
-        ],
-        [Markup.button.callback(listLabel, listAction)],
-        [Markup.button.callback("❌ Cancel", "main_menu")],
+        [Markup.button.callback("🇳🇬 Naira (₦ NGN)", `inv_start_${mode}_ngn`)],
+        [Markup.button.callback(intlLabel, `inv_start_${mode}_intl`)],
+        [Markup.button.callback("🌐 Crypto (NEAR Intents)", `inv_start_${mode}_crypto`)],
+        [Markup.button.callback(listLabel, listAction), Markup.button.callback("❌ Cancel", "main_menu")],
+      ]),
+    }
+  );
+}
+
+function promptInvoiceInstruction(ctx, { mode, invoiceCurrency, paymentChannel, nuvionBankCurrency = null, cryptoChain = "arc", methodLabel }) {
+  const stateType = mode === "biz" ? "await_biz_invoice_instruction" : "await_invoice_instruction";
+  const context = mode === "biz" ? "business" : "personal";
+  const listAction = mode === "biz" ? "action_list_biz_invoices" : "action_list_invoices";
+  const backAction = mode === "biz" ? "action_new_biz_invoice" : "action_new_invoice";
+
+  convState.setState(ctx.from.id, stateType, {
+    invoiceCurrency,
+    paymentChannel,
+    nuvionBankCurrency,
+    cryptoChain,
+    methodLabel,
+  }, context);
+
+  const sym = invoiceCurrency === "NGN" ? "₦" : invoiceCurrency === "GBP" ? "£" : invoiceCurrency === "EUR" ? "€" : "$";
+  const sample1 = invoiceCurrency === "NGN" ? "₦150,000" : `${sym}500`;
+  const sample2a = invoiceCurrency === "NGN" ? "₦80,000" : `${sym}200`;
+  const sample2b = invoiceCurrency === "NGN" ? "₦40,000" : `${sym}100`;
+
+  return ctx.reply(
+    `🧾 <b>Create Invoice · ${escapeHtml(methodLabel)}</b>\n` +
+    `──────────────────────────\n` +
+    `Step 2 of 3 · <b>Describe your invoice in plain English</b>\n\n` +
+    `• "Invoice Acme Ltd ${sample1} for web design, due July 15"\n` +
+    `• "Bill TechCorp ${sample2a} consulting and ${sample2b} hosting"\n\n` +
+    `Type your instruction:`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("🔄 Change Method", backAction)],
+        [Markup.button.callback("📋 Invoices", listAction), Markup.button.callback("❌ Cancel", "main_menu")],
       ]),
     }
   );
@@ -5217,6 +5263,140 @@ async function showBizInvoiceMenu(ctx) {
   if (!user) return;
   return showInvoiceCurrencyPicker(ctx, "biz");
 }
+
+// Step 1 handler: Naira | International Currency (Tier 1) | Crypto (NEAR Intents)
+bot.action(/^inv_start_(biz|per)_(ngn|intl|crypto)$/, async (ctx) => {
+  await safeAnswerCbQuery(ctx);
+  const user = requireUser(ctx);
+  if (!user) return;
+  const mode = ctx.match[1];
+  const pick = ctx.match[2];
+  const accountType = mode === "biz" ? "business" : "personal";
+  const verified = isTier1VerifiedForInvoice(ctx.from.id, accountType);
+  const backAction = mode === "biz" ? "action_new_biz_invoice" : "action_new_invoice";
+
+  if (pick === "ngn") {
+    const channel = verified ? "nuvion_bank" : "ngn_bank";
+    return promptInvoiceInstruction(ctx, {
+      mode,
+      invoiceCurrency: "NGN",
+      paymentChannel: channel,
+      nuvionBankCurrency: verified ? "NGN" : null,
+      cryptoChain: "arc",
+      methodLabel: verified ? "🇳🇬 Naira Bank Account (NGN)" : "🇳🇬 Naira Bank Transfer (Paj · NGN)",
+    });
+  }
+
+  if (pick === "intl") {
+    if (!verified) {
+      const portalAction = mode === "biz" ? "biz_nuvion_portal" : "action_nuvion_portal";
+      return ctx.reply(
+        `🔒 <b>Tier-1 Verification Required</b>\n──────────────────────────\n` +
+        `Billing clients in <b>International Currencies</b> (USD, GBP, EUR, AED, KES, GHS, TZS, MXN) with named bank accounts requires <b>${mode === "biz" ? "Business KYB" : "Personal KYC"}</b> verification.\n\n` +
+        `You can still create <b>🇳🇬 Naira</b> or <b>🌐 Crypto (NEAR Intents)</b> invoices right now without verification!`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback(mode === "biz" ? "💼 Upgrade to Tier 1 (KYB)" : "🪪 Upgrade to Tier 1 (KYC)", portalAction)],
+            [Markup.button.callback("⬅️ Back to Invoice Options", backAction)],
+          ]),
+        }
+      );
+    }
+
+    const activeCurrencies = new Set();
+    try {
+      const entity = db.getNuvionEntityByUser(ctx.from.id, accountType);
+      if (entity) {
+        const details = db.getNuvionAccountDetailsByEntity(entity.entity_id).filter((d) => d.asset_type === "fiat" && d.status === "active");
+        for (const d of details) activeCurrencies.add(d.currency);
+      }
+    } catch (_) {}
+    const badge = (code) => (activeCurrencies.has(code) ? " ✅" : "");
+
+    return ctx.reply(
+      `🌍 <b>Select International Currency</b>\n──────────────────────────\n` +
+      `Choose the exact currency for this invoice — your named bank details for that currency will be provisioned directly onto the invoice (✅ = active):`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback(`🇺🇸 USD${badge("USD")}`, `inv_intl_pick_${mode}_USD`),
+            Markup.button.callback(`🇬🇧 GBP${badge("GBP")}`, `inv_intl_pick_${mode}_GBP`),
+            Markup.button.callback(`🇪🇺 EUR${badge("EUR")}`, `inv_intl_pick_${mode}_EUR`),
+          ],
+          [
+            Markup.button.callback(`🇦🇪 AED${badge("AED")}`, `inv_intl_pick_${mode}_AED`),
+            Markup.button.callback(`🇰🇪 KES${badge("KES")}`, `inv_intl_pick_${mode}_KES`),
+            Markup.button.callback(`🇬🇭 GHS${badge("GHS")}`, `inv_intl_pick_${mode}_GHS`),
+          ],
+          [
+            Markup.button.callback(`🇹🇿 TZS${badge("TZS")}`, `inv_intl_pick_${mode}_TZS`),
+            Markup.button.callback(`🇲🇽 MXN${badge("MXN")}`, `inv_intl_pick_${mode}_MXN`),
+          ],
+          [Markup.button.callback("⬅️ Back", backAction), Markup.button.callback("❌ Cancel", "main_menu")],
+        ]),
+      }
+    );
+  }
+
+  // pick === "crypto" -> select NEAR Intents network upfront
+  return ctx.reply(
+    `🌐 <b>Select Crypto Network (NEAR Intents)</b>\n──────────────────────────\n` +
+    `Your client pays the <b>exact</b> invoice amount on their chosen chain and funds auto-settle straight into your Proxim wallet:`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback("☀️ Solana USDC", `inv_crypto_pick_${mode}_sol_usdc`),
+          Markup.button.callback("Ⓝ NEAR USDC", `inv_crypto_pick_${mode}_near_usdc`),
+        ],
+        [
+          Markup.button.callback("☀️ Solana USDT", `inv_crypto_pick_${mode}_sol_usdt`),
+          Markup.button.callback("Ⓝ NEAR USDT", `inv_crypto_pick_${mode}_near_usdt`),
+        ],
+        [
+          Markup.button.callback("🪶 Robinhood USDG", `inv_crypto_pick_${mode}_hood_usdg`),
+          Markup.button.callback("🔵 Arc USDC", `inv_crypto_pick_${mode}_arc`),
+        ],
+        [Markup.button.callback("⬅️ Back", backAction), Markup.button.callback("❌ Cancel", "main_menu")],
+      ]),
+    }
+  );
+});
+
+bot.action(/^inv_intl_pick_(biz|per)_(USD|GBP|EUR|AED|KES|GHS|TZS|MXN)$/, async (ctx) => {
+  await safeAnswerCbQuery(ctx);
+  const user = requireUser(ctx);
+  if (!user) return;
+  const mode = ctx.match[1];
+  const cur = ctx.match[2];
+  return promptInvoiceInstruction(ctx, {
+    mode,
+    invoiceCurrency: cur,
+    paymentChannel: "nuvion_bank",
+    nuvionBankCurrency: cur,
+    cryptoChain: "arc",
+    methodLabel: `🌍 ${cur} Global Bank Account`,
+  });
+});
+
+bot.action(/^inv_crypto_pick_(biz|per)_(sol_usdc|near_usdc|sol_usdt|near_usdt|hood_usdg|arc)$/, async (ctx) => {
+  await safeAnswerCbQuery(ctx);
+  const user = requireUser(ctx);
+  if (!user) return;
+  const mode = ctx.match[1];
+  const chain = ctx.match[2];
+  const meta = INVOICE_CRYPTO_CHAINS[chain] || INVOICE_CRYPTO_CHAINS.arc;
+  return promptInvoiceInstruction(ctx, {
+    mode,
+    invoiceCurrency: "USD",
+    paymentChannel: "crypto_intent",
+    nuvionBankCurrency: null,
+    cryptoChain: chain,
+    methodLabel: `🌐 ${meta.shortLabel}${meta.viaNearIntents ? " (NEAR Intents)" : ""}`,
+  });
+});
 
 bot.action(/^inv_cur_(biz|per)_(NGN|USD)$/, async (ctx) => {
   await safeAnswerCbQuery(ctx);
@@ -9772,7 +9952,7 @@ bot.on("text", async (ctx) => {
             clientName: state.data.parsed.clientName,
             clientEmail: state.data.parsed.clientEmail,
             items: state.data.parsed.items,
-            totalUsdc: invoiceCurrency === "USD" ? state.data.total : undefined,
+            totalUsdc: invoiceCurrency !== "NGN" ? state.data.total : undefined,
             totalNgn: invoiceCurrency === "NGN" ? state.data.total : undefined,
             invoiceCurrency,
             paymentChannel,
@@ -9793,7 +9973,7 @@ bot.on("text", async (ctx) => {
 
         const displayTotal = fullInvoice.invoiceCurrency === "NGN"
           ? `₦${Number(fullInvoice.totalNgn || 0).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (~$${fullInvoice.totalUsdc.toFixed(2)})`
-          : `$${fullInvoice.totalUsdc.toFixed(2)} USD`;
+          : `${formatInvoiceAmt(state.data.total, fullInvoice.invoiceCurrency)} ${fullInvoice.invoiceCurrency}`;
 
         let caption =
           `🧾 <b>Invoice #${escapeHtml(fullInvoice.invoiceNumber)} Created!</b>\n` +
@@ -9895,7 +10075,7 @@ bot.on("text", async (ctx) => {
             clientName: state.data.parsed.clientName,
             clientEmail: state.data.parsed.clientEmail,
             items: state.data.parsed.items,
-            totalUsdc: invoiceCurrency === "USD" ? state.data.total : undefined,
+            totalUsdc: invoiceCurrency !== "NGN" ? state.data.total : undefined,
             totalNgn: invoiceCurrency === "NGN" ? state.data.total : undefined,
             invoiceCurrency,
             paymentChannel,
@@ -9921,7 +10101,7 @@ bot.on("text", async (ctx) => {
 
         const displayTotal = fullBizInvoice.invoiceCurrency === "NGN"
           ? `₦${Number(fullBizInvoice.totalNgn || 0).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (~$${fullBizInvoice.totalUsdc.toFixed(2)})`
-          : `$${fullBizInvoice.totalUsdc.toFixed(2)} USD`;
+          : `${formatInvoiceAmt(state.data.total, fullBizInvoice.invoiceCurrency)} ${fullBizInvoice.invoiceCurrency}`;
 
         let caption =
           `🧾 <b>Business Invoice #${escapeHtml(fullBizInvoice.invoiceNumber)}</b>\n` +
@@ -10143,6 +10323,10 @@ bot.on("text", async (ctx) => {
       const walletAddress = user.business_deposit_address || user.deposit_address;
       const profile = bizProfile.getBizProfile(userId);
       const selectedCurrency = (state.data && state.data.invoiceCurrency) || (/[₦]|(?:^|\b)(?:ngn|naira)\b/i.test(text) ? "NGN" : "USD");
+      const preselectedChannel = state.data?.paymentChannel || null;
+      const preselectedBankCur = state.data?.nuvionBankCurrency || null;
+      const preselectedChain = state.data?.cryptoChain || "arc";
+      const preselectedMethodLabel = state.data?.methodLabel || null;
       const parsed = await parseSmartInvoiceIntent(text, {
         businessName: profile?.business_name || ctx.from.username || `User ${userId}`,
         walletAddress,
@@ -10154,13 +10338,40 @@ bot.on("text", async (ctx) => {
           Markup.inlineKeyboard([[Markup.button.callback("🧾 Try Again", "action_new_biz_invoice")]])
         );
       }
-      const invoiceCurrency = String(selectedCurrency || parsed.currency || "USD").toUpperCase() === "NGN" ? "NGN" : "USD";
+      const invoiceCurrency = String(selectedCurrency || parsed.currency || "USD").toUpperCase();
       const total = parsed.items.reduce((s, i) => s + Number(i.quantity || 1) * Number(i.unitPrice || 0), 0);
       const itemLines = parsed.items.map(i => `• ${escapeHtml(i.description)} × ${i.quantity || 1} @ ${formatInvoiceAmt(i.unitPrice, invoiceCurrency)}`).join("\n");
-      convState.setState(userId, "confirm_biz_invoice", { parsed, total, walletAddress, invoiceCurrency }, "business");
+      convState.setState(userId, "confirm_biz_invoice", {
+        parsed,
+        total,
+        walletAddress,
+        invoiceCurrency,
+        paymentChannel: preselectedChannel,
+        nuvionBankCurrency: preselectedBankCur,
+        cryptoChain: preselectedChain,
+      }, "business");
       const isBizVerified = isTier1VerifiedForInvoice(userId, "business");
+      if (preselectedChannel) {
+        return ctx.reply(
+          `📋 <b>Invoice Preview (${escapeHtml(invoiceCurrency)})</b>\n──────────────────────────\n` +
+          `👤 <b>To:</b> ${escapeHtml(parsed.clientName)}${parsed.clientEmail ? " (" + escapeHtml(parsed.clientEmail) + ")" : ""}\n` +
+          `${itemLines}\n──────────────────────────\n` +
+          `💰 <b>Total:</b> ${formatInvoiceAmt(total, invoiceCurrency)}\n` +
+          `💳 <b>Payment Method:</b> ${escapeHtml(preselectedMethodLabel || preselectedChannel)}\n` +
+          (parsed.dueDate ? `📅 <b>Due:</b> ${escapeHtml(parsed.dueDate)}\n` : "") +
+          `\n<b>Step 3 of 3 · Ready to generate?</b>`,
+          {
+            parse_mode: "HTML",
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback("✅ Generate Invoice", "action_confirm_biz_invoice")],
+              [Markup.button.callback("🔄 Change Payment Method", "inv_ch_biz_back")],
+              [Markup.button.callback("✏️ Edit", "action_new_biz_invoice"), Markup.button.callback("❌ Cancel", "main_menu")],
+            ]),
+          }
+        );
+      }
       return ctx.reply(
-        `📋 <b>Invoice Preview (${invoiceCurrency})</b>\n──────────────────────────\n` +
+        `📋 <b>Invoice Preview (${escapeHtml(invoiceCurrency)})</b>\n──────────────────────────\n` +
         `👤 <b>To:</b> ${escapeHtml(parsed.clientName)}${parsed.clientEmail ? " (" + escapeHtml(parsed.clientEmail) + ")" : ""}\n` +
         `${itemLines}\n──────────────────────────\n` +
         `💰 <b>Total:</b> ${formatInvoiceAmt(total, invoiceCurrency)}\n` +
@@ -10181,6 +10392,10 @@ bot.on("text", async (ctx) => {
       if (!user) return;
       await ctx.reply("⏳ Parsing your invoice...");
       const selectedCurrency = (state.data && state.data.invoiceCurrency) || (/[₦]|(?:^|\b)(?:ngn|naira)\b/i.test(text) ? "NGN" : "USD");
+      const preselectedChannel = state.data?.paymentChannel || null;
+      const preselectedBankCur = state.data?.nuvionBankCurrency || null;
+      const preselectedChain = state.data?.cryptoChain || "arc";
+      const preselectedMethodLabel = state.data?.methodLabel || null;
       const parsed = await parseSmartInvoiceIntent(text, {
         businessName: user.username || `User ${userId}`,
         walletAddress: user.deposit_address,
@@ -10192,13 +10407,38 @@ bot.on("text", async (ctx) => {
           Markup.inlineKeyboard([[Markup.button.callback("🧾 Try Again", "action_new_invoice")]])
         );
       }
-      const invoiceCurrency = String(selectedCurrency || parsed.currency || "USD").toUpperCase() === "NGN" ? "NGN" : "USD";
+      const invoiceCurrency = String(selectedCurrency || parsed.currency || "USD").toUpperCase();
       const total = parsed.items.reduce((s, i) => s + Number(i.quantity || 1) * Number(i.unitPrice || 0), 0);
       const itemLines = parsed.items.map(i => `• ${escapeHtml(i.description)} × ${i.quantity || 1} @ ${formatInvoiceAmt(i.unitPrice, invoiceCurrency)}`).join("\n");
-      convState.setState(userId, "confirm_invoice", { parsed, total, invoiceCurrency }, "personal");
+      convState.setState(userId, "confirm_invoice", {
+        parsed,
+        total,
+        invoiceCurrency,
+        paymentChannel: preselectedChannel,
+        nuvionBankCurrency: preselectedBankCur,
+        cryptoChain: preselectedChain,
+      }, "personal");
       const isPerVerified = isTier1VerifiedForInvoice(userId, "personal");
+      if (preselectedChannel) {
+        return ctx.reply(
+          `📋 <b>Invoice Preview (${escapeHtml(invoiceCurrency)})</b>\n──────────────────────────\n` +
+          `👤 <b>To:</b> ${escapeHtml(parsed.clientName)}\n${itemLines}\n──────────────────────────\n` +
+          `💰 <b>Total:</b> ${formatInvoiceAmt(total, invoiceCurrency)}\n` +
+          `💳 <b>Payment Method:</b> ${escapeHtml(preselectedMethodLabel || preselectedChannel)}\n` +
+          (parsed.dueDate ? `📅 <b>Due:</b> ${escapeHtml(parsed.dueDate)}\n` : "") +
+          `\n<b>Step 3 of 3 · Ready to generate?</b>`,
+          {
+            parse_mode: "HTML",
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback("✅ Generate Invoice", "action_confirm_invoice")],
+              [Markup.button.callback("🔄 Change Payment Method", "inv_ch_per_back")],
+              [Markup.button.callback("✏️ Edit", "action_new_invoice"), Markup.button.callback("❌ Cancel", "main_menu")],
+            ]),
+          }
+        );
+      }
       return ctx.reply(
-        `📋 <b>Invoice Preview (${invoiceCurrency})</b>\n──────────────────────────\n` +
+        `📋 <b>Invoice Preview (${escapeHtml(invoiceCurrency)})</b>\n──────────────────────────\n` +
         `👤 <b>To:</b> ${escapeHtml(parsed.clientName)}\n${itemLines}\n──────────────────────────\n` +
         `💰 <b>Total:</b> ${formatInvoiceAmt(total, invoiceCurrency)}\n` +
         (parsed.dueDate ? `📅 <b>Due:</b> ${escapeHtml(parsed.dueDate)}\n` : "") +
