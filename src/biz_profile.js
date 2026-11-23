@@ -29,12 +29,19 @@ function initBizProfileTable() {
       phone             TEXT,
       address           TEXT,
       logo_path         TEXT,
+      logo_data_uri     TEXT,
       default_due_days  INTEGER NOT NULL DEFAULT 14,
       currency_display  TEXT    NOT NULL DEFAULT 'USDC',
       created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
       updated_at        TEXT    NOT NULL DEFAULT (datetime('now'))
     );
   `);
+  try {
+    const cols = getDb().prepare("PRAGMA table_info(biz_profile)").all().map((c) => c.name);
+    if (!cols.includes("logo_data_uri")) {
+      getDb().exec("ALTER TABLE biz_profile ADD COLUMN logo_data_uri TEXT");
+    }
+  } catch (_) {}
 }
 
 // ─── CRUD ─────────────────────────────────────────────────────────────────────
@@ -134,33 +141,62 @@ const path = require("path");
 const fs   = require("fs");
 
 function logoStoragePath(telegramId) {
-  const dir = path.join(__dirname, "../data/logos");
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, `${telegramId}.png`);
+  let baseDir = path.join(__dirname, "../data/logos");
+  try {
+    const dbMod = require("./db");
+    if (typeof dbMod.resolveDbPath === "function") {
+      baseDir = path.join(path.dirname(dbMod.resolveDbPath()), "logos");
+    }
+  } catch (_) {}
+  if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true });
+  return path.join(baseDir, `${telegramId}.png`);
 }
 
 /**
- * Resize an image buffer to 80x80 PNG and save to the logo storage path.
- * Returns the saved file path.
- *
- * @param {number} telegramId
- * @param {Buffer} imageBuffer  - raw image data downloaded from Telegram
+ * Resize an image buffer to 80x80 PNG, persist base64 data URI in SQLite (survives Railway redeploys),
+ * and also write to the persistent logos directory.
  */
 async function saveLogo(telegramId, imageBuffer) {
   const sharp  = require("sharp");
   const outPath = logoStoragePath(telegramId);
-  await sharp(imageBuffer)
+  const resizedBuf = await sharp(imageBuffer)
     .resize(80, 80, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 0 } })
     .png()
-    .toFile(outPath);
+    .toBuffer();
+
+  try {
+    fs.writeFileSync(outPath, resizedBuf);
+  } catch (fsErr) {
+    console.warn("[biz_profile:saveLogo:disk_note]", fsErr.message);
+  }
+
+  const dataUri = `data:image/png;base64,${resizedBuf.toString("base64")}`;
+  try {
+    getDb()
+      .prepare("UPDATE biz_profile SET logo_data_uri = ?, logo_path = ?, updated_at = datetime('now') WHERE telegram_id = ?")
+      .run(dataUri, outPath, Number(telegramId));
+  } catch (dbErr) {
+    console.warn("[biz_profile:saveLogo:db_note]", dbErr.message);
+  }
   return outPath;
 }
 
 /**
  * Read logo as base64 data URI for SVG embedding.
- * Returns null if no logo is stored.
+ * Prefers SQLite-persisted `logo_data_uri` (survives ephemeral container redeploys) and falls back to disk.
  */
 function getLogoDataUri(telegramId) {
+  try {
+    const row = getDb()
+      .prepare("SELECT logo_data_uri, logo_path FROM biz_profile WHERE telegram_id = ?")
+      .get(Number(telegramId));
+    if (row && row.logo_data_uri) return row.logo_data_uri;
+    if (row && row.logo_path && fs.existsSync(row.logo_path)) {
+      const buf = fs.readFileSync(row.logo_path);
+      return `data:image/png;base64,${buf.toString("base64")}`;
+    }
+  } catch (_) {}
+
   const p = logoStoragePath(telegramId);
   if (!fs.existsSync(p)) return null;
   const buf = fs.readFileSync(p);

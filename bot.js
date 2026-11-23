@@ -64,6 +64,7 @@ const cashflow = require("./src/cashflow");
 const socialTransfers = require("./src/social_transfers");
 const fraudGuard = require("./src/fraud_guard");
 const compliance = require("./src/compliance");
+const retention = require("./src/retention");
 
 // ── Agent modules ─────────────────────────────────────────────────────────────
 const { parsePaymentIntent } = require("./agent/orchestrator");
@@ -456,7 +457,7 @@ function formatPointValue(points) {
   return `$${(points / POINTS_PER_USD).toFixed(2)}`;
 }
 
-// Wrap db.awardPoints to automatically send a notification when a referral bonus is triggered
+// Wrap db.awardPoints to automatically send referral bonus + first-transaction welcome bonus & JIT Tier-1 nudge
 const originalDbAwardPoints = db.awardPoints.bind(db);
 db.awardPoints = function (telegramId, points, action, details = null, options = {}) {
   const mergedOptions = {
@@ -481,7 +482,16 @@ db.awardPoints = function (telegramId, points, action, details = null, options =
       }
     },
   };
-  return originalDbAwardPoints(telegramId, points, action, details, mergedOptions);
+  const result = originalDbAwardPoints(telegramId, points, action, details, mergedOptions);
+  if (action && action !== "first_tx_bonus" && action !== "referral_bonus" && action !== "invoice" && action !== "businessInvoice") {
+    retention.handleFirstQualifyingTransaction({
+      telegramId,
+      action,
+      context: getContext(telegramId),
+      bot,
+    }).catch(() => {});
+  }
+  return result;
 };
 
 const afterPaymentButtons = Markup.inlineKeyboard([
@@ -682,15 +692,10 @@ bot.start(async (ctx) => {
     `${referralGreeting}` +
     `👋 <b>Welcome to Proxim</b>\n` +
     `──────────────────────────\n` +
-    `Your Global Neobank right inside Telegram.\n\n` +
-    `🏦 <b>Named Global Bank Accounts</b> — Receive USD, GBP, EUR, NGN, CAD &amp; more\n` +
-    `💳 <b>Virtual &amp; Disposable USD Cards</b> — Spend globally on subscriptions, ads &amp; cloud\n` +
-    `🌍 <b>Instant Local &amp; Global Transfers</b> — Send to 27+ currencies &amp; Nigerian banks in seconds\n` +
-    `📈 <b>Dollar Savings, Bills &amp; Business Suite</b> — Earn yield, pay bills, send invoices &amp; run payroll\n\n` +
-    `🔒 <i>Bank-grade security protected by your private PIN. You stay in full control of your money.</i>\n` +
-    `🌐 <b>Website:</b> <a href="https://www.proximfi.xyz/">www.proximfi.xyz</a>\n\n` +
-    `⚖️ <i>${compliance.LEGAL_BANKING_DISCLAIMER} By continuing, you accept our <a href="${compliance.TERMS_URL}">Terms of Service &amp; Privacy Policy</a> (v${compliance.TERMS_VERSION}).</i>\n\n` +
-    `How will you use Proxim today?`,
+    `Your Global Neobank in Telegram — ready in 15 seconds.\n\n` +
+    `✅ <b>Start Immediately (No KYC):</b> Naira (NGN), Crypto (11 chains), Savings, Bills &amp; @username transfers\n` +
+    `🌍 <b>Unlock With Tier 1:</b> Named USD/GBP/EUR Accounts, USD Cards &amp; 27-currency transfers\n\n` +
+    `🌐 <a href="https://www.proximfi.xyz/">www.proximfi.xyz</a> · <i>${compliance.LEGAL_BANKING_DISCLAIMER} By continuing, you accept our <a href="${compliance.TERMS_URL}">Terms &amp; Privacy</a> (v${compliance.TERMS_VERSION}).</i>`,
     {
       parse_mode: "HTML",
       disable_web_page_preview: true,
@@ -1066,17 +1071,25 @@ async function showBalance(ctx) {
 
     if (nuvionAllowed) {
       if (nuvionStatus === "approved") {
-        globalUpgradeHint = `\n• <b>Account Tier:</b> Tier 1 Global Verified ✅ (NGN + USD/GBP/EUR Accounts &amp; Cards Active)`;
+        globalUpgradeHint = `\n• <b>Tier:</b> Tier 1 Global Verified ✅`;
       } else if (nuvionStatus === "pending" || nuvionStatus === "incomplete") {
-        globalUpgradeHint = `\n• <b>Account Tier:</b> Tier 0 (NGN Accounts Only)\n⏳ <b>Tier-1 Global Verification:</b> Under review — tap below to check status.`;
+        globalUpgradeHint = `\n• <b>Tier:</b> Tier 0 Active (No KYC) · ⏳ <i>Tier 1 Under Review</i>`;
       } else {
-        globalUpgradeHint =
-          `\n• <b>Account Tier:</b> Tier 0 (Standard — NGN Accounts Only)\n\n` +
-          `🔒 <b>Want Global Bank Accounts &amp; USD Cards?</b> <i>Getting named USD, GBP &amp; EUR bank accounts, Virtual USD Cards, and transfers to 27+ currencies requires <b>Tier 1</b> verification. Tap below to verify your ID.</i>`;
+        globalUpgradeHint = `\n• <b>Tier:</b> Tier 0 — Active Now (No KYC Needed)`;
       }
     }
 
+    const quickStartHint = effectiveTotalUsdc <= 0.01
+      ? `\n\n🚀 <b>Quick Start:</b> 1️⃣ Add funds → 2️⃣ Send or pay a bill → 3️⃣ Unlock Global Accounts`
+      : "";
+
     const buttonRows = [];
+    if (effectiveTotalUsdc <= 0.01) {
+      buttonRows.push([
+        btnSuccess("⚡ Fund ₦2,000", "quick_fund_ngn_2000"),
+        btnSuccess("⚡ Fund ₦5,000", "quick_fund_ngn_5000"),
+      ]);
+    }
     if (hasSavings) {
       buttonRows.push([
         btnPrimary("💵 Withdraw Savings", "yield_withdraw_start"),
@@ -1089,6 +1102,15 @@ async function showBalance(ctx) {
       [btnSuccess("💡 Pay Bills", "action_bills_menu"),
       btnSuccess("📈 Save & Earn", "action_yields")],
     );
+    // 1-Tap Repeat Last Transfer shortcut for returning users
+    try {
+      const savedPayees = payeeBook.getAllPayees(ctx.from.id) || [];
+      if (savedPayees.length > 0 && effectiveTotalUsdc > 0.01) {
+        const lastP = savedPayees[0];
+        const shortName = String(lastP.name || lastP.account_name || "Recipient").slice(0, 18);
+        buttonRows.push([btnPrimary(`🔁 Repeat Transfer (${shortName})`, "action_cashout_ngn_start")]);
+      }
+    } catch (_) {}
     if (nuvionAllowed) {
       if (nuvionStatus === "approved") {
         buttonRows.push(
@@ -1097,9 +1119,12 @@ async function showBalance(ctx) {
           [btnSuccess("✈️ Send Abroad (27 Currencies)", "nuvion_po_menu_per")]
         );
       } else if (nuvionStatus === "pending" || nuvionStatus === "incomplete") {
-        buttonRows.push([btnPrimary("⏳ Check Tier-1 Verification Status", "action_nuvion_portal")]);
+        buttonRows.push([btnPrimary("⏳ Check Tier-1 Status", "action_nuvion_portal"), btnDefault("🏷️ Tiers & Limits", "action_tiers")]);
       } else {
-        buttonRows.push([btnSuccess("🪪 Verify ID — Unlock Global Accounts & USD Cards", "action_nuvion_portal")]);
+        buttonRows.push(
+          [btnDefault("🔒 Global Accounts", "action_nuvion_portal"), btnDefault("🔒 USD Cards", "action_nuvion_portal")],
+          [btnDefault("🔒 Send Abroad (27 Currencies)", "action_nuvion_portal"), btnDefault("🏷️ Tiers & Limits", "action_tiers")]
+        );
       }
     }
     buttonRows.push(
@@ -1110,7 +1135,7 @@ async function showBalance(ctx) {
     const otherWalletHint = await getOtherAccountBalanceHint(user, context);
 
     await ctx.reply(
-      `${balanceHeader}${savingsSection}${otherWalletHint}${globalUpgradeHint}`,
+      `${balanceHeader}${savingsSection}${otherWalletHint}${globalUpgradeHint}${quickStartHint}`,
       {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard(buttonRows),
@@ -1179,17 +1204,21 @@ async function showBizBalance(ctx) {
     let bizGlobalHint = "";
     if (bizNuvionAllowed) {
       if (bizNuvionStatus === "approved") {
-        bizGlobalHint = `\n• <b>Account Tier:</b> Tier 1 Global Verified ✅ (NGN + Company Global Accounts, Team Cards &amp; 27-Currency Payroll Active)`;
+        bizGlobalHint = `\n• <b>Tier:</b> Tier 1 Business Verified ✅`;
       } else if (bizNuvionStatus === "pending" || bizNuvionStatus === "incomplete") {
-        bizGlobalHint = `\n• <b>Account Tier:</b> Tier 0 (NGN Accounts Only)\n⏳ <b>Tier-1 Business KYB Verification:</b> Under review — tap below to check status.`;
+        bizGlobalHint = `\n• <b>Tier:</b> Tier 0 Active (No KYB) · ⏳ <i>Tier 1 KYB Under Review</i>`;
       } else {
-        bizGlobalHint =
-          `\n• <b>Account Tier:</b> Tier 0 (Standard — NGN Accounts Only)\n\n` +
-          `🔒 <b>Want Company Global Accounts &amp; Team USD Cards?</b> <i>Getting named USD, GBP &amp; EUR company bank accounts, Team USD Cards, and 27-currency payroll requires <b>Tier 1 Business Verification (KYB)</b>. Tap below to verify your business.</i>`;
+        bizGlobalHint = `\n• <b>Tier:</b> Tier 0 — Active Now (No KYB Needed)`;
       }
     }
 
     const buttonRows = [];
+    if (effectiveTotalUsdc <= 0.01) {
+      buttonRows.push([
+        btnSuccess("⚡ Fund ₦5,000", "quick_fund_ngn_5000"),
+        btnSuccess("⚡ Fund ₦10,000", "quick_fund_ngn_10000"),
+      ]);
+    }
     if (hasSavings) {
       buttonRows.push([
         btnPrimary("💵 Withdraw Savings", "yield_withdraw_start"),
@@ -1212,9 +1241,12 @@ async function showBizBalance(ctx) {
           [btnSuccess("✈️ Send Abroad (27 Currencies)", "nuvion_po_menu_biz")]
         );
       } else if (bizNuvionStatus === "pending" || bizNuvionStatus === "incomplete") {
-        buttonRows.push([btnPrimary("⏳ Check Business KYB Status", "biz_nuvion_portal")]);
+        buttonRows.push([btnPrimary("⏳ Check KYB Status", "biz_nuvion_portal"), btnDefault("🏷️ Tiers & Limits", "action_tiers")]);
       } else {
-        buttonRows.push([btnSuccess("💼 Verify Business (KYB) — Global Accounts & Cards", "biz_nuvion_portal")]);
+        buttonRows.push(
+          [btnDefault("🔒 Global Accounts", "biz_nuvion_portal"), btnDefault("🔒 Team USD Cards", "biz_nuvion_portal")],
+          [btnDefault("🔒 Send Abroad & Payroll", "biz_nuvion_portal"), btnDefault("🏷️ Tiers & Limits", "action_tiers")]
+        );
       }
     }
     buttonRows.push(
@@ -1480,6 +1512,65 @@ bot.command(["legal", "terms"], async (ctx) => {
     parse_mode: "HTML",
     disable_web_page_preview: true,
     ...backToMenu,
+  });
+});
+
+bot.command(["limits", "tiers"], async (ctx) => {
+  const user = requireUser(ctx);
+  if (!user) return;
+  const context = user.active_context || "personal";
+  const isBiz = context === "business";
+  const ent = db.getNuvionEntityByUser(ctx.from.id, context);
+  const status = String(ent?.status || "").toLowerCase();
+  const buttons = status === "approved"
+    ? [[btnDefault("🏠 Main Menu", "main_menu")]]
+    : [
+        [btnSuccess(isBiz ? "💼 Upgrade to Tier 1 (Business KYB)" : "🪪 Upgrade to Tier 1 (Personal KYC)", isBiz ? "biz_nuvion_portal" : "action_nuvion_portal")],
+        [btnPrimary("📥 Add Money Now (Tier 0)", "action_receive"), btnDefault("🏠 Main Menu", "main_menu")],
+      ];
+  return ctx.reply(retention.buildTierComparisonHtml(isBiz, status), {
+    parse_mode: "HTML",
+    ...Markup.inlineKeyboard(buttons),
+  });
+});
+
+bot.action("action_tiers", async (ctx) => {
+  await safeAnswerCbQuery(ctx);
+  const user = requireUser(ctx);
+  if (!user) return;
+  const context = user.active_context || "personal";
+  const isBiz = context === "business";
+  const ent = db.getNuvionEntityByUser(ctx.from.id, context);
+  const status = String(ent?.status || "").toLowerCase();
+  const buttons = status === "approved"
+    ? [[btnDefault("🏠 Main Menu", "main_menu")]]
+    : [
+        [btnSuccess(isBiz ? "💼 Upgrade to Tier 1 (Business KYB)" : "🪪 Upgrade to Tier 1 (Personal KYC)", isBiz ? "biz_nuvion_portal" : "action_nuvion_portal")],
+        [btnPrimary("📥 Add Money Now (Tier 0)", "action_receive"), btnDefault("🏠 Main Menu", "main_menu")],
+      ];
+  return ctx.reply(retention.buildTierComparisonHtml(isBiz, status), {
+    parse_mode: "HTML",
+    ...Markup.inlineKeyboard(buttons),
+  });
+});
+
+bot.action(/^quick_fund_ngn_(\d+)$/, async (ctx) => {
+  await safeAnswerCbQuery(ctx);
+  const user = requireUser(ctx);
+  if (!user) return;
+  const ngnAmt = parseInt(ctx.match[1], 10);
+  if (!ngnAmt || ngnAmt < 500) return showReceive(ctx);
+  const context = user.active_context || "personal";
+  convState.setState(ctx.from.id, "await_onramp_ngn_amount", { context }, context);
+  return bot.handleUpdate({
+    update_id: Date.now(),
+    message: {
+      message_id: Date.now(),
+      from: ctx.from,
+      chat: ctx.chat,
+      date: Math.floor(Date.now() / 1000),
+      text: String(ngnAmt),
+    },
   });
 });
 
@@ -6964,17 +7055,34 @@ bot.on("text", async (ctx) => {
     // ── Business onboarding ──────────────────────────────────────────────────
 
     if (state.type === "onboard_biz_name") {
-      convState.setState(userId, "onboard_biz_email", { ...state.data, businessName: text }, "business");
+      // Streamlined 2-step Business onboarding: Business Name -> 4-Digit PIN
+      // (Email, phone, address, invoice terms & logo can be customized anytime in Business Profile)
+      const d = state.data || {};
+      const personalWallet = walletLib.generateUserWallet();
+      const businessWallet = walletLib.generateUserWallet();
+      convState.setState(userId, "onboarding_pin", {
+        accountType: "business",
+        address: personalWallet.address,
+        privateKey: personalWallet.privateKey,
+        businessAddress: businessWallet.address,
+        businessPrivateKey: businessWallet.privateKey,
+        username: ctx.from.username,
+        bizProfile: {
+          businessName: text,
+          businessEmail: null,
+          phone: null,
+          address: null,
+          defaultDueDays: 14,
+        },
+        referrerId: d.referrerId || null,
+        pendingClaimToken: d.pendingClaimToken || null,
+      }, "business");
       return ctx.reply(
-        `Great — <b>${text}</b>.\n\n` +
-        `What's your business email address?\n\n` +
-        `👉 <b>Send email into the chat:</b>\n` +
-        `💬 <i>Example: <b>sales@mycompany.com</b></i>\n\n` +
-        `<i>Or tap Skip below if you don't have one:</i>`,
-        {
-          parse_mode: "HTML",
-          ...Markup.inlineKeyboard([[Markup.button.callback("⏭️ Skip / Leave Blank", "onboard_skip_email")]])
-        }
+        `✅ <b>${escapeHtml(text)}</b> — almost ready!\n\n` +
+        `Choose a secret <b>4-digit PIN</b> to secure your Business wallet.\n` +
+        `<i>(You can add your logo, email &amp; address anytime in Settings → Business Profile.)</i>\n\n` +
+        `💬 <i>Type your 4-digit PIN into the chat (e.g. <b>1234</b>):</i>`,
+        { parse_mode: "HTML" }
       );
     }
 
@@ -7161,19 +7269,16 @@ bot.on("text", async (ctx) => {
       const welcomeText =
         `🎉 <b>Your Proxim ${isBusiness ? "Business" : "Personal"} Account Is Ready!</b>\n` +
         `──────────────────────────\n` +
-        `• <b>Account Status:</b> Active ✅\n` +
-        `• <b>Current Tier:</b> Tier 0 (Standard — NGN Accounts Only)\n` +
-        `• <b>Security:</b> Protected by your private 4-digit PIN\n\n` +
-        `🇳🇬 <b>What You Have Now (Tier 0):</b>\n` +
-        `You can immediately receive and send Nigerian Naira (NGN), save in dollars, ${isBusiness ? "send invoices, " : ""}and pay local bills.\n\n` +
-        `🌍 <b>Want Global Bank Accounts &amp; USD Cards? (Requires Tier 1):</b>\n` +
-        `Opening named <b>USD, GBP, EUR, CAD &amp; AED Bank Accounts</b>, issuing <b>${isBusiness ? "Business &amp; Team" : "Virtual &amp; Disposable"} USD Mastercards</b>, and sending money across 27+ currencies requires upgrading to <b>Tier 1</b> via <b>${isBusiness ? "Business Verification (KYB)" : "ID Verification (KYC)"}</b> below.`;
+        `✅ <b>Tier 0 Active Now (No KYC):</b> Fund with Naira (NGN) or Crypto (11 chains), pay bills, save in dollars &amp; send instantly.\n` +
+        `🎁 <b>Welcome Perk:</b> Earn <b>+$1.00 bill/airtime credit</b> on your first transaction!\n\n` +
+        `🌍 <b>Need USD/GBP/EUR Accounts &amp; USD Cards?</b> Upgrade to Tier 1 (${isBusiness ? "KYB" : "KYC"}) anytime in 2 mins.`;
 
       await ctx.reply(welcomeText, {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard([
-          [btnSuccess(isBusiness ? "💼 Upgrade to Tier 1 — Verify Business (KYB)" : "🪪 Upgrade to Tier 1 — Verify ID (KYC)", portalAction)],
-          [btnPrimary("📥 Deposit Naira (NGN)", "action_receive"), btnPrimary("💰 View Balance", isBusiness ? "biz_balance" : "action_balance")],
+          [btnSuccess("📥 Add Money Now (Naira / Crypto)", "action_receive")],
+          [btnPrimary("⚡ Fund ₦2,000", "quick_fund_ngn_2000"), btnPrimary("⚡ Fund ₦5,000", "quick_fund_ngn_5000"), btnPrimary("⚡ Fund ₦10,000", "quick_fund_ngn_10000")],
+          [btnDefault("🏷️ Tiers & Limits", "action_tiers"), btnDefault(isBusiness ? "🔒 Unlock Tier 1 (KYB)" : "🔒 Unlock Tier 1 (KYC)", portalAction)],
         ]),
       });
 
@@ -10509,6 +10614,13 @@ async function startBot() {
     nuvionPoller.startNuvionPoller(bot);
   } catch (err) {
     console.warn("[bot] Nuvion poller notice:", err.message);
+  }
+
+  // Retention scheduler: monthly bill payment reminders & weekly Auto-Earn yield nudges
+  try {
+    retention.startRetentionScheduler(bot);
+  } catch (err) {
+    console.warn("[bot] Retention scheduler notice:", err.message);
   }
 }
 

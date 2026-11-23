@@ -166,6 +166,7 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
     dueDate,
     notes,
     businessName: businessName || user.username || `User ${telegramId}`,
+    logoDataUri: require("./biz_profile").getLogoDataUri(telegramId),
     walletAddress: paymentAddress,
     nearAddress,
     issueDate,

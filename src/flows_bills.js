@@ -13,7 +13,9 @@ const db = require("./db");
 const convState = require("./conversation_state");
 const airbills = require("./airbills");
 const { generateReceiptPNG } = require("./receipt_generator");
+const retention = require("./retention");
 
+const lastPaidBillByUser = new Map();
 const PAGE_SIZE = 8;
 
 function escapeHtml(str) {
@@ -92,6 +94,29 @@ function registerBillsFlows(bot, helpers) {
   });
 
   bot.command("bills", async (ctx) => showBillsMenu(ctx));
+
+  bot.action("action_bill_remind_30", async (ctx) => {
+    ctx.answerCbQuery("Monthly reminder set!").catch(() => {});
+    const user = requireUser(ctx);
+    if (!user) return;
+    const lastBill = lastPaidBillByUser.get(ctx.from.id) || (db.getUserBillPayments(ctx.from.id, 1) || [])[0];
+    if (!lastBill) {
+      return ctx.reply("🔔 Pay a bill first and tap Remind Me Next Month to schedule an automatic 30-day reminder.");
+    }
+    retention.scheduleBillReminder({
+      telegramId: ctx.from.id,
+      category: lastBill.category || "bills",
+      providerName: lastBill.providerName || lastBill.provider_name || "Bill",
+      recipient: lastBill.recipient || "",
+      amountNgn: lastBill.amountNgn || lastBill.amount_ngn || 0,
+      days: 30,
+    });
+    return ctx.reply(
+      `🔔 <b>Monthly Reminder Scheduled!</b>\n──────────────────────────\n` +
+      `We'll remind you in <b>30 days</b> to renew <b>${escapeHtml(lastBill.providerName || lastBill.provider_name || "your bill")}</b> (₦${Number(lastBill.amountNgn || lastBill.amount_ngn || 0).toLocaleString("en-NG")}).`,
+      { parse_mode: "HTML", ...backToMenu }
+    );
+  });
 
   // ── Bill History ───────────────────────────────────────────────────────────
 
@@ -1026,6 +1051,18 @@ function registerBillsFlows(bot, helpers) {
           tokenBlock +
           `• <b>Ref:</b> <code>${escapeHtml(res.airbillsTxId)}</code>`;
 
+        lastPaidBillByUser.set(userId, {
+          category: data.category,
+          providerName: data.providerName || data.label,
+          recipient: data.recipient,
+          amountNgn: res.amountNgn,
+        });
+        const billDoneKeyboard = Markup.inlineKeyboard([
+          [btnPrimary("🔔 Remind Me Next Month", "action_bill_remind_30")],
+          [btnPrimary("💰 Check Balance", "action_balance"), btnDefault("📋 History", "action_history")],
+          [btnPrimary("🏠 Main Menu", "main_menu")],
+        ]);
+
         try {
           const receiptPath = await generateReceiptPNG({
             receiptId:        `BILL-${String(res.airbillsTxId || Date.now()).slice(0, 10)}`,
@@ -1045,11 +1082,11 @@ function registerBillsFlows(bot, helpers) {
           });
           await ctx.replyWithPhoto(
             { source: receiptPath },
-            { caption: successCaption, parse_mode: "HTML", ...afterPaymentButtons }
+            { caption: successCaption, parse_mode: "HTML", ...billDoneKeyboard }
           );
         } catch (receiptErr) {
           console.warn("[flows_bills:receipt_png]", receiptErr.message);
-          await ctx.reply(successCaption, { parse_mode: "HTML", ...afterPaymentButtons });
+          await ctx.reply(successCaption, { parse_mode: "HTML", ...billDoneKeyboard });
         }
       } catch (err) {
         console.error("[flows_bills:execute:error]", err);
