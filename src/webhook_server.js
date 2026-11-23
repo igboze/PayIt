@@ -19,6 +19,8 @@ const multichain = require("./multichain");
 const { generateReceiptPNG } = require("./receipt_generator");
 const apiRoutes = require("./api_routes");
 const nuvionWebhooks = require("./nuvion_webhooks");
+const pods = require("./pods");
+const podsStore = require("./pods_store");
 const fx = require("./fx");
 
 function verifyAlchemySignature(rawBody, headers, signingKey) {
@@ -857,6 +859,50 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
     // 2b. Nuvion Global Banking Webhook route (exempt from API key auth; HMAC-SHA256 verified)
     if (req.method === "POST" && (req.url === "/webhook/nuvion" || req.url === "/webhook/nuvion/")) {
       return nuvionWebhooks.handleNuvionWebhookHttp(req, res, bot);
+    }
+
+    // 2c. Pods Finance Investments Webhook route (/webhooks/pods or /webhook/pods)
+    if (
+      req.method === "POST" &&
+      (req.url === "/webhooks/pods" ||
+        req.url === "/webhooks/pods/" ||
+        req.url === "/webhook/pods" ||
+        req.url === "/webhook/pods/")
+    ) {
+      const chunks = [];
+      let byteLen = 0;
+      req.on("data", (chunk) => {
+        byteLen += chunk.length;
+        if (byteLen <= 1024 * 1024) chunks.push(chunk);
+      });
+      req.on("end", async () => {
+        if (byteLen > 1024 * 1024) {
+          res.writeHead(413, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Payload too large" }));
+          return;
+        }
+        const rawBody = Buffer.concat(chunks).toString("utf8");
+        const secret = process.env.PODS_WEBHOOK_SECRET || "";
+        if (secret && !pods.verifyPodsWebhookSignature(rawBody, req.headers, secret)) {
+          console.warn("[webhook_server] Rejected /webhooks/pods: invalid HMAC signature");
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Invalid webhook signature" }));
+          return;
+        }
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ received: true }));
+
+        try {
+          const payload = JSON.parse(rawBody || "{}");
+          if (payload.messageType === "ACTION_UPDATE" && payload.data) {
+            await podsStore.processPodsActionUpdate(bot, payload.data);
+          }
+        } catch (err) {
+          console.error("[webhook_server] Error processing Pods webhook:", err.message);
+        }
+      });
+      return;
     }
 
     // 3. Automated EVM Cross-Chain Deposit Webhook route (/webhook/crypto-deposit & /webhook/alchemy)

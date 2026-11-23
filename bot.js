@@ -58,6 +58,8 @@ const flowsNuvionKyc = require("./src/flows_nuvion_kyc");
 const flowsGlobalAccounts = require("./src/flows_global_accounts");
 const flowsGlobalPayouts = require("./src/flows_global_payouts");
 const flowsCards = require("./src/flows_cards");
+const flowsInvestments = require("./src/flows_investments");
+const podsStore = require("./src/pods_store");
 const { generateCryptoNetworksBannerPNG } = require("./src/chain_logo_generator");
 const autoEarn = require("./src/auto_earn");
 const cashflow = require("./src/cashflow");
@@ -402,19 +404,24 @@ async function downloadTelegramFile(ctx, fileId) {
 // ─── Keyboards ────────────────────────────────────────────────────────────────
 
 function mainMenu(context) {
+  const showInvestmentsBtn = String(process.env.PODS_INVESTMENTS_ENABLED || "").toLowerCase() === "true";
   if (context === "business") {
     return Markup.keyboard([
       ["💼 Business Balance", "📥 Deposit", "📤 Send Money"],
       ["💡 Pay Bills", "🧾 New Invoice", "👥 Pay Team"],
       ["🌍 Global & Cards", "📋 My Invoices", "📊 Cash Flow"],
-      ["🔁 Switch to Personal", "⚙️ Settings & Help"],
+      showInvestmentsBtn
+        ? ["🇺🇸 Stocks & Yield", "🔁 Switch to Personal", "⚙️ Settings & Help"]
+        : ["🔁 Switch to Personal", "⚙️ Settings & Help"],
     ]).resize();
   }
   return Markup.keyboard([
     ["💰 Balance", "📥 Deposit", "📤 Send Money"],
     ["💡 Pay Bills", "📈 Save & Earn", "🌍 Global & Cards"],
     ["🧾 Invoice", "📋 History", "🔁 Switch Account"],
-    ["⚙️ Settings & Help"],
+    showInvestmentsBtn
+      ? ["🇺🇸 Stocks & Yield", "⚙️ Settings & Help"]
+      : ["⚙️ Settings & Help"],
   ]).resize();
 }
 
@@ -3494,6 +3501,16 @@ flowsCards.registerCardsFlows(bot, {
   getContext,
   backToMenu,
 });
+
+flowsInvestments.registerInvestmentFlows(bot, {
+  requireUser,
+  getContext,
+  backToMenu,
+  deleteSensitiveMessage,
+});
+bot.hears("🇺🇸 Stocks & Yield", (ctx) => flowsInvestments.showInvestmentsHub(ctx));
+bot.command("stocks", (ctx) => flowsInvestments.showStocksMenu(ctx));
+bot.command("invest", (ctx) => flowsInvestments.showInvestmentsHub(ctx));
 
 bot.command("cards", async (ctx) => {
   const user = requireUser(ctx);
@@ -8492,6 +8509,11 @@ bot.on("text", async (ctx) => {
       if (handled) return;
     }
 
+    if (flowsInvestments.handlesState(state.type)) {
+      const handled = await flowsInvestments.handleInvestmentTextState(ctx, state, text, userId);
+      if (handled) return;
+    }
+
     // ── Naira-first Cash Out: free-text Naira amount ─────────────────────────
     if (state.type === "await_withdraw_ngn_amount") {
       const ngnAmount = parseFloat(text.replace(/[^0-9.]/g, ""));
@@ -11245,6 +11267,17 @@ async function startBot() {
     nuvionPoller.startNuvionPoller(bot);
   } catch (err) {
     console.warn("[bot] Nuvion poller notice:", err.message);
+  }
+
+  // Pods Finance Investments fallback poller (complements POST /webhooks/pods)
+  try {
+    setInterval(() => {
+      podsStore.pollPendingPodsActions(bot).catch((e) => {
+        console.warn("[bot] Pods poller notice:", e.message);
+      });
+    }, 45 * 1000).unref();
+  } catch (err) {
+    console.warn("[bot] Pods poller setup notice:", err.message);
   }
 
   // Retention scheduler: monthly bill payment reminders & weekly Auto-Earn yield nudges
