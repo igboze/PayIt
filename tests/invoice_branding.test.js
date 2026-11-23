@@ -74,11 +74,12 @@ test("generateInvoicePNG renders logo-branded 3x Retina PNG with large amounts a
   try {
     assert.ok(fs.existsSync(outPath), "Output PNG must exist");
     const meta = await sharp(outPath).metadata();
-    assert.equal(meta.width, 760 * 3, "Must render at 3x Retina width (2280px)");
+    assert.equal(meta.width, 680 * 3, "Must render at 3x Retina portrait width (2040px)");
+    assert.ok(meta.height > meta.width, "Invoice must be portrait orientation (height > width)");
 
-    // Sample header background pixel — should be Cobalt Blue family (B > R)
-    const headerPx = await sharp(outPath).extract({ left: 900, top: 40, width: 1, height: 1 }).raw().toBuffer();
-    assert.ok(headerPx[2] > headerPx[0] + 40, `Header must be branded blue (RGB: ${[...headerPx.slice(0, 3)]})`);
+    // Sample top brand accent ribbon pixel — should be Cobalt Blue family (B > R)
+    const headerPx = await sharp(outPath).extract({ left: 900, top: 10, width: 1, height: 1 }).raw().toBuffer();
+    assert.ok(headerPx[2] > headerPx[0] + 40, `Top brand ribbon must be branded blue (RGB: ${[...headerPx.slice(0, 3)]})`);
   } finally {
     if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
   }

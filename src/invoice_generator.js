@@ -239,54 +239,78 @@ function buildSvg(opts) {
   const isNgn = displayCur === "NGN";
   const curSym = CURRENCY_SYMBOLS[displayCur] || "";
 
-  const W = 760;
+  // True A4 Portrait executive canvas (680px -> 2040px @ 3x Retina, minH 920px -> 1:1.35 portrait)
+  const W = 680;
+  const PAD = 42;
+  const INNER_W = W - PAD * 2;
+  const MIN_PORTRAIT_H = 920;
+
   const total = items.reduce(
     (s, i) => s + (Number(i.quantity || 1) || 1) * safeNum(i.unitPrice),
     0
   );
 
-  // ── Item rows (with zebra striping & adaptive font sizing for big values) ──
-  const tableHeaderY = 212;
-  let y = tableHeaderY + 42;
-  const ROW = 36;
+  const heroAmountStr = isNgn
+    ? `₦${formatMoney(total)}`
+    : curSym && !curSym.trim().endsWith(displayCur)
+      ? `${curSym}${formatMoney(total)}`
+      : `${formatMoney(total)} ${displayCur}`;
+  const totalWithCurStr = isNgn
+    ? `₦${formatMoney(total)}`
+    : curSym && !curSym.trim().endsWith(displayCur)
+      ? `${curSym}${formatMoney(total)} ${displayCur}`
+      : `${formatMoney(total)} ${displayCur}`;
+
+  const bizNameStr = String(businessName || "Proxim Account").trim();
+  const bizInitial = (bizNameStr.replace(/[^A-Za-z0-9]/g, "")[0] || "P").toUpperCase();
+  const bizNameFont = fitFontSize(bizNameStr, 260, 19, 13);
+  const bizMetaLine = [businessEmail, businessPhone, businessAddress].filter(Boolean).slice(0, 2).join("  ·  ");
+
+  // ── Section Y coordinates (true portrait vertical rhythm) ──────────────────
+  const headerTopY = 38;
+  const summaryCardY = 128;
+  const summaryCardH = 148;
+
+  const tableHeaderY = summaryCardY + summaryCardH + 42;
+  let y = tableHeaderY + 36;
+  const ROW = 44;
 
   const itemsSvg = items
     .map((item, idx) => {
       const qty = Number(item.quantity || 1) || 1;
       const price = safeNum(item.unitPrice);
       const lineTotal = qty * price;
-      const descText = truncateText(item.description || "Item", 44);
+      const descText = truncateText(item.description || "Item", 34);
       const priceStr = curSym ? `${curSym}${formatMoney(price)}` : formatMoney(price);
       const lineStr = curSym ? `${curSym}${formatMoney(lineTotal)}` : formatMoney(lineTotal);
-      const priceFont = fitFontSize(priceStr, 108, 12.5, 9.0);
-      const lineFont = fitFontSize(lineStr, 124, 13, 9.0);
-      const rowBg = idx % 2 === 1 ? `<rect x="36" y="${y - 22}" width="${W - 72}" height="${ROW}" fill="#f8fafc" rx="4"/>` : "";
+      const priceFont = fitFontSize(priceStr, 102, 12.5, 9.0);
+      const lineFont = fitFontSize(lineStr, 122, 13, 9.0);
+      const divider = idx < items.length - 1
+        ? `<line x1="${PAD}" y1="${y + 16}" x2="${W - PAD}" y2="${y + 16}" stroke="#f1f5f9" stroke-width="1"/>`
+        : "";
 
       const row = `
-      ${rowBg}
-      <text x="48"  y="${y}" font-size="13" fill="#0f172a" font-family="${FONT}">${escape(descText)}</text>
-      <text x="455" y="${y}" font-size="12.5" fill="#334155" font-family="${FONT}" text-anchor="middle">${qty}</text>
-      <text x="580" y="${y}" font-size="${priceFont}" fill="#334155" font-family="${FONT_MONO}" text-anchor="end">${escape(priceStr)}</text>
-      <text x="712" y="${y}" font-size="${lineFont}" fill="${theme.primary}" font-family="${FONT_MONO}" text-anchor="end" font-weight="bold">${escape(lineStr)}</text>`;
+      <text x="${PAD + 4}" y="${y}" font-size="13.5" fill="#0f172a" font-family="${FONT}">${escape(descText)}</text>
+      <text x="394" y="${y}" font-size="12.5" fill="#475569" font-family="${FONT}" text-anchor="middle">${qty}</text>
+      <text x="508" y="${y}" font-size="${priceFont}" fill="#475569" font-family="${FONT_MONO}" text-anchor="end">${escape(priceStr)}</text>
+      <text x="${W - PAD - 4}" y="${y}" font-size="${lineFont}" fill="#0f172a" font-family="${FONT_MONO}" text-anchor="end" font-weight="bold">${escape(lineStr)}</text>
+      ${divider}`;
       y += ROW;
       return row;
     })
     .join("");
 
-  // ── Adaptive Total Due Card ────────────────────────────────────────────────
-  const totalY = y + 20;
-  const totalDisplayStr = isNgn
-    ? `₦${formatMoney(total)}`
-    : curSym && !curSym.trim().endsWith(displayCur)
-      ? `${curSym}${formatMoney(total)} ${displayCur}`
-      : `${formatMoney(total)} ${displayCur}`;
-  const totalCardW = Math.min(360, Math.max(255, totalDisplayStr.length * 14 + 95));
-  const totalCardX = W - 36 - totalCardW;
-  const totalValueFont = fitFontSize(totalDisplayStr, totalCardW - 108, 19, 12.0, 0.64);
+  // ── Totals Summary Block (refined right-aligned) ───────────────────────────
+  const totalsTopY = y + 12;
+  const totalCardW = Math.min(340, Math.max(264, totalWithCurStr.length * 13 + 118));
+  const totalCardX = W - PAD - totalCardW;
+  const totalValueFont = fitFontSize(totalWithCurStr, totalCardW - 120, 17.5, 11.5, 0.64);
+  const totalCardH = 54;
 
-  const notesY = totalY + 62;
-  const paySectionY = notes ? notesY + 34 : totalY + 68;
+  const notesY = totalsTopY + totalCardH + 28;
+  const naturalPayY = notes ? notesY + 30 : totalsTopY + totalCardH + 36;
 
+  // ── Payment Cards Layout ───────────────────────────────────────────────────
   const hasFiat = Boolean(fiatDetails && (fiatDetails.accountNumber || fiatDetails.iban));
   const cryptoAddr = cryptoPaymentDetails?.depositAddress || walletAddress || null;
   const hasCrypto = Boolean(cryptoAddr);
@@ -295,53 +319,54 @@ function buildSvg(opts) {
   const hasExtraBankCodes = Boolean(
     hasFiat && (fiatDetails.routingNumber || fiatDetails.sortCode || fiatDetails.swiftCode || (fiatDetails.iban && fiatDetails.accountNumber))
   );
-  const fiatBoxHeight = hasFiat ? (hasExtraBankCodes ? 114 : 92) : 0;
-  const cryptoBoxY = paySectionY + (hasFiat ? fiatBoxHeight + 16 : 0);
+  const fiatBoxHeight = hasFiat ? (hasExtraBankCodes ? 158 : 126) : 0;
   const cryptoBoxHeight = hasCrypto
-    ? (qrDataUri ? (hasCryptoMemo ? 142 : 128) : (hasCryptoMemo ? 104 : 86))
+    ? (qrDataUri ? (hasCryptoMemo ? 186 : 170) : (hasCryptoMemo ? 136 : 118))
     : 0;
 
-  const afterPayY = hasCrypto
-    ? cryptoBoxY + cryptoBoxHeight
-    : hasFiat
-      ? paySectionY + fiatBoxHeight
-      : paySectionY;
+  const totalPayHeight =
+    (hasFiat ? fiatBoxHeight : 0) +
+    (hasFiat && hasCrypto ? 18 : 0) +
+    (hasCrypto ? cryptoBoxHeight : 0);
+
+  // Anchor payment block cleanly so short 1-item invoices still have balanced A4 portrait proportions
+  const minPayYForPortrait = MIN_PORTRAIT_H - 92 - totalPayHeight;
+  const paySectionY = Math.max(naturalPayY, minPayYForPortrait);
+  const cryptoBoxY = paySectionY + (hasFiat ? fiatBoxHeight + 18 : 0);
+
+  const afterPayY = paySectionY + totalPayHeight;
   const footerY = afterPayY + 34;
-  const H = footerY + 52;
+  const H = Math.max(MIN_PORTRAIT_H, footerY + 58);
 
-  // ── Header (Business Logo + Branded Color Block) ───────────────────────────
-  const bizNameStr = String(businessName || "Proxim Account");
-  const bizNameFont = fitFontSize(bizNameStr, 310, 18, 12.5);
-  const bizLines = [businessEmail, businessPhone, businessAddress].filter(Boolean).slice(0, 3);
-  const bizInfoSvg = bizLines
-    .map(
-      (line, i) =>
-        `<text x="${W - 36}" y="${60 + i * 16}" font-size="11" fill="${theme.headerSub}" font-family="${FONT}" text-anchor="end">${escape(truncateText(line, 48))}</text>`
-    )
-    .join("");
-
-  const logoX = 36;
-  const textX = logoDataUri ? 108 : 36;
-  const logoSvg = logoDataUri
+  // ── Logo or Bespoke Brand Monogram Badge ───────────────────────────────────
+  const brandMarkSvg = logoDataUri
     ? `
-    <rect x="${logoX}" y="22" width="58" height="58" rx="12" fill="#ffffff"/>
-    <image href="${logoDataUri}" x="${logoX + 5}" y="27" width="48" height="48" preserveAspectRatio="xMidYMid meet"/>`
-    : "";
+    <rect x="${PAD}" y="${headerTopY}" width="52" height="52" rx="14" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.2"/>
+    <image href="${logoDataUri}" x="${PAD + 5}" y="${headerTopY + 5}" width="42" height="42" preserveAspectRatio="xMidYMid meet"/>`
+    : `
+    <rect x="${PAD}" y="${headerTopY}" width="52" height="52" rx="14" fill="url(#brandGrad)"/>
+    <text x="${PAD + 26}" y="${headerTopY + 35}" font-size="24" font-weight="bold" fill="#ffffff" font-family="${FONT}" text-anchor="middle">${escape(bizInitial)}</text>`;
 
-  // ── Fiat / Global Bank Transfer Box ────────────────────────────────────────
+  // ── Hero Amount Sizing (inside Summary Card top row) ───────────────────────
+  const heroFont = fitFontSize(heroAmountStr, 340, 30, 17, 0.62);
+  const statusPillText = dueDate ? `DUE ${dueDate}` : "DUE ON RECEIPT";
+  const statusPillW = Math.min(168, Math.max(112, statusPillText.length * 7.2 + 28));
+
+  // ── Fiat / Global Bank Checkout Card ───────────────────────────────────────
   let fiatSectionSvg = "";
   if (hasFiat) {
     const fiatCur = String(fiatDetails.currency || "NGN").toUpperCase();
     const railTag = fiatDetails.railHint ? ` · ${String(fiatDetails.railHint).toUpperCase()}` : "";
-    const fiatTitle = `${hasCrypto ? "OPTION 1 · " : ""}BANK TRANSFER (${fiatCur}${railTag})`;
+    const fiatBadge = `${hasCrypto ? "OPTION 1 · " : ""}${fiatCur} BANK TRANSFER${railTag}`;
 
-    const primaryNumLabel = fiatDetails.accountNumber ? "Account No" : "IBAN";
+    const primaryNumLabel = fiatDetails.accountNumber ? "ACCOUNT NUMBER" : "IBAN";
     const primaryNumVal = fiatDetails.accountNumber || fiatDetails.iban;
+    const primaryNumFont = fitFontSize(primaryNumVal, 250, 13.5, 9.5, 0.62);
 
     const fiatAmtFormatted = fiatDetails.fiatAmount != null
       ? formatCurrencyAmount(fiatDetails.fiatAmount, fiatCur)
-      : null;
-    const fiatAmtFont = fiatAmtFormatted ? fitFontSize(fiatAmtFormatted, 200, 12.5, 10) : 12;
+      : "Per Invoice";
+    const fiatAmtFont = fitFontSize(fiatAmtFormatted, 220, 13.5, 10.0, 0.62);
 
     const extraPlainParts = [];
     const extraParts = [];
@@ -362,60 +387,79 @@ function buildSvg(opts) {
       extraParts.push(`SWIFT: <tspan font-weight="bold" fill="${theme.primary}" font-family="${FONT_MONO}">${escape(fiatDetails.swiftCode)}</tspan>`);
     }
 
-    const extraLineFont = fitFontSize(extraPlainParts.join("   ·   "), W - 110, 11.5, 8.5, 0.58);
+    const extraLineFont = fitFontSize(extraPlainParts.join("   ·   "), INNER_W - 44, 11, 8.2, 0.58);
     const extraLineSvg = hasExtraBankCodes
-      ? `<text x="54" y="${paySectionY + 95}" font-size="${extraLineFont}" fill="#334155" font-family="${FONT}">${extraParts.join("   ·   ")}</text>`
-      : "";
-
-    const amountPartSvg = fiatAmtFormatted
-      ? `   ·   Amount: <tspan font-size="${fiatAmtFont}" font-weight="bold" fill="${theme.accent}">${escape(fiatAmtFormatted)}</tspan>`
+      ? `
+      <line x1="${PAD + 20}" y1="${paySectionY + 118}" x2="${W - PAD - 20}" y2="${paySectionY + 118}" stroke="${theme.tintBorder}" stroke-width="1"/>
+      <text x="${PAD + 20}" y="${paySectionY + 140}" font-size="${extraLineFont}" fill="#475569" font-family="${FONT}">${extraParts.join("   ·   ")}</text>`
       : "";
 
     fiatSectionSvg = `
-    <rect x="36" y="${paySectionY}" width="${W - 72}" height="${fiatBoxHeight}" fill="${theme.tintBg}" rx="10" stroke="${theme.tintBorder}" stroke-width="1.2"/>
-    <rect x="36" y="${paySectionY}" width="5" height="${fiatBoxHeight}" fill="${theme.accent}" rx="2"/>
-    <text x="54" y="${paySectionY + 25}" font-size="12.5" font-weight="bold" fill="${theme.primary}" font-family="${FONT}">${escape(truncateText(fiatTitle, 74))}</text>
-    <text x="54" y="${paySectionY + 49}" font-size="12" fill="#334155" font-family="${FONT}">Bank: <tspan font-weight="bold" fill="#0f172a">${escape(truncateText(fiatDetails.bankName || "Partner Bank", 30))}</tspan>   ·   ${primaryNumLabel}: <tspan font-weight="bold" fill="${theme.primary}" font-family="${FONT_MONO}">${escape(primaryNumVal)}</tspan></text>
-    <text x="54" y="${paySectionY + 72}" font-size="12" fill="#334155" font-family="${FONT}">Account Name: <tspan font-weight="bold" fill="#0f172a">${escape(truncateText(fiatDetails.accountName || clientName, 30))}</tspan>${amountPartSvg}</text>
+    <rect x="${PAD}" y="${paySectionY}" width="${INNER_W}" height="${fiatBoxHeight}" fill="#ffffff" rx="14" stroke="${theme.tintBorder}" stroke-width="1.4"/>
+    <rect x="${PAD}" y="${paySectionY}" width="${INNER_W}" height="34" fill="${theme.tintBg}" rx="14"/>
+    <rect x="${PAD}" y="${paySectionY + 20}" width="${INNER_W}" height="14" fill="${theme.tintBg}"/>
+    <line x1="${PAD}" y1="${paySectionY + 34}" x2="${W - PAD}" y2="${paySectionY + 34}" stroke="${theme.tintBorder}" stroke-width="1"/>
+    <circle cx="${PAD + 20}" cy="${paySectionY + 17}" r="4" fill="${theme.accent}"/>
+    <text x="${PAD + 32}" y="${paySectionY + 21}" font-size="10.5" font-weight="bold" fill="${theme.primary}" font-family="${FONT}" letter-spacing="0.6">${escape(truncateText(fiatBadge, 62))}</text>
+
+    <text x="${PAD + 20}" y="${paySectionY + 56}" font-size="9" font-weight="bold" fill="#94a3b8" font-family="${FONT}" letter-spacing="0.8">BANK NAME</text>
+    <text x="${PAD + 20}" y="${paySectionY + 75}" font-size="12.5" font-weight="bold" fill="#0f172a" font-family="${FONT}">${escape(truncateText(fiatDetails.bankName || "Partner Bank", 28))}</text>
+
+    <text x="${PAD + 300}" y="${paySectionY + 56}" font-size="9" font-weight="bold" fill="#94a3b8" font-family="${FONT}" letter-spacing="0.8">${primaryNumLabel}</text>
+    <text x="${PAD + 300}" y="${paySectionY + 76}" font-size="${primaryNumFont}" font-weight="bold" fill="${theme.primary}" font-family="${FONT_MONO}">${escape(primaryNumVal)}</text>
+
+    <text x="${PAD + 20}" y="${paySectionY + 99}" font-size="9" font-weight="bold" fill="#94a3b8" font-family="${FONT}" letter-spacing="0.8">ACCOUNT HOLDER</text>
+    <text x="${PAD + 20}" y="${paySectionY + 114}" font-size="12" font-weight="bold" fill="#334155" font-family="${FONT}">${escape(truncateText(fiatDetails.accountName || clientName, 28))}</text>
+
+    <text x="${PAD + 300}" y="${paySectionY + 99}" font-size="9" font-weight="bold" fill="#94a3b8" font-family="${FONT}" letter-spacing="0.8">EXACT AMOUNT</text>
+    <text x="${PAD + 300}" y="${paySectionY + 114}" font-size="${fiatAmtFont}" font-weight="bold" fill="${theme.accent}" font-family="${FONT_MONO}">${escape(fiatAmtFormatted)}</text>
     ${extraLineSvg}
   `;
   }
 
-  // ── On-Chain / NEAR Intents Crypto Box (optional) ──────────────────────────
+  // ── On-Chain / NEAR Intents Crypto Checkout Card ───────────────────────────
   let cryptoSectionSvg = "";
   if (hasCrypto) {
-    const qrImageSvg = qrDataUri
-      ? `
-    <rect x="${W - 154}" y="${cryptoBoxY + 12}" width="104" height="104" rx="8" fill="#ffffff" stroke="${theme.tintBorder}" stroke-width="1"/>
-    <image href="${qrDataUri}" x="${W - 148}" y="${cryptoBoxY + 18}" width="92" height="92" preserveAspectRatio="xMidYMid meet"/>`
-      : "";
-
-    const addrBoxW = qrDataUri ? W - 224 : W - 108;
-    const chainLabel = cryptoPaymentDetails?.chainLabel || "ARC MAINNET";
+    const chainLabel = cryptoPaymentDetails?.chainLabel || "Arc Mainnet";
     const tokenSymbol = cryptoPaymentDetails?.tokenSymbol || (isNgn ? "USDC" : displayCur);
     const exactCryptoAmt = cryptoPaymentDetails?.exactAmount != null
       ? `${formatMoney(cryptoPaymentDetails.exactAmount)} ${tokenSymbol}`
-      : `$${formatMoney(total)} ${tokenSymbol}`;
+      : `${formatMoney(total)} ${tokenSymbol}`;
     const viaTag = cryptoPaymentDetails?.viaNearIntents ? " · NEAR INTENTS" : "";
-    const cryptoHeading = `${hasFiat ? "OPTION 2 · " : ""}CRYPTO PAYMENT (${chainLabel.toUpperCase()}${viaTag})`;
-    const addrFont = fitFontSize(cryptoAddr, addrBoxW - 24, 11, 8.0, 0.62);
-    const memoSvg = hasCryptoMemo
-      ? `<text x="54" y="${cryptoBoxY + 109}" font-size="11" fill="#334155" font-family="${FONT}">Memo: <tspan font-weight="bold" fill="${theme.primary}" font-family="${FONT_MONO}">${escape(truncateText(cryptoPaymentDetails.depositMemo, 48))}</tspan></text>`
+    const cryptoBadge = `${hasFiat ? "OPTION 2 · " : ""}${chainLabel.toUpperCase()} (${tokenSymbol})${viaTag}`;
+
+    const qrCardX = W - PAD - 124;
+    const qrCardY = cryptoBoxY + 46;
+    const qrImageSvg = qrDataUri
+      ? `
+    <rect x="${qrCardX}" y="${qrCardY}" width="106" height="108" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.2"/>
+    <image href="${qrDataUri}" x="${qrCardX + 8}" y="${qrCardY + 6}" width="90" height="90" preserveAspectRatio="xMidYMid meet"/>
+    <text x="${qrCardX + 53}" y="${qrCardY + 104}" font-size="7.5" font-weight="bold" fill="#94a3b8" font-family="${FONT}" text-anchor="middle" letter-spacing="0.8">SCAN TO PAY</text>`
       : "";
-    const hintY = hasCryptoMemo ? cryptoBoxY + 127 : cryptoBoxY + 111;
+
+    const addrBoxW = qrDataUri ? INNER_W - 158 : INNER_W - 40;
+    const addrFont = fitFontSize(cryptoAddr, addrBoxW - 22, 11, 7.5, 0.62);
+    const memoSvg = hasCryptoMemo
+      ? `<text x="${PAD + 20}" y="${cryptoBoxY + 134}" font-size="11" fill="#475569" font-family="${FONT}">Memo / Tag: <tspan font-weight="bold" fill="${theme.primary}" font-family="${FONT_MONO}">${escape(truncateText(cryptoPaymentDetails.depositMemo, 38))}</tspan></text>`
+      : "";
+    const hintY = hasCryptoMemo ? cryptoBoxY + 154 : cryptoBoxY + 138;
     const hintText = cryptoPaymentDetails?.viaNearIntents
-      ? `Send exact ${exactCryptoAmt} on ${chainLabel}. Auto-settles via NEAR Intents.`
-      : `Scan QR or send exact ${exactCryptoAmt} on ${chainLabel} for instant settlement.`;
+      ? `Auto-converts and settles instantly via NEAR Intents.`
+      : `Dedicated single-invoice address · settles on ${chainLabel}.`;
 
     cryptoSectionSvg = `
-    <rect x="36" y="${cryptoBoxY}" width="${W - 72}" height="${cryptoBoxHeight}" fill="#f8fafc" rx="10" stroke="#cbd5e1" stroke-width="1.2"/>
-    <rect x="36" y="${cryptoBoxY}" width="5" height="${cryptoBoxHeight}" fill="${theme.primary}" rx="2"/>
-    <text x="54" y="${cryptoBoxY + 26}" font-size="12.5" font-weight="bold" fill="${theme.primary}" font-family="${FONT}">${escape(cryptoHeading)}</text>
-    <text x="54" y="${cryptoBoxY + 49}" font-size="12" fill="#334155" font-family="${FONT}">Send exact <tspan font-weight="bold" fill="${theme.primary}">${escape(exactCryptoAmt)}</tspan> to this dedicated invoice address:</text>
-    <rect x="54" y="${cryptoBoxY + 60}" width="${addrBoxW}" height="32" fill="#ffffff" rx="6" stroke="#cbd5e1" stroke-width="1"/>
-    <text x="66" y="${cryptoBoxY + 80}" font-size="${addrFont}" font-weight="bold" fill="#0f172a" font-family="${FONT_MONO}">${escape(cryptoAddr)}</text>
+    <rect x="${PAD}" y="${cryptoBoxY}" width="${INNER_W}" height="${cryptoBoxHeight}" fill="#ffffff" rx="14" stroke="#e2e8f0" stroke-width="1.4"/>
+    <rect x="${PAD}" y="${cryptoBoxY}" width="${INNER_W}" height="34" fill="#f8fafc" rx="14"/>
+    <rect x="${PAD}" y="${cryptoBoxY + 20}" width="${INNER_W}" height="14" fill="#f8fafc"/>
+    <line x1="${PAD}" y1="${cryptoBoxY + 34}" x2="${W - PAD}" y2="${cryptoBoxY + 34}" stroke="#e2e8f0" stroke-width="1"/>
+    <circle cx="${PAD + 20}" cy="${cryptoBoxY + 17}" r="4" fill="${theme.primary}"/>
+    <text x="${PAD + 32}" y="${cryptoBoxY + 21}" font-size="10.5" font-weight="bold" fill="${theme.primary}" font-family="${FONT}" letter-spacing="0.6">${escape(truncateText(cryptoBadge, 58))}</text>
+
+    <text x="${PAD + 20}" y="${cryptoBoxY + 60}" font-size="12" fill="#475569" font-family="${FONT}">Send exact <tspan font-weight="bold" fill="${theme.primary}">${escape(exactCryptoAmt)}</tspan> on <tspan font-weight="bold" fill="#0f172a">${escape(chainLabel)}</tspan>:</text>
+    <rect x="${PAD + 20}" y="${cryptoBoxY + 72}" width="${addrBoxW}" height="38" fill="#f8fafc" rx="9" stroke="#cbd5e1" stroke-width="1"/>
+    <text x="${PAD + 31}" y="${cryptoBoxY + 95}" font-size="${addrFont}" font-weight="bold" fill="#0f172a" font-family="${FONT_MONO}">${escape(cryptoAddr)}</text>
     ${memoSvg}
-    <text x="54" y="${hintY}" font-size="10.5" fill="#64748b" font-family="${FONT}">${escape(truncateText(hintText, 78))}</text>
+    <text x="${PAD + 20}" y="${hintY}" font-size="10" fill="#64748b" font-family="${FONT}">${escape(truncateText(hintText, 62))}</text>
     ${qrImageSvg}
   `;
   }
@@ -429,64 +473,87 @@ function buildSvg(opts) {
     <style>
       ${getFontCss()}
     </style>
+    <linearGradient id="brandGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="${theme.primary}"/>
+      <stop offset="100%" stop-color="${theme.accent}"/>
+    </linearGradient>
+    <linearGradient id="topAccentBar" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="${theme.primary}"/>
+      <stop offset="65%" stop-color="${theme.accent}"/>
+      <stop offset="100%" stop-color="${theme.primary}"/>
+    </linearGradient>
   </defs>
 
-  <!-- Crisp Paper Card -->
-  <rect width="${W}" height="${H}" fill="#ffffff" rx="14"/>
+  <!-- Crisp Editorial Portrait Paper Card -->
+  <rect width="${W}" height="${H}" fill="#ffffff" rx="18"/>
 
-  <!-- Branded Executive Header -->
-  <rect width="${W}" height="114" fill="${theme.primary}" rx="14"/>
-  <rect y="94" width="${W}" height="20" fill="${theme.primary}"/>
-  <rect y="110" width="${W}" height="4" fill="${theme.accent}"/>
+  <!-- Sleek Top Brand Accent Ribbon -->
+  <rect x="0" y="0" width="${W}" height="7" fill="url(#topAccentBar)" rx="3"/>
+  <rect x="0" y="4" width="${W}" height="3" fill="url(#topAccentBar)"/>
 
-  ${logoSvg}
+  <!-- Executive Header: Brand Identity (Left) + Invoice Wordmark (Right) -->
+  ${brandMarkSvg}
 
-  <text x="${textX}" y="52" font-size="26" font-weight="bold" fill="#ffffff" font-family="${FONT}" letter-spacing="1">INVOICE</text>
-  <text x="${textX}" y="76" font-size="12.5" font-weight="bold" fill="${theme.headerSub}" font-family="${FONT_MONO}">#${escape(invoiceNumber)}</text>
+  <text x="${PAD + 66}" y="${headerTopY + 23}" font-size="${bizNameFont}" font-weight="bold" fill="#0f172a" font-family="${FONT}">${escape(bizNameStr)}</text>
+  ${bizMetaLine ? `<text x="${PAD + 66}" y="${headerTopY + 42}" font-size="10.5" fill="#64748b" font-family="${FONT}">${escape(truncateText(bizMetaLine, 46))}</text>` : ""}
 
-  <text x="${W - 36}" y="38" font-size="${bizNameFont}" font-weight="bold" fill="#ffffff" font-family="${FONT}" text-anchor="end">${escape(bizNameStr)}</text>
-  ${bizInfoSvg}
+  <text x="${W - PAD}" y="${headerTopY + 22}" font-size="24" font-weight="bold" fill="${theme.primary}" font-family="${FONT}" text-anchor="end" letter-spacing="1.5">INVOICE</text>
+  <text x="${W - PAD}" y="${headerTopY + 42}" font-size="12" font-weight="bold" fill="#64748b" font-family="${FONT_MONO}" text-anchor="end">#${escape(invoiceNumber)}</text>
 
-  <!-- Client & Date Metadata Band -->
-  <rect y="114" width="${W}" height="78" fill="${theme.tintBg}"/>
-  <line x1="0" y1="192" x2="${W}" y2="192" stroke="${theme.tintBorder}" stroke-width="1"/>
+  <!-- Subtle Hairline -->
+  <line x1="${PAD}" y1="110" x2="${W - PAD}" y2="110" stroke="#f1f5f9" stroke-width="1.2"/>
 
-  <text x="36" y="140" font-size="10.5" font-weight="bold" fill="#64748b" font-family="${FONT}" letter-spacing="0.8">BILL TO</text>
-  <text x="36" y="164" font-size="16" font-weight="bold" fill="#0f172a" font-family="${FONT}">${escape(truncateText(clientName, 36))}</text>
-  ${clientEmail ? `<text x="36" y="182" font-size="11.5" fill="#475569" font-family="${FONT}">${escape(truncateText(clientEmail, 44))}</text>` : ""}
+  <!-- 2-Row Portrait Summary Card: Hero Amount Due (Top) + Billed To & Dates (Bottom) -->
+  <rect x="${PAD}" y="${summaryCardY}" width="${INNER_W}" height="${summaryCardH}" fill="#f8fafc" rx="14" stroke="#e2e8f0" stroke-width="1.1"/>
 
-  <text x="${W - 185}" y="140" font-size="10.5" font-weight="bold" fill="#64748b" font-family="${FONT}" text-anchor="end" letter-spacing="0.8">DATE ISSUED</text>
-  <text x="${W - 36}"  y="140" font-size="12.5" font-weight="bold" fill="#0f172a" font-family="${FONT}" text-anchor="end">${escape(issueDate)}</text>
+  <!-- Top Row: Hero Amount Due + Status Pill -->
+  <text x="${PAD + 22}" y="${summaryCardY + 24}" font-size="9.5" font-weight="bold" fill="#94a3b8" font-family="${FONT}" letter-spacing="1">AMOUNT DUE (${escape(displayCur)})</text>
+  <text x="${PAD + 22}" y="${summaryCardY + 58}" font-size="${heroFont}" font-weight="bold" fill="${theme.primary}" font-family="${FONT_MONO}">${escape(heroAmountStr)}</text>
 
-  <text x="${W - 185}" y="166" font-size="10.5" font-weight="bold" fill="#64748b" font-family="${FONT}" text-anchor="end" letter-spacing="0.8">DUE DATE</text>
-  <text x="${W - 36}"  y="166" font-size="12.5" font-weight="bold" fill="${dueDate ? "#b91c1c" : "#475569"}" font-family="${FONT}" text-anchor="end">${escape(dueDate || "On receipt")}</text>
+  <rect x="${W - PAD - 22 - statusPillW}" y="${summaryCardY + 28}" width="${statusPillW}" height="24" rx="12" fill="${theme.tintBg}" stroke="${theme.tintBorder}" stroke-width="1.1"/>
+  <text x="${W - PAD - 22 - statusPillW / 2}" y="${summaryCardY + 43.5}" font-size="9" font-weight="bold" fill="${theme.accent}" font-family="${FONT}" text-anchor="middle" letter-spacing="0.6">${escape(statusPillText)}</text>
 
-  <!-- Line Items Table Header -->
-  <rect x="36" y="${tableHeaderY}" width="${W - 72}" height="32" fill="${theme.primary}" rx="6"/>
-  <text x="48"  y="${tableHeaderY + 21}" font-size="11.5" font-weight="bold" fill="#ffffff" font-family="${FONT}" letter-spacing="0.6">DESCRIPTION</text>
-  <text x="455" y="${tableHeaderY + 21}" font-size="11.5" font-weight="bold" fill="#ffffff" font-family="${FONT}" text-anchor="middle" letter-spacing="0.6">QTY</text>
-  <text x="580" y="${tableHeaderY + 21}" font-size="11.5" font-weight="bold" fill="#ffffff" font-family="${FONT}" text-anchor="end" letter-spacing="0.6">UNIT PRICE</text>
-  <text x="712" y="${tableHeaderY + 21}" font-size="11.5" font-weight="bold" fill="#ffffff" font-family="${FONT}" text-anchor="end" letter-spacing="0.6">AMOUNT (${escape(currency)})</text>
+  <!-- Horizontal Divider inside Summary Card -->
+  <line x1="${PAD + 22}" y1="${summaryCardY + 76}" x2="${W - PAD - 22}" y2="${summaryCardY + 76}" stroke="#e2e8f0" stroke-width="1"/>
+
+  <!-- Bottom Row: Billed To (Left) + Issued & Due Date (Right) -->
+  <text x="${PAD + 22}" y="${summaryCardY + 98}" font-size="9" font-weight="bold" fill="#94a3b8" font-family="${FONT}" letter-spacing="1">BILLED TO</text>
+  <text x="${PAD + 22}" y="${summaryCardY + 120}" font-size="15.5" font-weight="bold" fill="#0f172a" font-family="${FONT}">${escape(truncateText(clientName, 28))}</text>
+  ${clientEmail ? `<text x="${PAD + 22}" y="${summaryCardY + 137}" font-size="10.5" fill="#64748b" font-family="${FONT}">${escape(truncateText(clientEmail, 34))}</text>` : ""}
+
+  <text x="${PAD + 336}" y="${summaryCardY + 98}" font-size="9" font-weight="bold" fill="#94a3b8" font-family="${FONT}" letter-spacing="1">ISSUED</text>
+  <text x="${PAD + 336}" y="${summaryCardY + 119}" font-size="12.5" font-weight="bold" fill="#334155" font-family="${FONT_MONO}">${escape(issueDate)}</text>
+
+  <text x="${W - PAD - 22}" y="${summaryCardY + 98}" font-size="9" font-weight="bold" fill="#94a3b8" font-family="${FONT}" text-anchor="end" letter-spacing="1">DUE DATE</text>
+  <text x="${W - PAD - 22}" y="${summaryCardY + 119}" font-size="12.5" font-weight="bold" fill="${dueDate ? "#b91c1c" : "#334155"}" font-family="${FONT_MONO}" text-anchor="end">${escape(dueDate || "On receipt")}</text>
+
+  <!-- Editorial Line Items Table -->
+  <text x="${PAD + 4}" y="${tableHeaderY}" font-size="9.5" font-weight="bold" fill="#94a3b8" font-family="${FONT}" letter-spacing="1">DESCRIPTION</text>
+  <text x="394" y="${tableHeaderY}" font-size="9.5" font-weight="bold" fill="#94a3b8" font-family="${FONT}" text-anchor="middle" letter-spacing="1">QTY</text>
+  <text x="508" y="${tableHeaderY}" font-size="9.5" font-weight="bold" fill="#94a3b8" font-family="${FONT}" text-anchor="end" letter-spacing="1">RATE</text>
+  <text x="${W - PAD - 4}" y="${tableHeaderY}" font-size="9.5" font-weight="bold" fill="#94a3b8" font-family="${FONT}" text-anchor="end" letter-spacing="1">AMOUNT</text>
+  <line x1="${PAD}" y1="${tableHeaderY + 11}" x2="${W - PAD}" y2="${tableHeaderY + 11}" stroke="${theme.primary}" stroke-width="1.6"/>
 
   <!-- Line Items -->
   ${itemsSvg}
 
-  <!-- Total Due Card -->
-  <line x1="36" y1="${totalY - 12}" x2="${W - 36}" y2="${totalY - 12}" stroke="#e2e8f0" stroke-width="1.2"/>
-  <rect x="${totalCardX}" y="${totalY}" width="${totalCardW}" height="48" fill="${theme.primaryDark}" rx="8"/>
-  <rect x="${totalCardX}" y="${totalY}" width="5" height="48" fill="${theme.accent}" rx="2"/>
-  <text x="${totalCardX + 18}" y="${totalY + 29}" font-size="12" font-weight="bold" fill="${theme.headerSub}" font-family="${FONT}" letter-spacing="0.6">TOTAL DUE</text>
-  <text x="${W - 50}" y="${totalY + 31}" font-size="${totalValueFont}" font-weight="bold" fill="#ffffff" font-family="${FONT_MONO}" text-anchor="end">${escape(totalDisplayStr)}</text>
+  <!-- Clean Total Due Pill -->
+  <line x1="${PAD}" y1="${totalsTopY - 12}" x2="${W - PAD}" y2="${totalsTopY - 12}" stroke="#e2e8f0" stroke-width="1.2"/>
+  <rect x="${totalCardX}" y="${totalsTopY}" width="${totalCardW}" height="${totalCardH}" fill="${theme.tintBg}" rx="12" stroke="${theme.tintBorder}" stroke-width="1.3"/>
+  <rect x="${totalCardX + 10}" y="${totalsTopY + 13}" width="4" height="${totalCardH - 26}" fill="${theme.accent}" rx="2"/>
+  <text x="${totalCardX + 24}" y="${totalsTopY + 32}" font-size="10.5" font-weight="bold" fill="#475569" font-family="${FONT}" letter-spacing="0.9">TOTAL DUE</text>
+  <text x="${W - PAD - 18}" y="${totalsTopY + 34}" font-size="${totalValueFont}" font-weight="bold" fill="${theme.primary}" font-family="${FONT_MONO}" text-anchor="end">${escape(totalWithCurStr)}</text>
 
-  ${notes ? `<text x="36" y="${notesY}" font-size="11.5" fill="#475569" font-family="${FONT}"><tspan font-weight="bold" fill="#0f172a">Note:</tspan> ${escape(truncateText(notes, 96))}</text>` : ""}
+  ${notes ? `<text x="${PAD}" y="${notesY}" font-size="11.5" fill="#475569" font-family="${FONT}"><tspan font-weight="bold" fill="#0f172a">Note:</tspan> ${escape(truncateText(notes, 84))}</text>` : ""}
 
-  <!-- Payment Methods -->
+  <!-- Elevated Payment Checkout Card(s) -->
   ${fiatSectionSvg}
   ${cryptoSectionSvg}
 
-  <!-- Branded Footer -->
-  <line x1="36" y1="${footerY}" x2="${W - 36}" y2="${footerY}" stroke="#e2e8f0" stroke-width="1"/>
-  <text x="${W / 2}" y="${footerY + 28}" font-size="12" font-weight="bold" fill="#64748b" font-family="${FONT}" text-anchor="middle">Powered by Proxim</text>
+  <!-- Refined Footer -->
+  <line x1="${PAD}" y1="${footerY}" x2="${W - PAD}" y2="${footerY}" stroke="#f1f5f9" stroke-width="1.2"/>
+  <circle cx="${W / 2 - 72}" cy="${footerY + 27}" r="3.5" fill="${theme.accent}"/>
+  <text x="${W / 2 + 6}" y="${footerY + 31}" font-size="11.5" font-weight="bold" fill="#64748b" font-family="${FONT}" text-anchor="middle" letter-spacing="0.3">Powered by Proxim</text>
 
 </svg>`;
 }

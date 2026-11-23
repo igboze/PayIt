@@ -40,8 +40,8 @@ async function run() {
   });
   assert.ok(fs.existsSync(ngnPng), "NGN-only invoice PNG should exist");
   const ngnMeta = await sharp(ngnPng).metadata();
-  assert.strictEqual(ngnMeta.width, 2280, "3x Retina width should be 2280px");
-  assert.ok(ngnMeta.height > 1000, "PNG height should be valid");
+  assert.strictEqual(ngnMeta.width, 2040, "3x Retina portrait width should be 2040px");
+  assert.ok(ngnMeta.height > ngnMeta.width, "NGN invoice PNG should be portrait orientation");
   fs.unlinkSync(ngnPng);
   console.log("  ✓ NGN-only invoice PNG rendered cleanly at 2280px Retina");
 
@@ -70,7 +70,8 @@ async function run() {
   });
   assert.ok(fs.existsSync(cryptoPng), "Crypto-only NEAR Intents invoice PNG should exist");
   const cryptoMeta = await sharp(cryptoPng).metadata();
-  assert.strictEqual(cryptoMeta.width, 2280, "3x Retina width should be 2280px");
+  assert.strictEqual(cryptoMeta.width, 2040, "3x Retina portrait width should be 2040px");
+  assert.ok(cryptoMeta.height > cryptoMeta.width, "Crypto invoice PNG should be portrait orientation");
   fs.unlinkSync(cryptoPng);
   console.log("  ✓ NEAR Intents crypto-only invoice PNG rendered cleanly with QR & memo");
 
