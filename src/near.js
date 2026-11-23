@@ -27,10 +27,10 @@ const ASSETS = {
   NEAR_WNEAR: process.env.NEAR_INTENTS_WNEAR || "nep141:wrap.near",
   BASE_USDC: process.env.NEAR_INTENTS_BASE_USDC || "nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near",
   ARB_USDC: process.env.NEAR_INTENTS_ARB_USDC || "nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near",
-  // Solana native tokens via NEAR Intents (omft.near bridge)
-  SOL_NATIVE: process.env.NEAR_INTENTS_SOL || "nep141:sol-5ce3bf3a31af18be40ba30f721101b4341690186.omft.near",
-  SOL_USDC: process.env.NEAR_INTENTS_SOL_USDC || "nep141:sol-epcrhbpnlmxqtqljmohe4hfzs4etwe7qkpnvqwqfqmfwjr.omft.near",
-  SOL_USDT: process.env.NEAR_INTENTS_SOL_USDT || "nep141:sol-es9vmfrzacermjfrf4h4qmzezaqsf3s9a9jiqvtqx3fcd.omft.near",
+  // Solana tokens via NEAR Intents (omft.near bridge — verified against live /v0/tokens)
+  SOL_NATIVE: process.env.NEAR_INTENTS_SOL || "nep141:sol.omft.near",
+  SOL_USDC: process.env.NEAR_INTENTS_SOL_USDC || "nep141:sol-5ce3bf3a31af18be40ba30f721101b4341690186.omft.near",
+  SOL_USDT: process.env.NEAR_INTENTS_SOL_USDT || "nep141:sol-c800a4bd850783ccb82c2b2c7e84175443606352.omft.near",
   // Robinhood Chain tokens via NEAR Intents (omft.near bridge)
   HOOD_USDG: process.env.NEAR_INTENTS_HOOD_USDG || "nep141:hood-0x5fc5360d0400a0fd4f2af552add042d716f1d168.omft.near",
   HOOD_ETH: process.env.NEAR_INTENTS_HOOD_ETH || "nep141:hood.omft.near",
@@ -38,11 +38,11 @@ const ASSETS = {
   HOOD_USDE: process.env.NEAR_INTENTS_HOOD_USDE || "nep141:hood-0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34.omft.near",
   HOOD_PONS: process.env.NEAR_INTENTS_HOOD_PONS || "nep141:hood-0x39dbed3a2bd333467115de45665cc57f813c4571.omft.near",
   HOOD_CASHCAT: process.env.NEAR_INTENTS_HOOD_CASHCAT || "nep141:hood-0x020bfc650a365f8bb26819deaabf3e21291018b4.omft.near",
-  // Starknet tokens via NEAR Intents (1Click)
+  // Starknet tokens via NEAR Intents (1Click — verified against live /v0/tokens)
   STARKNET_STRK: process.env.NEAR_INTENTS_STARKNET_STRK || "nep141:starknet.omft.near",
-  STARKNET_ETH: process.env.NEAR_INTENTS_STARKNET_ETH || "1cs_v1:starknet:erc20:0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
   STARKNET_ZEC: process.env.NEAR_INTENTS_STARKNET_ZEC || "1cs_v1:starknet:erc20:0x05ce53b9b68fb8e9ecab9283a96d97948914733fd6ed8d9a53a276a419497841",
   STARKNET_XRP: process.env.NEAR_INTENTS_STARKNET_XRP || "1cs_v1:starknet:erc20:0x07bc19585817a78f2304b2f3b31f954d80e8a1eff6e8d81a84eb5cedb7267728",
+  STARKNET_SOL: process.env.NEAR_INTENTS_STARKNET_SOL || "1cs_v1:starknet:erc20:0x0752c64c8430f1a81a8f87e6252a8853cb9428352d585d90b4151cfe3702dcfe",
 };
 
 // Known popular NEAR tokens supported by 1Click / Defuse solvers.
@@ -129,15 +129,6 @@ const SUPPORTED_NEAR_TOKENS = [
     blockchain: "near",
   },
   {
-    symbol: "DAI",
-    name: "Dai Stablecoin",
-    assetId: process.env.NEAR_INTENTS_DAI || "nep141:6b175474e89094c44da98b954eedeac495271d0f.factory.bridge.near",
-    decimals: 18,
-    icon: "🟡",
-    minDeposit: 2,
-    blockchain: "near",
-  },
-  {
     symbol: "FRAX",
     name: "Frax",
     assetId: "nep141:853d955acef822db058eb8505911ed77f175b99e.factory.bridge.near",
@@ -218,39 +209,57 @@ const SUPPORTED_SOLANA_TOKENS = [
     blockchain: "sol",
   },
   {
-    symbol: "BONK",
-    name: "Bonk",
-    assetId: process.env.NEAR_INTENTS_SOL_BONK || "nep141:sol-bonkfxp8vbpq9xtnv1mseqbm6bhkq6dkn6xxuqj2jbxs.omft.near",
-    decimals: 5,
-    icon: "🐕",
-    minDeposit: 500000,
-    blockchain: "sol",
-  },
-  {
-    symbol: "WIF",
+    symbol: "$WIF",
     name: "dogwifhat",
-    assetId: process.env.NEAR_INTENTS_SOL_WIF || "nep141:sol-ekcabpgahfkbp9b8a2lbxbkxjagxauqnqjegkqtajzxw.omft.near",
+    assetId: process.env.NEAR_INTENTS_SOL_WIF || "nep141:sol-b9c68f94ec8fd160137af8cdfe5e61cd68e2afba.omft.near",
     decimals: 6,
     icon: "🎩",
     minDeposit: 1,
     blockchain: "sol",
   },
   {
-    symbol: "JUP",
-    name: "Jupiter",
-    assetId: process.env.NEAR_INTENTS_SOL_JUP || "nep141:sol-jupsolfjlxxbpufjp4lazamkbsfepd3ntptunnnzufka.omft.near",
+    symbol: "USD1",
+    name: "USD1 (Solana)",
+    assetId: process.env.NEAR_INTENTS_SOL_USD1 || "nep141:sol-0x936420c6ae310eb29511d139991654f922456fbe.omdep.near",
     decimals: 6,
-    icon: "🪐",
+    icon: "💵",
     minDeposit: 2,
     blockchain: "sol",
   },
   {
-    symbol: "PYTH",
-    name: "Pyth Network",
-    assetId: process.env.NEAR_INTENTS_SOL_PYTH || "nep141:sol-hz1jqxmjmpvwf8vfatbfwcqhebmxeqb7r7q3yfmjkxb8.omft.near",
+    symbol: "TRUMP",
+    name: "OFFICIAL TRUMP",
+    assetId: process.env.NEAR_INTENTS_SOL_TRUMP || "nep141:sol-c58e6539c2f2e097c251f8edf11f9c03e581f8d4.omft.near",
     decimals: 6,
-    icon: "🔮",
-    minDeposit: 2,
+    icon: "🪙",
+    minDeposit: 0.5,
+    blockchain: "sol",
+  },
+  {
+    symbol: "PENGU",
+    name: "Pudgy Penguins",
+    assetId: process.env.NEAR_INTENTS_SOL_PENGU || "nep141:sol-0xaad74c68eecfc9f8c5bdcea614f6167048c795ef.omdep.near",
+    decimals: 6,
+    icon: "🐧",
+    minDeposit: 100,
+    blockchain: "sol",
+  },
+  {
+    symbol: "BOME",
+    name: "BOOK OF MEME",
+    assetId: process.env.NEAR_INTENTS_SOL_BOME || "nep141:sol-57d087fd8c460f612f8701f5499ad8b2eec5ab68.omft.near",
+    decimals: 6,
+    icon: "🐸",
+    minDeposit: 500,
+    blockchain: "sol",
+  },
+  {
+    symbol: "xBTC",
+    name: "OKX Wrapped BTC (Solana)",
+    assetId: process.env.NEAR_INTENTS_SOL_XBTC || "nep141:sol-91914f13d3b54f8126a2824d71632d4b078d7403.omft.near",
+    decimals: 8,
+    icon: "🪙",
+    minDeposit: 0.0001,
     blockchain: "sol",
   },
 ];
@@ -338,16 +347,6 @@ const SUPPORTED_STARKNET_TOKENS = [
     blockchain: "starknet",
   },
   {
-    symbol: "ETH",
-    name: "Ethereum (Starknet)",
-    assetId: ASSETS.STARKNET_ETH,
-    decimals: 18,
-    icon: "🔷",
-    minDeposit: 0.001,
-    blockchain: "starknet",
-    contractAddress: "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
-  },
-  {
     symbol: "ZEC",
     name: "Zcash (Starknet)",
     assetId: ASSETS.STARKNET_ZEC,
@@ -366,6 +365,16 @@ const SUPPORTED_STARKNET_TOKENS = [
     minDeposit: 2,
     blockchain: "starknet",
     contractAddress: "0x07bc19585817a78f2304b2f3b31f954d80e8a1eff6e8d81a84eb5cedb7267728",
+  },
+  {
+    symbol: "SOL",
+    name: "Solana (Starknet)",
+    assetId: ASSETS.STARKNET_SOL,
+    decimals: 9,
+    icon: "☀️",
+    minDeposit: 0.02,
+    blockchain: "starknet",
+    contractAddress: "0x0752c64c8430f1a81a8f87e6252a8853cb9428352d585d90b4151cfe3702dcfe",
   },
 ];
 
@@ -1212,7 +1221,7 @@ async function pollPendingNearDeposits(bot = null) {
           `2. Enter your PIN to view your <code>ed25519:...</code> NEAR Private Key.\n` +
           `3. Import into Meteor Wallet (wallet.meteorwallet.app) or HERE Wallet on NEAR Mainnet.`,
           { parse_mode: "HTML" }
-        ).catch(() => {});
+        ).catch(() => { });
       }
 
       if (TERMINAL_STATUSES.has(status)) {
@@ -1249,7 +1258,7 @@ async function pollPendingNearDeposits(bot = null) {
               `⏳ <b>Next:</b> Auto-sweeping to your Arc balance — you'll get a credit confirmation in about a minute.\n\n` +
               `<i>No action needed.</i>`,
               { parse_mode: "HTML" }
-            ).catch(() => {});
+            ).catch(() => { });
 
             // Auto-trigger background EVM sweep immediately with gas sponsorship
             try {
@@ -1257,7 +1266,7 @@ async function pollPendingNearDeposits(bot = null) {
               evmSweeper.sweepUserDeposits(row.telegram_id, bot, { force: true }).catch((sweepErr) => {
                 console.warn("[near:auto_sweep_trigger_error]", sweepErr.message);
               });
-            } catch (_) {}
+            } catch (_) { }
           } else if (status === "REFUNDED") {
             await bot.telegram.sendMessage(
               row.telegram_id,
@@ -1271,14 +1280,14 @@ async function pollPendingNearDeposits(bot = null) {
               `3. Import into Meteor Wallet (wallet.meteorwallet.app) or HERE Wallet on NEAR Mainnet.\n\n` +
               `<i>Your keys are exportable anytime via /export_keys (Self-Custodial Key Export Enabled).</i>`,
               { parse_mode: "HTML" }
-            ).catch(() => {});
+            ).catch(() => { });
           } else {
             await bot.telegram.sendMessage(
               row.telegram_id,
               `❌ <b>${chainName} Deposit Failed</b>\n──────────────────────────\n` +
               `The bridge could not complete. Your funds were not lost — contact support with reference <code>${row.correlation_id || row.id}</code>.`,
               { parse_mode: "HTML" }
-            ).catch(() => {});
+            ).catch(() => { });
           }
         }
       }
@@ -1314,7 +1323,7 @@ async function expireStaleNearDeposits(bot = null) {
         `The deposit address for ${inAmount} ${inSymbol} was one-time and has expired.\n` +
         `<i>If you already sent funds, don't worry — they refund automatically to your ${refundChainName} refund address.</i>`,
         { parse_mode: "HTML" }
-      ).catch(() => {});
+      ).catch(() => { });
     }
   }
   return stale.length;
