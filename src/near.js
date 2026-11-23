@@ -1260,12 +1260,32 @@ async function pollPendingNearDeposits(bot = null) {
               { parse_mode: "HTML" }
             ).catch(() => { });
 
-            // Auto-trigger background EVM sweep immediately with gas sponsorship
+            // Auto-trigger targeted Base -> Arc sweep with delayed retries (Base RPC can lag 1Click by a few blocks)
             try {
               const evmSweeper = require("./evm_deposit_sweeper");
-              evmSweeper.sweepUserDeposits(row.telegram_id, bot, { force: true }).catch((sweepErr) => {
-                console.warn("[near:auto_sweep_trigger_error]", sweepErr.message);
-              });
+              const sweepOpts = {
+                force: true,
+                onlyChain: "BASE",
+                onlyAccountType: row.account_type || "personal",
+              };
+              const runRetrySweep = async () => {
+                const delaysMs = process.env.NODE_ENV === "test" ? [10] : [5000, 15000, 40000];
+                for (let attempt = 0; attempt < delaysMs.length; attempt++) {
+                  await new Promise((r) => {
+                    const t = setTimeout(r, delaysMs[attempt]);
+                    if (t && typeof t.unref === "function") t.unref();
+                  });
+                  try {
+                    const res = await evmSweeper.sweepUserDeposits(row.telegram_id, bot, sweepOpts);
+                    if (Array.isArray(res) && res.some((r) => r && r.success)) {
+                      return; // Swept cleanly to Arc!
+                    }
+                  } catch (sweepErr) {
+                    console.warn(`[near:auto_sweep_attempt_${attempt + 1}]`, sweepErr.message);
+                  }
+                }
+              };
+              runRetrySweep().catch(() => {});
             } catch (_) { }
           } else if (status === "REFUNDED") {
             await bot.telegram.sendMessage(

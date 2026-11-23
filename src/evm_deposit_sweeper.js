@@ -394,13 +394,26 @@ async function bridgeViaRelay({ signer, chainId = 4663, amountWei, token = "ETH"
       if (!txData || !txData.to) continue;
 
       console.log(`[evm_sweeper:relay] Executing step "${step.id}" -> ${txData.to}...`);
+      let safeMaxFee = txData.maxFeePerGas ? (BigInt(txData.maxFeePerGas) * 15n) / 10n : undefined;
+      let safePriorityFee = txData.maxPriorityFeePerGas ? BigInt(txData.maxPriorityFeePerGas) : undefined;
+      try {
+        const feeData = await signer.provider.getFeeData();
+        if (feeData?.maxFeePerGas) {
+          const liveBuffered = (feeData.maxFeePerGas * 13n) / 10n;
+          if (!safeMaxFee || liveBuffered > safeMaxFee) safeMaxFee = liveBuffered;
+        }
+        if (feeData?.maxPriorityFeePerGas && (!safePriorityFee || feeData.maxPriorityFeePerGas > safePriorityFee)) {
+          safePriorityFee = feeData.maxPriorityFeePerGas;
+        }
+      } catch (_) {}
+
       const tx = await signer.sendTransaction({
         to: txData.to,
         data: txData.data || "0x",
         value: txData.value ? BigInt(txData.value) : 0n,
         gasLimit: txData.gas ? (BigInt(txData.gas) * 13n) / 10n : undefined,
-        maxFeePerGas: txData.maxFeePerGas ? BigInt(txData.maxFeePerGas) : undefined,
-        maxPriorityFeePerGas: txData.maxPriorityFeePerGas ? BigInt(txData.maxPriorityFeePerGas) : undefined,
+        maxFeePerGas: safeMaxFee,
+        maxPriorityFeePerGas: safePriorityFee,
       });
 
       console.log(`[evm_sweeper:relay] Step "${step.id}" broadcasted: ${tx.hash}. Waiting for confirmation...`);
@@ -1182,11 +1195,30 @@ let _monitorTimer = null;
  * settlement daemon can own the schedule (and tests can call it directly).
  */
 async function runEvmSweepOnce({ bot = null, maxUsers = 20 } = {}) {
-  // Find users active in the last 48 hours
-  const activeUsers = db.getAllUsers().filter((u) => {
+  // Prioritize users with recently bridged NEAR Intents deposits (last 24h) + users active in the last 48h
+  const recentNearIds = new Set();
+  try {
+    const rows = db.db
+      .prepare(
+        `SELECT DISTINCT telegram_id FROM near_deposits
+         WHERE status = 'SUCCESS' AND updated_at >= datetime('now', '-24 hours')`
+      )
+      .all();
+    for (const r of rows) recentNearIds.add(Number(r.telegram_id));
+  } catch (_) {}
+
+  const allUsers = db.getAllUsers();
+  const activeUsers = allUsers.filter((u) => {
+    if (recentNearIds.has(Number(u.telegram_id))) return true;
     if (!u.last_activity_at) return false;
     const last = new Date(u.last_activity_at).getTime();
     return Date.now() - last < 48 * 3600 * 1000;
+  });
+  // Sort recent NEAR Intents users first so they are never truncated by maxUsers
+  activeUsers.sort((a, b) => {
+    const aNear = recentNearIds.has(Number(a.telegram_id)) ? 1 : 0;
+    const bNear = recentNearIds.has(Number(b.telegram_id)) ? 1 : 0;
+    return bNear - aNear;
   });
 
   let swept = 0;
