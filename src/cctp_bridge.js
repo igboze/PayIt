@@ -73,6 +73,11 @@ const ARC_CCTP_CONTRACTS = {
 };
 
 function getAlchemyRpcUrl(network, fallback) {
+  // Only route RPC traffic through Alchemy when explicitly opted in (USE_ALCHEMY_RPC=true),
+  // so an exhausted Alchemy monthly quota (HTTP 429) never stalls Base/Polygon/Arb sweeps for 150s+.
+  if (String(process.env.USE_ALCHEMY_RPC || "").toLowerCase() !== "true") {
+    return fallback;
+  }
   const key = process.env.ALCHEMY_API_KEY;
   if (!key) return fallback;
   const map = {

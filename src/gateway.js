@@ -117,14 +117,15 @@ function friendlyGatewayError(err, chainName) {
 
 // ── RPC endpoints for each source chain ───────────────────────────────────────
 // Public fallbacks; override via env if needed (e.g. SEPOLIA_RPC_URL, ETHEREUM_RPC_URL).
+const _useAlchemyRpc = String(process.env.USE_ALCHEMY_RPC || "").toLowerCase() === "true" && Boolean(process.env.ALCHEMY_API_KEY);
 const CHAIN_RPCS = {
   // Mainnet
-  "Ethereum":         process.env.ETHEREUM_RPC_URL     || (process.env.ALCHEMY_API_KEY ? `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}` : "https://ethereum-rpc.publicnode.com"),
-  "Base":             process.env.BASE_RPC_URL         || (process.env.ALCHEMY_API_KEY ? `https://base-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}` : "https://mainnet.base.org"),
+  "Ethereum":         process.env.ETHEREUM_RPC_URL     || (_useAlchemyRpc ? `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}` : "https://ethereum-rpc.publicnode.com"),
+  "Base":             process.env.BASE_RPC_URL         || (_useAlchemyRpc ? `https://base-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}` : "https://mainnet.base.org"),
   "Avalanche":        process.env.AVALANCHE_RPC_URL    || "https://api.avax.network/ext/bc/C/rpc",
   // Testnet
-  "Ethereum Sepolia": process.env.SEPOLIA_RPC_URL      || (process.env.ALCHEMY_API_KEY ? `https://eth-sepolia.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}` : "https://ethereum-sepolia-rpc.publicnode.com"),
-  "Base Sepolia":     process.env.BASE_SEPOLIA_RPC_URL || (process.env.ALCHEMY_API_KEY ? `https://base-sepolia.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}` : "https://base-sepolia-rpc.publicnode.com"),
+  "Ethereum Sepolia": process.env.SEPOLIA_RPC_URL      || (_useAlchemyRpc ? `https://eth-sepolia.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}` : "https://ethereum-sepolia-rpc.publicnode.com"),
+  "Base Sepolia":     process.env.BASE_SEPOLIA_RPC_URL || (_useAlchemyRpc ? `https://base-sepolia.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}` : "https://base-sepolia-rpc.publicnode.com"),
   "Avalanche Fuji":   process.env.FUJI_RPC_URL         || "https://api.avax-test.network/ext/bc/C/rpc",
 };
 

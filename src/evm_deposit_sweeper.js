@@ -1103,10 +1103,19 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
         const provider = new JsonRpcProvider(cfg.rpcUrl, cfg.chainId, { staticNetwork: true });
         const dexCfg = resolveDexConfig(cfg.key);
 
+        const withRpcTimeout = (promise, ms = 8000) =>
+          Promise.race([
+            promise,
+            new Promise((_, rej) => {
+              const t = setTimeout(() => rej(new Error(`RPC timeout (${ms}ms) on ${cfg.name}`)), ms);
+              if (t && typeof t.unref === "function") t.unref();
+            }),
+          ]);
+
         // 1. Check USDC balance first (so native gas is preserved to burn existing USDC!)
         if (cfg.usdc) {
           const usdcContract = new Contract(cfg.usdc, ERC20_ABI, provider);
-          const usdcBalUnits = await usdcContract.balanceOf(address);
+          const usdcBalUnits = await withRpcTimeout(usdcContract.balanceOf(address));
           const usdcBal = parseFloat(formatUnits(usdcBalUnits, cfg.decimals));
 
           if (usdcBal >= 0.5) {
@@ -1140,7 +1149,7 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
         }
 
         // 2. Check native balance (only if significant native remains)
-        const nativeBalWei = await provider.getBalance(address);
+        const nativeBalWei = await withRpcTimeout(provider.getBalance(address));
         const minNativeWei = dexCfg?.minDepositWei || parseUnits("0.0005", 18);
 
         if (nativeBalWei > minNativeWei) {
