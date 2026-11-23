@@ -17,10 +17,10 @@ const idempotency = require("../src/idempotency");
 
 test("Automated EVM Cross-Chain Deposit Engine Test Suite", async (t) => {
   const testUserId = 777666555;
-  const personalAddress = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D";
-  const businessAddress = "0x9965507D1a55bcC2695C58ba16FB37d819B0A4df";
   const testPrivateKey = "0x4f3edf983ac636a65a842ce7c78d9aa706d3b113bce9c46f30d7d21715b23b1d";
   const testBizPrivateKey = "0x6cbed15c793ce57650b9877cf26f5d7d9571f00cd8237e826ec7b4013e9a63f2";
+  const personalAddress = walletLib.walletFromPrivateKey(testPrivateKey).address;
+  const businessAddress = walletLib.walletFromPrivateKey(testBizPrivateKey).address;
   const testPin = "4321";
 
   // Cleanup any old test user

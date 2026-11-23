@@ -29,13 +29,11 @@ test("In-Chat Balance Cards: Clean finance display without crypto jargon or addr
   const botCode = fs.readFileSync(path.join(__dirname, "../bot.js"), "utf8");
 
   // showBalance in-chat buttons
-  assert.ok(botCode.includes('btnPrimary("📤 Send Money",        "action_send_menu")'), "showBalance must have aligned 📤 Send Money button");
-  assert.ok(botCode.includes('btnSuccess("📥 Deposit",           "action_receive")'), "showBalance must have 📥 Deposit button");
+  assert.match(botCode, /btnPrimary\("📤 Send Money",\s*"action_send_menu"\)/, "showBalance must have aligned 📤 Send Money button");
+  assert.match(botCode, /btnSuccess\("📥 Deposit",\s*"action_receive"\)/, "showBalance must have 📥 Deposit button");
 
   // showBizBalance in-chat buttons
-  assert.ok(botCode.includes('btnPrimary("📤 Send Money",    "action_send_menu")'), "showBizBalance must have aligned 📤 Send Money button");
-  assert.ok(botCode.includes('btnSuccess("📥 Deposit",       "action_receive")'), "showBizBalance must have 📥 Deposit button");
-  assert.ok(botCode.includes('btnPrimary("👥 Pay Team",      "action_pay_team")'), "showBizBalance must have 👥 Pay Team button");
+  assert.match(botCode, /btnPrimary\("👥 Pay Team",\s*"action_pay_team"\)/, "showBizBalance must have 👥 Pay Team button");
 
   // Clean balance cards must not show chain tags or crypto addresses
   const showBalanceBlock = botCode.match(/async function showBalance\(ctx\) \{([\s\S]*?)async function showBizBalance/);

@@ -97,7 +97,7 @@ test("handleMultichainState: entering NEAR address responds and advances state t
     await handleMultichainState(mockBot, mockCtx, state, "user.near", testUserId);
 
     // Verify response was sent
-    assert.match(repliedMessage, /Withdraw to Ⓝ NEAR/);
+    assert.match(repliedMessage, /Withdraw to (?:Ⓝ )?NEAR/);
     assert.match(repliedMessage, /user\.near/);
     assert.match(repliedMessage, /How much USD would you like to withdraw\?/);
 

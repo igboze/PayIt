@@ -144,7 +144,11 @@ async function handleApiRequest(req, res, bot = null) {
     return res.end();
   }
 
-  const parsedUrl = url.parse(req.url, true);
+  const whatwgUrl = new URL(req.url || "/", "http://localhost");
+  const parsedUrl = {
+    pathname: whatwgUrl.pathname,
+    query: Object.fromEntries(whatwgUrl.searchParams.entries()),
+  };
   const pathname = parsedUrl.pathname.replace(/\/+$/, "");
   const method = req.method.toUpperCase();
   const baseUrl = getPublicBaseUrl(req);
