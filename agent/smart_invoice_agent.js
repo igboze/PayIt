@@ -175,6 +175,7 @@ function normalizeInvoiceParsed(parsed, rawUserMessage = "") {
 }
 
 async function parseSmartInvoiceIntent(userMessage, userContext = {}) {
+  const defaultCurrency = String(userContext.defaultCurrency || "USD").toUpperCase();
   const systemPrompt = `You are a Smart Invoicing Agent for Proxim — a full-service Global Neobank.
 Users will provide raw, unstructured text describing work they have done or an invoice to create.
 Extract the relevant details to generate a professional invoice.
@@ -187,17 +188,17 @@ Respond with ONLY a valid JSON object matching this exact shape — no markdown,
     {
       "description": "<Description of the service or product>",
       "quantity": 1,
-      "unitPrice": <number representing cost in USDC/EURC>
+      "unitPrice": <number representing cost in the chosen currency (${defaultCurrency}) — NEVER convert currencies>
     }
   ],
-  "currency": "<USDC | EURC — default USDC unless user specifies EUR/EURC/euros>",
+  "currency": "${defaultCurrency}",
   "dueDate": "<YYYY-MM-DD or null if not specified>",
   "notes": "<A short polite note thanking the client for business, or null>"
 }
 
 Rules:
-- Amounts must be positive numbers.
-- If no specific currency is mentioned, assume USDC.
+- Amounts must be positive numbers in the exact numbers the user typed (do NOT convert NGN to USD or USD to NGN).
+- If no specific currency is mentioned, use "${defaultCurrency}".
 - Infer reasonable due dates: "end of month" = last day of current month, "next week" = 7 days from today, "in 14 days" = 14 days from today.
 - If crucial details like client name or total amount cannot be derived, return {"error": "Please provide client name and amount."}.
 
@@ -207,15 +208,22 @@ User context: ${JSON.stringify(userContext)}`;
     const rawParsed = await getJSONCompletion(systemPrompt, userMessage);
     const normalized = normalizeInvoiceParsed(rawParsed, userMessage);
     if (normalized && !normalized.error) {
+      if (userContext.defaultCurrency) normalized.currency = defaultCurrency;
       return normalized;
     }
     const fallback = parseSmartInvoiceHeuristic(userMessage);
-    if (fallback) return fallback;
+    if (fallback) {
+      if (userContext.defaultCurrency) fallback.currency = defaultCurrency;
+      return fallback;
+    }
     return normalized || { error: "Could not understand the invoice details. Please provide client name and amount." };
   } catch (err) {
     console.error("[smart_invoice_agent] Error:", err.message);
     const fallback = parseSmartInvoiceHeuristic(userMessage);
-    if (fallback) return fallback;
+    if (fallback) {
+      if (userContext.defaultCurrency) fallback.currency = defaultCurrency;
+      return fallback;
+    }
     return { error: "Could not understand the invoice details. Please provide client name and amount." };
   }
 }

@@ -34,6 +34,20 @@ function formatMoney(num) {
   });
 }
 
+function formatCurrencyAmount(num, currency = "USDC") {
+  const cur = String(currency || "USDC").toUpperCase();
+  if (cur === "NGN") {
+    return `₦${Number(num || 0).toLocaleString("en-NG", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+  }
+  if (cur === "USD") {
+    return `$${formatMoney(num)}`;
+  }
+  return `${formatMoney(num)} ${cur}`;
+}
+
 function fitFontSize(text, maxWidthPx, baseSize, minSize = 9.5, charWidthRatio = 0.62) {
   const len = String(text || "").length;
   if (!len) return baseSize;
@@ -194,13 +208,17 @@ function buildSvg(opts) {
     businessPhone = null,
     businessAddress = null,
     logoDataUri = null,
-    walletAddress,
+    walletAddress = null,
+    cryptoPaymentDetails = null,
     issueDate,
     currency = "USDC",
     fiatDetails = null,
     qrDataUri = null,
     theme = DEFAULT_THEME,
   } = opts;
+
+  const displayCur = String(currency || "USDC").toUpperCase();
+  const isNgn = displayCur === "NGN";
 
   const W = 760;
   const total = items.reduce(
@@ -219,10 +237,10 @@ function buildSvg(opts) {
       const price = safeNum(item.unitPrice);
       const lineTotal = qty * price;
       const descText = truncateText(item.description || "Item", 44);
-      const priceStr = formatMoney(price);
-      const lineStr = formatMoney(lineTotal);
-      const priceFont = fitFontSize(priceStr, 108, 12.5, 9.5);
-      const lineFont = fitFontSize(lineStr, 124, 13, 9.5);
+      const priceStr = isNgn ? `₦${formatMoney(price)}` : formatMoney(price);
+      const lineStr = isNgn ? `₦${formatMoney(lineTotal)}` : formatMoney(lineTotal);
+      const priceFont = fitFontSize(priceStr, 108, 12.5, 9.0);
+      const lineFont = fitFontSize(lineStr, 124, 13, 9.0);
       const rowBg = idx % 2 === 1 ? `<rect x="36" y="${y - 22}" width="${W - 72}" height="${ROW}" fill="#f8fafc" rx="4"/>` : "";
 
       const row = `
@@ -238,20 +256,38 @@ function buildSvg(opts) {
 
   // ── Adaptive Total Due Card ────────────────────────────────────────────────
   const totalY = y + 20;
-  const totalDisplayStr = `${formatMoney(total)} ${currency}`;
-  const totalCardW = Math.min(340, Math.max(250, totalDisplayStr.length * 14 + 90));
+  const totalDisplayStr = isNgn
+    ? `₦${formatMoney(total)}`
+    : displayCur === "USD"
+      ? `$${formatMoney(total)} USD`
+      : `${formatMoney(total)} ${displayCur}`;
+  const totalCardW = Math.min(360, Math.max(255, totalDisplayStr.length * 14 + 95));
   const totalCardX = W - 36 - totalCardW;
-  const totalValueFont = fitFontSize(totalDisplayStr, totalCardW - 105, 19, 12.5, 0.64);
+  const totalValueFont = fitFontSize(totalDisplayStr, totalCardW - 108, 19, 12.0, 0.64);
 
   const notesY = totalY + 62;
   const paySectionY = notes ? notesY + 34 : totalY + 68;
 
-  const hasFiat = fiatDetails && fiatDetails.accountNumber;
-  const fiatBoxHeight = hasFiat ? 92 : 0;
-  const cryptoBoxY = paySectionY + (hasFiat ? fiatBoxHeight + 16 : 0);
-  const cryptoBoxHeight = qrDataUri ? 128 : 82;
+  const hasFiat = Boolean(fiatDetails && (fiatDetails.accountNumber || fiatDetails.iban));
+  const cryptoAddr = cryptoPaymentDetails?.depositAddress || walletAddress || null;
+  const hasCrypto = Boolean(cryptoAddr);
+  const hasCryptoMemo = Boolean(cryptoPaymentDetails?.depositMemo);
 
-  const footerY = cryptoBoxY + cryptoBoxHeight + 34;
+  const hasExtraBankCodes = Boolean(
+    hasFiat && (fiatDetails.routingNumber || fiatDetails.sortCode || fiatDetails.swiftCode || (fiatDetails.iban && fiatDetails.accountNumber))
+  );
+  const fiatBoxHeight = hasFiat ? (hasExtraBankCodes ? 114 : 92) : 0;
+  const cryptoBoxY = paySectionY + (hasFiat ? fiatBoxHeight + 16 : 0);
+  const cryptoBoxHeight = hasCrypto
+    ? (qrDataUri ? (hasCryptoMemo ? 142 : 128) : (hasCryptoMemo ? 104 : 86))
+    : 0;
+
+  const afterPayY = hasCrypto
+    ? cryptoBoxY + cryptoBoxHeight
+    : hasFiat
+      ? paySectionY + fiatBoxHeight
+      : paySectionY;
+  const footerY = afterPayY + 34;
   const H = footerY + 52;
 
   // ── Header (Business Logo + Branded Color Block) ───────────────────────────
@@ -273,42 +309,105 @@ function buildSvg(opts) {
     <image href="${logoDataUri}" x="${logoX + 5}" y="27" width="48" height="48" preserveAspectRatio="xMidYMid meet"/>`
     : "";
 
-  // ── Fiat Payment Box ───────────────────────────────────────────────────────
-  const fiatAmtFormatted = hasFiat
-    ? `₦${Number(fiatDetails.fiatAmount || 0).toLocaleString("en-NG", { maximumFractionDigits: 2 })}`
-    : "";
-  const fiatAmtFont = fitFontSize(fiatAmtFormatted, 200, 12.5, 10);
+  // ── Fiat / Global Bank Transfer Box ────────────────────────────────────────
+  let fiatSectionSvg = "";
+  if (hasFiat) {
+    const fiatCur = String(fiatDetails.currency || "NGN").toUpperCase();
+    const railTag = fiatDetails.railHint ? ` · ${String(fiatDetails.railHint).toUpperCase()}` : "";
+    const fiatTitle = `${hasCrypto ? "OPTION 1 · " : ""}BANK TRANSFER (${fiatCur}${railTag})`;
 
-  const fiatSectionSvg = hasFiat
-    ? `
+    const primaryNumLabel = fiatDetails.accountNumber ? "Account No" : "IBAN";
+    const primaryNumVal = fiatDetails.accountNumber || fiatDetails.iban;
+
+    const fiatAmtFormatted = fiatDetails.fiatAmount != null
+      ? (fiatCur === "NGN"
+        ? `₦${Number(fiatDetails.fiatAmount).toLocaleString("en-NG", { maximumFractionDigits: 2 })}`
+        : fiatCur === "USD"
+          ? `$${formatMoney(fiatDetails.fiatAmount)}`
+          : fiatCur === "GBP"
+            ? `£${formatMoney(fiatDetails.fiatAmount)}`
+            : fiatCur === "EUR"
+              ? `€${formatMoney(fiatDetails.fiatAmount)}`
+              : `${formatMoney(fiatDetails.fiatAmount)} ${fiatCur}`)
+      : null;
+    const fiatAmtFont = fiatAmtFormatted ? fitFontSize(fiatAmtFormatted, 200, 12.5, 10) : 12;
+
+    const extraPlainParts = [];
+    const extraParts = [];
+    if (fiatDetails.routingNumber) {
+      extraPlainParts.push(`Routing: ${fiatDetails.routingNumber}`);
+      extraParts.push(`Routing: <tspan font-weight="bold" fill="${theme.primary}" font-family="${FONT_MONO}">${escape(fiatDetails.routingNumber)}</tspan>`);
+    }
+    if (fiatDetails.sortCode) {
+      extraPlainParts.push(`Sort Code: ${fiatDetails.sortCode}`);
+      extraParts.push(`Sort Code: <tspan font-weight="bold" fill="${theme.primary}" font-family="${FONT_MONO}">${escape(fiatDetails.sortCode)}</tspan>`);
+    }
+    if (fiatDetails.iban && fiatDetails.accountNumber) {
+      extraPlainParts.push(`IBAN: ${fiatDetails.iban}`);
+      extraParts.push(`IBAN: <tspan font-weight="bold" fill="${theme.primary}" font-family="${FONT_MONO}">${escape(fiatDetails.iban)}</tspan>`);
+    }
+    if (fiatDetails.swiftCode) {
+      extraPlainParts.push(`SWIFT: ${fiatDetails.swiftCode}`);
+      extraParts.push(`SWIFT: <tspan font-weight="bold" fill="${theme.primary}" font-family="${FONT_MONO}">${escape(fiatDetails.swiftCode)}</tspan>`);
+    }
+
+    const extraLineFont = fitFontSize(extraPlainParts.join("   ·   "), W - 110, 11.5, 8.5, 0.58);
+    const extraLineSvg = hasExtraBankCodes
+      ? `<text x="54" y="${paySectionY + 95}" font-size="${extraLineFont}" fill="#334155" font-family="${FONT}">${extraParts.join("   ·   ")}</text>`
+      : "";
+
+    const amountPartSvg = fiatAmtFormatted
+      ? `   ·   Amount: <tspan font-size="${fiatAmtFont}" font-weight="bold" fill="${theme.accent}">${escape(fiatAmtFormatted)}</tspan>`
+      : "";
+
+    fiatSectionSvg = `
     <rect x="36" y="${paySectionY}" width="${W - 72}" height="${fiatBoxHeight}" fill="${theme.tintBg}" rx="10" stroke="${theme.tintBorder}" stroke-width="1.2"/>
     <rect x="36" y="${paySectionY}" width="5" height="${fiatBoxHeight}" fill="${theme.accent}" rx="2"/>
-    <text x="54" y="${paySectionY + 25}" font-size="12.5" font-weight="bold" fill="${theme.primary}" font-family="${FONT}">OPTION 1 · BANK TRANSFER (NGN)</text>
-    <text x="54" y="${paySectionY + 49}" font-size="12" fill="#334155" font-family="${FONT}">Bank: <tspan font-weight="bold" fill="#0f172a">${escape(fiatDetails.bankName || "Wema Bank PLC")}</tspan>   ·   Account No: <tspan font-weight="bold" fill="${theme.primary}" font-family="${FONT_MONO}">${escape(fiatDetails.accountNumber)}</tspan></text>
-    <text x="54" y="${paySectionY + 72}" font-size="12" fill="#334155" font-family="${FONT}">Account Name: <tspan font-weight="bold" fill="#0f172a">${escape(truncateText(fiatDetails.accountName || clientName, 30))}</tspan>   ·   Amount: <tspan font-size="${fiatAmtFont}" font-weight="bold" fill="${theme.accent}">${escape(fiatAmtFormatted)}</tspan></text>
-  `
-    : "";
+    <text x="54" y="${paySectionY + 25}" font-size="12.5" font-weight="bold" fill="${theme.primary}" font-family="${FONT}">${escape(truncateText(fiatTitle, 74))}</text>
+    <text x="54" y="${paySectionY + 49}" font-size="12" fill="#334155" font-family="${FONT}">Bank: <tspan font-weight="bold" fill="#0f172a">${escape(truncateText(fiatDetails.bankName || "Partner Bank", 30))}</tspan>   ·   ${primaryNumLabel}: <tspan font-weight="bold" fill="${theme.primary}" font-family="${FONT_MONO}">${escape(primaryNumVal)}</tspan></text>
+    <text x="54" y="${paySectionY + 72}" font-size="12" fill="#334155" font-family="${FONT}">Account Name: <tspan font-weight="bold" fill="#0f172a">${escape(truncateText(fiatDetails.accountName || clientName, 30))}</tspan>${amountPartSvg}</text>
+    ${extraLineSvg}
+  `;
+  }
 
-  // ── On-Chain Stablecoin & QR Box ───────────────────────────────────────────
-  const qrImageSvg = qrDataUri
-    ? `
+  // ── On-Chain / NEAR Intents Crypto Box (optional) ──────────────────────────
+  let cryptoSectionSvg = "";
+  if (hasCrypto) {
+    const qrImageSvg = qrDataUri
+      ? `
     <rect x="${W - 154}" y="${cryptoBoxY + 12}" width="104" height="104" rx="8" fill="#ffffff" stroke="${theme.tintBorder}" stroke-width="1"/>
     <image href="${qrDataUri}" x="${W - 148}" y="${cryptoBoxY + 18}" width="92" height="92" preserveAspectRatio="xMidYMid meet"/>`
-    : "";
+      : "";
 
-  const addrBoxW = qrDataUri ? W - 224 : W - 108;
-  const cryptoAmtStr = `$${formatMoney(total)} ${currency}`;
+    const addrBoxW = qrDataUri ? W - 224 : W - 108;
+    const chainLabel = cryptoPaymentDetails?.chainLabel || "ARC MAINNET";
+    const tokenSymbol = cryptoPaymentDetails?.tokenSymbol || (isNgn ? "USDC" : displayCur);
+    const exactCryptoAmt = cryptoPaymentDetails?.exactAmount != null
+      ? `${formatMoney(cryptoPaymentDetails.exactAmount)} ${tokenSymbol}`
+      : `$${formatMoney(total)} ${tokenSymbol}`;
+    const viaTag = cryptoPaymentDetails?.viaNearIntents ? " · NEAR INTENTS" : "";
+    const cryptoHeading = `${hasFiat ? "OPTION 2 · " : ""}CRYPTO PAYMENT (${chainLabel.toUpperCase()}${viaTag})`;
+    const addrFont = fitFontSize(cryptoAddr, addrBoxW - 24, 11, 8.0, 0.62);
+    const memoSvg = hasCryptoMemo
+      ? `<text x="54" y="${cryptoBoxY + 109}" font-size="11" fill="#334155" font-family="${FONT}">Memo: <tspan font-weight="bold" fill="${theme.primary}" font-family="${FONT_MONO}">${escape(truncateText(cryptoPaymentDetails.depositMemo, 48))}</tspan></text>`
+      : "";
+    const hintY = hasCryptoMemo ? cryptoBoxY + 127 : cryptoBoxY + 111;
+    const hintText = cryptoPaymentDetails?.viaNearIntents
+      ? `Send exact ${exactCryptoAmt} on ${chainLabel}. Auto-settles via NEAR Intents.`
+      : `Scan QR or send exact ${exactCryptoAmt} on ${chainLabel} for instant settlement.`;
 
-  const cryptoSectionSvg = `
+    cryptoSectionSvg = `
     <rect x="36" y="${cryptoBoxY}" width="${W - 72}" height="${cryptoBoxHeight}" fill="#f8fafc" rx="10" stroke="#cbd5e1" stroke-width="1.2"/>
     <rect x="36" y="${cryptoBoxY}" width="5" height="${cryptoBoxHeight}" fill="${theme.primary}" rx="2"/>
-    <text x="54" y="${cryptoBoxY + 26}" font-size="12.5" font-weight="bold" fill="${theme.primary}" font-family="${FONT}">${hasFiat ? "OPTION 2 · " : ""}ON-CHAIN STABLECOIN (ARC MAINNET · ${escape(currency)})</text>
-    <text x="54" y="${cryptoBoxY + 49}" font-size="12" fill="#334155" font-family="${FONT}">Send <tspan font-weight="bold" fill="${theme.primary}">${escape(cryptoAmtStr)}</tspan> to this dedicated invoice address:</text>
+    <text x="54" y="${cryptoBoxY + 26}" font-size="12.5" font-weight="bold" fill="${theme.primary}" font-family="${FONT}">${escape(cryptoHeading)}</text>
+    <text x="54" y="${cryptoBoxY + 49}" font-size="12" fill="#334155" font-family="${FONT}">Send exact <tspan font-weight="bold" fill="${theme.primary}">${escape(exactCryptoAmt)}</tspan> to this dedicated invoice address:</text>
     <rect x="54" y="${cryptoBoxY + 60}" width="${addrBoxW}" height="32" fill="#ffffff" rx="6" stroke="#cbd5e1" stroke-width="1"/>
-    <text x="66" y="${cryptoBoxY + 81}" font-size="11" font-weight="bold" fill="#0f172a" font-family="${FONT_MONO}">${escape(walletAddress)}</text>
-    <text x="54" y="${cryptoBoxY + 111}" font-size="10.5" fill="#64748b" font-family="${FONT}">Scan QR to settle instantly on Arc Mainnet or via cross-chain routing.</text>
+    <text x="66" y="${cryptoBoxY + 80}" font-size="${addrFont}" font-weight="bold" fill="#0f172a" font-family="${FONT_MONO}">${escape(cryptoAddr)}</text>
+    ${memoSvg}
+    <text x="54" y="${hintY}" font-size="10.5" fill="#64748b" font-family="${FONT}">${escape(truncateText(hintText, 78))}</text>
     ${qrImageSvg}
   `;
+  }
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"
@@ -382,15 +481,106 @@ function buildSvg(opts) {
 }
 
 /**
+ * Build a clean, copy-and-forward Telegram HTML message that the merchant can
+ * send directly to their client alongside the invoice PNG image.
+ */
+function buildClientInvoiceCopyText(opts) {
+  const {
+    invoiceNumber,
+    businessName,
+    clientName,
+    currency = "USDC",
+    totalDisplay = null,
+    totalUsdc = 0,
+    totalNgn = null,
+    dueDate = null,
+    fiatDetails = null,
+    cryptoPaymentDetails = null,
+    walletAddress = null,
+  } = opts || {};
+
+  const cur = String(currency || "USDC").toUpperCase();
+  const amountLine = totalDisplay
+    || (cur === "NGN" && totalNgn != null
+      ? `₦${Number(totalNgn).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+      : cur === "USD"
+        ? `$${formatMoney(totalUsdc)} USD`
+        : `$${formatMoney(totalUsdc)} ${cur}`);
+
+  const hasFiat = Boolean(fiatDetails && (fiatDetails.accountNumber || fiatDetails.iban));
+  const cryptoAddr = cryptoPaymentDetails?.depositAddress || walletAddress || null;
+  const hasCrypto = Boolean(cryptoAddr);
+
+  let text =
+    `🧾 <b>Invoice #${escape(invoiceNumber)} — ${escape(businessName || "Proxim")}</b>\n` +
+    `Hi <b>${escape(clientName || "there")}</b>,\n\n` +
+    `Please find your invoice attached.\n` +
+    `• <b>Amount Due:</b> ${escape(amountLine)}\n` +
+    (dueDate ? `• <b>Due Date:</b> ${escape(dueDate)}\n` : "");
+
+  if (hasFiat) {
+    const fiatCur = String(fiatDetails.currency || "NGN").toUpperCase();
+    const isNgnBank = fiatCur === "NGN";
+    const railLabel = fiatDetails.railHint ? ` (${fiatDetails.railHint})` : "";
+    const bankHeading = isNgnBank
+      ? `🇳🇬 <b>${hasCrypto ? "Option 1: " : ""}Pay via Nigerian Bank Transfer (NGN)</b>`
+      : `🏦 <b>${hasCrypto ? "Option 1: " : ""}Pay via ${escape(fiatCur)} Bank Transfer${escape(railLabel)}</b>`;
+
+    const fiatAmtStr = fiatDetails.fiatAmount != null
+      ? (fiatCur === "NGN"
+        ? `₦${Number(fiatDetails.fiatAmount).toLocaleString("en-NG", { maximumFractionDigits: 2 })}`
+        : fiatCur === "USD"
+          ? `$${formatMoney(fiatDetails.fiatAmount)}`
+          : fiatCur === "GBP"
+            ? `£${formatMoney(fiatDetails.fiatAmount)}`
+            : fiatCur === "EUR"
+              ? `€${formatMoney(fiatDetails.fiatAmount)}`
+              : `${formatMoney(fiatDetails.fiatAmount)} ${fiatCur}`)
+      : null;
+
+    text += `\n${bankHeading}\n`;
+    if (fiatDetails.bankName) text += `• <b>Bank:</b> ${escape(fiatDetails.bankName)}\n`;
+    if (fiatDetails.accountNumber) text += `• <b>Account Number:</b> <code>${escape(fiatDetails.accountNumber)}</code>\n`;
+    if (fiatDetails.iban) text += `• <b>IBAN:</b> <code>${escape(fiatDetails.iban)}</code>\n`;
+    if (fiatDetails.routingNumber) text += `• <b>Routing Number:</b> <code>${escape(fiatDetails.routingNumber)}</code>\n`;
+    if (fiatDetails.sortCode) text += `• <b>Sort Code:</b> <code>${escape(fiatDetails.sortCode)}</code>\n`;
+    if (fiatDetails.swiftCode) text += `• <b>SWIFT / BIC:</b> <code>${escape(fiatDetails.swiftCode)}</code>\n`;
+    text += `• <b>Account Name:</b> ${escape(fiatDetails.accountName || clientName || "Proxim")}\n`;
+    if (fiatAmtStr) text += `• <b>Exact Amount:</b> <code>${escape(fiatAmtStr)}</code>\n`;
+  }
+
+  if (hasCrypto) {
+    const chainLabel = cryptoPaymentDetails?.chainLabel || "Arc Mainnet";
+    const tokenSymbol = cryptoPaymentDetails?.tokenSymbol || "USDC";
+    const exactAmt = cryptoPaymentDetails?.exactAmount != null
+      ? `${formatMoney(cryptoPaymentDetails.exactAmount)} ${tokenSymbol}`
+      : `${formatMoney(totalUsdc)} ${tokenSymbol}`;
+
+    text +=
+      `\n🌐 <b>${hasFiat ? "Option 2: " : ""}Pay via Crypto (${escape(chainLabel)} · ${escape(tokenSymbol)})</b>\n` +
+      `• <b>Exact Amount:</b> <code>${escape(exactAmt)}</code>\n` +
+      `• <b>Network:</b> ${escape(chainLabel)}\n` +
+      `• <b>Deposit Address:</b> <code>${escape(cryptoAddr)}</code>\n` +
+      (cryptoPaymentDetails?.depositMemo
+        ? `• <b>Memo / Tag:</b> <code>${escape(cryptoPaymentDetails.depositMemo)}</code>\n`
+        : "");
+  }
+
+  text += `\n⚡ <i>Please pay the exact amount shown above for instant automatic confirmation. Powered by Proxim.</i>`;
+  return text;
+}
+
+/**
  * Generate a dynamically logo-branded 3x Retina invoice PNG with adaptive value sizing & QR code.
  */
 async function generateInvoicePNG(data) {
   const theme = await extractBrandThemeFromLogo(data.logoDataUri);
 
+  const qrTarget = data.cryptoPaymentDetails?.depositAddress || data.walletAddress || null;
   let qrDataUri = null;
-  if (data.walletAddress) {
+  if (qrTarget) {
     try {
-      qrDataUri = await QRCode.toDataURL(data.walletAddress, {
+      qrDataUri = await QRCode.toDataURL(qrTarget, {
         margin: 1,
         width: 140,
         color: {
@@ -414,7 +604,9 @@ async function generateInvoicePNG(data) {
 
 module.exports = {
   generateInvoicePNG,
+  buildClientInvoiceCopyText,
   extractBrandThemeFromLogo,
   fitFontSize,
+  formatCurrencyAmount,
   DEFAULT_THEME,
 };

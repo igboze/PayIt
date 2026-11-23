@@ -78,7 +78,15 @@ const { parseImagePayment, formatExtractionPreview } = require("./agent/vision_p
 const { parsePdf, parseSpreadsheetFile, formatFilePreview, parsePptx, parseDocx, parseTextFile, buildFilePaymentPlan } = require("./agent/file_parser");
 const { transcribeVoice } = require("./agent/voice_parser");
 const { shouldReprocessConversationState } = require("./src/conversation_flow");
-const { createHDInvoice, createCompleteInvoice, createCompleteBizInvoice, validateAndConfirmPayment, generateInvoiceQRData } = require("./src/invoice_hd");
+const {
+  INVOICE_CRYPTO_CHAINS,
+  isTier1VerifiedForInvoice,
+  createHDInvoice,
+  createCompleteInvoice,
+  createCompleteBizInvoice,
+  validateAndConfirmPayment,
+  generateInvoiceQRData,
+} = require("./src/invoice_hd");
 const invoiceListener = require("./agent/invoice_listener");
 const { safeAnswerCbQuery } = require("./src/telegram_utils");
 const { getSettlementDestination } = require("./agent/invoice_listener");
@@ -5098,23 +5106,337 @@ bot.action("swap_start_eurc_usdc", async (ctx) => {
 
 // ─── Business Invoice actions ─────────────────────────────────────────────────
 
+function formatInvoiceAmt(amount, currency = "USD") {
+  const num = Number(amount || 0);
+  if (String(currency).toUpperCase() === "NGN") {
+    return `₦${num.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+  return `$${num.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function buildInvoiceChannelKeyboard(mode /* "biz" | "per" */, isTier1Verified = false) {
+  const editAction = mode === "biz" ? "action_new_biz_invoice" : "action_new_invoice";
+  const rows = [];
+  if (isTier1Verified) {
+    rows.push([Markup.button.callback("🏦 Global Bank Account (USD / GBP / EUR / NGN…)", `inv_ch_${mode}_nuvion_pick`)]);
+    rows.push([Markup.button.callback("🇳🇬 Naira Instant Checkout (Paj)", `inv_ch_${mode}_ngn_bank`)]);
+    rows.push([Markup.button.callback("🌐 Crypto (NEAR Intents · Exact Amount)", `inv_ch_${mode}_crypto_pick`)]);
+    rows.push([Markup.button.callback("⚡ Both (Global Bank + Crypto)", `inv_ch_${mode}_both_nuvion_pick`)]);
+  } else {
+    rows.push([Markup.button.callback("🇳🇬 Naira Bank Transfer (Paj)", `inv_ch_${mode}_ngn_bank`)]);
+    rows.push([Markup.button.callback("🌐 Crypto (NEAR Intents · Exact Amount)", `inv_ch_${mode}_crypto_pick`)]);
+    rows.push([Markup.button.callback("⚡ Both (Naira Bank + Crypto)", `inv_ch_${mode}_both_pick`)]);
+  }
+  rows.push([
+    Markup.button.callback("✏️ Edit", editAction),
+    Markup.button.callback("❌ Cancel", "main_menu"),
+  ]);
+  return Markup.inlineKeyboard(rows);
+}
+
+function buildInvoiceGlobalBankKeyboard(mode /* "biz" | "per" */, channel /* "nuvion_bank" | "both_nuvion" */, telegramId) {
+  const accountType = mode === "biz" ? "business" : "personal";
+  const activeCurrencies = new Set();
+  try {
+    const entity = db.getNuvionEntityByUser(telegramId, accountType);
+    if (entity) {
+      const details = db.getNuvionAccountDetailsByEntity(entity.entity_id).filter((d) => d.asset_type === "fiat" && d.status === "active");
+      for (const d of details) activeCurrencies.add(d.currency);
+    }
+  } catch (_) {}
+  const badge = (code) => (activeCurrencies.has(code) ? " ✅" : "");
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback(`🇺🇸 USD${badge("USD")}`, `inv_gbank_${mode}_${channel}_USD`),
+      Markup.button.callback(`🇬🇧 GBP${badge("GBP")}`, `inv_gbank_${mode}_${channel}_GBP`),
+      Markup.button.callback(`🇪🇺 EUR${badge("EUR")}`, `inv_gbank_${mode}_${channel}_EUR`),
+    ],
+    [
+      Markup.button.callback(`🇳🇬 NGN${badge("NGN")}`, `inv_gbank_${mode}_${channel}_NGN`),
+      Markup.button.callback(`🇦🇪 AED${badge("AED")}`, `inv_gbank_${mode}_${channel}_AED`),
+      Markup.button.callback(`🇰🇪 KES${badge("KES")}`, `inv_gbank_${mode}_${channel}_KES`),
+    ],
+    [
+      Markup.button.callback(`🇬🇭 GHS${badge("GHS")}`, `inv_gbank_${mode}_${channel}_GHS`),
+      Markup.button.callback(`🇹🇿 TZS${badge("TZS")}`, `inv_gbank_${mode}_${channel}_TZS`),
+      Markup.button.callback(`🇲🇽 MXN${badge("MXN")}`, `inv_gbank_${mode}_${channel}_MXN`),
+    ],
+    [
+      Markup.button.callback("⬅️ Back", `inv_ch_${mode}_back`),
+      Markup.button.callback("❌ Cancel", "main_menu"),
+    ],
+  ]);
+}
+
+function buildInvoiceChainKeyboard(mode /* "biz" | "per" */, channel /* "crypto_intent" | "both" | "both_nuvion" */) {
+  const backAction = `inv_ch_${mode}_back`;
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback("☀️ Solana USDC", `inv_chain_${mode}_${channel}_sol_usdc`),
+      Markup.button.callback("Ⓝ NEAR USDC", `inv_chain_${mode}_${channel}_near_usdc`),
+    ],
+    [
+      Markup.button.callback("☀️ Solana USDT", `inv_chain_${mode}_${channel}_sol_usdt`),
+      Markup.button.callback("Ⓝ NEAR USDT", `inv_chain_${mode}_${channel}_near_usdt`),
+    ],
+    [
+      Markup.button.callback("🪶 Robinhood USDG", `inv_chain_${mode}_${channel}_hood_usdg`),
+      Markup.button.callback("🔵 Arc USDC", `inv_chain_${mode}_${channel}_arc`),
+    ],
+    [
+      Markup.button.callback("⬅️ Back", backAction),
+      Markup.button.callback("❌ Cancel", "main_menu"),
+    ],
+  ]);
+}
+
+function showInvoiceCurrencyPicker(ctx, mode /* "biz" | "per" */) {
+  const listAction = mode === "biz" ? "action_list_biz_invoices" : "action_list_invoices";
+  const listLabel = mode === "biz" ? "📋 All Invoices" : "📋 My Invoices";
+  return ctx.reply(
+    `🧾 <b>Create ${mode === "biz" ? "Business " : ""}Invoice</b>\n` +
+    `──────────────────────────\n` +
+    `Step 1 of 3 · <b>Choose invoice currency</b>\n\n` +
+    `Select whether to bill your client in <b>Nigerian Naira (₦)</b> or <b>US Dollars ($)</b>:`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback("🇳🇬 Naira (₦ NGN)", `inv_cur_${mode}_NGN`),
+          Markup.button.callback("🇺🇸 US Dollars ($ USD)", `inv_cur_${mode}_USD`),
+        ],
+        [Markup.button.callback(listLabel, listAction)],
+        [Markup.button.callback("❌ Cancel", "main_menu")],
+      ]),
+    }
+  );
+}
+
 async function showBizInvoiceMenu(ctx) {
   const user = requireUser(ctx);
   if (!user) return;
-  convState.setState(ctx.from.id, "await_biz_invoice_instruction", {}, "business");
-  return ctx.reply(
-    `🧾 Create Invoice\n──────────────────────────\n` +
-    `Describe it in plain English:\n\n` +
-    `• "Invoice Acme Ltd $500 for web design, due July 15"\n` +
-    `• "Bill TechCorp $200 consulting and $100 hosting"\n` +
-    `• "Invoice john@example.com $1,500 for brand identity"\n\n` +
-    `Type your instruction:`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("📋 All Invoices", "action_list_biz_invoices")],
-      [Markup.button.callback("❌ Cancel", "main_menu")],
-    ])
-  );
+  return showInvoiceCurrencyPicker(ctx, "biz");
 }
+
+bot.action(/^inv_cur_(biz|per)_(NGN|USD)$/, async (ctx) => {
+  await safeAnswerCbQuery(ctx);
+  const user = requireUser(ctx);
+  if (!user) return;
+  const mode = ctx.match[1];
+  const invoiceCurrency = ctx.match[2];
+  const stateType = mode === "biz" ? "await_biz_invoice_instruction" : "await_invoice_instruction";
+  const context = mode === "biz" ? "business" : "personal";
+  const listAction = mode === "biz" ? "action_list_biz_invoices" : "action_list_invoices";
+
+  convState.setState(ctx.from.id, stateType, { invoiceCurrency }, context);
+
+  const examples = invoiceCurrency === "NGN"
+    ? `• "Invoice Acme Ltd ₦150,000 for web design, due July 15"\n` +
+      `• "Bill TechCorp ₦80,000 consulting and ₦40,000 hosting"\n` +
+      `• "Invoice john@example.com ₦250,000 for brand identity"`
+    : `• "Invoice Acme Ltd $500 for web design, due July 15"\n` +
+      `• "Bill TechCorp $200 consulting and $100 hosting"\n` +
+      `• "Invoice john@example.com $1,500 for brand identity"`;
+
+  return ctx.reply(
+    `🧾 <b>Create Invoice (${invoiceCurrency === "NGN" ? "₦ NGN" : "$ USD"})</b>\n` +
+    `──────────────────────────\n` +
+    `Step 2 of 3 · <b>Describe your invoice in plain English</b>\n\n` +
+    `${examples}\n\n` +
+    `Type your instruction:`,
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("🔄 Switch Currency", mode === "biz" ? "action_new_biz_invoice" : "action_new_invoice")],
+        [Markup.button.callback("📋 Invoices", listAction), Markup.button.callback("❌ Cancel", "main_menu")],
+      ]),
+    }
+  );
+});
+
+bot.action(/^inv_ch_(biz|per)_(ngn_bank|nuvion_pick|both_nuvion_pick|crypto_pick|both_pick|back)$/, async (ctx) => {
+  await safeAnswerCbQuery(ctx);
+  const user = requireUser(ctx);
+  if (!user) return;
+  const mode = ctx.match[1];
+  const choice = ctx.match[2];
+  const expectedState = mode === "biz" ? "confirm_biz_invoice" : "confirm_invoice";
+  const accountType = mode === "biz" ? "business" : "personal";
+  const state = convState.getState(ctx.from.id);
+  if (!state || state.type !== expectedState) {
+    return ctx.reply("Session expired. Start again with 🧾 New Invoice.");
+  }
+
+  const cur = state.data.invoiceCurrency || "USD";
+  const totalStr = formatInvoiceAmt(state.data.total, cur);
+  const verified = isTier1VerifiedForInvoice(ctx.from.id, accountType);
+
+  if (choice === "back") {
+    return ctx.reply(
+      `💳 <b>Step 3 of 3 · Choose Payment Channel</b>\n` +
+      `Invoice for <b>${escapeHtml(state.data.parsed.clientName)}</b> · <b>${totalStr}</b>\n\n` +
+      `How will your client pay?`,
+      { parse_mode: "HTML", ...buildInvoiceChannelKeyboard(mode, verified) }
+    );
+  }
+
+  if (choice === "nuvion_pick" || choice === "both_nuvion_pick") {
+    if (!verified) {
+      return ctx.reply(
+        `🔒 Complete Tier-1 verification to unlock named global bank accounts on invoices.`,
+        buildInvoiceChannelKeyboard(mode, false)
+      );
+    }
+    const channel = choice === "nuvion_pick" ? "nuvion_bank" : "both_nuvion";
+    return ctx.reply(
+      `🏦 <b>Select Your Named Bank Account Currency</b>\n` +
+      `──────────────────────────\n` +
+      `Amount: <b>${totalStr}</b>\n\n` +
+      `Pick which global bank account coordinates to provision onto this invoice (✅ = already active):`,
+      { parse_mode: "HTML", ...buildInvoiceGlobalBankKeyboard(mode, channel, ctx.from.id) }
+    );
+  }
+
+  if (choice === "crypto_pick" || choice === "both_pick") {
+    const channel = choice === "crypto_pick" ? "crypto_intent" : "both";
+    return ctx.reply(
+      `🌐 <b>Select Client's Crypto Network</b>\n` +
+      `──────────────────────────\n` +
+      `Amount: <b>${totalStr}</b>\n\n` +
+      `Using <b>NEAR Intents</b>, your client pays the exact amount on their chosen chain and it settles straight into your Proxim wallet:`,
+      { parse_mode: "HTML", ...buildInvoiceChainKeyboard(mode, channel) }
+    );
+  }
+
+  // choice === "ngn_bank" -> go straight to PIN
+  const invoiceNumber = mode === "biz"
+    ? bizDb.getNextBizInvoiceNumber(ctx.from.id)
+    : invoiceDb.getNextInvoiceNumber(ctx.from.id);
+  const issueDate = new Date().toISOString().split("T")[0];
+  const pinState = mode === "biz" ? "confirm_biz_invoice_pin" : "confirm_invoice_pin";
+
+  convState.setState(ctx.from.id, pinState, {
+    ...state.data,
+    paymentChannel: "ngn_bank",
+    cryptoChain: "arc",
+    invoiceNumber,
+    issueDate,
+  }, accountType);
+
+  return ctx.reply(
+    `🔐 <b>Confirm Invoice #${invoiceNumber}</b>\n` +
+    `• Total: <b>${totalStr}</b>\n` +
+    `• Channel: <b>🇳🇬 Naira Bank Transfer (Paj)</b>\n\n` +
+    `Enter your 4-digit PIN to generate the invoice & provision the Naira account:`,
+    { parse_mode: "HTML", ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]) }
+  );
+});
+
+bot.action(/^inv_gbank_(biz|per)_(nuvion_bank|both_nuvion)_(USD|GBP|EUR|NGN|AED|KES|GHS|TZS|MXN)$/, async (ctx) => {
+  await safeAnswerCbQuery(ctx);
+  const user = requireUser(ctx);
+  if (!user) return;
+  const mode = ctx.match[1];
+  const channel = ctx.match[2];
+  const bankCurrency = ctx.match[3];
+  const expectedState = mode === "biz" ? "confirm_biz_invoice" : "confirm_invoice";
+  const accountType = mode === "biz" ? "business" : "personal";
+  const state = convState.getState(ctx.from.id);
+  if (!state || state.type !== expectedState) {
+    return ctx.reply("Session expired. Start again with 🧾 New Invoice.");
+  }
+
+  const cur = state.data.invoiceCurrency || "USD";
+  const totalStr = formatInvoiceAmt(state.data.total, cur);
+
+  if (channel === "both_nuvion") {
+    // Save selected global bank currency and let user pick the NEAR Intents crypto chain
+    convState.setState(ctx.from.id, expectedState, {
+      ...state.data,
+      nuvionBankCurrency: bankCurrency,
+    }, accountType);
+    return ctx.reply(
+      `🌐 <b>Select Client's Crypto Network</b>\n` +
+      `──────────────────────────\n` +
+      `Bank Option: <b>🏦 ${bankCurrency} Global Bank Account</b>\n` +
+      `Amount: <b>${totalStr}</b>\n\n` +
+      `Now pick the crypto network for the <b>NEAR Intents</b> exact-amount option:`,
+      { parse_mode: "HTML", ...buildInvoiceChainKeyboard(mode, "both_nuvion") }
+    );
+  }
+
+  // channel === "nuvion_bank" -> go straight to PIN
+  const invoiceNumber = mode === "biz"
+    ? bizDb.getNextBizInvoiceNumber(ctx.from.id)
+    : invoiceDb.getNextInvoiceNumber(ctx.from.id);
+  const issueDate = new Date().toISOString().split("T")[0];
+  const pinState = mode === "biz" ? "confirm_biz_invoice_pin" : "confirm_invoice_pin";
+
+  convState.setState(ctx.from.id, pinState, {
+    ...state.data,
+    paymentChannel: "nuvion_bank",
+    nuvionBankCurrency: bankCurrency,
+    cryptoChain: "arc",
+    invoiceNumber,
+    issueDate,
+  }, accountType);
+
+  return ctx.reply(
+    `🔐 <b>Confirm Invoice #${invoiceNumber}</b>\n` +
+    `• Total: <b>${totalStr}</b>\n` +
+    `• Channel: <b>🏦 ${bankCurrency} Global Bank Account</b>\n\n` +
+    `Enter your 4-digit PIN to generate the invoice with your named ${bankCurrency} bank details:`,
+    { parse_mode: "HTML", ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]) }
+  );
+});
+
+bot.action(/^inv_chain_(biz|per)_(crypto_intent|both|both_nuvion)_(sol_usdc|near_usdc|sol_usdt|near_usdt|hood_usdg|arc)$/, async (ctx) => {
+  await safeAnswerCbQuery(ctx);
+  const user = requireUser(ctx);
+  if (!user) return;
+  const mode = ctx.match[1];
+  const paymentChannel = ctx.match[2];
+  const cryptoChain = ctx.match[3];
+  const expectedState = mode === "biz" ? "confirm_biz_invoice" : "confirm_invoice";
+  const state = convState.getState(ctx.from.id);
+  if (!state || state.type !== expectedState) {
+    return ctx.reply("Session expired. Start again with 🧾 New Invoice.");
+  }
+
+  const cur = state.data.invoiceCurrency || "USD";
+  const totalStr = formatInvoiceAmt(state.data.total, cur);
+  const chainMeta = INVOICE_CRYPTO_CHAINS[cryptoChain] || INVOICE_CRYPTO_CHAINS.arc;
+  const gbankCur = state.data.nuvionBankCurrency || "USD";
+  const channelDesc = paymentChannel === "both_nuvion"
+    ? `⚡ ${gbankCur} Global Bank + ${chainMeta.shortLabel}`
+    : paymentChannel === "both"
+      ? `⚡ Naira Bank (Paj) + ${chainMeta.shortLabel}`
+      : `🌐 ${chainMeta.shortLabel}${chainMeta.viaNearIntents ? " (NEAR Intents)" : ""}`;
+
+  const invoiceNumber = mode === "biz"
+    ? bizDb.getNextBizInvoiceNumber(ctx.from.id)
+    : invoiceDb.getNextInvoiceNumber(ctx.from.id);
+  const issueDate = new Date().toISOString().split("T")[0];
+  const pinState = mode === "biz" ? "confirm_biz_invoice_pin" : "confirm_invoice_pin";
+  const context = mode === "biz" ? "business" : "personal";
+
+  convState.setState(ctx.from.id, pinState, {
+    ...state.data,
+    paymentChannel,
+    nuvionBankCurrency: gbankCur,
+    cryptoChain,
+    invoiceNumber,
+    issueDate,
+  }, context);
+
+  return ctx.reply(
+    `🔐 <b>Confirm Invoice #${invoiceNumber}</b>\n` +
+    `• Total: <b>${totalStr}</b>\n` +
+    `• Channel: <b>${channelDesc}</b>\n\n` +
+    `Enter your 4-digit PIN to generate the invoice:`,
+    { parse_mode: "HTML", ...Markup.inlineKeyboard([[Markup.button.callback("❌ Cancel", "main_menu")]]) }
+  );
+});
 
 bot.action("action_new_biz_invoice", (ctx) => { ctx.answerCbQuery(); return showBizInvoiceMenu(ctx); });
 
@@ -5307,6 +5629,7 @@ bot.action("action_confirm_biz_invoice", async (ctx) => {
   const invoiceNumber = bizDb.getNextBizInvoiceNumber(ctx.from.id);
   const issueDate = new Date().toISOString().split("T")[0];
   convState.setState(ctx.from.id, "confirm_biz_invoice_pin", {
+    ...state.data,
     parsed: state.data.parsed,
     total: state.data.total,
     walletAddress: state.data.walletAddress,
@@ -5355,6 +5678,7 @@ bot.action("action_confirm_invoice", async (ctx) => {
 
     // Request PIN to decrypt private key for HD wallet derivation
     convState.setState(ctx.from.id, "confirm_invoice_pin", {
+      ...state.data,
       invoiceNumber,
       issueDate,
       parsed,
@@ -5543,18 +5867,7 @@ bot.action("action_new_invoice", (ctx) => {
   ctx.answerCbQuery();
   const context = getContext(ctx.from?.id);
   if (context === "business") return showBizInvoiceMenu(ctx);
-  convState.setState(ctx.from.id, "await_invoice_instruction", {}, context);
-  return ctx.reply(
-    `🧾 Create Invoice\n──────────────────────────\n` +
-    `Describe it:\n\n` +
-    `• "Invoice Acme Ltd $500 for web design, due July 15"\n` +
-    `• "Bill TechCorp $200 consulting and $100 hosting"\n\n` +
-    `Type your instruction:`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback("📋 My Invoices", "action_list_invoices")],
-      [Markup.button.callback("❌ Cancel", "main_menu")],
-    ])
-  );
+  return showInvoiceCurrencyPicker(ctx, "per");
 });
 
 bot.action("action_confirm_shopping", (ctx) => {
@@ -9446,6 +9759,10 @@ bot.on("text", async (ctx) => {
       convState.clearState(userId);
 
       try {
+        const invoiceCurrency = state.data.invoiceCurrency || "USD";
+        const paymentChannel = state.data.paymentChannel || "both";
+        const nuvionBankCurrency = state.data.nuvionBankCurrency || "USD";
+        const cryptoChain = state.data.cryptoChain || "arc";
         const fullInvoice = await createCompleteInvoice({
           telegramId: userId,
           decryptedPrivateKey: decryptedKey,
@@ -9455,7 +9772,12 @@ bot.on("text", async (ctx) => {
             clientName: state.data.parsed.clientName,
             clientEmail: state.data.parsed.clientEmail,
             items: state.data.parsed.items,
-            totalUsdc: state.data.total,
+            totalUsdc: invoiceCurrency === "USD" ? state.data.total : undefined,
+            totalNgn: invoiceCurrency === "NGN" ? state.data.total : undefined,
+            invoiceCurrency,
+            paymentChannel,
+            nuvionBankCurrency,
+            cryptoChain,
             dueDate: state.data.parsed.dueDate,
             notes: state.data.parsed.notes,
             issueDate: state.data.issueDate,
@@ -9469,30 +9791,48 @@ bot.on("text", async (ctx) => {
           console.error("[points_award_invoice]", err);
         }
 
+        const displayTotal = fullInvoice.invoiceCurrency === "NGN"
+          ? `₦${Number(fullInvoice.totalNgn || 0).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (~$${fullInvoice.totalUsdc.toFixed(2)})`
+          : `$${fullInvoice.totalUsdc.toFixed(2)} USD`;
+
         let caption =
-          `🧾 <b>Invoice #${fullInvoice.invoiceNumber} Created!</b>\n` +
+          `🧾 <b>Invoice #${escapeHtml(fullInvoice.invoiceNumber)} Created!</b>\n` +
           `──────────────────────────\n` +
-          `👤 <b>Client:</b> ${state.data.parsed.clientName}\n` +
-          `💵 <b>Amount:</b> $${fullInvoice.totalUsdc.toFixed(2)}\n` +
-          (state.data.parsed.dueDate ? `📅 <b>Due Date:</b> ${state.data.parsed.dueDate}\n` : "");
+          `👤 <b>Client:</b> ${escapeHtml(state.data.parsed.clientName)}\n` +
+          `💵 <b>Amount:</b> ${escapeHtml(displayTotal)}\n` +
+          (state.data.parsed.dueDate ? `📅 <b>Due Date:</b> ${escapeHtml(state.data.parsed.dueDate)}\n` : "");
 
         if (fullInvoice.fiatDetails) {
-          caption +=
-            `\n🇳🇬 <b>Option 1: Nigerian Bank Transfer (Naira)</b>\n` +
-            `• <b>Bank:</b> ${fullInvoice.fiatDetails.bankName}\n` +
-            `• <b>Account No:</b> <code>${fullInvoice.fiatDetails.accountNumber}</code> (tap to copy)\n` +
-            `• <b>Account Name:</b> ${fullInvoice.fiatDetails.accountName}\n` +
-            `• <b>Exact Amount:</b> ₦${fullInvoice.fiatDetails.fiatAmount.toLocaleString()}\n` +
-            `<i>(Dedicated virtual account for this invoice alone)</i>\n`;
+          const fd = fullInvoice.fiatDetails;
+          const fiatCur = String(fd.currency || "NGN").toUpperCase();
+          const bankTitle = fd.provider === "global_bank"
+            ? `🏦 <b>Global Bank Account (${escapeHtml(fiatCur)}${fd.railHint ? ` · ${escapeHtml(fd.railHint)}` : ""})</b>`
+            : `🇳🇬 <b>Nigerian Bank Transfer (Paj · NGN)</b>`;
+          caption += `\n${bankTitle}\n`;
+          if (fd.bankName) caption += `• <b>Bank:</b> ${escapeHtml(fd.bankName)}\n`;
+          if (fd.accountNumber) caption += `• <b>Account No:</b> <code>${escapeHtml(fd.accountNumber)}</code>\n`;
+          if (fd.iban) caption += `• <b>IBAN:</b> <code>${escapeHtml(fd.iban)}</code>\n`;
+          if (fd.routingNumber) caption += `• <b>Routing No:</b> <code>${escapeHtml(fd.routingNumber)}</code>\n`;
+          if (fd.sortCode) caption += `• <b>Sort Code:</b> <code>${escapeHtml(fd.sortCode)}</code>\n`;
+          if (fd.swiftCode) caption += `• <b>SWIFT/BIC:</b> <code>${escapeHtml(fd.swiftCode)}</code>\n`;
+          if (fd.fiatAmount != null && fiatCur === "NGN") {
+            caption += `• <b>Exact Amount:</b> ₦${Number(fd.fiatAmount).toLocaleString("en-NG")}\n`;
+          }
+        } else if (fullInvoice.fiatPendingCurrency) {
+          caption += `\n⏳ <i>Your ${escapeHtml(fullInvoice.fiatPendingCurrency)} Global Bank Account is being activated — once active, future invoices will embed it automatically.</i>\n`;
         }
 
-        caption +=
-          `\n🌐 <b>Option 2: Direct Crypto / Web3 Payment (USDC)</b>\n` +
-          `• <b>Deposit Address:</b> <code>${fullInvoice.paymentAddress}</code>\n` +
-          `• <b>Network:</b> Arc Mainnet (USDC)\n` +
-          (fullInvoice?.nearAddress ? `• <b>NEAR / 1Click:</b> <code>${fullInvoice.nearAddress}</code>\n` : "") +
-          `<i>(Dedicated single-invoice address · QR code on card)</i>\n\n` +
-          `⚡ <i>Payments settle automatically to your account!</i>`;
+        if (fullInvoice.cryptoPaymentDetails) {
+          const c = fullInvoice.cryptoPaymentDetails;
+          caption +=
+            `\n🌐 <b>Crypto Payment (${escapeHtml(c.chainLabel)} · ${escapeHtml(c.tokenSymbol)}${c.viaNearIntents ? " via NEAR Intents" : ""})</b>\n` +
+            `• <b>Exact Amount:</b> ${Number(c.exactAmount).toFixed(2)} ${escapeHtml(c.tokenSymbol)}\n` +
+            `• <b>Deposit Address:</b> <code>${escapeHtml(c.depositAddress)}</code>\n` +
+            (c.depositMemo ? `• <b>Memo:</b> <code>${escapeHtml(c.depositMemo)}</code>\n` : "") +
+            (c.fallbackFrom ? `<i>(Fell back from ${escapeHtml(c.fallbackFrom)} to Arc Mainnet USDC)</i>\n` : "");
+        }
+
+        caption += `\n⚡ <i>Payments settle automatically to your account! Forward the message below with this image to your client.</i>`;
 
         await ctx.replyWithPhoto({ source: fullInvoice.pngPath }, {
           caption,
@@ -9504,7 +9844,15 @@ bot.on("text", async (ctx) => {
           ]),
         });
 
-        console.log(`[invoice_hd] Created invoice #${fullInvoice.invoiceNumber} with dual payment options`);
+        if (fullInvoice.clientCopyText) {
+          await ctx.reply(
+            `📋 <b>Ready-to-Send Client Message</b> <i>(copy &amp; send with the invoice image above)</i>\n──────────────────────────\n\n` +
+            fullInvoice.clientCopyText,
+            { parse_mode: "HTML" }
+          );
+        }
+
+        console.log(`[invoice_hd] Created invoice #${fullInvoice.invoiceNumber} (${invoiceCurrency}, channel=${paymentChannel}, chain=${cryptoChain})`);
       } catch (err) {
         console.error("[invoice_hd]", err);
         await ctx.reply("❌ Failed to create invoice. Please try again.");
@@ -9534,6 +9882,10 @@ bot.on("text", async (ctx) => {
 
       try {
         const profile = bizProfile.getBizProfile(userId);
+        const invoiceCurrency = state.data.invoiceCurrency || "USD";
+        const paymentChannel = state.data.paymentChannel || "both";
+        const nuvionBankCurrency = state.data.nuvionBankCurrency || "USD";
+        const cryptoChain = state.data.cryptoChain || "arc";
         const fullBizInvoice = await createCompleteBizInvoice({
           telegramId: userId,
           decryptedBizKey,
@@ -9543,7 +9895,12 @@ bot.on("text", async (ctx) => {
             clientName: state.data.parsed.clientName,
             clientEmail: state.data.parsed.clientEmail,
             items: state.data.parsed.items,
-            totalUsdc: state.data.total,
+            totalUsdc: invoiceCurrency === "USD" ? state.data.total : undefined,
+            totalNgn: invoiceCurrency === "NGN" ? state.data.total : undefined,
+            invoiceCurrency,
+            paymentChannel,
+            nuvionBankCurrency,
+            cryptoChain,
             dueDate: state.data.parsed.dueDate,
             notes: state.data.parsed.notes,
             issueDate: state.data.issueDate,
@@ -9553,41 +9910,60 @@ bot.on("text", async (ctx) => {
 
         const goal = bizDb.getSavingsGoal(userId);
         const goalNote = goal
-          ? `\n💰 ${goal.percentage}% ($${(state.data.total * goal.percentage / 100).toFixed(2)}) will auto-save to Business Savings on settlement.`
+          ? `\n💰 ${goal.percentage}% ($${(fullBizInvoice.totalUsdc * goal.percentage / 100).toFixed(2)}) will auto-save to Business Savings on settlement.`
           : "";
 
         try {
-          db.awardPoints(userId, POINTS.businessInvoice, "create_business_invoice", `Invoice #${fullBizInvoice.invoiceNumber} for $${state.data.total.toFixed(2)}`);
+          db.awardPoints(userId, POINTS.businessInvoice, "create_business_invoice", `Invoice #${fullBizInvoice.invoiceNumber} for $${fullBizInvoice.totalUsdc.toFixed(2)}`);
         } catch (err) {
           console.error("[points_award_biz_invoice]", err);
         }
 
+        const displayTotal = fullBizInvoice.invoiceCurrency === "NGN"
+          ? `₦${Number(fullBizInvoice.totalNgn || 0).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (~$${fullBizInvoice.totalUsdc.toFixed(2)})`
+          : `$${fullBizInvoice.totalUsdc.toFixed(2)} USD`;
+
         let caption =
-          `🧾 <b>Business Invoice #${fullBizInvoice.invoiceNumber}</b>\n` +
+          `🧾 <b>Business Invoice #${escapeHtml(fullBizInvoice.invoiceNumber)}</b>\n` +
           `──────────────────────────\n` +
-          `🏢 <b>Business:</b> ${profile?.business_name || user.username || `Business`}\n` +
-          `👤 <b>Client:</b> ${state.data.parsed.clientName}\n` +
-          `💵 <b>Total:</b> $${fullBizInvoice.totalUsdc.toFixed(2)}\n` +
-          (state.data.parsed.dueDate ? `📅 <b>Due Date:</b> ${state.data.parsed.dueDate}\n` : "");
+          `🏢 <b>Business:</b> ${escapeHtml(profile?.business_name || user.username || `Business`)}\n` +
+          `👤 <b>Client:</b> ${escapeHtml(state.data.parsed.clientName)}\n` +
+          `💵 <b>Total:</b> ${escapeHtml(displayTotal)}\n` +
+          (state.data.parsed.dueDate ? `📅 <b>Due Date:</b> ${escapeHtml(state.data.parsed.dueDate)}\n` : "");
 
         if (fullBizInvoice.fiatDetails) {
+          const fd = fullBizInvoice.fiatDetails;
+          const fiatCur = String(fd.currency || "NGN").toUpperCase();
+          const bankTitle = fd.provider === "global_bank"
+            ? `🏦 <b>Global Bank Account (${escapeHtml(fiatCur)}${fd.railHint ? ` · ${escapeHtml(fd.railHint)}` : ""})</b>`
+            : `🇳🇬 <b>Nigerian Bank Transfer (Paj · NGN)</b>`;
+          caption += `\n${bankTitle}\n`;
+          if (fd.bankName) caption += `• <b>Bank:</b> ${escapeHtml(fd.bankName)}\n`;
+          if (fd.accountNumber) caption += `• <b>Account No:</b> <code>${escapeHtml(fd.accountNumber)}</code>\n`;
+          if (fd.iban) caption += `• <b>IBAN:</b> <code>${escapeHtml(fd.iban)}</code>\n`;
+          if (fd.routingNumber) caption += `• <b>Routing No:</b> <code>${escapeHtml(fd.routingNumber)}</code>\n`;
+          if (fd.sortCode) caption += `• <b>Sort Code:</b> <code>${escapeHtml(fd.sortCode)}</code>\n`;
+          if (fd.swiftCode) caption += `• <b>SWIFT/BIC:</b> <code>${escapeHtml(fd.swiftCode)}</code>\n`;
+          if (fd.fiatAmount != null && fiatCur === "NGN") {
+            caption += `• <b>Exact Amount:</b> ₦${Number(fd.fiatAmount).toLocaleString("en-NG")}\n`;
+          }
+        } else if (fullBizInvoice.fiatPendingCurrency) {
+          caption += `\n⏳ <i>Your ${escapeHtml(fullBizInvoice.fiatPendingCurrency)} Global Bank Account is being activated — once active, future invoices will embed it automatically.</i>\n`;
+        }
+
+        if (fullBizInvoice.cryptoPaymentDetails) {
+          const c = fullBizInvoice.cryptoPaymentDetails;
           caption +=
-            `\n🇳🇬 <b>Option 1: Nigerian Bank Transfer (Naira)</b>\n` +
-            `• <b>Bank:</b> ${fullBizInvoice.fiatDetails.bankName}\n` +
-            `• <b>Account No:</b> <code>${fullBizInvoice.fiatDetails.accountNumber}</code> (tap to copy)\n` +
-            `• <b>Account Name:</b> ${fullBizInvoice.fiatDetails.accountName}\n` +
-            `• <b>Exact Amount:</b> ₦${fullBizInvoice.fiatDetails.fiatAmount.toLocaleString()}\n` +
-            `<i>(Dedicated virtual account for this invoice only)</i>\n`;
+            `\n🌐 <b>Crypto Payment (${escapeHtml(c.chainLabel)} · ${escapeHtml(c.tokenSymbol)}${c.viaNearIntents ? " via NEAR Intents" : ""})</b>\n` +
+            `• <b>Exact Amount:</b> ${Number(c.exactAmount).toFixed(2)} ${escapeHtml(c.tokenSymbol)}\n` +
+            `• <b>Deposit Address:</b> <code>${escapeHtml(c.depositAddress)}</code>\n` +
+            (c.depositMemo ? `• <b>Memo:</b> <code>${escapeHtml(c.depositMemo)}</code>\n` : "") +
+            (c.fallbackFrom ? `<i>(Fell back from ${escapeHtml(c.fallbackFrom)} to Arc Mainnet USDC)</i>\n` : "");
         }
 
         caption +=
-          `\n🌐 <b>Option 2: Direct Crypto / Web3 Payment (USDC)</b>\n` +
-          `• <b>Deposit Address:</b> <code>${fullBizInvoice.paymentAddress}</code>\n` +
-          `• <b>Network:</b> Arc Mainnet (USDC)\n` +
-          (fullBizInvoice?.nearAddress ? `• <b>NEAR / 1Click:</b> <code>${fullBizInvoice.nearAddress}</code>\n` : "") +
-          `<i>(Dedicated address · QR code on invoice card)</i>\n` +
           goalNote +
-          `\n⚡ <i>Payments settle directly into your main business account!</i>`;
+          `\n⚡ <i>Payments settle directly into your business account! Forward the message below with this image to your client.</i>`;
 
         await ctx.replyWithPhoto({ source: fullBizInvoice.pngPath }, {
           caption,
@@ -9598,6 +9974,14 @@ bot.on("text", async (ctx) => {
             [Markup.button.callback("🏠 Main Menu", "main_menu")],
           ]),
         });
+
+        if (fullBizInvoice.clientCopyText) {
+          await ctx.reply(
+            `📋 <b>Ready-to-Send Client Message</b> <i>(copy &amp; send with the invoice image above)</i>\n──────────────────────────\n\n` +
+            fullBizInvoice.clientCopyText,
+            { parse_mode: "HTML" }
+          );
+        }
       } catch (err) {
         console.error("[biz_invoice_hd]", err);
         await ctx.reply("❌ Failed to create business invoice. Please try again.");
@@ -9758,9 +10142,11 @@ bot.on("text", async (ctx) => {
       await ctx.reply("⏳ Parsing your invoice...");
       const walletAddress = user.business_deposit_address || user.deposit_address;
       const profile = bizProfile.getBizProfile(userId);
+      const selectedCurrency = (state.data && state.data.invoiceCurrency) || (/[₦]|(?:^|\b)(?:ngn|naira)\b/i.test(text) ? "NGN" : "USD");
       const parsed = await parseSmartInvoiceIntent(text, {
         businessName: profile?.business_name || ctx.from.username || `User ${userId}`,
         walletAddress,
+        defaultCurrency: selectedCurrency,
       });
       if (parsed.error) {
         return ctx.reply(
@@ -9768,21 +10154,22 @@ bot.on("text", async (ctx) => {
           Markup.inlineKeyboard([[Markup.button.callback("🧾 Try Again", "action_new_biz_invoice")]])
         );
       }
+      const invoiceCurrency = String(selectedCurrency || parsed.currency || "USD").toUpperCase() === "NGN" ? "NGN" : "USD";
       const total = parsed.items.reduce((s, i) => s + Number(i.quantity || 1) * Number(i.unitPrice || 0), 0);
-      const itemLines = parsed.items.map(i => `• ${i.description} × ${i.quantity || 1} @ $${Number(i.unitPrice).toFixed(2)}`).join("\n");
-      convState.setState(userId, "confirm_biz_invoice", { parsed, total, walletAddress }, "business");
+      const itemLines = parsed.items.map(i => `• ${escapeHtml(i.description)} × ${i.quantity || 1} @ ${formatInvoiceAmt(i.unitPrice, invoiceCurrency)}`).join("\n");
+      convState.setState(userId, "confirm_biz_invoice", { parsed, total, walletAddress, invoiceCurrency }, "business");
+      const isBizVerified = isTier1VerifiedForInvoice(userId, "business");
       return ctx.reply(
-        `📋 Invoice Preview\n──────────────────────────\n` +
-        `To: ${parsed.clientName}${parsed.clientEmail ? " (" + parsed.clientEmail + ")" : ""}\n` +
+        `📋 <b>Invoice Preview (${invoiceCurrency})</b>\n──────────────────────────\n` +
+        `👤 <b>To:</b> ${escapeHtml(parsed.clientName)}${parsed.clientEmail ? " (" + escapeHtml(parsed.clientEmail) + ")" : ""}\n` +
         `${itemLines}\n──────────────────────────\n` +
-        `Total: $${total.toFixed(2)}\n` +
-        (parsed.dueDate ? `Due: ${parsed.dueDate}\n` : "") +
-        `\nLooks right?`,
-        Markup.inlineKeyboard([
-          [Markup.button.callback("✅ Generate Invoice", "action_confirm_biz_invoice")],
-          [Markup.button.callback("✏️ Edit", "action_new_biz_invoice")],
-          [Markup.button.callback("❌ Cancel", "main_menu")],
-        ])
+        `💰 <b>Total:</b> ${formatInvoiceAmt(total, invoiceCurrency)}\n` +
+        (parsed.dueDate ? `📅 <b>Due:</b> ${escapeHtml(parsed.dueDate)}\n` : "") +
+        `\n<b>Step 3 of 3 · How will your client pay?</b>`,
+        {
+          parse_mode: "HTML",
+          ...buildInvoiceChannelKeyboard("biz", isBizVerified),
+        }
       );
     }
 
@@ -9793,9 +10180,11 @@ bot.on("text", async (ctx) => {
       const user = requireUser(ctx);
       if (!user) return;
       await ctx.reply("⏳ Parsing your invoice...");
+      const selectedCurrency = (state.data && state.data.invoiceCurrency) || (/[₦]|(?:^|\b)(?:ngn|naira)\b/i.test(text) ? "NGN" : "USD");
       const parsed = await parseSmartInvoiceIntent(text, {
         businessName: user.username || `User ${userId}`,
         walletAddress: user.deposit_address,
+        defaultCurrency: selectedCurrency,
       });
       if (parsed.error) {
         return ctx.reply(
@@ -9803,19 +10192,21 @@ bot.on("text", async (ctx) => {
           Markup.inlineKeyboard([[Markup.button.callback("🧾 Try Again", "action_new_invoice")]])
         );
       }
+      const invoiceCurrency = String(selectedCurrency || parsed.currency || "USD").toUpperCase() === "NGN" ? "NGN" : "USD";
       const total = parsed.items.reduce((s, i) => s + Number(i.quantity || 1) * Number(i.unitPrice || 0), 0);
-      const itemLines = parsed.items.map(i => `• ${i.description} × ${i.quantity || 1} @ $${Number(i.unitPrice).toFixed(2)}`).join("\n");
-      convState.setState(userId, "confirm_invoice", { parsed, total }, "personal");
+      const itemLines = parsed.items.map(i => `• ${escapeHtml(i.description)} × ${i.quantity || 1} @ ${formatInvoiceAmt(i.unitPrice, invoiceCurrency)}`).join("\n");
+      convState.setState(userId, "confirm_invoice", { parsed, total, invoiceCurrency }, "personal");
+      const isPerVerified = isTier1VerifiedForInvoice(userId, "personal");
       return ctx.reply(
-        `📋 Invoice Preview\n──────────────────────────\n` +
-        `To: ${parsed.clientName}\n${itemLines}\n──────────────────────────\n` +
-        `Total: $${total.toFixed(2)}\n` +
-        (parsed.dueDate ? `Due: ${parsed.dueDate}\n` : ""),
-        Markup.inlineKeyboard([
-          [Markup.button.callback("✅ Generate Invoice", "action_confirm_invoice")],
-          [Markup.button.callback("✏️ Edit", "action_new_invoice")],
-          [Markup.button.callback("❌ Cancel", "main_menu")],
-        ])
+        `📋 <b>Invoice Preview (${invoiceCurrency})</b>\n──────────────────────────\n` +
+        `👤 <b>To:</b> ${escapeHtml(parsed.clientName)}\n${itemLines}\n──────────────────────────\n` +
+        `💰 <b>Total:</b> ${formatInvoiceAmt(total, invoiceCurrency)}\n` +
+        (parsed.dueDate ? `📅 <b>Due:</b> ${escapeHtml(parsed.dueDate)}\n` : "") +
+        `\n<b>Step 3 of 3 · How will your client pay?</b>`,
+        {
+          parse_mode: "HTML",
+          ...buildInvoiceChannelKeyboard("per", isPerVerified),
+        }
       );
     }
 
@@ -10335,33 +10726,33 @@ bot.on("text", async (ctx) => {
 
     case "invoice_create": {
       const instruction = classified.params?.invoice_instruction || text;
-      convState.setState(userId, context === "business" ? "await_biz_invoice_instruction" : "await_invoice_instruction", {}, context);
-      // Re-process the same text through the invoice flow by triggering state handler
-      // Simplest approach: synthetic re-entry
-      const syntheticCtx = { ...ctx, message: { ...ctx.message, text: instruction } };
-      // Store and immediately re-handle — easier to just set state and ask user to resend
       convState.clearState(userId);
-      // Parse directly here
       const walletAddress = getActiveWallet(user);
       const profile = bizProfile.getBizProfile(userId);
+      const detectedCurrency = /[₦]|(?:^|\b)(?:ngn|naira)\b/i.test(instruction) ? "NGN" : "USD";
       const parsed = await parseSmartInvoiceIntent(instruction, {
         businessName: profile?.business_name || user.username || `User ${userId}`,
         walletAddress,
+        defaultCurrency: detectedCurrency,
       });
       if (parsed.error) return ctx.reply(`❌ ${parsed.error}`);
+      const invoiceCurrency = String(detectedCurrency || parsed.currency || "USD").toUpperCase() === "NGN" ? "NGN" : "USD";
       const total = parsed.items.reduce((s, i) => s + Number(i.quantity || 1) * Number(i.unitPrice || 0), 0);
-      const itemLines = parsed.items.map(i => `• ${i.description} × ${i.quantity || 1} @ $${Number(i.unitPrice).toFixed(2)}`).join("\n");
+      const itemLines = parsed.items.map(i => `• ${escapeHtml(i.description)} × ${i.quantity || 1} @ ${formatInvoiceAmt(i.unitPrice, invoiceCurrency)}`).join("\n");
+      const mode = context === "business" ? "biz" : "per";
       const stateType = context === "business" ? "confirm_biz_invoice" : "confirm_invoice";
-      convState.setState(userId, stateType, { parsed, total, walletAddress }, context);
+      const verified = isTier1VerifiedForInvoice(userId, context);
+      convState.setState(userId, stateType, { parsed, total, walletAddress, invoiceCurrency }, context);
       return ctx.reply(
-        `📋 Invoice Preview\n──────────────────────────\n` +
-        `To: ${parsed.clientName}\n${itemLines}\n──────────────────────────\n` +
-        `Total: $${total.toFixed(2)}\n` +
-        (parsed.dueDate ? `Due: ${parsed.dueDate}\n` : ""),
-        Markup.inlineKeyboard([
-          [Markup.button.callback("✅ Generate", context === "business" ? "action_confirm_biz_invoice" : "action_confirm_invoice")],
-          [Markup.button.callback("❌ Cancel", "main_menu")],
-        ])
+        `📋 <b>Invoice Preview (${invoiceCurrency})</b>\n──────────────────────────\n` +
+        `👤 <b>To:</b> ${escapeHtml(parsed.clientName)}\n${itemLines}\n──────────────────────────\n` +
+        `💰 <b>Total:</b> ${formatInvoiceAmt(total, invoiceCurrency)}\n` +
+        (parsed.dueDate ? `📅 <b>Due:</b> ${escapeHtml(parsed.dueDate)}\n` : "") +
+        `\n<b>How will your client pay?</b>`,
+        {
+          parse_mode: "HTML",
+          ...buildInvoiceChannelKeyboard(mode, verified),
+        }
       );
     }
 
