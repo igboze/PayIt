@@ -44,6 +44,9 @@ const deps = {
 const overrides = {};
 const dep = (name) => (name in overrides ? overrides[name] : deps[name]);
 function __setTestDeps(o = {}) {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("__setTestDeps cannot be used in production.");
+  }
   for (const k of Object.keys(overrides)) delete overrides[k];
   Object.assign(overrides, o);
   _banksCache = { rows: null, fetchedAt: 0 };
@@ -279,7 +282,7 @@ async function switchAccount(auth, body, publicUserFn) {
 
   const chains = dep("chains");
   let balance = null;
-  let otherBalanceUsdc = 0;
+  let otherBalanceUsdc = null;
   try {
     const u = await chains.getUnifiedBalance(updated, target, { strictBusiness: target === "business" });
     balance = { totalUsdc: u.total, arc: u.arc, base: u.base || { usdc: 0 }, gateway: u.gateway || { usdc: 0 }, solana: u.solana, byChain: u.byChain || null, pendingBridgeUsdc: u.pendingNear };
@@ -288,7 +291,7 @@ async function switchAccount(auth, body, publicUserFn) {
     const other = target === "business" ? "personal" : "business";
     try {
       const o = await chains.getUnifiedBalance(updated, other, { strictBusiness: other === "business" });
-      otherBalanceUsdc = Number(o?.total || 0);
+      if (o && Number.isFinite(Number(o.total))) otherBalanceUsdc = Number(o.total);
     } catch (_) {}
   }
 
@@ -405,6 +408,7 @@ async function listBanks(auth, url) {
   const country = (url.searchParams.get("country") || "NG").toUpperCase();
   const q = (url.searchParams.get("q") || "").trim().toLowerCase();
   let banks = null;
+  let source = "live";
 
   if (country === "NG" && _banksCache.rows && Date.now() - _banksCache.fetchedAt < BANKS_CACHE_MS) {
     banks = _banksCache.rows;
@@ -425,12 +429,13 @@ async function listBanks(auth, url) {
 
   if (!banks || !banks.length) {
     banks = country === "NG" ? fallbackBankList() : [];
+    source = "directory";
   }
   const filtered = q
     ? banks.filter((b) => b.name.toLowerCase().includes(q) || b.code.includes(q))
     : banks;
 
-  return { status: 200, data: { country, banks: filtered } };
+  return { status: 200, data: { country, source, banks: filtered } };
 }
 
 async function getBankRates() {
@@ -443,6 +448,9 @@ async function getBankRates() {
   } catch (_) {}
   if (!offRampRate) {
     try { offRampRate = Number(await dep("fx").getUsdToNgnRate()) || null; } catch (_) {}
+  }
+  if (!onRampRate && !offRampRate) {
+    throw new FeatureError(503, "rate_unavailable", "Live NGN exchange rates are temporarily unavailable. Please try again.");
   }
   return {
     status: 200,
@@ -642,17 +650,19 @@ async function getCardDepositLink(auth, url) {
 async function getNgnDepositStatus(auth, orderId) {
   const id = decodeURIComponent(String(orderId || "")).trim();
   if (!id) throw bad("Order ID is required.");
+  // Strict ownership check BEFORE querying Paj — prevents IDOR enumeration of other users' orders.
   const local = dep("db").getOnrampOrderByOrderId?.(id) || null;
-  if (local && Number(local.telegram_id) !== auth.telegramId) {
+  if (!local || Number(local.telegram_id) !== auth.telegramId) {
     throw new FeatureError(404, "not_found", "Deposit order not found.");
   }
-  const live = await dep("paj").getOnrampOrder(id);
-  if (!live && !local) throw new FeatureError(404, "not_found", "Deposit order not found.");
+  let live = null;
+  try { live = await dep("paj").getOnrampOrder(id); } catch (_) {}
   return {
     status: 200,
     data: {
       orderId: id,
-      status: live?.status || local?.status || "pending",
+      accountType: local.account_type || "personal",
+      status: live?.status || local.status || "pending",
       order: live || local,
     },
   };
@@ -1007,6 +1017,9 @@ async function getRewards(auth, url) {
     status: 200,
     data: {
       pointsBalance,
+      pointsPerUsd: 20,
+      minRedeemPoints: 20,
+      redeemValueUsd: Number((pointsBalance / 20).toFixed(2)),
       referralCode,
       referralLink,
       referredCount,
@@ -1030,14 +1043,8 @@ async function getKycStatus(auth) {
   const business = db.getNuvionEntityByUser(auth.telegramId, "business");
   const personalApproved = String(personal?.status || "").toLowerCase() === "approved";
   const businessApproved = String(business?.status || "").toLowerCase() === "approved";
-  const cfg = fg.getVelocityConfig ? fg.getVelocityConfig() : {
-    tier0HourlyLimitUsd: 300,
-    tier0DailyLimitUsd: 500,
-    tier1HourlyLimitUsd: 10000,
-    tier1DailyLimitUsd: 25000,
-    tier1BizDailyLimitUsd: 100000,
-  };
-  const stats = fg.getUserOutboundStats ? fg.getUserOutboundStats(auth.telegramId) : { usd1h: 0, usd24h: 0 };
+  const cfg = fg.getVelocityConfig();
+  const stats = fg.getUserOutboundStats(auth.telegramId);
 
   return {
     status: 200,
@@ -1872,7 +1879,8 @@ async function submitKyc(auth, body) {
   const lastName = reqStr(body, "lastName", { max: 80 });
   const email = reqStr(body, "email", { max: 120 });
   const phoneNumber = reqStr(body, "phoneNumber", { max: 32 });
-  const dateOfBirth = reqStr(body, "dateOfBirth", { max: 20 });
+  const dateOfBirth = reqStr(body, "dateOfBirth", { pattern: /^\d{4}-\d{2}-\d{2}$/, max: 20 });
+  const gender = reqStr(body, "gender", { pattern: /^(male|female)$/i }).toLowerCase();
   if (!body?.address || typeof body.address !== "object") throw bad("address object is required.");
   if (!body?.idDocument || typeof body.idDocument !== "object") throw bad("idDocument object is required.");
 
@@ -1886,7 +1894,7 @@ async function submitKyc(auth, body) {
       email,
       phoneNumber,
       dateOfBirth,
-      gender: optStr(body, "gender", { pattern: /^(male|female)$/i })?.toLowerCase() || "male",
+      gender,
       address: body.address,
       idDocument: body.idDocument,
     });
@@ -1916,6 +1924,17 @@ async function submitKyb(auth, body) {
   const registrationNumber = reqStr(body, "registrationNumber", { max: 64 });
   const email = reqStr(body, "email", { max: 120 });
   const phoneNumber = reqStr(body, "phoneNumber", { max: 32 });
+  const industry = reqStr(body, "industry", { max: 80 });
+  const businessType = reqStr(body, "businessType", { pattern: /^(llc|corporation|sole_proprietorship|partnership)$/i }).toLowerCase();
+  const currentYear = new Date().getUTCFullYear();
+  const incorporationYear = Math.round(Number(body?.incorporationYear));
+  const incorporationMonth = Math.round(Number(body?.incorporationMonth));
+  if (!Number.isInteger(incorporationYear) || incorporationYear < 1900 || incorporationYear > currentYear) {
+    throw bad(`incorporationYear must be a valid year between 1900 and ${currentYear}.`);
+  }
+  if (!Number.isInteger(incorporationMonth) || incorporationMonth < 1 || incorporationMonth > 12) {
+    throw bad("incorporationMonth must be an integer between 1 and 12.");
+  }
   if (!body?.address || typeof body.address !== "object") throw bad("address object is required.");
   if (!body?.officer || typeof body.officer !== "object") throw bad("officer object is required.");
 
@@ -1928,13 +1947,13 @@ async function submitKyb(auth, body) {
       taxId: optStr(body, "taxId", { max: 64 }) || registrationNumber,
       incorporationCountry: countryCode,
       incorporationState: optStr(body, "incorporationState", { max: 80 }) || body.address.state || "",
-      incorporationYear: Number(body?.incorporationYear || 2022),
-      incorporationMonth: Number(body?.incorporationMonth || 1),
+      incorporationYear,
+      incorporationMonth,
       email,
       phoneNumber,
       website: optStr(body, "website", { max: 200 }) || undefined,
-      industry: optStr(body, "industry", { max: 80 }) || "Financial Technology",
-      entityType: optStr(body, "businessType", { max: 40 }) || "llc",
+      industry,
+      entityType: businessType,
       address: body.address,
       officer: body.officer,
     });

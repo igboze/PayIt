@@ -31,6 +31,9 @@ const deps = {
 const overrides = {};
 const dep = (name) => (name in overrides ? overrides[name] : deps[name]);
 function __setTestDeps(o = {}) {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("__setTestDeps cannot be used in production.");
+  }
   for (const k of Object.keys(overrides)) delete overrides[k];
   Object.assign(overrides, o);
 }
@@ -816,8 +819,8 @@ const ACTIONS = {
   "rewards.redeem": {
     async prepare(ctx, body) {
       const points = Math.round(Number(body?.points));
-      if (!Number.isInteger(points) || points < 100 || points > 1_000_000) {
-        throw bad("Enter a valid number of points (minimum 100).", "invalid_amount");
+      if (!Number.isInteger(points) || points < 20 || points > 1_000_000) {
+        throw bad("Enter a valid number of points (minimum 20).", "invalid_amount");
       }
       const balance = dep("db").getPointsBalance(ctx.telegramId);
       if (balance < points) throw new ActionError(400, "insufficient_points", `You only have ${balance} points available.`);

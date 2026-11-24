@@ -28,6 +28,9 @@ const deps = {
 const overrides = {};
 const dep = (name) => (name in overrides ? overrides[name] : deps[name]);
 function __setTestDeps(o = {}) {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("__setTestDeps cannot be used in production.");
+  }
   for (const k of Object.keys(overrides)) delete overrides[k];
   Object.assign(overrides, o);
   const subOverrides = { ...o };
@@ -53,11 +56,19 @@ class HttpError extends Error {
 
 // ─── http helpers ─────────────────────────────────────────────────────────────
 
+const SECURITY_HEADERS = {
+  "Cache-Control": "no-store",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "no-referrer",
+  "Content-Security-Policy": "default-src 'none'",
+  "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+};
+
 function sendJson(res, status, data) {
   res.writeHead(status, {
     "Content-Type": "application/json",
-    "Cache-Control": "no-store",
-    "X-Content-Type-Options": "nosniff",
+    ...SECURITY_HEADERS,
   });
   res.end(JSON.stringify(data));
 }
@@ -85,8 +96,18 @@ function parseBody(req) {
 }
 
 function clientIp(req) {
-  const fwd = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
-  return fwd || req.socket?.remoteAddress || "unknown";
+  // Never trust the leftmost X-Forwarded-For entry (trivially spoofed by attackers to bypass rate limits).
+  // Prefer Cloudflare's edge header or the rightmost proxy-appended hop when running behind a reverse proxy.
+  if (String(process.env.TRUST_PROXY || "true").toLowerCase() !== "false") {
+    const cfIp = String(req.headers["cf-connecting-ip"] || "").trim();
+    if (cfIp) return cfIp;
+    const xff = String(req.headers["x-forwarded-for"] || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (xff.length) return xff[xff.length - 1];
+  }
+  return req.socket?.remoteAddress || "unknown";
 }
 
 // ─── rate limiting (in-memory, per process) ───────────────────────────────────
@@ -151,8 +172,12 @@ function authenticate(req) {
   const token = header.startsWith("Bearer ") ? header.slice(7).trim() : null;
   const session = tokens.verifyAccessToken(token);
   if (!session) throw new HttpError(401, "unauthorized", "Session expired. Please sign in again.");
-  const user = dep("db").getUser(session.telegramId);
+  const db = dep("db");
+  const user = db.getUser(session.telegramId);
   if (!user) throw new HttpError(401, "unauthorized", "Account not found.");
+  if (db.isBlocked(session.telegramId)) {
+    throw new HttpError(403, "account_frozen", "Your account is frozen. Please contact support.");
+  }
   const rawAcctHeader = String(req.headers["x-proxim-account"] || "").trim().toLowerCase();
   if (rawAcctHeader && rawAcctHeader !== "personal" && rawAcctHeader !== "business") {
     throw new HttpError(400, "invalid_account", "X-Proxim-Account must be 'personal' or 'business'.");
@@ -339,6 +364,7 @@ async function linkFinish(req, body) {
   const code = requireString(body, "code", { pattern: /^[A-Za-z0-9]{6,16}$/ });
   const challengeId = requireString(body, "challengeId", { max: 64 });
   const pin = requireString(body, "pin", { pattern: /^\d{4}$/ });
+  rateLimit(`link-finish-ip:${clientIp(req)}`, 10, 15 * 60 * 1000);
 
   const reg = await passkeys.finishRegistration({ challengeId, purpose: "link", response: body.response });
   const pending = store.peekLinkCode(code);
@@ -426,6 +452,10 @@ async function refresh(req, body) {
     throw new HttpError(401, "session_revoked", "Session ended for your security. Please sign in again.");
   }
   if (!rotated) throw new HttpError(401, "unauthorized", "Session expired. Please sign in again.");
+  if (dep("db").isBlocked(rotated.telegramId)) {
+    store.revokeAllSessions(rotated.telegramId);
+    throw new HttpError(403, "account_frozen", "Your account is frozen. Please contact support.");
+  }
   const { accessToken, expiresIn } = tokens.issueAccessToken({ telegramId: rotated.telegramId, deviceId: rotated.deviceId });
   return { status: 200, data: { session: { accessToken, refreshToken: rotated.refreshToken, expiresIn } } };
 }
@@ -766,11 +796,23 @@ const ROUTES = [
   }],
 
   // Naira, card/Apple Pay & crypto (NEAR Intents) deposits & sweep
-  ["POST", "/deposits/ngn", (req, body) => features.createNgnDeposit(authenticate(req), body)],
+  ["POST", "/deposits/ngn", (req, body) => {
+    const auth = authenticate(req);
+    rateLimit(`dep-ngn:${auth.telegramId}`, 15, 60 * 60 * 1000);
+    return features.createNgnDeposit(auth, body);
+  }],
   ["GET", "/deposits/card", (req, url) => features.getCardDepositLink(authenticate(req), url)],
   ["GET", "/deposits/crypto/tokens", (req, url) => features.listCryptoDepositTokens(authenticate(req), url)],
-  ["POST", "/deposits/crypto/intent", (req, body) => features.createCryptoDepositIntent(authenticate(req), body)],
-  ["POST", "/deposits/crypto/sweep", (req, body) => features.sweepCryptoDeposits(authenticate(req), body)],
+  ["POST", "/deposits/crypto/intent", (req, body) => {
+    const auth = authenticate(req);
+    rateLimit(`dep-crypto:${auth.telegramId}`, 20, 60 * 60 * 1000);
+    return features.createCryptoDepositIntent(auth, body);
+  }],
+  ["POST", "/deposits/crypto/sweep", (req, body) => {
+    const auth = authenticate(req);
+    rateLimit(`dep-sweep:${auth.telegramId}`, 10, 10 * 60 * 1000);
+    return features.sweepCryptoDeposits(auth, body);
+  }],
 
   // Cross-chain withdrawals, bridge moves & FX swap
   ["GET", "/withdrawals/chains", (req) => { authenticate(req); return features.listWithdrawalChains(); }],
@@ -780,13 +822,21 @@ const ROUTES = [
 
   // Social gift links
   ["GET", "/gifts", (req) => features.listPendingGifts(authenticate(req))],
-  ["POST", "/gifts/claim", (req, body) => features.claimGift(authenticate(req), body)],
+  ["POST", "/gifts/claim", (req, body) => {
+    const auth = authenticate(req);
+    rateLimit(`gift-claim:${auth.telegramId}`, 15, 60 * 60 * 1000);
+    return features.claimGift(auth, body);
+  }],
 
   // Global accounts, payout corridors, recipients & hosted payment links
   ["GET", "/global/accounts", (req, url) => features.listGlobalAccounts(authenticate(req), url)],
   ["GET", "/global/corridors", (req) => { authenticate(req); return features.listGlobalCorridors(); }],
   ["GET", "/global/recipients", (req, url) => features.listGlobalRecipients(authenticate(req), url)],
-  ["POST", "/global/payment-links", (req, body) => features.createGlobalPaymentLink(authenticate(req), body)],
+  ["POST", "/global/payment-links", (req, body) => {
+    const auth = authenticate(req);
+    rateLimit(`global-pl:${auth.telegramId}`, 20, 60 * 60 * 1000);
+    return features.createGlobalPaymentLink(auth, body);
+  }],
 
   // Cards
   ["GET", "/cards", (req, url) => features.listCards(authenticate(req), url)],
@@ -802,15 +852,31 @@ const ROUTES = [
   // Rewards, KYC/KYB, savings & investments
   ["GET", "/rewards", (req, url) => features.getRewards(authenticate(req), url)],
   ["GET", "/kyc/status", (req) => features.getKycStatus(authenticate(req))],
-  ["POST", "/kyc/submit", (req, body) => features.submitKyc(authenticate(req), body)],
-  ["POST", "/kyb/submit", (req, body) => features.submitKyb(authenticate(req), body)],
-  ["POST", "/kyc/refresh", (req, body) => features.refreshKycStatus(authenticate(req), body)],
+  ["POST", "/kyc/submit", (req, body) => {
+    const auth = authenticate(req);
+    rateLimit(`kyc-sub:${auth.telegramId}`, 5, 60 * 60 * 1000);
+    return features.submitKyc(auth, body);
+  }],
+  ["POST", "/kyb/submit", (req, body) => {
+    const auth = authenticate(req);
+    rateLimit(`kyb-sub:${auth.telegramId}`, 5, 60 * 60 * 1000);
+    return features.submitKyb(auth, body);
+  }],
+  ["POST", "/kyc/refresh", (req, body) => {
+    const auth = authenticate(req);
+    rateLimit(`kyc-ref:${auth.telegramId}`, 20, 60 * 60 * 1000);
+    return features.refreshKycStatus(auth, body);
+  }],
   ["GET", "/savings", (req, url) => features.getSavingsOverview(authenticate(req), url)],
   ["GET", "/investments/hub", (req) => features.getInvestmentsHub(authenticate(req))],
 
   // Personal invoices
   ["GET", "/invoices", (req, url) => features.listPersonalInvoices(authenticate(req), url)],
-  ["POST", "/invoices", (req, body) => features.createPersonalInvoice(authenticate(req), body)],
+  ["POST", "/invoices", (req, body) => {
+    const auth = authenticate(req);
+    rateLimit(`inv-per:${auth.telegramId}`, 30, 60 * 60 * 1000);
+    return features.createPersonalInvoice(auth, body);
+  }],
 
   // Business home, profile, invoices, expenses, savings goal & payment links
   ["GET", "/business/home", (req) => features.getBusinessHome(authenticate(req))],
@@ -818,12 +884,20 @@ const ROUTES = [
   ["PATCH", "/business/profile", (req, body) => features.updateBusinessProfile(authenticate(req), body)],
   ["PUT", "/business/profile", (req, body) => features.updateBusinessProfile(authenticate(req), body)],
   ["GET", "/business/invoices", (req, url) => features.listBusinessInvoices(authenticate(req), url)],
-  ["POST", "/business/invoices", (req, body) => features.createBusinessInvoice(authenticate(req), body)],
+  ["POST", "/business/invoices", (req, body) => {
+    const auth = authenticate(req);
+    rateLimit(`inv-biz:${auth.telegramId}`, 30, 60 * 60 * 1000);
+    return features.createBusinessInvoice(auth, body);
+  }],
   ["GET", "/business/expenses", (req, url) => features.listBusinessExpenses(authenticate(req), url)],
   ["POST", "/business/expenses", (req, body) => features.logBusinessExpense(authenticate(req), body)],
   ["PUT", "/business/savings-goal", (req, body) => features.setBusinessSavingsGoal(authenticate(req), body)],
   ["GET", "/business/payment-links", (req) => features.listBusinessPaymentLinks(req, authenticate(req))],
-  ["POST", "/business/payment-links", (req, body) => features.createBusinessPaymentLink(req, authenticate(req), body)],
+  ["POST", "/business/payment-links", (req, body) => {
+    const auth = authenticate(req);
+    rateLimit(`biz-pl:${auth.telegramId}`, 20, 60 * 60 * 1000);
+    return features.createBusinessPaymentLink(req, auth, body);
+  }],
 
   // Assistant (read-only + action proposals)
   ["POST", "/assistant", (req, body) => {
@@ -841,7 +915,11 @@ const PARAM_ROUTES = [
   ["DELETE", /^\/contacts\/([^/]+)$/, (req, _arg, m) => features.deleteContact(authenticate(req), m[1])],
   ["GET", /^\/deposits\/ngn\/([^/]+)$/, (req, _arg, m) => features.getNgnDepositStatus(authenticate(req), m[1])],
   ["GET", /^\/deposits\/crypto\/(\d+)$/, (req, _arg, m) => features.getCryptoDepositStatus(authenticate(req), m[1])],
-  ["POST", /^\/global\/accounts\/([A-Za-z]{3})$/, (req, body, m) => features.provisionGlobalAccount(authenticate(req), body, m[1])],
+  ["POST", /^\/global\/accounts\/([A-Za-z]{3})$/, (req, body, m) => {
+    const auth = authenticate(req);
+    rateLimit(`global-acct:${auth.telegramId}`, 10, 60 * 60 * 1000);
+    return features.provisionGlobalAccount(auth, body, m[1]);
+  }],
   ["GET", /^\/cards\/([^/]+)\/transactions$/, (req, url, m) => features.listCardTransactions(authenticate(req), url, m[1])],
   ["DELETE", /^\/schedules\/([^/]+)$/, (req, _arg, m) => features.updateScheduleStatus(authenticate(req), m[1], "cancelled")],
   ["POST", /^\/schedules\/([^/]+)\/cancel$/, (req, _arg, m) => features.updateScheduleStatus(authenticate(req), m[1], "cancelled")],
@@ -879,8 +957,7 @@ async function handleAppApiRequest(req, res) {
     if (result.raw !== undefined) {
       res.writeHead(result.status, {
         "Content-Type": result.contentType || "application/octet-stream",
-        "Cache-Control": "no-store",
-        "X-Content-Type-Options": "nosniff",
+        ...SECURITY_HEADERS,
         ...(result.headers || {}),
       });
       return res.end(result.raw);

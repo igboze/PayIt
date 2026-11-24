@@ -384,7 +384,7 @@ test("full cards lifecycle, social gift links (create, claim, cancel), KYC/KYB s
 
   const kycSub = await call("POST", "/kyc/submit", {
     countryCode: "NG", firstName: "Adaora", lastName: "Okafor", email: "ada@proxim.app", phoneNumber: "+2348091000010",
-    dateOfBirth: "1995-05-05", address: { line1: "10 Lekki Way", city: "Lagos", state: "LA", country: "NG" },
+    dateOfBirth: "1995-05-05", gender: "female", address: { line1: "10 Lekki Way", city: "Lagos", state: "LA", country: "NG" },
     idDocument: { type: "national_id", number: "12345678901" },
   }, tokenA);
   assert.equal(kycSub.status, 201, JSON.stringify(kycSub.body));
@@ -631,4 +631,77 @@ test("Personal <-> Business account switching and strict deposit/transfer wallet
   const balAfter = await call("GET", "/balances", null, token);
   assert.equal(balAfter.body.accountType, "personal");
   assert.equal(balAfter.body.depositAddress.toLowerCase(), personalArc);
+});
+
+test("security hardening: frozen accounts, NGN order IDOR, XFF spoofing, no dummy KYB/KYC defaults, headers & production lock", async () => {
+  const authA = new SoftAuthenticator({ rpId: "proxim.test", origin: "https://proxim.test" });
+  const authB = new SoftAuthenticator({ rpId: "proxim.test", origin: "https://proxim.test" });
+  const userA = await signUp(authA, "+2348091000081", "dev-sec-a-0000000081");
+  const userB = await signUp(authB, "+2348091000082", "dev-sec-b-0000000082");
+  const tokenA = userA.session.accessToken;
+  const tokenB = userB.session.accessToken;
+
+  // 1) Security headers present on every response
+  const me = await call("GET", "/me", null, tokenA);
+  assert.equal(me.status, 200);
+  assert.equal(me.headers.get("x-frame-options"), "DENY");
+  assert.equal(me.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(me.headers.get("content-security-policy"), "default-src 'none'");
+  assert.match(me.headers.get("strict-transport-security"), /max-age=/);
+
+  // 2) IDOR protection on GET /deposits/ngn/:orderId — unowned/other-user order returns 404 before touching Paj
+  const ngnA = await call("POST", "/deposits/ngn", { amountNgn: 15000 }, tokenA);
+  assert.equal(ngnA.status, 201);
+  const idorB = await call("GET", `/deposits/ngn/${ngnA.body.orderId}`, null, tokenB);
+  assert.equal(idorB.status, 404);
+  const unownedOrder = await call("GET", "/deposits/ngn/external_foreign_order_999", null, tokenB);
+  assert.equal(unownedOrder.status, 404);
+
+  // 3) No fabricated compliance defaults: KYC requires gender; KYB requires real incorporationYear/Month/industry/businessType
+  const kycMissingGender = await call("POST", "/kyc/submit", {
+    countryCode: "NG", firstName: "Ada", lastName: "Okafor", email: "ada@proxim.app", phoneNumber: "+2348091000081",
+    dateOfBirth: "1995-05-05", address: { line1: "1 St" }, idDocument: { type: "national_id", number: "123" },
+  }, tokenA);
+  assert.equal(kycMissingGender.status, 400);
+
+  const kybMissingFields = await call("POST", "/kyb/submit", {
+    incorporationCountry: "NG", legalName: "Craft Ltd", registrationNumber: "RC123", email: "hi@craft.ng",
+    phoneNumber: "+2348091000081", address: { line1: "1 St" }, officer: { firstName: "Ada" },
+  }, tokenA);
+  assert.equal(kybMissingFields.status, 400);
+
+  // 4) Frozen/blocked accounts are immediately denied on BOTH active access tokens AND refresh tokens
+  db.blockUser(Number(userA.user.id), "Fraud freeze test");
+  const blockedMe = await call("GET", "/me", null, tokenA);
+  assert.equal(blockedMe.status, 403);
+  assert.equal(blockedMe.body.error.code, "account_frozen");
+  const blockedRefresh = await call("POST", "/auth/refresh", {
+    refreshToken: userA.session.refreshToken,
+    deviceId: "dev-sec-a-0000000081",
+  });
+  assert.equal(blockedRefresh.status, 403);
+  assert.equal(blockedRefresh.body.error.code, "account_frozen");
+  db.unblockUser(Number(userA.user.id));
+
+  // 5) X-Forwarded-For leftmost IP spoofing cannot bypass IP rate limits
+  routes.__resetRateLimits();
+  for (let i = 0; i < 10; i++) {
+    await call("POST", "/auth/signup/start", { phone: `+23480999900${String(i).padStart(2, "0")}`, deviceId: `dev-xff-0000000000${String(i).padStart(2, "0")}`, platform: "android" }, null, {
+      "X-Forwarded-For": `10.0.0.${i + 1}, 203.0.113.55`,
+    });
+  }
+  const blockedXff = await call("POST", "/auth/signup/start", { phone: "+2348099990099", deviceId: "dev-xff-000000000099", platform: "android" }, null, {
+    "X-Forwarded-For": "198.51.100.99, 203.0.113.55",
+  });
+  assert.equal(blockedXff.status, 429, "spoofing leftmost XFF IP must not evade proxy-appended IP rate limit");
+
+  // 6) __setTestDeps refuses to run in production
+  const prevEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
+  try {
+    assert.throws(() => routes.__setTestDeps({}), /cannot be used in production/);
+  } finally {
+    if (prevEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prevEnv;
+  }
 });

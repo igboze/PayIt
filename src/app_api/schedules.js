@@ -16,6 +16,9 @@ const deps = {
 const overrides = {};
 const dep = (name) => (name in overrides ? overrides[name] : deps[name]);
 function __setTestDeps(o = {}) {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("__setTestDeps cannot be used in production.");
+  }
   for (const k of Object.keys(overrides)) delete overrides[k];
   Object.assign(overrides, o);
 }
