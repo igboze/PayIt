@@ -366,6 +366,10 @@ function registerGlobalAccountsFlows(bot, depsIn = {}) {
         ]),
       });
     } catch (err) {
+      console.warn(
+        `[nuvion] ${currency} account provisioning failed for TG:${ctx.from.id}: ` +
+        `status=${err?.status} type=${err?.type} requestId=${err?.requestId || "none"} message=${err?.message}`
+      );
       return ctx.reply(
         `❌ Couldn't load ${currency} account details: ${escapeHtml(nuvion.formatUserFriendlyError(err))}`,
         {
