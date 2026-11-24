@@ -115,6 +115,9 @@ if (!(process.env.INVOICE_FORWARDING_SECRET || "").trim()) {
 }
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+const appStore = require("./src/app_api/store");
+const appSchedules = require("./src/app_api/schedules");
+require("./src/notify").setNotifyBot(bot);
 
 // Global Telegraf error handler: prevents update timeouts or network RPC exceptions from terminating the Node process
 bot.catch((err, ctx) => {
@@ -127,6 +130,20 @@ process.on("unhandledRejection", (reason) => {
 });
 
 // Wrap Telegraf callback query responses so stale, invalid or network-failed callback IDs do not crash the bot.
+// A Telegram account must never act on a wallet that the builder API created under the same
+// numeric ID (older builder wallets used random positive IDs). Stop before touching the row.
+bot.use(async (ctx, next) => {
+  const fromId = ctx.from?.id;
+  if (fromId && db.getUser(fromId) && db.isApiProvisionedWallet(fromId)) {
+    console.error(`[security] Telegram user ${fromId} collides with a builder-API wallet; access blocked.`);
+    if (typeof ctx.reply === "function") {
+      await ctx.reply("⚠️ We found a conflict with your account ID and paused access to keep your money safe. Please contact Proxim support.").catch(() => {});
+    }
+    return;
+  }
+  return next();
+});
+
 bot.use(async (ctx, next) => {
   if (ctx.from?.id) {
     db.updateUserLastActivity(ctx.from.id);
@@ -11184,6 +11201,40 @@ bot.on("text", async (ctx) => { }); // placeholder — handled above
 // ─── Photo handler for onboarding logo (business profile step) ───────────────
 // Already handled above in bot.on("photo") — state "await_logo_upload" is checked first.
 
+// ─── Mobile app linking ───────────────────────────────────────────────────────
+// /linkapp issues a one-time, 5-minute code that the Proxim mobile app exchanges for a
+// passkey on the user's phone. The app also asks for the user's PIN before linking.
+
+bot.command("linkapp", async (ctx) => {
+  const user = db.getUser(ctx.from.id);
+  if (!user) return ctx.reply("Create your Proxim account first with /start.");
+  if (db.isBlocked(ctx.from.id)) return ctx.reply("Your account is frozen. Please contact support.");
+  const { code, expiresInSec } = appStore.createLinkCode(ctx.from.id);
+  const rpId = (process.env.APP_RP_ID || "").trim();
+  const lines = [
+    "📱 <b>Link the Proxim mobile app</b>",
+    "",
+    `Your one-time code: <code>${code}</code>`,
+    `It expires in ${Math.round(expiresInSec / 60)} minutes and works once.`,
+  ];
+  if (rpId) lines.push("", `Or open this on your phone: https://${rpId}/link/${code}`);
+  lines.push("", "Never share this code. Proxim staff will never ask for it.");
+  return ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
+});
+
+bot.action(/^app_revoke_([A-Za-z0-9_-]{16,128})$/, async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const deviceId = ctx.match[1];
+  const device = appStore.getDevice(deviceId);
+  if (!device || Number(device.telegram_id) !== Number(ctx.from.id)) {
+    return ctx.reply("That device isn't linked to your account.");
+  }
+  if (device.revoked) return ctx.reply("That device was already removed.");
+  appStore.revokeDevice(deviceId);
+  appStore.revokeAllSessions(ctx.from.id);
+  return ctx.reply("✅ Device removed and all app sessions signed out. If you didn't link it, also change your PIN in /settings.");
+});
+
 // ─── Launch ───────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -11291,11 +11342,19 @@ async function startBot() {
   } catch (err) {
     console.warn("[bot] Retention scheduler notice:", err.message);
   }
+
+  // Persistent mobile app scheduled payments runner (checks every 60s)
+  try {
+    appSchedules.startScheduleRunner();
+  } catch (err) {
+    console.warn("[bot] App schedule runner notice:", err.message);
+  }
 }
 
 startBot();
 
 process.once("SIGINT", () => {
+  appSchedules.stopScheduleRunner();
   nuvionPoller.stopNuvionPoller();
   settlementDaemon.stopSettlementDaemon();
   autoEarn.stopAutoEarnWorker();
@@ -11304,6 +11363,7 @@ process.once("SIGINT", () => {
   bot.stop("SIGINT");
 });
 process.once("SIGTERM", () => {
+  appSchedules.stopScheduleRunner();
   nuvionPoller.stopNuvionPoller();
   settlementDaemon.stopSettlementDaemon();
   autoEarn.stopAutoEarnWorker();

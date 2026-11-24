@@ -2663,6 +2663,20 @@ function recordApiKeyUsage(keyId) {
   } catch (_) { }
 }
 
+/**
+ * True when this ID belongs to a wallet created through the builder API. Such a row must never be
+ * used by a Telegram account with the same numeric ID (older builder wallets used random positive
+ * IDs that can collide with real Telegram users).
+ */
+function isApiProvisionedWallet(telegramId) {
+  try {
+    ensureApiKeysSchema();
+    return Boolean(db.prepare("SELECT 1 FROM api_key_wallets WHERE telegram_id = ? LIMIT 1").get(Number(telegramId)));
+  } catch (_) {
+    return false;
+  }
+}
+
 function registerApiKeyWallet(keyId, telegramId) {
   if (!keyId || !telegramId) return false;
   ensureApiKeysSchema();
@@ -2684,7 +2698,8 @@ function getApiKeyWallets(keyId) {
 
 function isWalletOwnedByApiKey(keyId, telegramId, ownerTelegramId = 0) {
   const targetId = Number(telegramId);
-  if (!Number.isFinite(targetId) || targetId <= 0) return false;
+  // Builder-provisioned wallets use negative IDs; 0 and non-integers are never valid.
+  if (!Number.isSafeInteger(targetId) || targetId === 0) return false;
   if (ownerTelegramId && Number(ownerTelegramId) > 0 && targetId === Number(ownerTelegramId)) {
     return true;
   }
@@ -3460,6 +3475,7 @@ module.exports = {
   blockUser,
   unblockUser,
   isBlocked,
+  isApiProvisionedWallet,
   awardPoints,
   maybeAwardReferralBonus,
   redeemPointsAtomic,

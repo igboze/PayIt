@@ -4,6 +4,7 @@
 // with enforced API Key authentication, customizable feature permissions, and strict tenant isolation.
 
 const url = require("node:url");
+const appStore = require("./app_api/store");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
@@ -304,7 +305,15 @@ async function handleApiRequest(req, res, bot = null) {
         const identifier = body.userId || body.externalId || body.username || `builder_user_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
         const pin = body.pin ? String(body.pin) : crypto.randomBytes(12).toString("hex");
 
-        let user = typeof identifier === "number" ? db.getUser(identifier) : db.findUserByUsername(String(identifier));
+        // A numeric identifier is only ever used to look up a wallet this key already owns. It is
+        // never used as the new account's database ID: that ID space belongs to Telegram users, and
+        // reusing it would let an API key pre-create the account of a future Telegram user.
+        // Look up by external ID (stored as the wallet's username) first; a numeric value may
+        // also be a wallet ID this key received earlier.
+        let user = db.findUserByUsername(String(identifier));
+        if (!user && typeof identifier === "number") {
+          user = db.getUser(identifier);
+        }
         if (user) {
           // Do not allow an API key to hijack another user's or another tenant's existing wallet
           if (!db.isWalletOwnedByApiKey(apiKey.key_id, user.telegram_id, apiKey.telegram_id)) {
@@ -315,9 +324,8 @@ async function handleApiRequest(req, res, bot = null) {
           }
         } else {
           const generated = walletLib.generateUserWallet();
-          const userNumId = typeof identifier === "number"
-            ? identifier
-            : (100000000 + crypto.randomInt(800000000));
+          // Builder wallets get IDs from the reserved negative range (never a Telegram user's ID).
+          const userNumId = appStore.allocateAppUserId();
           user = db.createUserWithWallet(userNumId, String(identifier), generated.address, generated.privateKey, pin);
           db.registerApiKeyWallet(apiKey.key_id, user.telegram_id);
         }

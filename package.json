@@ -22,6 +22,7 @@
     "@circle-fin/swap-kit": "^1.7.0",
     "@google/generative-ai": "^0.24.1",
     "@resvg/resvg-js": "^2.6.2",
+    "@simplewebauthn/server": "^13.3.3",
     "@solana/spl-token": "^0.4.15",
     "@solana/web3.js": "^1.99.0",
     "axios": "^1.21.1",

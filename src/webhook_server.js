@@ -23,6 +23,7 @@ const pods = require("./pods");
 const podsStore = require("./pods_store");
 const merchantCheckout = require("./merchant_checkout");
 const checkoutUi = require("./checkout_ui");
+const appApi = require("./app_api/routes");
 const fx = require("./fx");
 
 function verifyAlchemySignature(rawBody, headers, signingKey) {
@@ -791,6 +792,14 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
     : null;
 
   const server = http.createServer(async (req, res) => {
+    // 0a. Mobile app API (/api/app/v1/*) and passkey/deep-link association files
+    if (req.url && (req.url === appApi.PREFIX || req.url.startsWith(`${appApi.PREFIX}/`) || req.url.startsWith(`${appApi.PREFIX}?`))) {
+      return appApi.handleAppApiRequest(req, res);
+    }
+    if (req.url && req.url.startsWith("/.well-known/")) {
+      return appApi.handleWellKnown(req, res);
+    }
+
     // 0. Builder REST API routes (/api/v1/*)
     if (req.url && (req.url.startsWith("/api/v1") || req.url.startsWith("/api/v1/"))) {
       return apiRoutes.handleApiRequest(req, res, bot);
