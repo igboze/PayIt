@@ -1,0 +1,47 @@
+{
+  "expo": {
+    "name": "Proxim",
+    "slug": "proxim-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "proxim",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0B1117",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0B1117"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "app.proxim.mobile",
+      "associatedDomains": [
+        "applinks:payit-production.up.railway.app",
+        "webcredentials:payit-production.up.railway.app"
+      ]
+    },
+    "android": {
+      "package": "app.proxim.mobile",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0B1117"
+      },
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            { "scheme": "https", "host": "payit-production.up.railway.app", "pathPrefix": "/link/" },
+            { "scheme": "https", "host": "payit-production.up.railway.app", "pathPrefix": "/pay/" },
+            { "scheme": "https", "host": "payit-production.up.railway.app", "pathPrefix": "/checkout/" }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ]
+    },
+    "extra": {
+      "apiBaseUrl": "https://payit-production.up.railway.app/api/app/v1"
+    }
+  }
+}

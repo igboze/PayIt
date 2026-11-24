@@ -1,0 +1,763 @@
+import React, { useEffect, useState } from "react";
+import { Pressable, ScrollView, Share, StyleSheet, Text, View } from "react-native";
+import { api } from "../api/client";
+import type {
+  BankItem,
+  BankRatesResponse,
+  ContactItem,
+  GiftItem,
+  GlobalRail,
+  GlobalRecipient,
+  ResolvedBankAccount,
+  WithdrawalChain,
+} from "../api/types";
+import { useApp } from "../state/AppContext";
+import { COLORS, RADIUS, SPACING } from "../theme";
+import {
+  Button,
+  Card,
+  ErrorBanner,
+  formatUsdc,
+  Input,
+  KeyValueRow,
+  Pill,
+  ScreenHeader,
+  SectionHeader,
+  shortAddr,
+  SuccessBanner,
+} from "../components/UI";
+
+type SendMode = "user" | "wallet" | "ngn" | "global" | "crypto";
+
+export function SendScreen({ onBack }: { onBack: () => void }) {
+  const { activeAccount, requestApproval } = useApp();
+  const isBiz = activeAccount === "business";
+
+  const [mode, setMode] = useState<SendMode>("ngn");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // User & Gift state
+  const [recipientQuery, setRecipientQuery] = useState("");
+  const [lookupResult, setLookupResult] = useState<{
+    id: string;
+    username: string | null;
+    displayName: string;
+    isSelf: boolean;
+  } | null>(null);
+  const [userNotFound, setUserNotFound] = useState(false);
+  const [userAmount, setUserAmount] = useState("");
+  const [userNote, setUserNote] = useState("");
+  const [pendingGifts, setPendingGifts] = useState<GiftItem[]>([]);
+  const [claimInput, setClaimInput] = useState("");
+
+  // Wallet state
+  const [walletAddr, setWalletAddr] = useState("");
+  const [walletAmt, setWalletAmt] = useState("");
+  const [walletNote, setWalletNote] = useState("");
+  const [contacts, setContacts] = useState<ContactItem[]>([]);
+
+  // Naira Bank state
+  const [rates, setRates] = useState<BankRatesResponse | null>(null);
+  const [banks, setBanks] = useState<BankItem[]>([]);
+  const [bankQuery, setBankQuery] = useState("");
+  const [selectedBank, setSelectedBank] = useState<BankItem | null>(null);
+  const [acctNumber, setAcctNumber] = useState("");
+  const [resolvedAcct, setResolvedAcct] = useState<ResolvedBankAccount | null>(null);
+  const [ngnSendUsdc, setNgnSendUsdc] = useState("");
+  const [ngnNarration, setNgnNarration] = useState("");
+
+  // Global payout state
+  const [rails, setRails] = useState<GlobalRail[]>([]);
+  const [selectedRail, setSelectedRail] = useState<GlobalRail | null>(null);
+  const [globalRecipients, setGlobalRecipients] = useState<GlobalRecipient[]>([]);
+  const [selectedCounterpartyId, setSelectedCounterpartyId] = useState<string | null>(null);
+  const [globalAmount, setGlobalAmount] = useState("");
+  const [globalFields, setGlobalFields] = useState<Record<string, string>>({});
+  const [globalNote, setGlobalNote] = useState("");
+
+  // Crypto withdraw & bridge state
+  const [chains, setChains] = useState<WithdrawalChain[]>([]);
+  const [feeUsd, setFeeUsd] = useState<number | null>(null);
+  const [selectedChain, setSelectedChain] = useState<WithdrawalChain | null>(null);
+  const [destAddr, setDestAddr] = useState("");
+  const [cryptoAmt, setCryptoAmt] = useState("");
+  const [bridgeDir, setBridgeDir] = useState<"arc_to_solana" | "solana_to_arc">("arc_to_solana");
+  const [bridgeAmt, setBridgeAmt] = useState("");
+
+  useEffect(() => {
+    setError(null);
+    if (mode === "user") {
+      api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => {});
+    } else if (mode === "wallet") {
+      api.listContacts().then((r) => setContacts(r.contacts || [])).catch(() => {});
+    } else if (mode === "ngn") {
+      api.getBankRates().then(setRates).catch(() => {});
+      api.listBanks(bankQuery || undefined).then((r) => setBanks(r.banks || [])).catch(() => {});
+    } else if (mode === "global") {
+      api
+        .listGlobalCorridors()
+        .then((r) => {
+          setRails(r.rails || []);
+          if (!selectedRail && r.rails?.length) setSelectedRail(r.rails[0]);
+        })
+        .catch(() => {});
+      api
+        .listGlobalRecipients(undefined, activeAccount)
+        .then((r) => setGlobalRecipients(r.recipients || []))
+        .catch(() => {});
+    } else if (mode === "crypto") {
+      api
+        .listWithdrawalChains()
+        .then((r) => {
+          setChains(r.chains || []);
+          setFeeUsd(r.feeUsd);
+          if (!selectedChain && r.chains?.length) setSelectedChain(r.chains[0]);
+        })
+        .catch(() => {});
+    }
+  }, [mode, activeAccount]);
+
+  useEffect(() => {
+    if (mode !== "ngn") return;
+    const t = setTimeout(() => {
+      api.listBanks(bankQuery.trim() || undefined).then((r) => setBanks(r.banks || [])).catch(() => {});
+    }, 250);
+    return () => clearTimeout(t);
+  }, [bankQuery, mode]);
+
+  const handleLookupUser = async () => {
+    setError(null);
+    setLookupResult(null);
+    setUserNotFound(false);
+    setLoading(true);
+    try {
+      const res = await api.lookupUser(recipientQuery.trim());
+      setLookupResult(res.user);
+    } catch {
+      setUserNotFound(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSendToUser = async () => {
+    setError(null);
+    setNotice(null);
+    setLoading(true);
+    try {
+      const res = await requestApproval("transfer.user", {
+        accountType: activeAccount,
+        recipient: recipientQuery.trim(),
+        amountUsdc: Number(userAmount),
+        narration: userNote.trim() || undefined,
+      });
+      setNotice(res.notice || "Transfer completed!");
+      setUserAmount("");
+      setUserNote("");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Transfer failed.";
+      if (!/cancel/i.test(msg)) setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreateGift = async () => {
+    setError(null);
+    setNotice(null);
+    setLoading(true);
+    try {
+      const res = await requestApproval("gift.create", {
+        accountType: activeAccount,
+        targetUsername: recipientQuery.trim(),
+        amountUsdc: Number(userAmount),
+      });
+      setNotice(res.notice || "Gift link created!");
+      if (res.shareText || res.claimUrl) {
+        Share.share({ message: String(res.shareText || res.claimUrl) }).catch(() => {});
+      }
+      api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => {});
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Could not create gift link.";
+      if (!/cancel/i.test(msg)) setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleClaimGift = async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      await api.claimGift(claimInput.trim());
+      setNotice("Gift claimed into your Proxim balance!");
+      setClaimInput("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not claim gift.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSendWallet = async () => {
+    setError(null);
+    setNotice(null);
+    setLoading(true);
+    try {
+      const res = await requestApproval("transfer.wallet", {
+        accountType: activeAccount,
+        toAddress: walletAddr.trim(),
+        amountUsdc: Number(walletAmt),
+        narration: walletNote.trim() || undefined,
+      });
+      setNotice(res.notice || "Sent successfully!");
+      setWalletAmt("");
+      setWalletNote("");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Transfer failed.";
+      if (!/cancel/i.test(msg)) setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResolveBank = async () => {
+    if (!selectedBank) {
+      setError("Pick a bank first.");
+      return;
+    }
+    setError(null);
+    setResolvedAcct(null);
+    setLoading(true);
+    try {
+      const res = await api.resolveBankAccount(selectedBank.code, acctNumber.trim(), selectedBank.name);
+      setResolvedAcct(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not verify bank account.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePayoutNgn = async () => {
+    if (!selectedBank) {
+      setError("Select a Nigerian bank.");
+      return;
+    }
+    setError(null);
+    setNotice(null);
+    setLoading(true);
+    try {
+      const res = await requestApproval("payout.ngn", {
+        accountType: activeAccount,
+        amountUsdc: Number(ngnSendUsdc),
+        bankCode: selectedBank.code,
+        accountNumber: acctNumber.trim(),
+        accountName: resolvedAcct?.accountName || undefined,
+        narration: ngnNarration.trim() || undefined,
+      });
+      setNotice(res.notice || "Naira payout submitted!");
+      setNgnSendUsdc("");
+      setNgnNarration("");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Naira payout failed.";
+      if (!/cancel/i.test(msg)) setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGlobalPayout = async () => {
+    if (!selectedRail) {
+      setError("Select a destination currency rail.");
+      return;
+    }
+    setError(null);
+    setNotice(null);
+    setLoading(true);
+    try {
+      const payload: Record<string, unknown> = {
+        accountType: activeAccount,
+        targetCurrency: selectedRail.currency,
+        targetAmount: Number(globalAmount),
+        railKey: selectedRail.railKey,
+        narration: globalNote.trim() || undefined,
+      };
+      if (selectedCounterpartyId) {
+        payload.savedCounterpartyId = selectedCounterpartyId;
+      } else {
+        payload.recipientDetails = globalFields;
+      }
+      const res = await requestApproval("payout.global", payload);
+      setNotice(res.notice || "Global payout submitted!");
+      setGlobalAmount("");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Global payout failed.";
+      if (!/cancel/i.test(msg)) setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCryptoWithdraw = async () => {
+    if (!selectedChain) {
+      setError("Select a destination network.");
+      return;
+    }
+    setError(null);
+    setNotice(null);
+    setLoading(true);
+    try {
+      const res = await requestApproval("withdraw.crypto", {
+        accountType: activeAccount,
+        destinationChain: selectedChain.key,
+        destinationAddress: destAddr.trim(),
+        amountUsdc: Number(cryptoAmt),
+      });
+      setNotice(res.notice || "Cross-chain withdrawal started!");
+      setCryptoAmt("");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Withdrawal failed.";
+      if (!/cancel/i.test(msg)) setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleBridgeMove = async () => {
+    setError(null);
+    setNotice(null);
+    setLoading(true);
+    try {
+      const res = await requestApproval("bridge.move", {
+        accountType: activeAccount,
+        direction: bridgeDir,
+        amountUsdc: Number(bridgeAmt),
+      });
+      setNotice(res.notice || "Internal chain move submitted!");
+      setBridgeAmt("");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Chain move failed.";
+      if (!/cancel/i.test(msg)) setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <View style={styles.root}>
+      <ScreenHeader
+        title="Send & Cash Out"
+        subtitle={`From ${isBiz ? "Business" : "Personal"} wallet · Passkey + PIN protected`}
+        onBack={onBack}
+      />
+
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <View style={styles.pillRow}>
+          <Pill label="Naira Bank" active={mode === "ngn"} onPress={() => setMode("ngn")} />
+          <Pill label="Proxim User" active={mode === "user"} onPress={() => setMode("user")} />
+          <Pill label="Wallet 0x" active={mode === "wallet"} onPress={() => setMode("wallet")} />
+          <Pill label="Global 27+" active={mode === "global"} onPress={() => setMode("global")} />
+          <Pill label="Crypto Chains" active={mode === "crypto"} onPress={() => setMode("crypto")} />
+        </View>
+
+        <ErrorBanner message={error} onDismiss={() => setError(null)} />
+        <SuccessBanner message={notice} onDismiss={() => setNotice(null)} />
+
+        {mode === "ngn" ? (
+          <Card>
+            <SectionHeader
+              title="Cash out to Nigerian Bank"
+              right={
+                rates?.offRampRate ? (
+                  <Text style={styles.rateTag}>$1 = ₦{rates.offRampRate.toLocaleString("en-NG")}</Text>
+                ) : null
+              }
+            />
+            <Input
+              label="Search bank"
+              placeholder="e.g. GTBank, OPay, Kuda, Access…"
+              value={bankQuery}
+              onChangeText={setBankQuery}
+            />
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                {banks.slice(0, 15).map((b) => (
+                  <Pill
+                    key={b.code}
+                    label={b.name}
+                    active={selectedBank?.code === b.code}
+                    onPress={() => {
+                      setSelectedBank(b);
+                      setResolvedAcct(null);
+                    }}
+                  />
+                ))}
+              </View>
+            </ScrollView>
+
+            <Input
+              label="10-digit Account Number"
+              placeholder="0123456789"
+              value={acctNumber}
+              onChangeText={(t) => {
+                setAcctNumber(t.replace(/\D/g, "").slice(0, 10));
+                setResolvedAcct(null);
+              }}
+              keyboardType="number-pad"
+              maxLength={10}
+            />
+            <Button
+              title={resolvedAcct ? `Verified: ${resolvedAcct.accountName}` : "Verify Account Name"}
+              variant="secondary"
+              onPress={handleResolveBank}
+              loading={loading}
+              style={{ marginBottom: 14 }}
+            />
+
+            <Input
+              label="Amount in USDC"
+              placeholder="e.g. 50"
+              value={ngnSendUsdc}
+              onChangeText={setNgnSendUsdc}
+              keyboardType="decimal-pad"
+              hint={
+                rates?.offRampRate && Number(ngnSendUsdc) > 0
+                  ? `Estimated NGN: ₦${Math.floor(Number(ngnSendUsdc) * rates.offRampRate).toLocaleString("en-NG")}`
+                  : undefined
+              }
+            />
+            <Input
+              label="Narration (optional)"
+              placeholder="Payment reference"
+              value={ngnNarration}
+              onChangeText={setNgnNarration}
+            />
+            <Button title="Review and approve" onPress={handlePayoutNgn} loading={loading} />
+          </Card>
+        ) : null}
+
+        {mode === "user" ? (
+          <>
+            <Card>
+              <SectionHeader title="Send to @username or phone" />
+              <Input
+                label="Recipient (@username or +phone)"
+                placeholder="@ada or +2348012345678"
+                value={recipientQuery}
+                onChangeText={(t) => {
+                  setRecipientQuery(t);
+                  setLookupResult(null);
+                  setUserNotFound(false);
+                }}
+                autoCapitalize="none"
+              />
+              <Button
+                title="Look up Proxim user"
+                variant="secondary"
+                onPress={handleLookupUser}
+                loading={loading}
+                style={{ marginBottom: 14 }}
+              />
+
+              {lookupResult ? (
+                <View style={styles.verifiedBox}>
+                  <Text style={styles.verifiedText}>
+                    Found: {lookupResult.displayName} {lookupResult.username ? `(@${lookupResult.username})` : ""}
+                  </Text>
+                </View>
+              ) : null}
+              {userNotFound ? (
+                <View style={styles.giftHintBox}>
+                  <Text style={styles.giftHintText}>
+                    Not on Proxim yet — you can send a claimable Gift Link to this @username below.
+                  </Text>
+                </View>
+              ) : null}
+
+              <Input
+                label="Amount (USDC)"
+                placeholder="e.g. 20"
+                value={userAmount}
+                onChangeText={setUserAmount}
+                keyboardType="decimal-pad"
+              />
+              <Input
+                label="Note (optional)"
+                placeholder="Dinner split"
+                value={userNote}
+                onChangeText={setUserNote}
+              />
+
+              {userNotFound ? (
+                <Button title="Create Claimable Gift Link" onPress={handleCreateGift} loading={loading} />
+              ) : (
+                <Button title="Review and approve" onPress={handleSendToUser} loading={loading} />
+              )}
+            </Card>
+
+            <Card>
+              <SectionHeader title="Claim a Gift Link" />
+              <Input
+                label="Gift claim code or link"
+                placeholder="Paste gift token or URL"
+                value={claimInput}
+                onChangeText={setClaimInput}
+                autoCapitalize="none"
+              />
+              <Button title="Claim into balance" variant="secondary" onPress={handleClaimGift} loading={loading} />
+
+              {pendingGifts.length > 0 ? (
+                <View style={{ marginTop: 14 }}>
+                  <SectionHeader title="Your Pending Sent Gifts" />
+                  {pendingGifts.map((g) => (
+                    <View key={g.id} style={styles.listRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.rowTitle}>@{g.targetHandle}</Text>
+                        <Text style={styles.rowSub}>{formatUsdc(g.amountUsdc)} · {g.status}</Text>
+                      </View>
+                      <Button
+                        title="Cancel"
+                        variant="danger"
+                        onPress={() =>
+                          requestApproval("gift.cancel", { claimToken: g.claimToken })
+                            .then(() => {
+                              setNotice("Gift cancelled & refunded.");
+                              api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => {});
+                            })
+                            .catch((e) => !/cancel/i.test(String(e?.message)) && setError(e.message))
+                        }
+                        style={{ height: 34, paddingHorizontal: 12 }}
+                      />
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+            </Card>
+          </>
+        ) : null}
+
+        {mode === "wallet" ? (
+          <Card>
+            <SectionHeader title="Send USDC to EVM Wallet (Arc)" />
+            {contacts.filter((c) => c.walletAddress).length > 0 ? (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  {contacts
+                    .filter((c) => c.walletAddress)
+                    .map((c) => (
+                      <Pill
+                        key={c.name}
+                        label={c.name}
+                        active={walletAddr.toLowerCase() === c.walletAddress?.toLowerCase()}
+                        onPress={() => setWalletAddr(c.walletAddress || "")}
+                      />
+                    ))}
+                </View>
+              </ScrollView>
+            ) : null}
+            <Input
+              label="Recipient Wallet Address"
+              placeholder="0x..."
+              value={walletAddr}
+              onChangeText={setWalletAddr}
+              autoCapitalize="none"
+            />
+            <Input
+              label="Amount (USDC)"
+              placeholder="e.g. 25"
+              value={walletAmt}
+              onChangeText={setWalletAmt}
+              keyboardType="decimal-pad"
+            />
+            <Input
+              label="Narration (optional)"
+              placeholder="Reference"
+              value={walletNote}
+              onChangeText={setWalletNote}
+            />
+            <Button title="Review and approve" onPress={handleSendWallet} loading={loading} />
+          </Card>
+        ) : null}
+
+        {mode === "global" ? (
+          <Card>
+            <SectionHeader title="Global Payout (27+ Currencies)" />
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                {rails.map((r) => (
+                  <Pill
+                    key={r.railKey}
+                    label={`${r.currency} · ${r.label}`}
+                    active={selectedRail?.railKey === r.railKey}
+                    onPress={() => {
+                      setSelectedRail(r);
+                      setSelectedCounterpartyId(null);
+                      setGlobalFields({});
+                    }}
+                  />
+                ))}
+              </View>
+            </ScrollView>
+
+            {globalRecipients.filter((g) => !selectedRail || g.currency === selectedRail.currency).length > 0 ? (
+              <View style={{ marginBottom: 12 }}>
+                <Text style={styles.fieldHint}>Saved recipients</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                  <View style={{ flexDirection: "row", gap: 8 }}>
+                    {globalRecipients
+                      .filter((g) => !selectedRail || g.currency === selectedRail.currency)
+                      .map((g) => (
+                        <Pill
+                          key={g.counterpartyId}
+                          label={`${g.label} ${g.accountTail ? `••${g.accountTail}` : ""}`}
+                          active={selectedCounterpartyId === g.counterpartyId}
+                          onPress={() =>
+                            setSelectedCounterpartyId(
+                              selectedCounterpartyId === g.counterpartyId ? null : g.counterpartyId
+                            )
+                          }
+                        />
+                      ))}
+                  </View>
+                </ScrollView>
+              </View>
+            ) : null}
+
+            <Input
+              label={`Target Amount (${selectedRail?.currency || "Currency"})`}
+              placeholder="e.g. 100"
+              value={globalAmount}
+              onChangeText={setGlobalAmount}
+              keyboardType="decimal-pad"
+            />
+
+            {!selectedCounterpartyId && selectedRail ? (
+              (selectedRail.requiredFields || []).map((f, idx) => {
+                const key = typeof f === "string" ? f : f.key || f.name || `field_${idx}`;
+                const label = typeof f === "string" ? f : f.label || key;
+                return (
+                  <Input
+                    key={key}
+                    label={label}
+                    placeholder={typeof f === "object" ? f.placeholder || "" : ""}
+                    value={globalFields[key] || ""}
+                    onChangeText={(v) => setGlobalFields((prev) => ({ ...prev, [key]: v }))}
+                  />
+                );
+              })
+            ) : null}
+
+            <Input
+              label="Reference (optional)"
+              placeholder="Invoice or memo"
+              value={globalNote}
+              onChangeText={setGlobalNote}
+            />
+            <Button title="Quote & approve payout" onPress={handleGlobalPayout} loading={loading} />
+          </Card>
+        ) : null}
+
+        {mode === "crypto" ? (
+          <>
+            <Card>
+              <SectionHeader
+                title="Withdraw to External Chain"
+                right={feeUsd !== null ? <Text style={styles.rateTag}>Fee: ${feeUsd.toFixed(2)}</Text> : null}
+              />
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  {chains.map((c) => (
+                    <Pill
+                      key={c.key}
+                      label={c.label}
+                      active={selectedChain?.key === c.key}
+                      onPress={() => setSelectedChain(c)}
+                    />
+                  ))}
+                </View>
+              </ScrollView>
+              <Input
+                label={`Destination ${selectedChain?.name || ""} Address`}
+                placeholder={selectedChain?.example || "Address"}
+                value={destAddr}
+                onChangeText={setDestAddr}
+                autoCapitalize="none"
+              />
+              <Input
+                label="Amount (USDC)"
+                placeholder="e.g. 20"
+                value={cryptoAmt}
+                onChangeText={setCryptoAmt}
+                keyboardType="decimal-pad"
+              />
+              <Button title="Review and approve withdrawal" onPress={handleCryptoWithdraw} loading={loading} />
+            </Card>
+
+            <Card>
+              <SectionHeader title="Internal Move (Arc ↔ Solana)" />
+              <View style={styles.pillRow}>
+                <Pill
+                  label="Arc → Solana"
+                  active={bridgeDir === "arc_to_solana"}
+                  onPress={() => setBridgeDir("arc_to_solana")}
+                />
+                <Pill
+                  label="Solana → Arc"
+                  active={bridgeDir === "solana_to_arc"}
+                  onPress={() => setBridgeDir("solana_to_arc")}
+                />
+              </View>
+              <Input
+                label="Amount (USDC)"
+                placeholder="e.g. 10"
+                value={bridgeAmt}
+                onChangeText={setBridgeAmt}
+                keyboardType="decimal-pad"
+              />
+              <Button title="Move between your chains" variant="secondary" onPress={handleBridgeMove} loading={loading} />
+            </Card>
+          </>
+        ) : null}
+      </ScrollView>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: COLORS.bg },
+  content: { padding: SPACING.md, paddingBottom: 40 },
+  pillRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: SPACING.md },
+  rateTag: { color: COLORS.primary, fontSize: 12, fontWeight: "700" },
+  verifiedBox: {
+    backgroundColor: COLORS.primaryMuted,
+    borderWidth: 1,
+    borderColor: COLORS.primaryBorder,
+    borderRadius: RADIUS.sm,
+    padding: 10,
+    marginBottom: 12,
+  },
+  verifiedText: { color: "#A7F3D0", fontSize: 13, fontWeight: "600" },
+  giftHintBox: {
+    backgroundColor: COLORS.businessMuted,
+    borderWidth: 1,
+    borderColor: COLORS.businessBorder,
+    borderRadius: RADIUS.sm,
+    padding: 10,
+    marginBottom: 12,
+  },
+  giftHintText: { color: "#FDE68A", fontSize: 12, lineHeight: 18 },
+  listRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  rowTitle: { color: COLORS.text, fontSize: 14, fontWeight: "600" },
+  rowSub: { color: COLORS.textSecondary, fontSize: 12 },
+  fieldHint: { color: COLORS.textSecondary, fontSize: 12, fontWeight: "600", marginBottom: 6 },
+});
