@@ -52,8 +52,8 @@ async function showGlobalAccountsMenu(ctx, accountType = "personal") {
   }
 
   const existing = db.getNuvionAccountDetailsByEntity(entity.entity_id).filter((d) => d.asset_type === "fiat");
-  const activeCurrencies = new Set(existing.filter((d) => d.status === "active").map((d) => d.currency));
-  const pendingCurrencies = new Set(existing.filter((d) => d.status !== "active").map((d) => d.currency));
+  const activeCurrencies = new Set(existing.filter((d) => nuvion.isAccountDetailReady(d)).map((d) => d.currency));
+  const pendingCurrencies = new Set(existing.filter((d) => !nuvion.isAccountDetailReady(d)).map((d) => d.currency));
 
   const badge = (code) => (activeCurrencies.has(code) ? " ✅" : pendingCurrencies.has(code) ? " ⏳" : "");
   const p = accountType === "business" ? "biz" : "per";
@@ -291,7 +291,7 @@ function getBusinessGlobalPaymentOptions(telegramId) {
   if (!entity || String(entity.status).toLowerCase() !== "approved") return [];
   return db
     .getNuvionAccountDetailsByEntity(entity.entity_id)
-    .filter((d) => d.asset_type === "fiat" && d.status === "active");
+    .filter((d) => d.asset_type === "fiat" && nuvion.isAccountDetailReady(d));
 }
 
 function registerGlobalAccountsFlows(bot, depsIn = {}) {

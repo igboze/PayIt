@@ -458,7 +458,7 @@ async function processNuvionEvent(payload, headers = {}, bot = null) {
       // If this is the user's USC Base bridge address becoming active, sync it onto nuvion_entities
       if (entityRecord.usc_base_detail_id === detailId && confirmed.account_number) {
         db.updateNuvionEntity(entityId, { usc_base_address: confirmed.account_number });
-      } else if (saved.asset_type === "fiat" && confirmed.status === "active" && telegram && entityRecord.telegram_id) {
+      } else if (saved.asset_type === "fiat" && nuvion.isAccountDetailReady(saved) && telegram && entityRecord.telegram_id) {
         const lines = [
           `🏦 <b>Your ${escapeHtml(saved.currency)} Bank Account Is Ready!</b>`,
           `──────────────────────────`,

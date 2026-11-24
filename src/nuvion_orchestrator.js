@@ -109,7 +109,7 @@ async function provisionGlobalReceivingAccount(telegramId, accountType = "person
   if (existingDetails.length > 0) {
     // Prefer a detail that is already active and has a number; rows are newest-first, so a newer
     // pending row must not hide an older active one.
-    const usable = existingDetails.find((d) => d.status === "active" && (d.account_number || d.iban));
+    const usable = existingDetails.find((d) => nuvion.isAccountDetailReady(d));
     if (usable) {
       return { entity, detail: usable, isPending: false, cached: true };
     }
@@ -118,12 +118,18 @@ async function provisionGlobalReceivingAccount(telegramId, accountType = "person
     try {
       const live = await nuvion.getAccountDetails(first.detail_id, entityId);
       if (!live || typeof live !== "object" || !(live.id || live.account_number || live.iban || live.status)) {
-        return { entity, detail: first, isPending: first.status !== "active", cached: true };
+        console.warn(`[nuvion_orchestrator] Account detail ${first.detail_id} refresh returned no usable fields.`);
+        return { entity, detail: first, isPending: !nuvion.isAccountDetailReady(first), cached: true };
       }
       const updated = saveDetailFromApi({ ...live, id: live.id || first.detail_id }, entityId, first.account_id, code);
-      return { entity, detail: updated, isPending: updated.status !== "active", cached: false };
-    } catch (_) {
-      return { entity, detail: first, isPending: first.status !== "active", cached: true };
+      console.log(
+        `[nuvion_orchestrator] Account detail ${first.detail_id} refreshed: currency=${code} liveStatus=${live.status} ` +
+        `hasNumber=${!!(live.account_number || live.iban)} keys=${Object.keys(live).slice(0, 25).join(",")}`
+      );
+      return { entity, detail: updated, isPending: !nuvion.isAccountDetailReady(updated), cached: false };
+    } catch (err) {
+      console.warn(`[nuvion_orchestrator] Account detail ${first.detail_id} refresh failed:`, err.message);
+      return { entity, detail: first, isPending: !nuvion.isAccountDetailReady(first), cached: true };
     }
   }
 
@@ -179,7 +185,7 @@ async function provisionGlobalReceivingAccount(telegramId, accountType = "person
     entity,
     account,
     detail: saved,
-    isPending: saved.status !== "active",
+    isPending: !nuvion.isAccountDetailReady(saved),
     cached: false,
   };
 }

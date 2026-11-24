@@ -1196,7 +1196,19 @@ async function sendTestWebhook({ entityWebhookId, eventGroup = "inflows", eventN
   return res;
 }
 
+// An account detail is usable once it carries bank coordinates, unless its status is
+// explicitly a dead/failed one. Nuvion's "ready" status word is not documented here, so we
+// must not require the literal "active" (a ready account with a number was shown as pending).
+const DEAD_DETAIL_STATUSES = new Set(["inactive", "closed", "deleted", "deactivated", "failed", "rejected", "cancelled", "canceled", "suspended", "blocked", "disabled"]);
+function isAccountDetailReady(detail) {
+  if (!detail) return false;
+  const hasCoords = !!(detail.account_number || detail.iban);
+  if (!hasCoords) return false;
+  return !DEAD_DETAIL_STATUSES.has(String(detail.status || "").toLowerCase());
+}
+
 module.exports = {
+  isAccountDetailReady,
   NuvionError,
   DEFAULT_API_VERSION,
   DEFAULT_FX_MARGIN_BPS,
