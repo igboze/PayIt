@@ -27,6 +27,16 @@ const deps = {
   get intentRouter() { return require("../../agent/intent_router"); },
   get actions() { return require("./actions"); },
   get store() { return require("./store"); },
+  get evmSweeper() { return require("../evm_deposit_sweeper"); },
+  get nuvion() { return require("../nuvion"); },
+  get compliance() { return require("../compliance"); },
+  get invoiceDb() { return require("../invoice_db"); },
+  get receiptGenerator() { return require("../receipt_generator"); },
+  get socialTransfers() { return require("../social_transfers"); },
+  get swap() { return require("../swap"); },
+  get flowsMultichain() { return require("../flows_multichain"); },
+  get pods() { return require("../pods"); },
+  get notify() { return require("../notify"); },
 };
 
 const overrides = {};
@@ -138,15 +148,25 @@ async function updateProfile(auth, body, publicUserFn) {
   const senderName = optStr(body, "senderName", { max: 64 });
   const bizSenderName = optStr(body, "bizSenderName", { max: 64 });
   const accountType = body?.accountType === "business" ? "business" : "personal";
+  const hasAutoEarn = typeof body?.autoEarnEnabled === "boolean";
+  const activeContext = optStr(body, "activeContext", { pattern: /^(personal|business)$/ });
 
-  if (!senderName && !bizSenderName) {
-    throw bad("Provide senderName or bizSenderName to update.");
+  if (!senderName && !bizSenderName && !hasAutoEarn && !activeContext) {
+    throw bad("Provide senderName, bizSenderName, autoEarnEnabled, or activeContext to update.");
   }
   try {
     if (senderName) db.setUserSenderName(auth.telegramId, senderName, accountType);
     if (bizSenderName) db.setUserSenderName(auth.telegramId, bizSenderName, "business");
+    if (hasAutoEarn) db.updateAutoEarnSetting(auth.telegramId, body.autoEarnEnabled);
+    if (activeContext) {
+      if (activeContext === "business" && !auth.user.business_deposit_address) {
+        throw new FeatureError(404, "no_business_account", "Set up a business account before switching to it.");
+      }
+      db.setActiveContext(auth.telegramId, activeContext);
+    }
   } catch (err) {
-    throw bad(err.message, "invalid_sender_name");
+    if (err instanceof FeatureError) throw err;
+    throw bad(err.message, "invalid_profile_update");
   }
   const updated = db.getUser(auth.telegramId);
   return {
@@ -466,8 +486,17 @@ async function getNgnDepositStatus(auth, orderId) {
   };
 }
 
-async function listCryptoDepositTokens(auth) {
+async function listCryptoDepositTokens(auth, url = null) {
+  const accountType = url?.searchParams?.get("account") === "business" ? "business" : "personal";
+  if (accountType === "business" && !auth.user.business_deposit_address) {
+    throw new FeatureError(404, "no_business_account", "No business account on this profile.");
+  }
   const near = dep("near");
+  const evmAddr = accountType === "business" ? auth.user.business_deposit_address : auth.user.deposit_address;
+  let solAddr = accountType === "business" ? auth.user.biz_solana_deposit_address : auth.user.solana_deposit_address;
+  if (!solAddr) {
+    try { solAddr = dep("chains").deriveAddress?.(auth.user, accountType, "solana") || null; } catch (_) {}
+  }
   const [nearTokens, solanaTokens, robinhoodTokens, starknetTokens] = await Promise.all([
     Promise.resolve(near.getSupportedNearTokens()).catch(() => []),
     Promise.resolve(near.getSupportedSolanaTokens()).catch(() => []),
@@ -477,10 +506,17 @@ async function listCryptoDepositTokens(auth) {
   return {
     status: 200,
     data: {
+      accountType,
       directAddresses: {
-        arc: auth.user.deposit_address || null,
-        base: auth.user.deposit_address || null,
-        solana: auth.user.solana_deposit_address || null,
+        arc: evmAddr || null,
+        base: evmAddr || null,
+        arbitrum: evmAddr || null,
+        optimism: evmAddr || null,
+        polygon: evmAddr || null,
+        avalanche: evmAddr || null,
+        ethereum: evmAddr || null,
+        robinhood: evmAddr || null,
+        solana: solAddr || null,
       },
       intents: {
         near: nearTokens,
@@ -504,6 +540,7 @@ async function createCryptoDepositIntent(auth, body) {
   if (!recipientAddress) throw new FeatureError(404, "wallet_missing", "Wallet not found for this account.");
 
   const near = dep("near");
+  const db = dep("db");
   let refundTo = optStr(body, "refundTo", { max: 128 });
   let token = null;
   let row = null;
@@ -511,23 +548,39 @@ async function createCryptoDepositIntent(auth, body) {
   if (chain === "near") {
     token = await near.resolveNearToken(symbol);
     if (!token) throw bad(`Unsupported NEAR token: ${symbol}`);
+    if (!refundTo) {
+      try {
+        const sysKey = db.getSystemDecryptedPrivateKey(auth.user, accountType);
+        if (sysKey && typeof near.deriveNearAddress === "function") {
+          refundTo = near.deriveNearAddress(sysKey)?.nearAddress || null;
+        }
+      } catch (_) {}
+    }
     if (!refundTo) throw bad("refundTo (your NEAR refund address) is required for NEAR deposits.");
     row = await near.createNearDeposit({
       telegramId: auth.telegramId,
+      accountType,
       originAsset: token.assetId,
       originSymbol: token.symbol,
       originDecimals: token.decimals,
       amount,
+      amountUsdc: amount,
       recipientAddress,
       refundTo,
     });
   } else if (chain === "solana") {
     token = await near.resolveSolanaToken(symbol);
     if (!token) throw bad(`Unsupported Solana token: ${symbol}`);
-    if (!refundTo) refundTo = auth.user.solana_deposit_address || null;
+    if (!refundTo) {
+      refundTo = (accountType === "business" ? auth.user.biz_solana_deposit_address : auth.user.solana_deposit_address) || null;
+      if (!refundTo) {
+        try { refundTo = dep("chains").deriveAddress?.(auth.user, accountType, "solana") || null; } catch (_) {}
+      }
+    }
     if (!refundTo) throw bad("refundTo (your Solana refund address) is required for Solana deposits.");
     row = await near.createSolanaDeposit({
       telegramId: auth.telegramId,
+      accountType,
       originAsset: token.assetId,
       originSymbol: token.symbol,
       originDecimals: token.decimals,
@@ -540,6 +593,7 @@ async function createCryptoDepositIntent(auth, body) {
     if (!token) throw bad(`Unsupported Robinhood Chain token: ${symbol}`);
     row = await near.createRobinhoodDeposit({
       telegramId: auth.telegramId,
+      accountType,
       originAsset: token.assetId,
       originSymbol: token.symbol,
       originDecimals: token.decimals,
@@ -552,6 +606,7 @@ async function createCryptoDepositIntent(auth, body) {
     if (!token) throw bad(`Unsupported Starknet token: ${symbol}`);
     row = await near.createStarknetDeposit({
       telegramId: auth.telegramId,
+      accountType,
       originAsset: token.assetId,
       originSymbol: token.symbol,
       originDecimals: token.decimals,
@@ -570,6 +625,7 @@ async function createCryptoDepositIntent(auth, body) {
       amount,
       depositAddress: row.deposit_address,
       depositMemo: row.deposit_memo || null,
+      refundTo: refundTo || recipientAddress,
       estimatedAmountOutUsdc: row.amount_out || null,
       deadline: row.deadline || null,
       status: row.status || "pending",
@@ -1447,6 +1503,571 @@ async function exportStatementCsv(auth, url) {
   };
 }
 
+// ─── 16. Cross-chain withdrawals, chain moves, EVM sweep & FX swap ────────────
+
+async function listWithdrawalChains() {
+  const chainsMap = dep("flowsMultichain").CCW_CHAINS || {};
+  const feeUsd = Number(process.env.CROSSCHAIN_WITHDRAWAL_FEE_USDC ?? 0.30);
+  return {
+    status: 200,
+    data: {
+      feeUsd,
+      chains: Object.entries(chainsMap).map(([key, c]) => ({
+        key,
+        name: c.name,
+        label: c.label,
+        token: c.token,
+        engine: c.engine,
+        example: c.example,
+      })),
+    },
+  };
+}
+
+async function listBridgeMoves(auth) {
+  const db = dep("db");
+  const burns = db.getRecentCctpBurnsByUser ? db.getRecentCctpBurnsByUser(auth.telegramId, 10) : [];
+  const inbounds = db.getRecentInboundByUser ? db.getRecentInboundByUser(auth.telegramId, 10) : [];
+  return {
+    status: 200,
+    data: {
+      arcToSolana: burns.map((b) => ({
+        id: b.id,
+        amountUsdc: Number(b.amount_usdc || 0),
+        status: b.status,
+        arcTxHash: b.arc_tx_hash || null,
+        solanaTxSig: b.solana_tx_sig || null,
+        createdAt: b.created_at || null,
+      })),
+      solanaToArc: inbounds.map((t) => ({
+        id: t.id,
+        amountUsdc: Number(t.amount_usdc || 0),
+        status: t.status,
+        solanaTxSig: t.solana_tx_sig || null,
+        arcTxHash: t.arc_tx_hash || null,
+        createdAt: t.created_at || null,
+      })),
+    },
+  };
+}
+
+async function sweepCryptoDeposits(auth, body) {
+  const onlyAccountType = optStr(body, "accountType", { pattern: /^(personal|business)$/ });
+  const onlyChain = optStr(body, "chain", { max: 32 });
+  const results = await dep("evmSweeper").sweepUserDeposits(
+    auth.telegramId,
+    dep("notify").getNotifyBot?.() || null,
+    { onlyAccountType: onlyAccountType || undefined, onlyChain: onlyChain || undefined }
+  );
+  return { status: 200, data: { swept: Array.isArray(results) ? results : [] } };
+}
+
+async function getSwapRates() {
+  const rates = await dep("swap").getFxRates();
+  return { status: 200, data: { rates } };
+}
+
+async function quoteSwap(auth, body) {
+  const tokenIn = reqStr(body, "tokenIn", { pattern: /^(USDC|EURC)$/i }).toUpperCase();
+  const tokenOut = reqStr(body, "tokenOut", { pattern: /^(USDC|EURC)$/i }).toUpperCase();
+  if (tokenIn === tokenOut) throw bad("Choose two different currencies to swap.");
+  const amountIn = Number(body?.amountIn);
+  if (!Number.isFinite(amountIn) || amountIn < 1 || amountIn > 1_000_000) {
+    throw bad("Enter a valid swap amount (minimum 1).", "invalid_amount");
+  }
+  const amountMicro = dep("walletLib").parseToMicro(amountIn.toFixed(6));
+  const quote = await dep("swap").getSwapQuote(tokenIn, tokenOut, amountMicro);
+  return { status: 200, data: { quote } };
+}
+
+// ─── 17. Social gift links (list & claim) ─────────────────────────────────────
+
+async function listPendingGifts(auth) {
+  const rows = dep("db").getPendingSocialEscrowsBySender(auth.telegramId) || [];
+  return {
+    status: 200,
+    data: {
+      gifts: rows.map((g) => ({
+        id: g.id,
+        claimToken: g.claim_token,
+        targetHandle: g.target_handle,
+        amountUsdc: Number(g.amount_usdc || 0),
+        status: g.status,
+        expiresAt: g.expires_at || null,
+        createdAt: g.created_at || null,
+      })),
+    },
+  };
+}
+
+async function claimGift(auth, body) {
+  const st = dep("socialTransfers");
+  const raw = reqStr(body, "claimToken", { max: 128 });
+  const claimToken = st.extractClaimToken(raw) || raw;
+  try {
+    const res = await st.releaseEscrowToRecipient({
+      claimToken,
+      claimantTelegramId: auth.telegramId,
+      claimantUsername: auth.user.username || null,
+      recipientAddress: auth.user.deposit_address,
+    });
+    return { status: 200, data: { success: true, txHash: res.txHash, escrow: res.escrow } };
+  } catch (err) {
+    throw new FeatureError(400, "claim_failed", err.message);
+  }
+}
+
+// ─── 18. Global payout recipients, hosted payment links & KYC/KYB submit ──────
+
+async function listGlobalRecipients(auth, url) {
+  const accountType = url.searchParams.get("account") === "business" ? "business" : "personal";
+  const currency = (url.searchParams.get("currency") || "").trim().toUpperCase() || null;
+  const db = dep("db");
+  const entity = db.getNuvionEntityByUser(auth.telegramId, accountType);
+  if (!entity) return { status: 200, data: { recipients: [] } };
+  const rows = db.getNuvionCounterpartiesByEntity(entity.entity_id, currency) || [];
+  const filtered = rows.filter((c) => {
+    try {
+      const s = c.summary_json ? JSON.parse(c.summary_json) : {};
+      return !s.isSelf && !s.isPlatformMargin && !String(c.label || "").startsWith("__proxim_");
+    } catch (_) { return true; }
+  });
+  return {
+    status: 200,
+    data: {
+      recipients: filtered.map((c) => {
+        let summary = {};
+        try { summary = c.summary_json ? JSON.parse(c.summary_json) : {}; } catch (_) {}
+        return {
+          id: c.id,
+          counterpartyId: c.counterparty_id,
+          label: c.label,
+          currency: c.currency,
+          accountHolderName: c.account_holder_name || null,
+          railKey: summary.railKey || c.scheme || null,
+          bankName: summary.bankName || null,
+          accountTail: summary.accountTail || null,
+        };
+      }),
+    },
+  };
+}
+
+async function createGlobalPaymentLink(auth, body) {
+  const accountType = body?.accountType === "business" ? "business" : "personal";
+  const currency = reqStr(body, "currency", { pattern: /^[A-Za-z]{3}$/ }).toUpperCase();
+  const amountMajor = Number(body?.amount);
+  if (!Number.isFinite(amountMajor) || amountMajor <= 0) throw bad("Enter a positive payment amount.", "invalid_amount");
+  const fundingType = reqStr(body, "fundingType", { pattern: /^(open-banking|interac|momo)$/ });
+  const entity = dep("db").getNuvionEntityByUser(auth.telegramId, accountType);
+  if (!entity || String(entity.status || "").toLowerCase() !== "approved") {
+    throw new FeatureError(403, "kyc_required", "Complete ID verification to create Global Neobank payment links.");
+  }
+  try {
+    const res = await dep("nuvionOrchestrator").createHostedPaymentLink({
+      telegramId: auth.telegramId,
+      accountType,
+      currency,
+      amountMajor,
+      fundingType,
+      payerName: optStr(body, "payerName", { max: 80 }),
+      payerEmail: optStr(body, "payerEmail", { max: 120 }),
+      msisdn: optStr(body, "msisdn", { max: 32 }),
+      momoChannel: optStr(body, "momoChannel", { max: 40 }),
+      narration: optStr(body, "narration", { max: 80 }),
+    });
+    return {
+      status: 201,
+      data: {
+        sessionId: res?.session?.id || null,
+        paymentUrl: res?.session?.hosted_url || res?.session?.checkout_url || res?.session?.url || null,
+        status: res?.session?.status || "pending",
+        session: res?.session || null,
+      },
+    };
+  } catch (err) {
+    throw new FeatureError(400, "payment_link_error", String(err.message || "Could not create payment link.").replace(/nuvion/gi, "Global Neobank"));
+  }
+}
+
+async function submitKyc(auth, body) {
+  const compliance = dep("compliance");
+  const countryCode = compliance.normalizeCountryCode(body?.countryCode || body?.nationality || body?.country_code);
+  if (!/^[A-Z]{2}$/.test(countryCode)) throw bad("Valid 2-letter ISO countryCode is required.");
+  if (compliance.isSanctionedCountry(countryCode)) {
+    throw new FeatureError(403, "jurisdiction_unsupported", `Jurisdiction ${countryCode} is not supported due to compliance restrictions.`);
+  }
+  const firstName = reqStr(body, "firstName", { max: 80 });
+  const lastName = reqStr(body, "lastName", { max: 80 });
+  const email = reqStr(body, "email", { max: 120 });
+  const phoneNumber = reqStr(body, "phoneNumber", { max: 32 });
+  const dateOfBirth = reqStr(body, "dateOfBirth", { max: 20 });
+  if (!body?.address || typeof body.address !== "object") throw bad("address object is required.");
+  if (!body?.idDocument || typeof body.idDocument !== "object") throw bad("idDocument object is required.");
+
+  let entityRes;
+  try {
+    entityRes = await dep("nuvion").createIndividualEntity({
+      nationality: countryCode,
+      firstName,
+      lastName,
+      middleName: optStr(body, "middleName", { max: 80 }) || undefined,
+      email,
+      phoneNumber,
+      dateOfBirth,
+      gender: optStr(body, "gender", { pattern: /^(male|female)$/i })?.toLowerCase() || "male",
+      address: body.address,
+      idDocument: body.idDocument,
+    });
+  } catch (err) {
+    throw new FeatureError(Number(err.status || err.statusCode) || 400, "kyc_error", String(err.message || "Could not submit verification.").replace(/nuvion/gi, "Global Neobank"));
+  }
+  dep("db").upsertNuvionEntity({
+    telegramId: auth.telegramId,
+    accountType: "personal",
+    entityId: entityRes.id,
+    entityType: "individual",
+    status: entityRes.status || "pending",
+    legalName: `${firstName} ${lastName}`.trim(),
+    countryCode,
+  });
+  return { status: 201, data: { status: entityRes.status || "pending", tier: String(entityRes.status || "").toLowerCase() === "approved" ? 1 : 0 } };
+}
+
+async function submitKyb(auth, body) {
+  const compliance = dep("compliance");
+  const countryCode = compliance.normalizeCountryCode(body?.incorporationCountry || body?.countryCode);
+  if (!/^[A-Z]{2}$/.test(countryCode)) throw bad("Valid 2-letter ISO incorporationCountry is required.");
+  if (compliance.isSanctionedCountry(countryCode)) {
+    throw new FeatureError(403, "jurisdiction_unsupported", `Jurisdiction ${countryCode} is not supported due to compliance restrictions.`);
+  }
+  const legalName = reqStr(body, "legalName", { max: 120 });
+  const registrationNumber = reqStr(body, "registrationNumber", { max: 64 });
+  const email = reqStr(body, "email", { max: 120 });
+  const phoneNumber = reqStr(body, "phoneNumber", { max: 32 });
+  if (!body?.address || typeof body.address !== "object") throw bad("address object is required.");
+  if (!body?.officer || typeof body.officer !== "object") throw bad("officer object is required.");
+
+  let entityRes;
+  try {
+    entityRes = await dep("nuvion").createBusinessEntity({
+      legalName,
+      tradeName: optStr(body, "tradeName", { max: 120 }) || legalName,
+      registrationNumber,
+      taxId: optStr(body, "taxId", { max: 64 }) || registrationNumber,
+      incorporationCountry: countryCode,
+      incorporationState: optStr(body, "incorporationState", { max: 80 }) || body.address.state || "",
+      incorporationYear: Number(body?.incorporationYear || 2022),
+      incorporationMonth: Number(body?.incorporationMonth || 1),
+      email,
+      phoneNumber,
+      website: optStr(body, "website", { max: 200 }) || undefined,
+      industry: optStr(body, "industry", { max: 80 }) || "Financial Technology",
+      entityType: optStr(body, "businessType", { max: 40 }) || "llc",
+      address: body.address,
+      officer: body.officer,
+    });
+  } catch (err) {
+    throw new FeatureError(Number(err.status || err.statusCode) || 400, "kyb_error", String(err.message || "Could not submit business verification.").replace(/nuvion/gi, "Global Neobank"));
+  }
+  dep("db").upsertNuvionEntity({
+    telegramId: auth.telegramId,
+    accountType: "business",
+    entityId: entityRes.id,
+    entityType: "business",
+    status: entityRes.status || "pending",
+    legalName,
+    countryCode,
+  });
+  return { status: 201, data: { status: entityRes.status || "pending", tier: String(entityRes.status || "").toLowerCase() === "approved" ? 1 : 0 } };
+}
+
+async function refreshKycStatus(auth, body) {
+  const accountType = body?.accountType === "business" ? "business" : "personal";
+  const db = dep("db");
+  const entity = db.getNuvionEntityByUser(auth.telegramId, accountType);
+  if (!entity) return getKycStatus(auth);
+  try {
+    const live = await dep("nuvion").getEntity(entity.entity_id);
+    if (live?.status) {
+      db.updateNuvionEntity(entity.entity_id, {
+        status: live.status,
+        rejection_reason: live.rejection_reason || live.status_reason || null,
+      });
+    }
+  } catch (_) {}
+  return getKycStatus(auth);
+}
+
+// ─── 19. Bill history, personal invoices, business expenses & receipts ────────
+
+async function listBillHistory(auth, url) {
+  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 20), 1), 100);
+  const rows = dep("db").getUserBillPayments(auth.telegramId, limit) || [];
+  return {
+    status: 200,
+    data: {
+      bills: rows.map((b) => ({
+        id: b.id,
+        category: b.category,
+        providerName: b.provider_name || null,
+        recipient: b.recipient,
+        amountNgn: Number(b.amount_ngn || 0),
+        amountUsdc: Number(b.amount_usdc || 0),
+        status: b.status,
+        meterToken: b.meter_token || null,
+        txHash: b.solana_tx_sig || null,
+        createdAt: b.created_at || null,
+      })),
+    },
+  };
+}
+
+function formatPersonalInvoice(row) {
+  let items = [];
+  if (typeof row.items_json === "string") {
+    try { items = JSON.parse(row.items_json); } catch (_) { items = []; }
+  }
+  return {
+    id: row.id,
+    invoiceNumber: row.invoice_number,
+    clientName: row.client_name,
+    clientEmail: row.client_email || null,
+    items,
+    totalUsdc: Number(row.total_usdc ?? row.total ?? 0),
+    dueDate: row.due_date || null,
+    notes: row.notes || null,
+    status: row.status || "unpaid",
+    walletAddress: row.wallet_address || null,
+    paymentAddress: row.payment_address || null,
+    fiatBankName: row.fiat_bank_name || null,
+    fiatAccountNumber: row.fiat_account_number || null,
+    fiatAccountName: row.fiat_account_name || null,
+    fiatAmount: row.fiat_amount != null ? Number(row.fiat_amount) : null,
+    paidTxHash: row.paid_tx_hash || null,
+    createdAt: row.created_at || null,
+    paidAt: row.paid_at || null,
+  };
+}
+
+async function listPersonalInvoices(auth, url) {
+  const idb = dep("invoiceDb");
+  if (typeof idb.initInvoiceTables === "function") idb.initInvoiceTables();
+  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 20), 1), 100);
+  const rows = idb.getUserInvoices(auth.telegramId, limit) || [];
+  return { status: 200, data: { invoices: rows.map(formatPersonalInvoice) } };
+}
+
+async function getPersonalInvoice(auth, rawId) {
+  const id = Number(rawId);
+  if (!Number.isInteger(id) || id <= 0) throw bad("Invalid invoice ID.");
+  const row = dep("invoiceDb").getInvoice(id);
+  if (!row || Number(row.telegram_id) !== auth.telegramId) {
+    throw new FeatureError(404, "invoice_not_found", "Invoice not found.");
+  }
+  return { status: 200, data: { invoice: formatPersonalInvoice(row) } };
+}
+
+async function createPersonalInvoice(auth, body) {
+  const idb = dep("invoiceDb");
+  const db = dep("db");
+  if (typeof idb.initInvoiceTables === "function") idb.initInvoiceTables();
+
+  const clientName = reqStr(body, "clientName", { max: 100 });
+  const clientEmail = optStr(body, "clientEmail", { max: 120 });
+  const notes = optStr(body, "notes", { max: 300 });
+  const dueDate = optStr(body, "dueDate", { max: 32 });
+  const paymentChannel = optStr(body, "paymentChannel", { pattern: /^(ngn_bank|nuvion_bank|crypto_intent|both|both_nuvion)$/ }) || "both";
+  const invoiceCurrency = (optStr(body, "currency", { pattern: /^[A-Za-z]{3}$/ }) || "USD").toUpperCase();
+  const nuvionBankCurrency = (optStr(body, "globalBankCurrency", { pattern: /^[A-Za-z]{3}$/ }) || "USD").toUpperCase();
+  const cryptoChain = optStr(body, "cryptoChain", { max: 32 }) || "arc";
+
+  let items = [];
+  if (Array.isArray(body?.items) && body.items.length > 0) {
+    items = body.items.slice(0, 30).map((it) => {
+      const desc = String(it?.description || "").trim().slice(0, 120);
+      const qty = Number(it?.quantity ?? 1);
+      const price = Number(it?.unitPrice ?? it?.amount ?? 0);
+      if (!desc || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(price) || price <= 0) {
+        throw bad("Each invoice item needs description, positive quantity, and positive unitPrice.");
+      }
+      return { description: desc, quantity: qty, unitPrice: price };
+    });
+  } else {
+    const total = Number(body?.totalUsdc ?? body?.amount);
+    if (!Number.isFinite(total) || total <= 0 || total > 1_000_000) throw bad("Provide invoice items or a positive amount.", "invalid_amount");
+    items = [{ description: notes || `Invoice for ${clientName}`, quantity: 1, unitPrice: total }];
+  }
+
+  const totalAmount = Number(items.reduce((s, i) => s + i.quantity * i.unitPrice, 0).toFixed(2));
+  const invoiceNumber = idb.getNextInvoiceNumber(auth.telegramId);
+  const walletAddress = auth.user.deposit_address;
+  let sysKey = null;
+  try { sysKey = db.getSystemDecryptedPrivateKey(auth.user, "personal"); } catch (_) {}
+
+  if (sysKey && typeof dep("invoiceHd").createCompleteInvoice === "function") {
+    try {
+      const created = await dep("invoiceHd").createCompleteInvoice({
+        telegramId: auth.telegramId,
+        decryptedPrivateKey: sysKey,
+        user: auth.user,
+        businessName: db.resolveSenderName(auth.telegramId, "personal"),
+        invoiceData: {
+          invoiceNumber,
+          clientName,
+          clientEmail,
+          items,
+          totalUsdc: invoiceCurrency === "NGN" ? null : totalAmount,
+          totalNgn: invoiceCurrency === "NGN" ? totalAmount : null,
+          invoiceCurrency,
+          paymentChannel,
+          nuvionBankCurrency,
+          cryptoChain,
+          dueDate,
+          notes,
+        },
+      });
+      const row = created?.invoiceId ? idb.getInvoice(created.invoiceId) : null;
+      return {
+        status: 201,
+        data: {
+          invoice: row ? formatPersonalInvoice(row) : { id: created?.invoiceId || null, invoiceNumber, clientName, items, totalUsdc: created?.totalUsdc ?? totalAmount, status: "unpaid" },
+          paymentDetails: { paymentAddress: created?.paymentAddress || walletAddress, fiat: created?.fiatDetails || null, crypto: created?.cryptoIntent || null },
+        },
+      };
+    } catch (err) {
+      if (!String(err.message || "").includes("INVOICE_FORWARDING_SECRET")) throw err;
+    }
+  }
+
+  const id = idb.createInvoice(auth.telegramId, { invoiceNumber, clientName, clientEmail, items, totalUsdc: totalAmount, dueDate, notes, walletAddress, pngPath: null });
+  return { status: 201, data: { invoice: formatPersonalInvoice(idb.getInvoice(id)), paymentDetails: { paymentAddress: walletAddress, fiat: null, crypto: null } } };
+}
+
+async function markPersonalInvoicePaid(auth, rawId) {
+  const id = Number(rawId);
+  if (!Number.isInteger(id) || id <= 0) throw bad("Invalid invoice ID.");
+  const idb = dep("invoiceDb");
+  const row = idb.getInvoice(id);
+  if (!row || Number(row.telegram_id) !== auth.telegramId) throw new FeatureError(404, "invoice_not_found", "Invoice not found.");
+  idb.markInvoicePaid(id);
+  return { status: 200, data: { success: true, invoice: formatPersonalInvoice(idb.getInvoice(id)) } };
+}
+
+async function markBusinessInvoicePaid(auth, rawId) {
+  const id = Number(rawId);
+  if (!Number.isInteger(id) || id <= 0) throw bad("Invalid invoice ID.");
+  const bizDb = dep("bizDb");
+  const row = bizDb.getBizInvoice(id);
+  if (!row || Number(row.telegram_id) !== auth.telegramId) throw new FeatureError(404, "invoice_not_found", "Invoice not found.");
+  bizDb.markBizInvoicePaid(id);
+  return { status: 200, data: { success: true, invoice: formatBizInvoice(bizDb.getBizInvoice(id)) } };
+}
+
+async function listBusinessExpenses(auth, url) {
+  const bizDb = dep("bizDb");
+  if (typeof bizDb.initBizTables === "function") bizDb.initBizTables();
+  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 50), 1), 200);
+  const rows = dep("db").db
+    .prepare("SELECT * FROM biz_expenses WHERE telegram_id = ? ORDER BY id DESC LIMIT ?")
+    .all(Number(auth.telegramId), limit);
+  return {
+    status: 200,
+    data: {
+      expenses: rows.map((e) => ({
+        id: e.id,
+        amount: Number(e.amount || 0),
+        currency: e.currency || "USDC",
+        category: e.category || "General",
+        description: e.description,
+        loggedAt: e.logged_at || null,
+      })),
+    },
+  };
+}
+
+async function logBusinessExpense(auth, body) {
+  const bizDb = dep("bizDb");
+  if (typeof bizDb.initBizTables === "function") bizDb.initBizTables();
+  const amount = Number(body?.amount);
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 100_000_000) throw bad("Enter a positive expense amount.", "invalid_amount");
+  const currency = (optStr(body, "currency", { pattern: /^(USDC|USD|NGN|EURC|GBP|EUR)$/i }) || "USDC").toUpperCase();
+  const description = reqStr(body, "description", { max: 200 });
+  bizDb.logExpense(auth.telegramId, amount, currency, description);
+  const latest = dep("db").db
+    .prepare("SELECT * FROM biz_expenses WHERE telegram_id = ? ORDER BY id DESC LIMIT 1")
+    .get(Number(auth.telegramId));
+  return {
+    status: 201,
+    data: {
+      expense: latest ? { id: latest.id, amount: Number(latest.amount), currency: latest.currency, category: latest.category, description: latest.description, loggedAt: latest.logged_at } : { amount, currency, description },
+    },
+  };
+}
+
+async function setBusinessSavingsGoal(auth, body) {
+  const bizDb = dep("bizDb");
+  if (typeof bizDb.initBizTables === "function") bizDb.initBizTables();
+  const percentage = Math.round(Number(body?.percentage));
+  if (!Number.isInteger(percentage) || percentage < 0 || percentage > 90) {
+    throw bad("Savings goal percentage must be between 0 and 90.");
+  }
+  const label = optStr(body, "label", { max: 60 }) || "Business Savings";
+  bizDb.setSavingsGoal(auth.telegramId, percentage, label);
+  return { status: 200, data: { savingsGoal: bizDb.getSavingsGoal(auth.telegramId) } };
+}
+
+async function getTransactionReceipt(auth, rawId) {
+  const id = Number(rawId);
+  if (!Number.isInteger(id) || id <= 0) throw bad("Invalid transaction ID.");
+  const db = dep("db");
+  const tx = db.db.prepare("SELECT * FROM transactions WHERE id = ? AND telegram_id = ?").get(id, Number(auth.telegramId));
+  if (!tx) throw new FeatureError(404, "not_found", "Transaction not found.");
+  const amountNum = Number(formatAmountForCsv(tx.amount_micro ?? tx.amount ?? "0", tx.decimals ?? 18)) || 0;
+  const acctType = tx.account_type || "personal";
+  const outPath = await dep("receiptGenerator").generateReceiptPNG({
+    receiptId: `TX-${tx.id}`,
+    senderName: db.resolveSenderName(auth.telegramId, acctType),
+    senderAddress: acctType === "business" ? (auth.user.business_deposit_address || auth.user.deposit_address) : auth.user.deposit_address,
+    recipientName: tx.narration || tx.type || "Transaction",
+    recipientAddress: tx.tx_hash || "",
+    amountUsdc: amountNum,
+    token: "USDC",
+    type: tx.type || "Transfer",
+    timestamp: tx.created_at || new Date().toISOString(),
+    status: tx.status || "Completed",
+    txHash: tx.tx_hash || null,
+    narration: tx.narration || null,
+  });
+  const fs = require("fs");
+  const png = fs.readFileSync(outPath);
+  try { fs.unlinkSync(outPath); } catch (_) {}
+  return {
+    status: 200,
+    raw: png,
+    contentType: "image/png",
+    headers: { "Content-Disposition": `inline; filename="proxim-receipt-${tx.id}.png"` },
+  };
+}
+
+async function getInvestmentsHub(auth) {
+  const pods = dep("pods");
+  const enabled = typeof pods.isInvestmentsEnabledForUser === "function"
+    ? Boolean(pods.isInvestmentsEnabledForUser(auth.telegramId))
+    : false;
+  if (!enabled) {
+    return { status: 200, data: { enabled: false } };
+  }
+  return {
+    status: 200,
+    data: {
+      enabled: true,
+      popularStocks: pods.POPULAR_STOCKS || [],
+      savingsVaults: pods.CURATED_SAVINGS_VAULTS || [],
+    },
+  };
+}
+
 module.exports = {
   FeatureError,
   updateProfile,
@@ -1465,23 +2086,46 @@ module.exports = {
   listGlobalAccounts,
   provisionGlobalAccount,
   listGlobalCorridors,
+  listGlobalRecipients,
+  createGlobalPaymentLink,
   listCards,
   listCardTransactions,
   listBillProviders,
   validateBillMeter,
+  listBillHistory,
   listSchedules,
   updateScheduleStatus,
   getRewards,
   getKycStatus,
+  submitKyc,
+  submitKyb,
+  refreshKycStatus,
   getSavingsOverview,
   getBusinessHome,
   updateBusinessProfile,
   listBusinessInvoices,
   getBusinessInvoice,
   createBusinessInvoice,
+  markBusinessInvoicePaid,
+  listBusinessExpenses,
+  logBusinessExpense,
+  setBusinessSavingsGoal,
   listBusinessPaymentLinks,
   createBusinessPaymentLink,
   deactivateBusinessPaymentLink,
+  listPersonalInvoices,
+  getPersonalInvoice,
+  createPersonalInvoice,
+  markPersonalInvoicePaid,
+  listWithdrawalChains,
+  listBridgeMoves,
+  sweepCryptoDeposits,
+  getSwapRates,
+  quoteSwap,
+  listPendingGifts,
+  claimGift,
+  getTransactionReceipt,
+  getInvestmentsHub,
   assistantChat,
   exportStatementCsv,
   __setTestDeps,

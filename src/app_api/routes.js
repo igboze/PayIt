@@ -177,6 +177,8 @@ function publicUser(user, device) {
     depositAddress: user.deposit_address || null,
     hasBusinessAccount: Boolean(user.business_deposit_address),
     businessDepositAddress: user.business_deposit_address || null,
+    activeContext: user.active_context || "personal",
+    autoEarnEnabled: Boolean(user.auto_earn_enabled),
     referralCode: user.referral_code || `ref${user.telegram_id}`,
     deviceRestrictedUntil: store.isDeviceRestricted(device) ? device.restricted_until : null,
   };
@@ -429,7 +431,10 @@ async function balances(req, url) {
       accountType,
       totalUsdc: unified.total,
       arc: unified.arc,
+      base: unified.base || { usdc: 0 },
+      gateway: unified.gateway || { usdc: 0 },
       solana: unified.solana,
+      byChain: unified.byChain || null,
       pendingBridgeUsdc: unified.pendingNear,
     },
   };
@@ -602,7 +607,7 @@ async function executeConfirmedAction(req, body, { allowedTypes = null } = {}) {
   const amountUsd = Number(approval.context?._amountUsd ?? a.amountUsdc ?? a.quotedUsd ?? a.totalUsd ?? 0);
   if (amountUsd > 0) assertDeviceAllowsAmount(auth.deviceId, amountUsd);
 
-  const result = await def.execute(auth, a, pin, approval.context || null);
+  const result = await def.execute(auth, a, pin, approval.context || null, body);
   if (result?.notice) {
     try {
       await dep("notify")(auth.telegramId, {
@@ -728,14 +733,27 @@ const ROUTES = [
     return features.resolveBankAccount(auth, body);
   }],
 
-  // Naira & crypto (NEAR Intents) deposits
+  // Naira & crypto (NEAR Intents) deposits & sweep
   ["POST", "/deposits/ngn", (req, body) => features.createNgnDeposit(authenticate(req), body)],
-  ["GET", "/deposits/crypto/tokens", (req) => features.listCryptoDepositTokens(authenticate(req))],
+  ["GET", "/deposits/crypto/tokens", (req, url) => features.listCryptoDepositTokens(authenticate(req), url)],
   ["POST", "/deposits/crypto/intent", (req, body) => features.createCryptoDepositIntent(authenticate(req), body)],
+  ["POST", "/deposits/crypto/sweep", (req, body) => features.sweepCryptoDeposits(authenticate(req), body)],
 
-  // Global accounts & payout corridors
+  // Cross-chain withdrawals, bridge moves & FX swap
+  ["GET", "/withdrawals/chains", (req) => { authenticate(req); return features.listWithdrawalChains(); }],
+  ["GET", "/bridge/moves", (req) => features.listBridgeMoves(authenticate(req))],
+  ["GET", "/swap/rates", (req) => { authenticate(req); return features.getSwapRates(); }],
+  ["POST", "/swap/quote", (req, body) => features.quoteSwap(authenticate(req), body)],
+
+  // Social gift links
+  ["GET", "/gifts", (req) => features.listPendingGifts(authenticate(req))],
+  ["POST", "/gifts/claim", (req, body) => features.claimGift(authenticate(req), body)],
+
+  // Global accounts, payout corridors, recipients & hosted payment links
   ["GET", "/global/accounts", (req, url) => features.listGlobalAccounts(authenticate(req), url)],
   ["GET", "/global/corridors", (req) => { authenticate(req); return features.listGlobalCorridors(); }],
+  ["GET", "/global/recipients", (req, url) => features.listGlobalRecipients(authenticate(req), url)],
+  ["POST", "/global/payment-links", (req, body) => features.createGlobalPaymentLink(authenticate(req), body)],
 
   // Cards
   ["GET", "/cards", (req, url) => features.listCards(authenticate(req), url)],
@@ -743,22 +761,34 @@ const ROUTES = [
   // Bills
   ["GET", "/bills/providers", (req, url) => features.listBillProviders(authenticate(req), url)],
   ["POST", "/bills/validate-meter", (req, body) => features.validateBillMeter(authenticate(req), body)],
+  ["GET", "/bills/history", (req, url) => features.listBillHistory(authenticate(req), url)],
 
   // Schedules
   ["GET", "/schedules", (req) => features.listSchedules(authenticate(req))],
 
-  // Rewards, KYC & savings read-only views
+  // Rewards, KYC/KYB, savings & investments
   ["GET", "/rewards", (req, url) => features.getRewards(authenticate(req), url)],
   ["GET", "/kyc/status", (req) => features.getKycStatus(authenticate(req))],
+  ["POST", "/kyc/submit", (req, body) => features.submitKyc(authenticate(req), body)],
+  ["POST", "/kyb/submit", (req, body) => features.submitKyb(authenticate(req), body)],
+  ["POST", "/kyc/refresh", (req, body) => features.refreshKycStatus(authenticate(req), body)],
   ["GET", "/savings", (req) => features.getSavingsOverview(authenticate(req))],
+  ["GET", "/investments/hub", (req) => features.getInvestmentsHub(authenticate(req))],
 
-  // Business home, profile, invoices & payment links
+  // Personal invoices
+  ["GET", "/invoices", (req, url) => features.listPersonalInvoices(authenticate(req), url)],
+  ["POST", "/invoices", (req, body) => features.createPersonalInvoice(authenticate(req), body)],
+
+  // Business home, profile, invoices, expenses, savings goal & payment links
   ["GET", "/business/home", (req) => features.getBusinessHome(authenticate(req))],
   ["GET", "/business/overview", (req) => features.getBusinessHome(authenticate(req))],
   ["PATCH", "/business/profile", (req, body) => features.updateBusinessProfile(authenticate(req), body)],
   ["PUT", "/business/profile", (req, body) => features.updateBusinessProfile(authenticate(req), body)],
   ["GET", "/business/invoices", (req, url) => features.listBusinessInvoices(authenticate(req), url)],
   ["POST", "/business/invoices", (req, body) => features.createBusinessInvoice(authenticate(req), body)],
+  ["GET", "/business/expenses", (req, url) => features.listBusinessExpenses(authenticate(req), url)],
+  ["POST", "/business/expenses", (req, body) => features.logBusinessExpense(authenticate(req), body)],
+  ["PUT", "/business/savings-goal", (req, body) => features.setBusinessSavingsGoal(authenticate(req), body)],
   ["GET", "/business/payment-links", (req) => features.listBusinessPaymentLinks(req, authenticate(req))],
   ["POST", "/business/payment-links", (req, body) => features.createBusinessPaymentLink(req, authenticate(req), body)],
 
@@ -774,6 +804,7 @@ const PARAM_ROUTES = [
   ["POST", /^\/actions\/([a-z0-9._-]+)\/intent$/, (req, body, m) => actionIntent(req, body, m[1])],
   ["POST", /^\/devices\/([A-Za-z0-9_-]{16,128})\/revoke\/intent$/, (req, body, m) => deviceRevokeIntent(req, body, m[1])],
   ["POST", /^\/devices\/([A-Za-z0-9_-]{16,128})\/revoke$/, (req, body, m) => deviceRevoke(req, body, m[1])],
+  ["GET", /^\/transactions\/(\d+)\/receipt$/, (req, _arg, m) => features.getTransactionReceipt(authenticate(req), m[1])],
   ["DELETE", /^\/contacts\/([^/]+)$/, (req, _arg, m) => features.deleteContact(authenticate(req), m[1])],
   ["GET", /^\/deposits\/ngn\/([^/]+)$/, (req, _arg, m) => features.getNgnDepositStatus(authenticate(req), m[1])],
   ["GET", /^\/deposits\/crypto\/(\d+)$/, (req, _arg, m) => features.getCryptoDepositStatus(authenticate(req), m[1])],
@@ -783,7 +814,10 @@ const PARAM_ROUTES = [
   ["POST", /^\/schedules\/([^/]+)\/cancel$/, (req, _arg, m) => features.updateScheduleStatus(authenticate(req), m[1], "cancelled")],
   ["POST", /^\/schedules\/([^/]+)\/pause$/, (req, _arg, m) => features.updateScheduleStatus(authenticate(req), m[1], "paused")],
   ["POST", /^\/schedules\/([^/]+)\/resume$/, (req, _arg, m) => features.updateScheduleStatus(authenticate(req), m[1], "active")],
+  ["GET", /^\/invoices\/(\d+)$/, (req, _arg, m) => features.getPersonalInvoice(authenticate(req), m[1])],
+  ["POST", /^\/invoices\/(\d+)\/mark-paid$/, (req, _arg, m) => features.markPersonalInvoicePaid(authenticate(req), m[1])],
   ["GET", /^\/business\/invoices\/(\d+)$/, (req, _arg, m) => features.getBusinessInvoice(authenticate(req), m[1])],
+  ["POST", /^\/business\/invoices\/(\d+)\/mark-paid$/, (req, _arg, m) => features.markBusinessInvoicePaid(authenticate(req), m[1])],
   ["DELETE", /^\/business\/payment-links\/([^/]+)$/, (req, _arg, m) => features.deactivateBusinessPaymentLink(authenticate(req), m[1])],
 ];
 
@@ -820,9 +854,10 @@ async function handleAppApiRequest(req, res) {
     }
     return sendJson(res, result.status, result.data);
   } catch (err) {
-    const status = Number(err.status) || 500;
+    const status = Number(err.status || err.statusCode) || 500;
     if (status >= 500) console.error("[app_api] error:", err.message);
-    const message = status >= 500 ? "Something went wrong. Please try again." : err.message;
+    const rawMsg = status >= 500 ? "Something went wrong. Please try again." : err.message;
+    const message = String(rawMsg || "").replace(/nuvion/gi, "Global Neobank");
     return sendJson(res, status, { error: { code: err.code || "server_error", message } });
   }
 }
