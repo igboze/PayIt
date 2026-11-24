@@ -1207,8 +1207,31 @@ function isAccountDetailReady(detail) {
   return !DEAD_DETAIL_STATUSES.has(String(detail.status || "").toLowerCase());
 }
 
+/** True when Nuvion has explicitly marked the detail as not usable (e.g. "inactive"). */
+function isAccountDetailDead(detail) {
+  return !!detail && DEAD_DETAIL_STATUSES.has(String(detail.status || "").toLowerCase());
+}
+
+/** Human-readable status_reason from a live detail or a stored row's raw_meta_json. */
+function getAccountDetailStatusReason(detail) {
+  if (!detail) return null;
+  let reason = detail.status_reason;
+  if (reason === undefined && detail.raw_meta_json) {
+    try { reason = JSON.parse(detail.raw_meta_json)?.status_reason; } catch (_) {}
+  }
+  if (reason === undefined || reason === null || reason === "") return null;
+  if (typeof reason === "string") return reason.slice(0, 300);
+  if (typeof reason === "object") {
+    const text = reason.message || reason.description || reason.reason || reason.code;
+    return String(text || JSON.stringify(reason)).slice(0, 300);
+  }
+  return String(reason).slice(0, 300);
+}
+
 module.exports = {
   isAccountDetailReady,
+  isAccountDetailDead,
+  getAccountDetailStatusReason,
   NuvionError,
   DEFAULT_API_VERSION,
   DEFAULT_FX_MARGIN_BPS,

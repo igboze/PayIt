@@ -311,11 +311,36 @@ function registerGlobalAccountsFlows(bot, depsIn = {}) {
 
     await ctx.reply(`⏳ Checking your named <b>${currency}</b> bank account...`, { parse_mode: "HTML" });
     try {
-      const { entity, detail, isPending } = await orchestrator.provisionGlobalReceivingAccount(
+      const result = await orchestrator.provisionGlobalReceivingAccount(
         ctx.from.id,
         accountType,
         currency
       );
+      const { entity, detail, isPending } = result;
+
+      if (result.isInactive) {
+        const reason = result.statusReason;
+        console.warn(`[nuvion] ${currency} account for TG:${ctx.from.id} is inactive at Nuvion: ${reason || "no reason given"}`);
+        return ctx.reply(
+          `⚠️ <b>Your ${currency} Bank Account Isn't Active Yet</b>
+──────────────────────────
+` +
+          `Our banking partner has not activated your named <b>${currency}</b> account.
+
+` +
+          (reason ? `<b>Reason:</b> ${escapeHtml(reason)}
+
+` : "") +
+          `Please contact support so we can resolve this with our banking partner, then tap Refresh.`,
+          {
+            parse_mode: "HTML",
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback(`🔄 Refresh ${currency} Details`, `nuvion_acct_${p}_${currency}`)],
+              [Markup.button.callback("« All Global Accounts", `nuvion_accounts_menu_${p}`)],
+            ]),
+          }
+        );
+      }
 
       if (isPending) {
         return ctx.reply(

@@ -114,6 +114,10 @@ async function provisionGlobalReceivingAccount(telegramId, accountType = "person
       return { entity, detail: usable, isPending: false, cached: true };
     }
     const first = existingDetails[0];
+    const deadResult = (detail) => ({
+      entity, detail, isPending: false, isInactive: true,
+      statusReason: nuvion.getAccountDetailStatusReason(detail), cached: false,
+    });
     // If still pending locally, refresh live from Nuvion once
     try {
       const live = await nuvion.getAccountDetails(first.detail_id, entityId);
@@ -124,8 +128,9 @@ async function provisionGlobalReceivingAccount(telegramId, accountType = "person
       const updated = saveDetailFromApi({ ...live, id: live.id || first.detail_id }, entityId, first.account_id, code);
       console.log(
         `[nuvion_orchestrator] Account detail ${first.detail_id} refreshed: currency=${code} liveStatus=${live.status} ` +
-        `hasNumber=${!!(live.account_number || live.iban)} keys=${Object.keys(live).slice(0, 25).join(",")}`
+        `hasNumber=${!!(live.account_number || live.iban)} reason=${nuvion.getAccountDetailStatusReason(live) || "none"}`
       );
+      if (nuvion.isAccountDetailDead(live)) return deadResult({ ...updated, status_reason: live.status_reason });
       return { entity, detail: updated, isPending: !nuvion.isAccountDetailReady(updated), cached: false };
     } catch (err) {
       console.warn(`[nuvion_orchestrator] Account detail ${first.detail_id} refresh failed:`, err.message);
