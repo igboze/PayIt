@@ -21,6 +21,8 @@ const apiRoutes = require("./api_routes");
 const nuvionWebhooks = require("./nuvion_webhooks");
 const pods = require("./pods");
 const podsStore = require("./pods_store");
+const merchantCheckout = require("./merchant_checkout");
+const checkoutUi = require("./checkout_ui");
 const fx = require("./fx");
 
 function verifyAlchemySignature(rawBody, headers, signingKey) {
@@ -442,8 +444,18 @@ async function processPajEvent(payload, bot) {
     const fiatAmount = Number(data.fiatAmount || data.amountFiat || 0);
     const solanaTxSignature = data.txHash || data.signature || data.hash || data.id;
 
-    // Check if this incoming payment matches a Personal or Business Invoice
+    // Check if this incoming payment matches a Merchant Checkout Session (cs_live_...)
     const externalId = data.userExternalId || data.metadata?.invoiceNumber;
+    if (externalId && typeof externalId === "string" && externalId.startsWith("cs_live_")) {
+      try {
+        await merchantCheckout.markCheckoutSessionPaid(externalId, {
+          paidChannel: "ngn_bank",
+          txHash: solanaTxSignature,
+        });
+      } catch (csErr) {
+        console.warn("[webhook_server] Checkout session settlement notice:", csErr.message);
+      }
+    }
 
     let invoice = null;
     let isBizInvoice = false;
@@ -793,6 +805,45 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
         res.writeHead(404, { "Content-Type": "application/json" });
         return res.end(JSON.stringify({ error: "Docs not found" }));
       }
+    }
+
+    // 0c. Drop-in Merchant Checkout JS SDK (/sdk/proxim-checkout.js)
+    if (req.method === "GET" && (req.url === "/sdk/proxim-checkout.js" || req.url.startsWith("/sdk/proxim-checkout.js?"))) {
+      const baseUrl = apiRoutes.getPublicBaseUrl(req);
+      res.writeHead(200, {
+        "Content-Type": "application/javascript; charset=utf-8",
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "public, max-age=300",
+      });
+      return res.end(checkoutUi.renderCheckoutSdkJs(baseUrl));
+    }
+
+    // 0d. White-Labeled Hosted Merchant Checkout Page (/checkout/:sessionId)
+    const hostedCheckoutMatch = req.method === "GET" && (req.url || "").split("?")[0].match(/^\/checkout\/([^/]+)$/);
+    if (hostedCheckoutMatch) {
+      const sid = decodeURIComponent(hostedCheckoutMatch[1]);
+      const baseUrl = apiRoutes.getPublicBaseUrl(req);
+      const session = merchantCheckout.getCheckoutSession(sid, baseUrl);
+      if (!session) {
+        res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
+        return res.end("<h2>Checkout session not found or expired.</h2>");
+      }
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      return res.end(checkoutUi.renderCheckoutPageHtml(session, baseUrl));
+    }
+
+    // 0e. Reusable Merchant Payment Link Page (/pay/:slug)
+    const payLinkMatch = req.method === "GET" && (req.url || "").split("?")[0].match(/^\/pay\/([^/]+)$/);
+    if (payLinkMatch) {
+      const slug = decodeURIComponent(payLinkMatch[1]);
+      const baseUrl = apiRoutes.getPublicBaseUrl(req);
+      const link = merchantCheckout.getPaymentLinkBySlug(slug, baseUrl);
+      if (!link) {
+        res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
+        return res.end("<h2>Payment link not found or inactive.</h2>");
+      }
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      return res.end(checkoutUi.renderPaymentLinkHtml(link, baseUrl));
     }
 
 

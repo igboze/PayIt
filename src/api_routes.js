@@ -26,6 +26,7 @@ const nuvionCorridors = require("./nuvion_corridors");
 const nuvionPayouts = require("./nuvion_payouts");
 const nuvionCards = require("./nuvion_cards");
 const compliance = require("./compliance");
+const merchantCheckout = require("./merchant_checkout");
 
 const DOCS_PATH = path.join(__dirname, "..", "BUILDER_API.md");
 const MAX_API_BODY_BYTES = 1024 * 1024; // 1 MB hard cap against DoS payloads
@@ -153,7 +154,65 @@ async function handleApiRequest(req, res, bot = null) {
   const method = req.method.toUpperCase();
   const baseUrl = getPublicBaseUrl(req);
 
-  // ── 1. Public Health, Features & Live Docs (No Auth Required) ─────────────
+  // ── 1. Public Health, Features, Live Docs & Public Checkout Polling (No Auth Required) ──
+  const publicCheckoutMatch = pathname.match(/^\/api\/v1\/checkout\/public\/([^/]+)$/);
+  if (method === "GET" && publicCheckoutMatch) {
+    const sid = decodeURIComponent(publicCheckoutMatch[1]);
+    const session = merchantCheckout.getCheckoutSession(sid, baseUrl);
+    if (!session) return sendJson(res, 404, { success: false, error: "Checkout session not found" });
+    return sendJson(res, 200, {
+      success: true,
+      sessionId: session.sessionId,
+      status: session.status,
+      amount: session.amount,
+      currency: session.currency,
+      paidChannel: session.paidChannel,
+      paidAt: session.paidAt,
+      successUrl: session.successUrl,
+      expiresAt: session.expiresAt,
+    });
+  }
+
+  const publicLinkCheckoutMatch = pathname.match(/^\/api\/v1\/payment-links\/([^/]+)\/checkout$/);
+  if (method === "POST" && publicLinkCheckoutMatch) {
+    try {
+      const slug = decodeURIComponent(publicLinkCheckoutMatch[1]);
+      const linkRow = merchantCheckout.getPaymentLinkRowBySlug(slug);
+      if (!linkRow) return sendJson(res, 404, { success: false, error: "Payment link not found or inactive" });
+      const body = await parseBody(req);
+      const chosenAmount = linkRow.amount != null ? Number(linkRow.amount) : Number(body.amount);
+      if (!Number.isFinite(chosenAmount) || chosenAmount <= 0) {
+        return sendJson(res, 400, { success: false, error: "A valid positive amount is required" });
+      }
+      const fakeKey = {
+        key_id: linkRow.key_id,
+        telegram_id: linkRow.merchant_telegram_id,
+        app_name: linkRow.title,
+        webhook_url: linkRow.webhook_url,
+      };
+      const session = await merchantCheckout.createCheckoutSession({
+        apiKey: fakeKey,
+        amount: chosenAmount,
+        currency: linkRow.currency,
+        channels: JSON.parse(linkRow.channels_json || '["ngn_bank","crypto"]'),
+        cryptoChain: linkRow.crypto_chain || "sol_usdc",
+        reference: `pl_${linkRow.slug}_${Date.now()}`,
+        description: linkRow.description || linkRow.title,
+        customerName: body.customerName || null,
+        customerEmail: body.customerEmail || null,
+        brand: linkRow.brand_json ? JSON.parse(linkRow.brand_json) : null,
+        successUrl: linkRow.success_url || null,
+        cancelUrl: linkRow.cancel_url || null,
+        webhookUrl: linkRow.webhook_url || null,
+        accountType: linkRow.account_type || "business",
+        baseUrl,
+      });
+      return sendJson(res, 201, { success: true, sessionId: session.sessionId, checkoutUrl: session.checkoutUrl, session });
+    } catch (err) {
+      return sendJson(res, err.statusCode || 400, { success: false, error: err.message });
+    }
+  }
+
   if (method === "GET" && (pathname === "/api/v1/health" || pathname === "/api/v1")) {
     return sendJson(res, 200, {
       success: true,
@@ -1547,6 +1606,153 @@ async function handleApiRequest(req, res, bot = null) {
           bot,
         });
         return sendJson(res, 200, { success: true, ...resTopup });
+      }
+    }
+
+    // ── 11. Merchant Checkout, Payment Links, White-Label Profile & Analytics ──
+    if (
+      pathname.startsWith("/api/v1/checkout") ||
+      pathname.startsWith("/api/v1/payment-links") ||
+      pathname.startsWith("/api/v1/merchant")
+    ) {
+      const allowed = Array.isArray(apiKey.allowed_features) ? apiKey.allowed_features : [];
+      const hasCheckoutPerm =
+        allowed.includes("all") ||
+        allowed.includes("checkout") ||
+        allowed.includes("invoices");
+      if (!hasCheckoutPerm) {
+        return sendJson(res, 403, {
+          success: false,
+          error: "Forbidden: API key lacks 'checkout' permission. Enable it in /developer.",
+        });
+      }
+
+      // GET /api/v1/merchant/profile — Read merchant white-label settings & default payment rails
+      if (method === "GET" && pathname === "/api/v1/merchant/profile") {
+        const settings = merchantCheckout.getMerchantSettings(apiKey.key_id) || {
+          keyId: apiKey.key_id,
+          businessName: apiKey.app_name,
+          logoUrl: null,
+          primaryColor: "#0f172a",
+          accentColor: "#059669",
+          defaultChannels: ["ngn_bank", "crypto"],
+          defaultCryptoChain: "sol_usdc",
+          defaultGlobalBankCurrency: "USD",
+          webhookUrl: apiKey.webhook_url || null,
+          successUrl: null,
+          cancelUrl: null,
+        };
+        return sendJson(res, 200, { success: true, profile: settings });
+      }
+
+      // PUT /api/v1/merchant/profile — Customize merchant branding, default channels, webhook & redirect URLs
+      if ((method === "PUT" || method === "POST") && pathname === "/api/v1/merchant/profile") {
+        const body = await parseBody(req);
+        const updated = merchantCheckout.upsertMerchantSettings(apiKey.key_id, body);
+        return sendJson(res, 200, { success: true, profile: updated });
+      }
+
+      // GET /api/v1/merchant/analytics — Unified revenue & channel breakdown across all Proxim rails
+      if (method === "GET" && pathname === "/api/v1/merchant/analytics") {
+        const analytics = merchantCheckout.getMerchantAnalytics(apiKey.key_id);
+        return sendJson(res, 200, { success: true, analytics });
+      }
+
+      // POST /api/v1/checkout/sessions — Create a hosted + headless payment checkout session
+      if (method === "POST" && pathname === "/api/v1/checkout/sessions") {
+        const body = await parseBody(req);
+        const session = await merchantCheckout.createCheckoutSession({
+          apiKey,
+          amount: body.amount,
+          currency: body.currency || "USD",
+          channels: body.channels || null,
+          cryptoChain: body.cryptoChain || "sol_usdc",
+          globalBankCurrency: body.globalBankCurrency || null,
+          reference: body.reference || null,
+          description: body.description || null,
+          customerName: body.customerName || body.customer?.name || null,
+          customerEmail: body.customerEmail || body.customer?.email || null,
+          metadata: body.metadata || null,
+          brand: body.brand || null,
+          successUrl: body.successUrl || null,
+          cancelUrl: body.cancelUrl || null,
+          webhookUrl: body.webhookUrl || null,
+          expiresInMinutes: body.expiresInMinutes || 30,
+          accountType: body.accountType || "business",
+          baseUrl,
+        });
+        return sendJson(res, 201, { success: true, session });
+      }
+
+      // GET /api/v1/checkout/sessions — List merchant's checkout sessions
+      if (method === "GET" && pathname === "/api/v1/checkout/sessions") {
+        const sessions = merchantCheckout.listCheckoutSessions(
+          apiKey.key_id,
+          {
+            status: parsedUrl.query.status || null,
+            reference: parsedUrl.query.reference || null,
+            limit: parsedUrl.query.limit || 25,
+          },
+          baseUrl
+        );
+        return sendJson(res, 200, { success: true, count: sessions.length, sessions });
+      }
+
+      // POST /api/v1/checkout/sessions/:id/cancel — Cancel unpaid session
+      const cancelMatch = pathname.match(/^\/api\/v1\/checkout\/sessions\/([^/]+)\/cancel$/);
+      if (method === "POST" && cancelMatch) {
+        const sid = decodeURIComponent(cancelMatch[1]);
+        const updated = merchantCheckout.cancelCheckoutSession(sid, apiKey.key_id, baseUrl);
+        if (!updated) return sendJson(res, 404, { success: false, error: "Checkout session not found" });
+        return sendJson(res, 200, { success: true, session: updated });
+      }
+
+      // GET /api/v1/checkout/sessions/:id — Get single checkout session & live payment status
+      const getSessionMatch = pathname.match(/^\/api\/v1\/checkout\/sessions\/([^/]+)$/);
+      if (method === "GET" && getSessionMatch) {
+        const sid = decodeURIComponent(getSessionMatch[1]);
+        const row = merchantCheckout.getCheckoutSessionRow(sid);
+        if (!row || row.key_id !== apiKey.key_id) {
+          return sendJson(res, 404, { success: false, error: "Checkout session not found" });
+        }
+        return sendJson(res, 200, { success: true, session: merchantCheckout.getCheckoutSession(sid, baseUrl) });
+      }
+
+      // POST /api/v1/payment-links — Create a reusable branded payment link
+      if (method === "POST" && pathname === "/api/v1/payment-links") {
+        const body = await parseBody(req);
+        const link = merchantCheckout.createPaymentLink({
+          apiKey,
+          title: body.title,
+          description: body.description || null,
+          amount: body.amount ?? null,
+          currency: body.currency || "USD",
+          slug: body.slug || null,
+          channels: body.channels || ["ngn_bank", "crypto"],
+          cryptoChain: body.cryptoChain || "sol_usdc",
+          brand: body.brand || null,
+          successUrl: body.successUrl || null,
+          cancelUrl: body.cancelUrl || null,
+          webhookUrl: body.webhookUrl || null,
+          accountType: body.accountType || "business",
+          baseUrl,
+        });
+        return sendJson(res, 201, { success: true, paymentLink: link });
+      }
+
+      // GET /api/v1/payment-links — List merchant's payment links
+      if (method === "GET" && pathname === "/api/v1/payment-links") {
+        const links = merchantCheckout.listPaymentLinks(apiKey.key_id, baseUrl);
+        return sendJson(res, 200, { success: true, count: links.length, paymentLinks: links });
+      }
+
+      // DELETE /api/v1/payment-links/:id — Deactivate payment link
+      const delLinkMatch = pathname.match(/^\/api\/v1\/payment-links\/([^/]+)$/);
+      if (method === "DELETE" && delLinkMatch) {
+        const lid = decodeURIComponent(delLinkMatch[1]);
+        const ok = merchantCheckout.deactivatePaymentLink(lid, apiKey.key_id);
+        if (!ok) return sendJson(res, 404, { success: false, error: "Payment link not found" });
+        return sendJson(res, 200, { success: true, linkId: lid, active: false });
       }
     }
 

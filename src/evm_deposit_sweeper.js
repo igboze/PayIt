@@ -719,6 +719,17 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
       return { success: false, error: "Amount below minimum threshold ($0.50 USDC)" };
     }
 
+    // Auto-settle any matching Merchant Checkout Session (Direct EVM / Base / Arc rail)
+    try {
+      const merchantCheckout = require("./merchant_checkout");
+      await merchantCheckout.trySettleSessionByDirectEvm({
+        recipientAddress: toAddress,
+        amountUsdc: effectiveAmountUsdc,
+        txHash: swapTxHash,
+        chainName,
+      });
+    } catch (_) {}
+
     // `isNuvionSettled` was already computed above before notifications (covers silent, inbound fiat, card unload & payout refund)
     // Record transaction with retry to guarantee user is credited (skip duplicate ledger row for Nuvion fiat settlements)
     if (!isNuvionSettled) {

@@ -27,6 +27,11 @@ const AVAILABLE_FEATURES = {
     name: "🧾 Invoicing & Checkout",
     description: "Create SME/personal invoices, track status, generate payment QR codes.",
   },
+  checkout: {
+    id: "checkout",
+    name: "🛒 Merchant Checkout & Payment Links",
+    description: "Accept customer payments via hosted/embedded checkout, payment links, Naira/Global bank transfers & NEAR Intents crypto.",
+  },
   onramp: {
     id: "onramp",
     name: "🇳🇬 Naira Onramp",

@@ -63,6 +63,7 @@ GET /api/v1/docs
 | `wallets` | **Multichain Wallets** | Create customer wallets, get addresses, check unified balances |
 | `transfers` | **Instant Transfers** | Send Arc USDC transfers (Paymaster-sponsored or direct) |
 | `invoices` | **Invoicing & Checkout** | Create, list, and check status of payment invoices |
+| `checkout` | **Merchant Checkout & Payment Links** | Accept customer payments on any website/app via headless API, white-labeled hosted checkout, drop-in JS modal SDK, or reusable payment links |
 | `onramp` | **Naira Onramp** | Dynamic Nigerian virtual bank accounts via Paj v2 |
 | `offramp` | **Naira Offramp** | Live USD/NGN rates and Naira bank payouts via Paj v2 |
 | `crypto_deposits` | **Multi-Chain EVM** | EVM deposit addresses & on-demand DEX/CCTP sweep to Arc |
@@ -486,3 +487,73 @@ async function main() {
 
 main();
 ```
+
+
+---
+
+## 🛒 Merchant Payment Acceptance (Checkout Sessions, Hosted Page, Drop-In SDK & Payment Links)
+
+Businesses and developers can accept customer payments directly inside their own website, SaaS, store, or mobile app — **without sending customers to Telegram** — using either:
+- **Headless API:** Render your own 100% custom checkout UI using the returned bank & crypto coordinates.
+- **White-Labeled Hosted Checkout (`/checkout/:sessionId`):** Redirect customers to a branded Proxim checkout page styled with your `businessName`, `logoUrl`, `primaryColor`, and `accentColor`.
+- **Drop-in Inline JS Modal (`/sdk/proxim-checkout.js`):** Open the branded checkout inside a modal overlay on your website in 4 lines of code.
+- **Reusable Payment Links (`/pay/:slug`):** Shareable links for products, subscriptions, or flexible-amount payments.
+
+### 1. Create a Checkout Session (`feature: "checkout"`)
+```http
+POST /api/v1/checkout/sessions
+Authorization: Bearer prx_live_YOUR_SECRET_KEY
+Content-Type: application/json
+```
+```json
+{
+  "amount": 150000,
+  "currency": "NGN",
+  "channels": ["ngn_bank", "crypto"],
+  "cryptoChain": "sol_usdc",
+  "reference": "ORDER-99421",
+  "description": "Pro Annual Subscription",
+  "customerName": "Ada Lovelace",
+  "customerEmail": "ada@example.com",
+  "brand": {
+    "businessName": "Acme Cloud",
+    "logoUrl": "https://acme.com/logo.png",
+    "primaryColor": "#1e3a8a",
+    "accentColor": "#10b981"
+  },
+  "successUrl": "https://acme.com/thank-you",
+  "webhookUrl": "https://acme.com/webhooks/proxim"
+}
+```
+Returns `session.sessionId`, `session.checkoutUrl` (hosted branded page), and `session.paymentMethods` (`ngnBank`, `globalBank`, `crypto` with QR data URI).
+
+### 2. Embed Checkout Inline on Your Website (Drop-In JS SDK)
+```html
+<script src="https://<your-proxim-host>/sdk/proxim-checkout.js"></script>
+<script>
+  ProximCheckout.open({
+    sessionId: "cs_live_...",
+    onSuccess: (session) => console.log("Paid!", session),
+    onClose: () => console.log("Closed"),
+  });
+</script>
+```
+
+### 3. Check / List / Cancel Checkout Sessions
+- `GET /api/v1/checkout/sessions/:sessionId` — Verify live payment status (`open`, `paid`, `expired`, `cancelled`).
+- `GET /api/v1/checkout/sessions?status=paid&reference=ORDER-99421` — List sessions.
+- `POST /api/v1/checkout/sessions/:sessionId/cancel` — Cancel an unpaid session.
+
+### 4. Reusable Payment Links
+- `POST /api/v1/payment-links` — Create a fixed or flexible-amount link (`https://<host>/pay/<slug>`).
+- `GET /api/v1/payment-links` — List your payment links.
+- `DELETE /api/v1/payment-links/:linkId` — Deactivate a payment link.
+
+### 5. White-Label Merchant Profile & Unified Analytics
+Configure your business branding, default payment channels (Paj NGN, Tier-1 Global Banks, NEAR Intents Crypto), webhook URL, and redirect URLs **once** via API — every Checkout Session and Payment Link inherits them automatically:
+- `GET /api/v1/merchant/profile` — Read saved white-label branding & default rails.
+- `PUT /api/v1/merchant/profile` — Update `businessName`, `logoUrl`, `primaryColor`, `accentColor`, `defaultChannels`, `defaultCryptoChain`, `defaultGlobalBankCurrency`, `webhookUrl`, `successUrl`, `cancelUrl`.
+- `GET /api/v1/merchant/analytics` — Unified revenue & settlement breakdown across all rails (`ngn_bank`, `global_bank_*`, `crypto_*`).
+
+### 6. Real-Time Multi-Rail Settlement Webhook (`checkout.session.completed`)
+When a customer completes payment on **any** Proxim rail (**Paj Naira Bank**, **Tier-1 Global Bank USD/GBP/EUR/NGN**, **NEAR Intents Solana/NEAR/Robinhood/Starknet**, or **Direct Arc/Base EVM**), Proxim automatically marks the session `paid` and sends an **HMAC-SHA256 signed** `POST` webhook (`X-Proxim-Signature`) to your `webhookUrl` with `{ "event": "checkout.session.completed", "data": { ...session } }`.

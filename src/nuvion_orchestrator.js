@@ -797,6 +797,18 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null }) {
     });
     idempotency.completeOperationIdempotency(sweepLockKey, { txHash: outflow.id });
 
+    // Auto-settle any matching Merchant Checkout Session (Tier-1 Global Bank rail)
+    try {
+      const merchantCheckout = require("./merchant_checkout");
+      await merchantCheckout.trySettleSessionByGlobalBank({
+        merchantTelegramId: entity.telegram_id,
+        accountType: entity.account_type || "business",
+        currency,
+        amountMajor: grossMajor,
+        txHash: outflow.id || confirmed.id,
+      });
+    } catch (_) {}
+
     // Step 3: Record ledger transaction
     try {
       const txType = currency === "NGN" ? "deposit_naira" : "deposit_fiat";

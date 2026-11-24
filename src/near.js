@@ -1246,6 +1246,12 @@ async function pollPendingNearDeposits(bot = null) {
           const refundChainName = isHood ? "Robinhood/EVM" : (isSol ? "Solana" : (isStark ? "Starknet" : "NEAR Mainnet"));
 
           if (status === "SUCCESS") {
+            // Auto-settle any matching Merchant Checkout Session (NEAR Intents rail)
+            try {
+              const merchantCheckout = require("./merchant_checkout");
+              await merchantCheckout.trySettleSessionByNearIntent(row);
+            } catch (_) {}
+
             const actualOutNum = swap.amountOutFormatted ? Number(swap.amountOutFormatted) : (row.amount_out ? Number(row.amount_out) : null);
             const out = actualOutNum ? `$${actualOutNum.toFixed(2)}` : "your USDC";
             await bot.telegram.sendMessage(
