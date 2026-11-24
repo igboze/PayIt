@@ -778,7 +778,11 @@ test("business home, profile, invoices, payment links, assistant, and statement 
   const aBal = await call("POST", "/assistant", { message: "balance" }, token);
   assert.equal(aBal.status, 200);
   assert.equal(aBal.body.intent, "balance");
-  assert.equal(aBal.body.data.totalUsdc, "512.75");
+  // db.addBusinessWallet sets active_context='business', so assistant honors active business context
+  assert.equal(aBal.body.data.totalUsdc, "2450.00");
+  const aBalPer = await call("POST", "/assistant", { message: "balance", accountType: "personal" }, token);
+  assert.equal(aBalPer.status, 200);
+  assert.equal(aBalPer.body.data.totalUsdc, "512.75");
 
   const sendsBefore = calls.sentOnchain.length;
   const aSend = await call("POST", "/assistant", { message: "send $30 to Tunde" }, token);

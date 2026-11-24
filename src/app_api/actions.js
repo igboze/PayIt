@@ -26,6 +26,7 @@ const deps = {
   get socialTransfers() { return require("../social_transfers"); },
   get swap() { return require("../swap"); },
   get bizProfile() { return require("../biz_profile"); },
+  get solanaAddress() { return require("../solana_address"); },
 };
 const overrides = {};
 const dep = (name) => (name in overrides ? overrides[name] : deps[name]);
@@ -65,13 +66,24 @@ function money(body, field, { min = 0.01, max = 1_000_000 } = {}) {
 }
 
 function resolveAccountType(ctx, body) {
-  if (body?.accountType === "business") {
+  const raw = body?.accountType !== undefined && body?.accountType !== null && body?.accountType !== ""
+    ? String(body.accountType).trim().toLowerCase()
+    : (ctx.accountHeader || (ctx.user?.active_context === "business" && ctx.user?.business_deposit_address ? "business" : "personal"));
+  if (raw !== "personal" && raw !== "business") {
+    throw bad("Invalid accountType. Use 'personal' or 'business'.");
+  }
+  if (raw === "business") {
     if (!ctx.user?.business_deposit_address) {
       throw new ActionError(404, "no_business_account", "No business account found. Set up your business account first.");
     }
     return "business";
   }
   return "personal";
+}
+
+function accountTagLines(ctx, accountType) {
+  if (!ctx.user?.business_deposit_address) return [];
+  return [["Account", accountType === "business" ? "Business" : "Personal"]];
 }
 
 function getWalletAddress(user, accountType) {
@@ -150,7 +162,7 @@ const ACTIONS = {
       return {
         amountUsd: amountUsdc,
         action: { accountType, toAddress, amountUsdc: amountUsdc.toFixed(6), currency: "USDC", narration },
-        summary: { title: `Send $${fmt(amountUsdc)}`, lines: [["To", toAddress], ["Amount", `$${fmt(amountUsdc)}`]] },
+        summary: { title: `Send $${fmt(amountUsdc)}`, lines: [...accountTagLines(ctx, accountType), ["To", toAddress], ["Amount", `$${fmt(amountUsdc)}`]] },
       };
     },
     async execute(ctx, a, pin) {
@@ -766,6 +778,7 @@ const ACTIONS = {
       }
       const bizWallet = dep("walletLib").generateUserWallet();
       db.addBusinessWallet(ctx.telegramId, bizWallet.address, bizWallet.privateKey, pin);
+      try { dep("solanaAddress").reconcileUser(db.getUser(ctx.telegramId)); } catch (_) {}
       if (a.businessName) {
         try {
           const bp = dep("bizProfile");

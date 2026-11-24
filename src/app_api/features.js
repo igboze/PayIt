@@ -37,6 +37,8 @@ const deps = {
   get flowsMultichain() { return require("../flows_multichain"); },
   get pods() { return require("../pods"); },
   get notify() { return require("../notify"); },
+  get solanaAddress() { return require("../solana_address"); },
+  get onramp() { return require("../onramp"); },
 };
 
 const overrides = {};
@@ -73,6 +75,45 @@ function optStr(body, field, { pattern = null, max = 256 } = {}) {
   if (!s) return null;
   if (s.length > max || (pattern && !pattern.test(s))) throw bad(`Invalid field: ${field}`);
   return s;
+}
+
+/**
+ * Single source of truth for resolving Personal vs Business account context on the mobile API.
+ * Precedence:
+ *   1. Explicit query/body parameter (`account` / `accountType`)
+ *   2. `X-Proxim-Account` HTTP header (sent per-screen by the mobile app to prevent cross-device switch races)
+ *   3. Saved `user.active_context` (only `"business"` if a business wallet actually exists)
+ * Never silently falls back to Personal when `"business"` is requested or active without a business wallet.
+ */
+function resolveAccountType(auth, explicit = null) {
+  const raw = explicit !== undefined && explicit !== null && explicit !== ""
+    ? String(explicit).trim().toLowerCase()
+    : (auth.accountHeader || (auth.user?.active_context === "business" && auth.user?.business_deposit_address ? "business" : "personal"));
+  if (raw !== "personal" && raw !== "business") {
+    throw bad("Account must be 'personal' or 'business'.", "invalid_account");
+  }
+  if (raw === "business" && !auth.user?.business_deposit_address) {
+    throw new FeatureError(404, "no_business_account", "No business account on this profile.");
+  }
+  return raw;
+}
+
+function getStrictAccountArcAddress(user, accountType) {
+  if (accountType === "business") return user?.business_deposit_address || null;
+  return user?.deposit_address || null;
+}
+
+function getStrictAccountSolanaAddress(user, accountType) {
+  const isBiz = accountType === "business";
+  try {
+    const resolved = dep("solanaAddress").resolveSolanaRecipient(user, { isBiz });
+    if (resolved) return resolved;
+  } catch (_) {}
+  try {
+    const derived = dep("chains").deriveAddress?.(user, accountType, "solana", { strictBusiness: isBiz });
+    if (derived) return derived;
+  } catch (_) {}
+  return (isBiz ? user?.biz_solana_deposit_address : user?.solana_deposit_address) || null;
 }
 
 function getBaseUrl(req) {
@@ -147,7 +188,7 @@ async function updateProfile(auth, body, publicUserFn) {
   const db = dep("db");
   const senderName = optStr(body, "senderName", { max: 64 });
   const bizSenderName = optStr(body, "bizSenderName", { max: 64 });
-  const accountType = body?.accountType === "business" ? "business" : "personal";
+  const accountType = resolveAccountType(auth, body?.accountType);
   const hasAutoEarn = typeof body?.autoEarnEnabled === "boolean";
   const activeContext = optStr(body, "activeContext", { pattern: /^(personal|business)$/ });
 
@@ -172,6 +213,107 @@ async function updateProfile(auth, body, publicUserFn) {
   return {
     status: 200,
     data: { user: publicUserFn(updated, dep("store").getDevice(auth.deviceId)) },
+  };
+}
+
+async function listAccounts(auth) {
+  const db = dep("db");
+  const chains = dep("chains");
+  const activeContext = auth.user.active_context === "business" && auth.user.business_deposit_address ? "business" : "personal";
+  const perEnt = db.getNuvionEntityByUser(auth.telegramId, "personal");
+  const bizEnt = auth.user.business_deposit_address ? db.getNuvionEntityByUser(auth.telegramId, "business") : null;
+
+  let perBal = null;
+  let bizBal = null;
+  try { perBal = await chains.getUnifiedBalance(auth.user, "personal", { strictBusiness: false }); } catch (_) {}
+  if (auth.user.business_deposit_address) {
+    try { bizBal = await chains.getUnifiedBalance(auth.user, "business", { strictBusiness: true }); } catch (_) {}
+  }
+
+  const accounts = [
+    {
+      accountType: "personal",
+      active: activeContext === "personal",
+      depositAddress: auth.user.deposit_address || null,
+      solanaAddress: getStrictAccountSolanaAddress(auth.user, "personal"),
+      kycStatus: perEnt?.status || "not_started",
+      kycTier: String(perEnt?.status || "").toLowerCase() === "approved" ? 1 : 0,
+      balance: perBal ? { totalUsdc: perBal.total, arc: perBal.arc, base: perBal.base || { usdc: 0 }, gateway: perBal.gateway || { usdc: 0 }, solana: perBal.solana, pendingBridgeUsdc: perBal.pendingNear } : null,
+    },
+  ];
+
+  if (auth.user.business_deposit_address) {
+    let bizProfileRow = null;
+    try { bizProfileRow = dep("bizProfile").getBizProfile(auth.telegramId); } catch (_) {}
+    accounts.push({
+      accountType: "business",
+      active: activeContext === "business",
+      businessName: bizProfileRow?.business_name || null,
+      depositAddress: auth.user.business_deposit_address,
+      solanaAddress: getStrictAccountSolanaAddress(auth.user, "business"),
+      kycStatus: bizEnt?.status || "not_started",
+      kycTier: String(bizEnt?.status || "").toLowerCase() === "approved" ? 1 : 0,
+      balance: bizBal ? { totalUsdc: bizBal.total, arc: bizBal.arc, base: bizBal.base || { usdc: 0 }, gateway: bizBal.gateway || { usdc: 0 }, solana: bizBal.solana, pendingBridgeUsdc: bizBal.pendingNear } : null,
+    });
+  }
+
+  return {
+    status: 200,
+    data: {
+      activeContext,
+      hasBusinessAccount: Boolean(auth.user.business_deposit_address),
+      accounts,
+    },
+  };
+}
+
+async function switchAccount(auth, body, publicUserFn) {
+  const target = reqStr(body, "accountType", { pattern: /^(personal|business)$/i }).toLowerCase();
+  const db = dep("db");
+  if (target === "business" && !auth.user.business_deposit_address) {
+    throw new FeatureError(404, "no_business_account", "Set up a business account before switching to it.");
+  }
+  db.setActiveContext(auth.telegramId, target);
+  const updated = db.getUser(auth.telegramId);
+  try { dep("solanaAddress").reconcileUser(updated); } catch (_) {}
+
+  const chains = dep("chains");
+  let balance = null;
+  let otherBalanceUsdc = 0;
+  try {
+    const u = await chains.getUnifiedBalance(updated, target, { strictBusiness: target === "business" });
+    balance = { totalUsdc: u.total, arc: u.arc, base: u.base || { usdc: 0 }, gateway: u.gateway || { usdc: 0 }, solana: u.solana, byChain: u.byChain || null, pendingBridgeUsdc: u.pendingNear };
+  } catch (_) {}
+  if (updated.business_deposit_address) {
+    const other = target === "business" ? "personal" : "business";
+    try {
+      const o = await chains.getUnifiedBalance(updated, other, { strictBusiness: other === "business" });
+      otherBalanceUsdc = Number(o?.total || 0);
+    } catch (_) {}
+  }
+
+  const ent = db.getNuvionEntityByUser(auth.telegramId, target);
+  let pendingInvoiceCount = 0;
+  if (target === "business") {
+    try { pendingInvoiceCount = Number(dep("bizDb").getPendingInvoiceCount(auth.telegramId) || 0); } catch (_) {}
+  }
+
+  return {
+    status: 200,
+    data: {
+      activeContext: target,
+      user: publicUserFn(updated, dep("store").getDevice(auth.deviceId)),
+      account: {
+        accountType: target,
+        depositAddress: getStrictAccountArcAddress(updated, target),
+        solanaAddress: getStrictAccountSolanaAddress(updated, target),
+        kycStatus: ent?.status || "not_started",
+        kycTier: String(ent?.status || "").toLowerCase() === "approved" ? 1 : 0,
+        balance,
+        otherAccountBalanceUsdc: otherBalanceUsdc,
+        pendingInvoiceCount,
+      },
+    },
   };
 }
 
@@ -390,45 +532,64 @@ async function createNgnDeposit(auth, body) {
   if (!Number.isFinite(amountNgn) || amountNgn < 500 || amountNgn > 50_000_000) {
     throw bad("Enter a Naira amount between ₦500 and ₦50,000,000.", "invalid_amount");
   }
-  const accountType = body?.accountType === "business" ? "business" : "personal";
-  if (accountType === "business" && !auth.user.business_deposit_address) {
-    throw new FeatureError(404, "no_business_account", "No business account on this profile.");
-  }
+  const accountType = resolveAccountType(auth, body?.accountType);
+  const isBiz = accountType === "business";
 
   const paj = dep("paj");
   const db = dep("db");
+  const arcAddr = getStrictAccountArcAddress(auth.user, accountType);
+  const solAddr = dep("solanaAddress").resolveSolanaRecipient(auth.user, { isBiz });
+  const externalId = isBiz ? `${auth.telegramId}-biz` : String(auth.telegramId);
+  const webhookURL = process.env.PAJ_WEBHOOK_URL || (process.env.WEBHOOK_URL ? `${process.env.WEBHOOK_URL.replace(/\/$/, "")}/webhook/paj` : undefined);
   const useArc = typeof paj.isArcOnrampEnabled === "function" ? paj.isArcOnrampEnabled() : false;
 
-  let recipient = accountType === "business" ? auth.user.business_deposit_address : auth.user.deposit_address;
-  let settlementRail = "arc";
+  let order = null;
+  let recipient = null;
+  let settlementRail = "solana";
 
-  if (!useArc) {
-    const solAddr = accountType === "business" ? auth.user.biz_solana_deposit_address : auth.user.solana_deposit_address;
-    if (solAddr) {
-      recipient = solAddr;
-      settlementRail = "solana";
-    } else {
-      try {
-        const key = db.getSystemDecryptedPrivateKey(auth.user, accountType);
-        if (key) {
-          const derived = dep("multichain").deriveSolanaFromEvmKey(key);
-          if (derived?.address) {
-            recipient = derived.address;
-            settlementRail = "solana";
-          }
-        }
-      } catch (_) {}
+  if (useArc && arcAddr) {
+    try {
+      order = await paj.createOnrampOrder({
+        fiatAmount: Math.round(amountNgn),
+        currency: "NGN",
+        recipient: arcAddr,
+        mint: paj.RAILS?.arc?.mint,
+        chain: paj.RAILS?.arc?.chain,
+        webhookURL,
+        userExternalId: externalId,
+        businessUSDCFee: 0,
+        metadata: { accountType, rail: "arc" },
+      });
+      recipient = arcAddr;
+      settlementRail = "arc";
+    } catch (arcErr) {
+      if (!solAddr) throw arcErr;
+      console.warn(`[app_api:onramp] Arc rail failed for ${externalId} (${arcErr.message}), falling back to Solana rail`);
     }
   }
 
-  if (!recipient) throw new FeatureError(500, "wallet_missing", "Deposit wallet is not configured.");
-
-  const order = await paj.createOnrampOrder({
-    fiatAmount: Math.round(amountNgn),
-    currency: "NGN",
-    recipient,
-    userExternalId: String(auth.telegramId),
-  });
+  if (!order) {
+    if (!solAddr) {
+      throw new FeatureError(
+        409,
+        "wallet_verification_required",
+        "Complete one PIN-confirmed action to verify your wallet before creating a Naira deposit account."
+      );
+    }
+    order = await paj.createOnrampOrder({
+      fiatAmount: Math.round(amountNgn),
+      currency: "NGN",
+      recipient: solAddr,
+      mint: paj.RAILS?.solana?.mint,
+      chain: paj.RAILS?.solana?.chain,
+      webhookURL,
+      userExternalId: externalId,
+      businessUSDCFee: 0,
+      metadata: { accountType, rail: "solana" },
+    });
+    recipient = solAddr;
+    settlementRail = "solana";
+  }
 
   const orderId = order?.id || order?.reference || null;
   const virtualAccount = {
@@ -458,6 +619,9 @@ async function createNgnDeposit(auth, body) {
   return {
     status: 201,
     data: {
+      accountType,
+      depositAddress: recipient,
+      settlementRail,
       orderId,
       status: order?.status || "pending",
       estimatedUsdc: order?.amount ?? null,
@@ -465,6 +629,14 @@ async function createNgnDeposit(auth, body) {
       virtualAccount,
     },
   };
+}
+
+async function getCardDepositLink(auth, url) {
+  const accountType = resolveAccountType(auth, url?.searchParams?.get("account"));
+  const walletAddress = getStrictAccountArcAddress(auth.user, accountType);
+  if (!walletAddress) throw new FeatureError(404, "wallet_missing", "Deposit wallet not found.");
+  const details = dep("onramp").getOnrampDetails(walletAddress);
+  return { status: 200, data: { accountType, ...details } };
 }
 
 async function getNgnDepositStatus(auth, orderId) {
@@ -487,16 +659,10 @@ async function getNgnDepositStatus(auth, orderId) {
 }
 
 async function listCryptoDepositTokens(auth, url = null) {
-  const accountType = url?.searchParams?.get("account") === "business" ? "business" : "personal";
-  if (accountType === "business" && !auth.user.business_deposit_address) {
-    throw new FeatureError(404, "no_business_account", "No business account on this profile.");
-  }
+  const accountType = resolveAccountType(auth, url?.searchParams?.get("account"));
   const near = dep("near");
-  const evmAddr = accountType === "business" ? auth.user.business_deposit_address : auth.user.deposit_address;
-  let solAddr = accountType === "business" ? auth.user.biz_solana_deposit_address : auth.user.solana_deposit_address;
-  if (!solAddr) {
-    try { solAddr = dep("chains").deriveAddress?.(auth.user, accountType, "solana") || null; } catch (_) {}
-  }
+  const evmAddr = getStrictAccountArcAddress(auth.user, accountType);
+  const solAddr = getStrictAccountSolanaAddress(auth.user, accountType);
   const [nearTokens, solanaTokens, robinhoodTokens, starknetTokens] = await Promise.all([
     Promise.resolve(near.getSupportedNearTokens()).catch(() => []),
     Promise.resolve(near.getSupportedSolanaTokens()).catch(() => []),
@@ -535,8 +701,8 @@ async function createCryptoDepositIntent(auth, body) {
   if (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000) {
     throw bad("Enter a valid deposit amount.", "invalid_amount");
   }
-  const accountType = body?.accountType === "business" ? "business" : "personal";
-  const recipientAddress = accountType === "business" ? auth.user.business_deposit_address : auth.user.deposit_address;
+  const accountType = resolveAccountType(auth, body?.accountType);
+  const recipientAddress = getStrictAccountArcAddress(auth.user, accountType);
   if (!recipientAddress) throw new FeatureError(404, "wallet_missing", "Wallet not found for this account.");
 
   const near = dep("near");
@@ -571,12 +737,7 @@ async function createCryptoDepositIntent(auth, body) {
   } else if (chain === "solana") {
     token = await near.resolveSolanaToken(symbol);
     if (!token) throw bad(`Unsupported Solana token: ${symbol}`);
-    if (!refundTo) {
-      refundTo = (accountType === "business" ? auth.user.biz_solana_deposit_address : auth.user.solana_deposit_address) || null;
-      if (!refundTo) {
-        try { refundTo = dep("chains").deriveAddress?.(auth.user, accountType, "solana") || null; } catch (_) {}
-      }
-    }
+    if (!refundTo) refundTo = getStrictAccountSolanaAddress(auth.user, accountType);
     if (!refundTo) throw bad("refundTo (your Solana refund address) is required for Solana deposits.");
     row = await near.createSolanaDeposit({
       telegramId: auth.telegramId,
@@ -619,6 +780,8 @@ async function createCryptoDepositIntent(auth, body) {
   return {
     status: 201,
     data: {
+      accountType,
+      recipientAddress,
       depositId: row.id,
       chain,
       symbol: token.symbol,
@@ -651,7 +814,7 @@ async function getCryptoDepositStatus(auth, rawId) {
 // ─── 6. Global accounts & payout corridors ────────────────────────────────────
 
 async function listGlobalAccounts(auth, url) {
-  const accountType = url.searchParams.get("account") === "business" ? "business" : "personal";
+  const accountType = resolveAccountType(auth, url.searchParams.get("account"));
   const db = dep("db");
   const corridors = dep("nuvionCorridors");
   const entity = db.getNuvionEntityByUser(auth.telegramId, accountType);
@@ -678,7 +841,7 @@ async function listGlobalAccounts(auth, url) {
 async function provisionGlobalAccount(auth, body, rawCurrency) {
   const currency = String(rawCurrency || "").trim().toUpperCase();
   if (!/^[A-Z]{3}$/.test(currency)) throw bad("Invalid currency code.");
-  const accountType = body?.accountType === "business" ? "business" : "personal";
+  const accountType = resolveAccountType(auth, body?.accountType);
   const entity = dep("db").getNuvionEntityByUser(auth.telegramId, accountType);
   if (!entity || String(entity.status || "").toLowerCase() !== "approved") {
     throw new FeatureError(403, "kyc_required", "Complete ID verification to open Global Neobank accounts.");
@@ -688,6 +851,7 @@ async function provisionGlobalAccount(auth, body, rawCurrency) {
     return {
       status: res.cached ? 200 : 201,
       data: {
+        accountType,
         account: formatGlobalAccount(res.detail),
         isPending: Boolean(res.isPending),
         cached: Boolean(res.cached),
@@ -725,7 +889,7 @@ async function listGlobalCorridors() {
 // ─── 7. Cards list & card transactions ────────────────────────────────────────
 
 async function listCards(auth, url) {
-  const accountType = url.searchParams.get("account") === "business" ? "business" : "personal";
+  const accountType = resolveAccountType(auth, url.searchParams.get("account"));
   try {
     const cards = await dep("nuvionCards").getUserCardsWithBalances(auth.telegramId, accountType);
     return { status: 200, data: { accountType, cards: Array.isArray(cards) ? cards : [] } };
@@ -740,7 +904,7 @@ async function listCards(auth, url) {
 async function listCardTransactions(auth, url, rawCardId) {
   const cardId = decodeURIComponent(String(rawCardId || "")).trim();
   if (!cardId) throw bad("Card ID is required.");
-  const accountType = url.searchParams.get("account") === "business" ? "business" : "personal";
+  const accountType = resolveAccountType(auth, url.searchParams.get("account"));
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 20), 1), 100);
   const transactions = await dep("nuvionCards").fetchCardTransactions({
     telegramId: auth.telegramId,
@@ -748,7 +912,7 @@ async function listCardTransactions(auth, url, rawCardId) {
     cardId,
     limit,
   });
-  return { status: 200, data: { cardId, transactions: Array.isArray(transactions) ? transactions : [] } };
+  return { status: 200, data: { accountType, cardId, transactions: Array.isArray(transactions) ? transactions : [] } };
 }
 
 // ─── 8. Bill providers & meter validation ─────────────────────────────────────
@@ -907,16 +1071,18 @@ async function getKycStatus(auth) {
 
 // ─── 12. Savings read-only overview ───────────────────────────────────────────
 
-async function getSavingsOverview(auth) {
+async function getSavingsOverview(auth, url = null) {
   const db = dep("db");
   const savings = dep("savings");
-  const open = db.getOpenYieldPosition(auth.telegramId, "personal");
+  const accountType = resolveAccountType(auth, url?.searchParams?.get("account"));
+  const open = db.getOpenYieldPosition(auth.telegramId, accountType);
   let pools = [];
   try { pools = await savings.getYieldPools(); } catch (_) {}
   const accruedYieldUsdc = open && typeof savings.calcAccruedYield === "function" ? Number(savings.calcAccruedYield(open) || 0) : 0;
   return {
     status: 200,
     data: {
+      accountType,
       position: open ? {
         id: open.id,
         principalUsdc: Number(open.amount_usdc || 0),
@@ -950,8 +1116,8 @@ async function getBusinessHome(auth) {
   let balance = null;
   if (enabled) {
     try {
-      const u = await dep("chains").getUnifiedBalance(auth.user, "business");
-      balance = { totalUsdc: u.total, arc: u.arc, solana: u.solana, pendingBridgeUsdc: u.pendingNear };
+      const u = await dep("chains").getUnifiedBalance(auth.user, "business", { strictBusiness: true });
+      balance = { totalUsdc: u.total, arc: u.arc, base: u.base || { usdc: 0 }, gateway: u.gateway || { usdc: 0 }, solana: u.solana, pendingBridgeUsdc: u.pendingNear };
     } catch (_) {}
   }
 
@@ -1261,10 +1427,10 @@ async function deactivateBusinessPaymentLink(auth, rawLinkId) {
 
 async function assistantChat(auth, body) {
   const message = reqStr(body, "message", { max: 1000 });
-  const accountType = body?.accountType === "business" ? "business" : "personal";
+  const accountType = resolveAccountType(auth, body?.accountType);
   const router = dep("intentRouter");
   const classified = await router.classifyIntent(message, auth.telegramId, {
-    address: accountType === "business" ? auth.user.business_deposit_address : auth.user.deposit_address,
+    address: getStrictAccountArcAddress(auth.user, accountType),
     active_context: accountType,
   });
 
@@ -1282,15 +1448,15 @@ async function assistantChat(auth, body) {
   // Read-only intents can be answered directly
   if (intent === "balance") {
     try {
-      const u = await dep("chains").getUnifiedBalance(auth.user, accountType);
-      data = { totalUsdc: u.total, arc: u.arc, solana: u.solana, pendingBridgeUsdc: u.pendingNear };
+      const u = await dep("chains").getUnifiedBalance(auth.user, accountType, { strictBusiness: accountType === "business" });
+      data = { accountType, totalUsdc: u.total, arc: u.arc, base: u.base || { usdc: 0 }, gateway: u.gateway || { usdc: 0 }, solana: u.solana, pendingBridgeUsdc: u.pendingNear };
       reply = `Your ${accountType} balance is $${Number(u.total || 0).toFixed(2)}.`;
     } catch (_) {
       reply = "Could not load your live balance right now.";
     }
   } else if (intent === "history") {
     const rows = dep("db").getTransactions(auth.telegramId, 5, accountType);
-    data = { count: rows.length, transactions: rows.map((t) => ({ id: t.id, type: t.type, status: t.status, createdAt: t.created_at })) };
+    data = { accountType, count: rows.length, transactions: rows.map((t) => ({ id: t.id, type: t.type, status: t.status, createdAt: t.created_at })) };
     reply = rows.length ? `Found ${rows.length} recent transaction${rows.length === 1 ? "" : "s"}.` : "You have no transactions yet.";
   } else if (intent === "list_payees") {
     const pb = dep("payeeBook");
@@ -1303,7 +1469,7 @@ async function assistantChat(auth, body) {
     data = { invoices: rows.map(formatBizInvoice) };
     reply = rows.length ? `You have ${rows.length} business invoice${rows.length === 1 ? "" : "s"}.` : "You have no invoices yet.";
   } else if (intent === "savings_view") {
-    const open = dep("db").getOpenYieldPosition(auth.telegramId, "personal");
+    const open = dep("db").getOpenYieldPosition(auth.telegramId, accountType);
     const accrued = open && typeof dep("savings").calcAccruedYield === "function" ? Number(dep("savings").calcAccruedYield(open) || 0) : 0;
     data = open ? { principalUsdc: Number(open.amount_usdc || 0), accruedYieldUsdc: accrued, apy: Number(open.apy || 0) } : null;
     reply = open
@@ -1347,7 +1513,7 @@ async function assistantChat(auth, body) {
     if (addr) {
       suggestedAction = {
         type: "transfer.wallet",
-        payload: { toAddress: addr.toLowerCase(), amountUsdc: Number(r0.amount), narration: r0.description || "" },
+        payload: { accountType, toAddress: addr.toLowerCase(), amountUsdc: Number(r0.amount), narration: r0.description || "" },
       };
       reply = `Ready to send $${Number(r0.amount).toFixed(2)} to ${r0.name_or_address || addr}. Review and approve with your passkey and PIN.`;
     } else if (r0.name_or_address) {
@@ -1355,7 +1521,7 @@ async function assistantChat(auth, body) {
       if (userMatch && userMatch.deposit_address) {
         suggestedAction = {
           type: "transfer.user",
-          payload: { recipient: r0.name_or_address, amountUsdc: Number(r0.amount), narration: r0.description || "" },
+          payload: { accountType, recipient: r0.name_or_address, amountUsdc: Number(r0.amount), narration: r0.description || "" },
         };
         reply = `Ready to send $${Number(r0.amount).toFixed(2)} to ${userMatch.username ? `@${userMatch.username}` : "Proxim user"}. Review and approve with your passkey and PIN.`;
       }
@@ -1370,6 +1536,7 @@ async function assistantChat(auth, body) {
       suggestedAction = {
         type: "payout.ngn",
         payload: {
+          accountType,
           amountUsdc: Number(r0.amount),
           bankCode,
           accountNumber: r0.account_number,
@@ -1382,11 +1549,11 @@ async function assistantChat(auth, body) {
   } else if (intent === "savings_deposit" && r0 && Number(r0.amount) > 0) {
     suggestedAction = {
       type: "savings.deposit",
-      payload: { amountUsdc: Number(r0.amount) },
+      payload: { accountType, amountUsdc: Number(r0.amount) },
     };
     reply = `Ready to deposit $${Number(r0.amount).toFixed(2)} into savings. Approve with your passkey and PIN.`;
   } else if (intent === "savings_withdraw") {
-    suggestedAction = { type: "savings.withdraw", payload: {} };
+    suggestedAction = { type: "savings.withdraw", payload: { accountType } };
     reply = "Ready to withdraw your savings back to your balance. Approve with your passkey and PIN.";
   } else if (intent === "scheduled" && r0 && Number(r0.amount) > 0 && params?.schedule?.frequency) {
     const addr = r0.wallet_address || (/^0x[0-9a-fA-F]{40}$/.test(String(r0.name_or_address || "")) ? r0.name_or_address : null);
@@ -1394,6 +1561,7 @@ async function assistantChat(auth, body) {
       suggestedAction = {
         type: "schedule.create",
         payload: {
+          accountType,
           kind: "transfer.wallet",
           toAddress: addr.toLowerCase(),
           amountUsdc: Number(r0.amount),
@@ -1453,7 +1621,10 @@ function formatAmountForCsv(raw, decimals) {
 
 async function exportStatementCsv(auth, url) {
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 500), 1), 2000);
-  const accountType = url.searchParams.get("account") || null;
+  const rawAccount = url.searchParams.get("account");
+  const accountType = rawAccount === "all"
+    ? null
+    : (rawAccount || auth.accountHeader ? resolveAccountType(auth, rawAccount) : null);
   const fromRaw = (url.searchParams.get("from") || "").trim();
   const toRaw = (url.searchParams.get("to") || "").trim();
   const fromMs = fromRaw ? Date.parse(fromRaw) : null;
@@ -1620,7 +1791,7 @@ async function claimGift(auth, body) {
 // ─── 18. Global payout recipients, hosted payment links & KYC/KYB submit ──────
 
 async function listGlobalRecipients(auth, url) {
-  const accountType = url.searchParams.get("account") === "business" ? "business" : "personal";
+  const accountType = resolveAccountType(auth, url.searchParams.get("account"));
   const currency = (url.searchParams.get("currency") || "").trim().toUpperCase() || null;
   const db = dep("db");
   const entity = db.getNuvionEntityByUser(auth.telegramId, accountType);
@@ -1654,7 +1825,7 @@ async function listGlobalRecipients(auth, url) {
 }
 
 async function createGlobalPaymentLink(auth, body) {
-  const accountType = body?.accountType === "business" ? "business" : "personal";
+  const accountType = resolveAccountType(auth, body?.accountType);
   const currency = reqStr(body, "currency", { pattern: /^[A-Za-z]{3}$/ }).toUpperCase();
   const amountMajor = Number(body?.amount);
   if (!Number.isFinite(amountMajor) || amountMajor <= 0) throw bad("Enter a positive payment amount.", "invalid_amount");
@@ -1783,7 +1954,7 @@ async function submitKyb(auth, body) {
 }
 
 async function refreshKycStatus(auth, body) {
-  const accountType = body?.accountType === "business" ? "business" : "personal";
+  const accountType = resolveAccountType(auth, body?.accountType);
   const db = dep("db");
   const entity = db.getNuvionEntityByUser(auth.telegramId, accountType);
   if (!entity) return getKycStatus(auth);
@@ -2071,6 +2242,8 @@ async function getInvestmentsHub(auth) {
 module.exports = {
   FeatureError,
   updateProfile,
+  listAccounts,
+  switchAccount,
   listContacts,
   upsertContact,
   deleteContact,
@@ -2079,6 +2252,7 @@ module.exports = {
   getBankRates,
   resolveBankAccount,
   createNgnDeposit,
+  getCardDepositLink,
   getNgnDepositStatus,
   listCryptoDepositTokens,
   createCryptoDepositIntent,

@@ -153,18 +153,41 @@ function authenticate(req) {
   if (!session) throw new HttpError(401, "unauthorized", "Session expired. Please sign in again.");
   const user = dep("db").getUser(session.telegramId);
   if (!user) throw new HttpError(401, "unauthorized", "Account not found.");
-  return { ...session, user };
+  const rawAcctHeader = String(req.headers["x-proxim-account"] || "").trim().toLowerCase();
+  if (rawAcctHeader && rawAcctHeader !== "personal" && rawAcctHeader !== "business") {
+    throw new HttpError(400, "invalid_account", "X-Proxim-Account must be 'personal' or 'business'.");
+  }
+  return { ...session, user, accountHeader: rawAcctHeader || null };
+}
+
+function resolveAccountType(auth, explicit = null) {
+  const raw = explicit !== undefined && explicit !== null && explicit !== ""
+    ? String(explicit).trim().toLowerCase()
+    : (auth.accountHeader || (auth.user?.active_context === "business" && auth.user?.business_deposit_address ? "business" : "personal"));
+  if (raw !== "personal" && raw !== "business") {
+    throw new HttpError(400, "invalid_account", "Account must be 'personal' or 'business'.");
+  }
+  if (raw === "business" && !auth.user?.business_deposit_address) {
+    throw new HttpError(404, "no_business_account", "No business account on this profile.");
+  }
+  return raw;
 }
 
 function publicUser(user, device) {
-  let tier1 = false;
+  let personalTier1 = false;
+  let businessTier1 = false;
   let senderName = user.sender_name || null;
   let bizSenderName = user.biz_sender_name || null;
-  try { tier1 = dep("fraudGuard").isUserTier1Approved(user.telegram_id, "personal"); } catch (_) {}
+  try { personalTier1 = dep("fraudGuard").isUserTier1Approved(user.telegram_id, "personal"); } catch (_) {}
+  if (user.business_deposit_address) {
+    try { businessTier1 = dep("fraudGuard").isUserTier1Approved(user.telegram_id, "business"); } catch (_) {}
+  }
   try { senderName = dep("db").resolveSenderName(user.telegram_id, "personal"); } catch (_) {}
   if (user.business_deposit_address) {
     try { bizSenderName = dep("db").resolveSenderName(user.telegram_id, "business"); } catch (_) {}
   }
+  const activeContext = user.active_context === "business" && user.business_deposit_address ? "business" : "personal";
+  const activeDepositAddress = activeContext === "business" ? user.business_deposit_address : (user.deposit_address || null);
   return {
     id: String(user.telegram_id),
     username: user.username || null,
@@ -173,11 +196,14 @@ function publicUser(user, device) {
     bizSenderName,
     phone: maskPhone(user.phone_number),
     telegramLinked: Number(user.telegram_id) > 0,
-    kycTier: tier1 ? 1 : 0,
+    kycTier: activeContext === "business" ? (businessTier1 ? 1 : 0) : (personalTier1 ? 1 : 0),
+    personalKycTier: personalTier1 ? 1 : 0,
+    businessKycTier: businessTier1 ? 1 : 0,
     depositAddress: user.deposit_address || null,
+    activeDepositAddress,
     hasBusinessAccount: Boolean(user.business_deposit_address),
     businessDepositAddress: user.business_deposit_address || null,
-    activeContext: user.active_context || "personal",
+    activeContext,
     autoEarnEnabled: Boolean(user.auto_earn_enabled),
     referralCode: user.referral_code || `ref${user.telegram_id}`,
     deviceRestrictedUntil: store.isDeviceRestricted(device) ? device.restricted_until : null,
@@ -420,15 +446,15 @@ async function me(req) {
 
 async function balances(req, url) {
   const auth = authenticate(req);
-  const accountType = url.searchParams.get("account") === "business" ? "business" : "personal";
-  if (accountType === "business" && !auth.user.business_deposit_address) {
-    throw new HttpError(404, "no_business_account", "No business account on this profile.");
-  }
-  const unified = await dep("chains").getUnifiedBalance(auth.user, accountType);
+  const accountType = resolveAccountType(auth, url.searchParams.get("account"));
+  const unified = await dep("chains").getUnifiedBalance(auth.user, accountType, {
+    strictBusiness: accountType === "business",
+  });
   return {
     status: 200,
     data: {
       accountType,
+      depositAddress: accountType === "business" ? auth.user.business_deposit_address : (auth.user.deposit_address || null),
       totalUsdc: unified.total,
       arc: unified.arc,
       base: unified.base || { usdc: 0 },
@@ -443,11 +469,15 @@ async function balances(req, url) {
 async function transactions(req, url) {
   const auth = authenticate(req);
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 20), 1), 100);
-  const accountType = url.searchParams.get("account") || null;
+  const rawAccount = url.searchParams.get("account");
+  const accountType = rawAccount === "all"
+    ? null
+    : (rawAccount || auth.accountHeader ? resolveAccountType(auth, rawAccount) : null);
   const rows = dep("db").getTransactions(auth.telegramId, limit, accountType);
   return {
     status: 200,
     data: {
+      accountType: accountType || "all",
       transactions: rows.map((t) => ({
         id: t.id,
         type: t.type,
@@ -699,11 +729,13 @@ const ROUTES = [
   ["POST", "/auth/refresh", refresh],
   ["POST", "/auth/logout", logout],
 
-  // Profile, balances, transactions & statement CSV
+  // Profile, accounts, balances, transactions & statement CSV
   ["GET", "/me", me],
   ["PATCH", "/me", (req, body) => features.updateProfile(authenticate(req), body, publicUser)],
   ["PATCH", "/profile", (req, body) => features.updateProfile(authenticate(req), body, publicUser)],
   ["POST", "/me/sender-name", (req, body) => features.updateProfile(authenticate(req), body, publicUser)],
+  ["GET", "/accounts", (req) => features.listAccounts(authenticate(req))],
+  ["POST", "/accounts/switch", (req, body) => features.switchAccount(authenticate(req), body, publicUser)],
   ["GET", "/balances", balances],
   ["GET", "/transactions", transactions],
   ["GET", "/transactions/statement.csv", (req, url) => features.exportStatementCsv(authenticate(req), url)],
@@ -733,8 +765,9 @@ const ROUTES = [
     return features.resolveBankAccount(auth, body);
   }],
 
-  // Naira & crypto (NEAR Intents) deposits & sweep
+  // Naira, card/Apple Pay & crypto (NEAR Intents) deposits & sweep
   ["POST", "/deposits/ngn", (req, body) => features.createNgnDeposit(authenticate(req), body)],
+  ["GET", "/deposits/card", (req, url) => features.getCardDepositLink(authenticate(req), url)],
   ["GET", "/deposits/crypto/tokens", (req, url) => features.listCryptoDepositTokens(authenticate(req), url)],
   ["POST", "/deposits/crypto/intent", (req, body) => features.createCryptoDepositIntent(authenticate(req), body)],
   ["POST", "/deposits/crypto/sweep", (req, body) => features.sweepCryptoDeposits(authenticate(req), body)],
@@ -772,7 +805,7 @@ const ROUTES = [
   ["POST", "/kyc/submit", (req, body) => features.submitKyc(authenticate(req), body)],
   ["POST", "/kyb/submit", (req, body) => features.submitKyb(authenticate(req), body)],
   ["POST", "/kyc/refresh", (req, body) => features.refreshKycStatus(authenticate(req), body)],
-  ["GET", "/savings", (req) => features.getSavingsOverview(authenticate(req))],
+  ["GET", "/savings", (req, url) => features.getSavingsOverview(authenticate(req), url)],
   ["GET", "/investments/hub", (req) => features.getInvestmentsHub(authenticate(req))],
 
   // Personal invoices

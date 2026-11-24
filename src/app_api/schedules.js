@@ -123,21 +123,23 @@ async function runOne(r, now) {
   const payment = JSON.parse(r.payment_json);
   const telegramId = Number(r.telegram_id);
   const amount = Number(payment.amountUsdc);
+  const accountType = payment.accountType === "business" ? "business" : "personal";
   const reference = r.kind === "transfer.user" ? `user:${payment.recipientId}` : payment.toAddress;
   const user = db.getUser(telegramId);
   if (!user) throw new Error("account not found");
+  if (accountType === "business" && !user.business_deposit_address) throw new Error("business account not found");
   if (r.kind === "transfer.user") {
     const recipient = db.getUser(Number(payment.recipientId));
     if (!recipient || String(recipient.deposit_address).toLowerCase() !== payment.toAddress) throw new Error("recipient account changed");
   }
-  await dep("fraudGuard").assertOutboundAllowed({ telegramId, accountType: "personal", action: "app_schedule", amountUsd: amount, reference });
-  const key = db.getSystemDecryptedPrivateKey(user, "personal");
+  await dep("fraudGuard").assertOutboundAllowed({ telegramId, accountType, action: "app_schedule", amountUsd: amount, reference });
+  const key = db.getSystemDecryptedPrivateKey(user, accountType);
   if (!key) throw new Error("wallet key unavailable");
   const signer = walletLib.walletFromPrivateKey(key);
   const amountMicro = walletLib.parseToMicro(amount.toFixed(6));
   const tx = await walletLib.sendSponsoredOrDirectTransaction(signer, payment.toAddress, amountMicro, "0x", { waitForConfirmation: false });
   const txHash = tx.txHash || tx.hash;
-  db.recordTransaction(telegramId, "scheduled_transfer", String(amountMicro), "completed", txHash, "personal", 18, "arc", payment.narration || null);
+  db.recordTransaction(telegramId, "scheduled_transfer", String(amountMicro), "completed", txHash, accountType, 18, "arc", payment.narration || null);
   return txHash;
 }
 

@@ -40,7 +40,12 @@ const log = {
   hostedLinks: [],
   sweeps: [],
   notifications: [],
+  pajOnramps: [],
+  balanceCalls: [],
 };
+
+let pajArcFail = false;
+let pajArcEnabled = true;
 
 routes.__setTestDeps({
   otp: {
@@ -51,17 +56,41 @@ routes.__setTestDeps({
     log.notifications.push({ telegramId, ...msg });
     return { telegram: true, push: 0 };
   },
+  paj: {
+    RAILS: {
+      arc: { chain: "ARC", mint: "0xarcusdc" },
+      solana: { chain: "SOLANA", mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" },
+    },
+    isArcOnrampEnabled: () => pajArcEnabled,
+    createOnrampOrder: async (params) => {
+      if (pajArcFail && params.chain === "ARC") throw new Error("Arc rail temporarily unavailable");
+      log.pajOnramps.push(params);
+      return {
+        id: `onramp_${log.pajOnramps.length}`,
+        status: "pending",
+        amount: Number((params.fiatAmount / 1550).toFixed(2)),
+        fiatAmount: params.fiatAmount,
+        rate: 1550,
+        bank: "Providus Bank",
+        accountNumber: `901234567${log.pajOnramps.length}`,
+        accountName: "PROXIM TEST",
+      };
+    },
+  },
   chains: {
     ...realChains,
-    getUnifiedBalance: async (_user, accountType) => ({
-      total: accountType === "business" ? 900 : 350,
-      arc: { usdc: accountType === "business" ? 800 : 200, eurc: 25 },
-      base: { usdc: 100 },
-      gateway: { usdc: 50 },
-      solana: { usdc: 0 },
-      byChain: { arc: 200, base: 100, gateway: 50, solana: 0 },
-      pendingNear: 0,
-    }),
+    getUnifiedBalance: async (_user, accountType, opts) => {
+      log.balanceCalls.push({ accountType, opts });
+      return {
+        total: accountType === "business" ? 900 : 350,
+        arc: { usdc: accountType === "business" ? 800 : 200, eurc: 25 },
+        base: { usdc: 100 },
+        gateway: { usdc: 50 },
+        solana: { usdc: 0 },
+        byChain: { arc: accountType === "business" ? 800 : 200, base: 100, gateway: 50, solana: 0 },
+        pendingNear: 0,
+      };
+    },
   },
   fraudGuard: {
     isUserTier1Approved: (tgId, acct) => {
@@ -183,10 +212,14 @@ test.after(() => {
 
 test.beforeEach(() => routes.__resetRateLimits());
 
-async function call(method, p, body, token) {
+async function call(method, p, body, token, extraHeaders = {}) {
   const res = await fetch(`${base}/api/app/v1${p}`, {
     method,
-    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...extraHeaders,
+    },
     body: body !== null && body !== undefined ? JSON.stringify(body) : undefined,
   });
   const buf = Buffer.from(await res.arrayBuffer());
@@ -474,4 +507,128 @@ test("business setup, account switch, expenses, savings goal, personal+biz invoi
   const invHub = await call("GET", "/investments/hub", null, token);
   assert.equal(invHub.status, 200);
   assert.equal(invHub.body.enabled, false);
+});
+
+test("Personal <-> Business account switching and strict deposit/transfer wallet isolation", async () => {
+  const auth = new SoftAuthenticator({ rpId: "proxim.test", origin: "https://proxim.test" });
+  const u = await signUp(auth, "+2348091000099", "dev-switch-000000099", "4826");
+  const uid = Number(u.user.id);
+  const token = u.session.accessToken;
+  const personalArc = u.user.depositAddress.toLowerCase();
+
+  // Switching to business before setup returns 404 no_business_account
+  const noBiz = await call("POST", "/accounts/switch", { accountType: "business" }, token);
+  assert.equal(noBiz.status, 404);
+  assert.equal(noBiz.body.error.code, "no_business_account");
+
+  // Create business wallet via passkey + PIN
+  const bizSetup = await approve(auth, token, "business.setup", { businessName: "Lagos Studio Ltd" }, "4826");
+  assert.equal(bizSetup.confirm.status, 200);
+  const businessArc = bizSetup.confirm.body.businessDepositAddress.toLowerCase();
+  assert.notEqual(businessArc, personalArc);
+
+  // GET /accounts lists both accounts with completely distinct Arc & Solana addresses
+  const accts = await call("GET", "/accounts", null, token);
+  assert.equal(accts.status, 200);
+  assert.equal(accts.body.accounts.length, 2);
+  const perAcct = accts.body.accounts.find((a) => a.accountType === "personal");
+  const bizAcct = accts.body.accounts.find((a) => a.accountType === "business");
+  assert.ok(perAcct.solanaAddress && bizAcct.solanaAddress);
+  assert.notEqual(perAcct.solanaAddress, bizAcct.solanaAddress, "Personal and Business Solana addresses must never collide");
+
+  // POST /accounts/switch -> business updates active_context, returns strict business balance & personal hint
+  log.balanceCalls.length = 0;
+  const swBiz = await call("POST", "/accounts/switch", { accountType: "business" }, token);
+  assert.equal(swBiz.status, 200, JSON.stringify(swBiz.body));
+  assert.equal(swBiz.body.activeContext, "business");
+  assert.equal(swBiz.body.user.activeDepositAddress.toLowerCase(), businessArc);
+  assert.equal(swBiz.body.account.balance.totalUsdc, 900);
+  assert.equal(swBiz.body.account.otherAccountBalanceUsdc, 350);
+  assert.ok(log.balanceCalls.some((c) => c.accountType === "business" && c.opts?.strictBusiness === true));
+
+  // Without passing ?account=, GET /balances honors switched activeContext=business with strictBusiness=true
+  const balAuto = await call("GET", "/balances", null, token);
+  assert.equal(balAuto.status, 200);
+  assert.equal(balAuto.body.accountType, "business");
+  assert.equal(balAuto.body.depositAddress.toLowerCase(), businessArc);
+  assert.equal(balAuto.body.totalUsdc, 900);
+
+  // Naira deposit while in Business mode routes to Business wallet with `-biz` externalId & metadata
+  log.pajOnramps.length = 0;
+  pajArcEnabled = true;
+  pajArcFail = false;
+  const bizNgn = await call("POST", "/deposits/ngn", { amountNgn: 100000 }, token);
+  assert.equal(bizNgn.status, 201, JSON.stringify(bizNgn.body));
+  assert.equal(bizNgn.body.accountType, "business");
+  assert.equal(bizNgn.body.depositAddress.toLowerCase(), businessArc);
+  assert.equal(log.pajOnramps[0].userExternalId, `${uid}-biz`);
+  assert.equal(log.pajOnramps[0].metadata.accountType, "business");
+
+  // If Arc rail fails on Business NGN deposit, fallback goes to BUSINESS Solana address (never Personal!)
+  pajArcFail = true;
+  const bizNgnSol = await call("POST", "/deposits/ngn", { amountNgn: 50000 }, token);
+  pajArcFail = false;
+  assert.equal(bizNgnSol.status, 201, JSON.stringify(bizNgnSol.body));
+  assert.equal(bizNgnSol.body.settlementRail, "solana");
+  assert.equal(bizNgnSol.body.depositAddress, bizAcct.solanaAddress);
+  assert.notEqual(bizNgnSol.body.depositAddress, perAcct.solanaAddress);
+
+  // Per-screen X-Proxim-Account header overrides saved activeContext (prevents cross-device switch races!)
+  const pinnedPersonalNgn = await call("POST", "/deposits/ngn", { amountNgn: 20000 }, token, { "X-Proxim-Account": "personal" });
+  assert.equal(pinnedPersonalNgn.status, 201, JSON.stringify(pinnedPersonalNgn.body));
+  assert.equal(pinnedPersonalNgn.body.accountType, "personal");
+  assert.equal(pinnedPersonalNgn.body.depositAddress.toLowerCase(), personalArc);
+  assert.equal(log.pajOnramps[log.pajOnramps.length - 1].userExternalId, String(uid));
+
+  // Crypto deposit tokens, NEAR intent & Card/Apple Pay deposit link all isolate Business vs Personal
+  const bizTokens = await call("GET", "/deposits/crypto/tokens", null, token);
+  assert.equal(bizTokens.body.accountType, "business");
+  assert.equal(bizTokens.body.directAddresses.arc.toLowerCase(), businessArc);
+  assert.equal(bizTokens.body.directAddresses.solana, bizAcct.solanaAddress);
+
+  const bizNear = await call("POST", "/deposits/crypto/intent", { chain: "near", symbol: "NEAR", amount: 3 }, token);
+  assert.equal(bizNear.status, 201);
+  assert.equal(bizNear.body.accountType, "business");
+  assert.equal(bizNear.body.recipientAddress.toLowerCase(), businessArc);
+
+  const perNear = await call("POST", "/deposits/crypto/intent", { chain: "near", symbol: "NEAR", amount: 3 }, token, { "X-Proxim-Account": "personal" });
+  assert.equal(perNear.status, 201);
+  assert.equal(perNear.body.accountType, "personal");
+  assert.equal(perNear.body.recipientAddress.toLowerCase(), personalArc);
+  assert.notEqual(bizNear.body.refundTo, perNear.body.refundTo, "Personal and Business NEAR refund addresses must be distinct");
+
+  const bizCardDep = await call("GET", "/deposits/card", null, token);
+  assert.equal(bizCardDep.status, 200);
+  assert.equal(bizCardDep.body.accountType, "business");
+  assert.equal(bizCardDep.body.walletAddress.toLowerCase(), businessArc);
+  assert.ok(bizCardDep.body.onrampUrl.includes(bizSetup.confirm.body.businessDepositAddress));
+
+  // Mid-approval switch safety: prepare transfer while in Business, switch to Personal BEFORE confirm ->
+  // MUST still spend strictly from the Business wallet approved in the passkey sheet!
+  log.sentOnchain.length = 0;
+  const intent = await call("POST", "/actions/transfer.wallet/intent", {
+    toAddress: "0x1234567890123456789012345678901234567890",
+    amountUsdc: 10,
+  }, token);
+  assert.equal(intent.status, 200);
+  assert.ok(intent.body.summary.lines.some(([k, v]) => k === "Account" && v === "Business"));
+
+  // Switch activeContext to personal right before confirming!
+  const swPer = await call("POST", "/accounts/switch", { accountType: "personal" }, token);
+  assert.equal(swPer.status, 200);
+  assert.equal(swPer.body.activeContext, "personal");
+
+  const confirm = await call("POST", "/actions/confirm", {
+    challengeId: intent.body.challengeId,
+    response: auth.assert(intent.body.options),
+    pin: "4826",
+  }, token);
+  assert.equal(confirm.status, 200, JSON.stringify(confirm.body));
+  assert.equal(confirm.body.accountType, "business");
+  assert.equal(log.sentOnchain[0].from.toLowerCase(), businessArc, "must debit the approved Business wallet even if user switched to Personal mid-approval");
+
+  // After switching back to Personal, a new deposit/balance goes strictly to Personal
+  const balAfter = await call("GET", "/balances", null, token);
+  assert.equal(balAfter.body.accountType, "personal");
+  assert.equal(balAfter.body.depositAddress.toLowerCase(), personalArc);
 });
