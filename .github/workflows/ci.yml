@@ -9,17 +9,26 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Use Node.js 20
+      - name: Use Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - name: Install
         run: npm ci
       - name: Run integration demos
         env:
           USE_MOCK_AI: '1'
+          INVOICE_FORWARDING_SECRET: ci-test-placeholder-not-a-real-secret
         run: |
           node tests/integration_demo.js
           node tests/full_e2e_mock.js
+      - name: Run test suite
+        env:
+          USE_MOCK_AI: '1'
+          PAYIT_DB_PATH: ${{ runner.temp }}/payit-ci.db
+          # Placeholder for tests only — not a real secret. Production reads it from Railway.
+          INVOICE_FORWARDING_SECRET: ci-test-placeholder-not-a-real-secret
+        run: npm test

@@ -107,14 +107,20 @@ async function provisionGlobalReceivingAccount(telegramId, accountType = "person
   // 1. Check cached details first (account details are permanent!)
   const existingDetails = db.getNuvionAccountDetailsByEntity(entityId, code).filter((d) => d.asset_type === "fiat");
   if (existingDetails.length > 0) {
-    const first = existingDetails[0];
-    if (first.status === "active" && (first.account_number || first.iban)) {
-      return { entity, detail: first, isPending: false, cached: true };
+    // Prefer a detail that is already active and has a number; rows are newest-first, so a newer
+    // pending row must not hide an older active one.
+    const usable = existingDetails.find((d) => d.status === "active" && (d.account_number || d.iban));
+    if (usable) {
+      return { entity, detail: usable, isPending: false, cached: true };
     }
+    const first = existingDetails[0];
     // If still pending locally, refresh live from Nuvion once
     try {
       const live = await nuvion.getAccountDetails(first.detail_id, entityId);
-      const updated = saveDetailFromApi(live, entityId, first.account_id, code);
+      if (!live || typeof live !== "object" || !(live.id || live.account_number || live.iban || live.status)) {
+        return { entity, detail: first, isPending: first.status !== "active", cached: true };
+      }
+      const updated = saveDetailFromApi({ ...live, id: live.id || first.detail_id }, entityId, first.account_id, code);
       return { entity, detail: updated, isPending: updated.status !== "active", cached: false };
     } catch (_) {
       return { entity, detail: first, isPending: first.status !== "active", cached: true };

@@ -109,6 +109,11 @@ if (!process.env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN.includes("
   process.exit(1);
 }
 
+if (!(process.env.INVOICE_FORWARDING_SECRET || "").trim()) {
+  console.error("ERROR: INVOICE_FORWARDING_SECRET is not set in .env (it encrypts server-held wallet keys).");
+  process.exit(1);
+}
+
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 // Global Telegraf error handler: prevents update timeouts or network RPC exceptions from terminating the Node process

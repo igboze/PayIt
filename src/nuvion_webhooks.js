@@ -412,9 +412,19 @@ async function processNuvionEvent(payload, headers = {}, bot = null) {
     if (!detailId) return { handled: false, reason: "missing_detail_id" };
 
     // Confirm latest state via GET /account-details/{id}?entity_id=...
+    // Merge the live GET over the webhook payload instead of replacing it: if the GET comes
+    // back empty or in an unexpected shape, the webhook's own status/account number survive.
     let confirmed = data;
     try {
-      confirmed = await nuvion.getAccountDetails(detailId, entityId || null);
+      const live = await nuvion.getAccountDetails(detailId, entityId || null);
+      if (live && typeof live === "object" && (live.id || live.account_number || live.iban || live.status)) {
+        confirmed = { ...data };
+        for (const [k, v] of Object.entries(live)) {
+          if (v !== undefined && v !== null && v !== "") confirmed[k] = v;
+        }
+      } else {
+        console.warn(`[nuvion_webhooks] Account detail ${detailId} GET returned no usable fields; using webhook payload.`);
+      }
     } catch (err) {
       console.warn(`[nuvion_webhooks] Could not confirm account detail ${detailId}:`, err.message);
     }
@@ -437,6 +447,11 @@ async function processNuvionEvent(payload, headers = {}, bot = null) {
       status: confirmed.status || "pending",
       rawMeta: confirmed,
     });
+
+    console.log(
+      `[nuvion_webhooks] Account detail ${detailId} saved: currency=${saved?.currency} asset=${saved?.asset_type} ` +
+      `status=${saved?.status} hasNumber=${!!(saved?.account_number || saved?.iban)} entityKnown=${!!(entityId && db.getNuvionEntityByEntityId(entityId))}`
+    );
 
     const entityRecord = entityId ? db.getNuvionEntityByEntityId(entityId) : null;
     if (entityRecord) {
@@ -541,9 +556,18 @@ async function processNuvionEvent(payload, headers = {}, bot = null) {
  * and dispatches async event handling.
  */
 function handleNuvionWebhookHttp(req, res, bot = null) {
+  const MAX_WEBHOOK_BYTES = 1024 * 1024;
   const chunks = [];
-  req.on("data", (chunk) => chunks.push(chunk));
+  let byteLen = 0;
+  req.on("data", (chunk) => {
+    byteLen += chunk.length;
+    if (byteLen <= MAX_WEBHOOK_BYTES) chunks.push(chunk);
+  });
   req.on("end", () => {
+    if (byteLen > MAX_WEBHOOK_BYTES) {
+      res.writeHead(413, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ error: "Payload too large" }));
+    }
     const rawBody = Buffer.concat(chunks);
     const secret = (process.env.NUVION_WEBHOOK_SECRET || "").trim();
 
@@ -554,8 +578,12 @@ function handleNuvionWebhookHttp(req, res, bot = null) {
         res.writeHead(401, { "Content-Type": "application/json" });
         return res.end(JSON.stringify({ error: "invalid signature" }));
       }
+    } else if (process.env.NODE_ENV === "production") {
+      console.error("[nuvion_webhooks] Rejected webhook in production: NUVION_WEBHOOK_SECRET is not configured.");
+      res.writeHead(401, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ error: "webhook secret not configured" }));
     } else {
-      console.warn("[nuvion_webhooks] WARNING: NUVION_WEBHOOK_SECRET is not set. Nuvion webhooks are NOT signature-verified.");
+      console.warn("[nuvion_webhooks] WARNING: NUVION_WEBHOOK_SECRET is not set. Nuvion webhooks are NOT signature-verified (non-production mode).");
     }
 
     // Acknowledge immediately with 200 OK so Nuvion never retries or blacklists the endpoint

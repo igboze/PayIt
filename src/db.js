@@ -34,6 +34,41 @@ if (!process.env.PAYIT_DB_PATH) {
 }
 const db = new DatabaseSync(DB_PATH);
 try { db.exec("PRAGMA busy_timeout = 5000"); } catch (_) {}
+installSafeIntegerReads(db);
+
+// node:sqlite throws "Value is too large to be represented as a JavaScript number" when a row
+// holds an INTEGER above Number.MAX_SAFE_INTEGER (e.g. 18-decimal Arc USDC amounts such as
+// invoices.expected_amount_micro = 690000000000000000). One such row breaks every query that
+// reads it. Read integers as BigInt, then return safe ones as plain numbers (unchanged
+// behaviour) and unsafe ones as decimal strings, which callers already pass to BigInt().
+function normalizeSqlValue(v) {
+  if (typeof v !== "bigint") return v;
+  return (v <= BigInt(Number.MAX_SAFE_INTEGER) && v >= BigInt(Number.MIN_SAFE_INTEGER)) ? Number(v) : v.toString();
+}
+function normalizeSqlRow(row) {
+  if (!row || typeof row !== "object") return row;
+  for (const k of Object.keys(row)) row[k] = normalizeSqlValue(row[k]);
+  return row;
+}
+function installSafeIntegerReads(database) {
+  const originalPrepare = database.prepare.bind(database);
+  database.prepare = (sql) => {
+    const stmt = originalPrepare(sql);
+    if (typeof stmt.setReadBigInts !== "function") return stmt;
+    stmt.setReadBigInts(true);
+    const get = stmt.get.bind(stmt);
+    const all = stmt.all.bind(stmt);
+    const run = stmt.run.bind(stmt);
+    stmt.get = (...args) => normalizeSqlRow(get(...args));
+    stmt.all = (...args) => all(...args).map(normalizeSqlRow);
+    stmt.run = (...args) => normalizeSqlRow(run(...args));
+    if (typeof stmt.iterate === "function") {
+      const iterate = stmt.iterate.bind(stmt);
+      stmt.iterate = function* (...args) { for (const r of iterate(...args)) yield normalizeSqlRow(r); };
+    }
+    return stmt;
+  };
+}
 const REFERRAL_BONUS_POINTS = 20;
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
@@ -3179,7 +3214,11 @@ function upsertNuvionAccountDetail({
       swift_code       = COALESCE(excluded.swift_code, nuvion_account_details.swift_code),
       bank_name        = COALESCE(excluded.bank_name, nuvion_account_details.bank_name),
       beneficiary_name = COALESCE(excluded.beneficiary_name, nuvion_account_details.beneficiary_name),
-      status           = excluded.status,
+      status           = CASE
+                           WHEN nuvion_account_details.status = 'active' AND excluded.status = 'pending'
+                             THEN nuvion_account_details.status
+                           ELSE excluded.status
+                         END,
       raw_meta_json    = COALESCE(excluded.raw_meta_json, nuvion_account_details.raw_meta_json),
       updated_at       = datetime('now')
   `).run(

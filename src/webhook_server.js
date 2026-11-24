@@ -47,6 +47,7 @@ function verifyAlchemySignature(rawBody, headers, signingKey) {
 }
 
 let _server = null;
+const MAX_WEBHOOK_BYTES = 1024 * 1024;
 
 function escapeHtml(str) {
   if (!str) return "";
@@ -869,8 +870,16 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
     // 2. Paj Webhook route
     if (req.method === "POST" && (req.url === "/webhook/paj" || req.url === "/webhook/paj/")) {
       const chunks = [];
-      req.on("data", (chunk) => chunks.push(chunk));
+      let byteLen = 0;
+      req.on("data", (chunk) => {
+        byteLen += chunk.length;
+        if (byteLen <= MAX_WEBHOOK_BYTES) chunks.push(chunk);
+      });
       req.on("end", async () => {
+        if (byteLen > MAX_WEBHOOK_BYTES) {
+          res.writeHead(413, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ error: "Payload too large" }));
+        }
         const rawBody = Buffer.concat(chunks);
 
         // Reject unsigned or badly signed webhooks. Without this, anyone who knows the URL can
@@ -934,11 +943,20 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
         }
         const rawBody = Buffer.concat(chunks).toString("utf8");
         const secret = process.env.PODS_WEBHOOK_SECRET || "";
-        if (secret && !pods.verifyPodsWebhookSignature(rawBody, req.headers, secret)) {
-          console.warn("[webhook_server] Rejected /webhooks/pods: invalid HMAC signature");
+        if (secret) {
+          if (!pods.verifyPodsWebhookSignature(rawBody, req.headers, secret)) {
+            console.warn("[webhook_server] Rejected /webhooks/pods: invalid HMAC signature");
+            res.writeHead(401, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Invalid webhook signature" }));
+            return;
+          }
+        } else if (process.env.NODE_ENV === "production") {
+          console.error("[webhook_server] Rejected /webhooks/pods in production: PODS_WEBHOOK_SECRET is not configured.");
           res.writeHead(401, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Invalid webhook signature" }));
+          res.end(JSON.stringify({ error: "webhook secret not configured" }));
           return;
+        } else {
+          console.warn("[webhook_server] WARNING: PODS_WEBHOOK_SECRET is not set (non-production mode).");
         }
 
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -967,16 +985,26 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
         req.url === "/webhook/quicknode/")
     ) {
       const chunks = [];
-      req.on("data", (chunk) => chunks.push(chunk));
+      let byteLen = 0;
+      req.on("data", (chunk) => {
+        byteLen += chunk.length;
+        if (byteLen <= MAX_WEBHOOK_BYTES) chunks.push(chunk);
+      });
       req.on("end", async () => {
+        if (byteLen > MAX_WEBHOOK_BYTES) {
+          res.writeHead(413, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Payload too large" }));
+          return;
+        }
         const rawBody = Buffer.concat(chunks);
 
         // Verify HMAC signature on /webhook/alchemy, /webhook/crypto-deposit, and /webhook/quicknode
         // Never allow an attacker to bypass signature verification simply by omitting the header!
+        // Note: ALCHEMY_API_KEY is NOT a webhook signing key (it appears in RPC URLs) — never use it here.
         const signingKey =
           process.env.ALCHEMY_WEBHOOK_SIGNING_KEY ||
           process.env.CRYPTO_DEPOSIT_WEBHOOK_SECRET ||
-          (req.url.includes("alchemy") ? process.env.ALCHEMY_API_KEY : "");
+          "";
         if (signingKey) {
           const isValid = verifyAlchemySignature(rawBody, req.headers, signingKey);
           if (!isValid) {

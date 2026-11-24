@@ -522,7 +522,7 @@ test("Nuvion Phase 1: Step-by-Step Telegram Personal KYC Chat Wizard (End-to-End
     const makeCtx = (userId, match = null) => ({
       from: { id: userId },
       match,
-      answerCbQuery: async () => {},
+      answerCbQuery: async () => { },
       reply: async (text, extra) => { replies.push({ userId, text, extra }); },
     });
 
@@ -593,5 +593,5 @@ test("Nuvion Phase 1: Step-by-Step Telegram Personal KYC Chat Wizard (End-to-End
 });
 
 test.after(() => {
-  try { fs.unlinkSync(tmpDbPath); } catch (_) {}
+  try { fs.unlinkSync(tmpDbPath); } catch (_) { }
 });

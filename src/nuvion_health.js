@@ -146,13 +146,13 @@ function getLocalNuvionStats() {
   try {
     const rows = db.prepare("SELECT status, COUNT(*) AS cnt FROM nuvion_entities GROUP BY status").all();
     for (const r of rows) entityCounts[String(r.status || "unknown")] = Number(r.cnt || 0);
-  } catch (_) {}
+  } catch (_) { }
 
   let activeCards = 0;
   try {
     const row = db.prepare("SELECT COUNT(*) AS cnt FROM nuvion_cards WHERE status IN ('active', 'blocked')").get();
     activeCards = Number(row?.cnt || 0);
-  } catch (_) {}
+  } catch (_) { }
 
   const jobCounts = {
     funding_in_transit: 0,
@@ -175,7 +175,7 @@ function getLocalNuvionStats() {
         jobCounts.interac_open += cnt;
       }
     }
-  } catch (_) {}
+  } catch (_) { }
 
   return {
     entities: entityCounts,
@@ -193,7 +193,7 @@ function getPublicHealthSummary() {
   try {
     const local = getLocalNuvionStats();
     pendingRetries = (local.jobs.retry_pending || 0) + (local.jobs.refund_pending || 0);
-  } catch (_) {}
+  } catch (_) { }
 
   return {
     configured: launch.configured,

@@ -1061,6 +1061,34 @@ const _recentSweeps = new Map();
  * @param {object} [bot] - Optional bot instance for notifications
  * @returns {Promise<Array<object>>} Array of sweep results
  */
+// ─── Per-chain circuit breaker ────────────────────────────────────────────────
+// When a chain's RPC is rate-limited (429) or down, every address scan on it used to wait the
+// full 8s timeout, back to back, all day — saturating the shared RPC quota and slowing the bot.
+// After CHAIN_BREAKER_THRESHOLD consecutive failures a chain is skipped for CHAIN_BREAKER_COOLDOWN_MS.
+const CHAIN_BREAKER_THRESHOLD = 3;
+const CHAIN_BREAKER_COOLDOWN_MS = Number(process.env.EVM_SWEEP_CHAIN_COOLDOWN_MS || 5 * 60 * 1000);
+const _chainHealth = new Map(); // chainKey -> { failures, openUntil }
+
+function isChainBreakerOpen(chainKey, now = Date.now()) {
+  const h = _chainHealth.get(chainKey);
+  return !!(h && h.openUntil > now);
+}
+function recordChainSuccess(chainKey) {
+  _chainHealth.delete(chainKey);
+}
+function recordChainFailure(chainKey, chainName, now = Date.now()) {
+  const h = _chainHealth.get(chainKey) || { failures: 0, openUntil: 0 };
+  h.failures += 1;
+  if (h.failures >= CHAIN_BREAKER_THRESHOLD && h.openUntil <= now) {
+    h.openUntil = now + CHAIN_BREAKER_COOLDOWN_MS;
+    console.warn(`[evm_sweeper] ${chainName} RPC failing (${h.failures} in a row); pausing scans on it for ${Math.round(CHAIN_BREAKER_COOLDOWN_MS / 1000)}s.`);
+  }
+  _chainHealth.set(chainKey, h);
+}
+function resetChainBreakers() {
+  _chainHealth.clear();
+}
+
 async function sweepUserDeposits(telegramId, bot = null, options = {}) {
   const user = db.getUser(telegramId);
   if (!user) return [];
@@ -1110,6 +1138,9 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
     if (!address || /^0x([0-9a-fA-F])\1{39}$/i.test(address)) continue;
 
     for (const cfg of allScanChains) {
+      // Background sweeps skip chains whose RPC is currently failing; an explicit
+      // single-chain sweep (user-triggered) always runs.
+      if (!onlyChain && isChainBreakerOpen(cfg.key)) continue;
       try {
         const provider = new JsonRpcProvider(cfg.rpcUrl, cfg.chainId, { staticNetwork: true });
         const dexCfg = resolveDexConfig(cfg.key);
@@ -1127,6 +1158,7 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
         if (cfg.usdc) {
           const usdcContract = new Contract(cfg.usdc, ERC20_ABI, provider);
           const usdcBalUnits = await withRpcTimeout(usdcContract.balanceOf(address));
+          recordChainSuccess(cfg.key);
           const usdcBal = parseFloat(formatUnits(usdcBalUnits, cfg.decimals));
 
           if (usdcBal >= 0.5) {
@@ -1161,6 +1193,7 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
 
         // 2. Check native balance (only if significant native remains)
         const nativeBalWei = await withRpcTimeout(provider.getBalance(address));
+        recordChainSuccess(cfg.key);
         const minNativeWei = dexCfg?.minDepositWei || parseUnits("0.0005", 18);
 
         if (nativeBalWei > minNativeWei) {
@@ -1192,6 +1225,9 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
           }
         }
       } catch (chainErr) {
+        if (/RPC timeout|429|Too Many Requests|ETIMEDOUT|ECONNRESET|ENOTFOUND|rate limit/i.test(String(chainErr?.message || ""))) {
+          recordChainFailure(cfg.key, cfg.name);
+        }
         console.warn(`[evm_sweeper:sweep_error] Chain ${cfg.name} scan/process error for ${address}:`, chainErr.message);
         results.push({
           success: false,
@@ -1286,6 +1322,9 @@ module.exports = {
   processEvmDeposit,
   sweepUserDeposits,
   runEvmSweepOnce,
+  isChainBreakerOpen,
+  recordChainFailure,
+  resetChainBreakers,
   startEvmDepositMonitor,
   stopEvmDepositMonitor,
 };

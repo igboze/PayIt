@@ -26,7 +26,7 @@ function getEscrowHolderAddress() {
     try {
       const signer = walletLib.walletFromPrivateKey(relayerKey);
       if (signer?.address) return signer.address;
-    } catch (_) {}
+    } catch (_) { }
   }
   return (
     process.env.APP_FEE_RECIPIENT_ADDRESS ||
@@ -270,7 +270,7 @@ function verifyEscrowRecipient(escrow, claimantUsername) {
  * Release escrowed funds to claimant's address and mark claimed in DB.
  */
 async function releaseEscrowToRecipient({ claimToken, claimantTelegramId, claimantUsername = null, recipientAddress }) {
-  try { db.expireStaleSocialEscrows(); } catch (_) {}
+  try { db.expireStaleSocialEscrows(); } catch (_) { }
 
   const escrow = db.getSocialEscrowByToken(claimToken);
   if (!escrow || escrow.status !== "pending") {
@@ -314,7 +314,7 @@ async function releaseEscrowToRecipient({ claimToken, claimantTelegramId, claima
       "arc",
       `Gift from user ${escrow.sender_id}`
     );
-  } catch (_) {}
+  } catch (_) { }
 
   return {
     success: true,
@@ -360,7 +360,7 @@ async function refundEscrowToSender({ claimToken, senderId, senderAddress }) {
       "arc",
       `Refund for cancelled gift to @${escrow.target_handle}`
     );
-  } catch (_) {}
+  } catch (_) { }
 
   return {
     success: true,

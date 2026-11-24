@@ -147,10 +147,16 @@ async function pollInvoices(bot, arcProvider) {
     }
   }
 
+  // Fetch recent blocks ONCE per poll for all watched addresses (previously every address
+  // re-downloaded the last 11 full blocks every cycle, flooding the shared RPC with requests).
+  const txsByAddress = watchedAddresses.size > 0
+    ? await getRecentTransactionsByAddress(arcProvider, new Set(watchedAddresses.keys()))
+    : new Map();
+
   // Check each watched address for recent transactions
   for (const [address, metadata] of watchedAddresses) {
     try {
-      const txs = await getRecentTransactionsTo(arcProvider, address);
+      const txs = txsByAddress.get(String(address).toLowerCase()) || [];
 
       let confirmed = false;
       for (const tx of txs) {
@@ -262,6 +268,47 @@ function rebuildWatchList() {
   } catch (err) {
     console.error("[invoice_listener] Failed to rebuild watch list:", err.message);
   }
+}
+
+/**
+ * Get recent transactions to any of the given addresses, fetching each block only once.
+ * Blocks already scanned in an earlier poll are skipped. The balance check in pollInvoices
+ * still catches any payment whose block fell outside this window.
+ * Returns Map<lowercased address, tx[]>.
+ */
+let lastScannedBlock = -1;
+async function getRecentTransactionsByAddress(provider, addresses) {
+  const result = new Map();
+  try {
+    if (!provider || !addresses || addresses.size === 0) return result;
+    const wanted = new Set([...addresses].map((a) => String(a).toLowerCase()));
+    const currentBlock = await provider.getBlockNumber();
+    const blocksToCheck = 10;
+    const fromBlock = Math.max(0, currentBlock - blocksToCheck, lastScannedBlock + 1);
+
+    for (let blockNumber = fromBlock; blockNumber <= currentBlock; blockNumber += 1) {
+      let block = null;
+      if (typeof provider.getBlockWithTransactions === "function") {
+        block = await provider.getBlockWithTransactions(blockNumber);
+      } else if (typeof provider.getBlock === "function") {
+        block = await provider.getBlock(blockNumber, true);
+      }
+      if (!block) continue;
+      const transactions = block.prefetchedTransactions || (Array.isArray(block.transactions) ? block.transactions : []);
+      for (const tx of transactions) {
+        if (typeof tx === "object" && tx !== null && tx.to) {
+          const to = tx.to.toLowerCase();
+          if (!wanted.has(to)) continue;
+          if (!result.has(to)) result.set(to, []);
+          result.get(to).push(tx);
+        }
+      }
+      lastScannedBlock = blockNumber;
+    }
+  } catch (err) {
+    console.error("[invoice_listener] getRecentTransactionsByAddress error:", err.message);
+  }
+  return result;
 }
 
 /**
@@ -462,7 +509,7 @@ async function settleInvoiceFunds(invoiceId, type) {
     return null;
   }
 
-  const secret = process.env.INVOICE_FORWARDING_SECRET || "payit-invoice-fallback-secret";
+  const secret = walletLib.getSystemSecret();
   const childPrivateKey = walletLib.decryptSensitiveValue(encryptedKey, secret);
   const signer = walletLib.walletFromPrivateKey(childPrivateKey);
   const destination = getSettlementDestination(invoice);

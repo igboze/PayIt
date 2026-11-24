@@ -1,7 +1,7 @@
 {
   "name": "proxim-telegram-bot",
   "version": "0.3.0",
-  "description": "Proxim — Your Global Neobank in Telegram. Named global bank accounts (USD, GBP, EUR, NGN, CAD), Virtual & Disposable USD Mastercards, 27-currency international payouts, instant Naira banking, high-yield dollar savings, bill payments, and SME invoicing & payroll.",
+  "description": "Proxim — Full-Service Global Neobank & Fintech Platform inside Telegram. Named global bank accounts (USD, GBP, EUR, NGN, CAD), Virtual & Disposable USD Mastercards, 27-currency international payouts, instant Naira banking, high-yield dollar savings, bill payments, and SME invoicing & payroll.",
   "main": "bot.js",
   "type": "commonjs",
   "scripts": {
@@ -24,7 +24,7 @@
     "@resvg/resvg-js": "^2.6.2",
     "@solana/spl-token": "^0.4.15",
     "@solana/web3.js": "^1.99.0",
-    "axios": "^1.7.7",
+    "axios": "^1.21.1",
     "bs58": "^6.0.0",
     "dejavu-fonts-ttf": "^2.37.3",
     "dotenv": "^16.6.1",

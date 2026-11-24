@@ -175,11 +175,18 @@ async function getUsdcBalance(walletAddress, chainName) {
   return formatUnits(raw, 6);
 }
 
-function deriveSecretKey(secret) {
-  const effectiveSecret = secret || process.env.INVOICE_FORWARDING_SECRET || "payit-invoice-fallback-secret";
-  if (typeof effectiveSecret !== "string" || !effectiveSecret.trim()) {
+// INVOICE_FORWARDING_SECRET protects server-side copies of users' private keys
+// (system_encrypted_key) and invoice child keys. There is deliberately no default value.
+function getSystemSecret() {
+  const configured = (process.env.INVOICE_FORWARDING_SECRET || "").trim();
+  if (!configured) {
     throw new Error("INVOICE_FORWARDING_SECRET is required for sensitive encryption/decryption.");
   }
+  return configured;
+}
+
+function deriveSecretKey(secret) {
+  const effectiveSecret = (typeof secret === "string" && secret.trim()) ? secret : getSystemSecret();
   return crypto.createHash("sha256").update(effectiveSecret, "utf8").digest();
 }
 
@@ -378,6 +385,7 @@ module.exports = {
   encryptPrivateKey,
   decryptPrivateKey,
   encryptSensitiveValue,
+  getSystemSecret,
   decryptSensitiveValue,
   parseToMicro,
   formatMicro,
