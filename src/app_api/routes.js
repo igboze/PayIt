@@ -14,6 +14,7 @@ const passkeys = require("./passkeys");
 const integrity = require("./integrity");
 const actions = require("./actions");
 const features = require("./features");
+const ota = require("./ota");
 
 // Dependencies are resolved lazily and can be replaced in tests.
 const deps = {
@@ -938,9 +939,18 @@ const ROUTES = [
     rateLimit(`assistant:${auth.telegramId}`, 30, 60 * 1000);
     return features.assistantChat(auth, body);
   }],
+
+  // Self-hosted Expo Updates Protocol v1 (OTA mobile updates)
+  ["GET", "/ota/manifest", (req, url) => ota.getManifest(req, url)],
+  ["GET", "/ota/status", (req, url) => ota.getStatus(req, url)],
+  ["POST", "/ota/refresh", (req, body) => {
+    rateLimit(`ota-refresh:${clientIp(req)}`, 10, 60 * 1000);
+    return ota.refreshOta(req, body);
+  }],
 ];
 
 const PARAM_ROUTES = [
+  ["GET", /^\/ota\/assets\/([a-z]+)\/([A-Za-z0-9._-]+)\/([0-9a-fA-F-]+)\/([A-Za-z0-9._-]+)$/, (req, url, m) => ota.getAsset(req, url, m)],
   ["POST", /^\/actions\/([a-z0-9._-]+)\/intent$/, (req, body, m) => actionIntent(req, body, m[1])],
   ["POST", /^\/devices\/([A-Za-z0-9_-]{16,128})\/revoke\/intent$/, (req, body, m) => deviceRevokeIntent(req, body, m[1])],
   ["POST", /^\/devices\/([A-Za-z0-9_-]{16,128})\/revoke$/, (req, body, m) => deviceRevoke(req, body, m[1])],
@@ -988,12 +998,13 @@ async function handleAppApiRequest(req, res) {
     const arg = hasJsonBody ? await parseBody(req) : url;
     const result = await handler(req, arg, match);
     if (result.raw !== undefined) {
-      res.writeHead(result.status, {
-        "Content-Type": result.contentType || "application/octet-stream",
+      const headers = {
+        ...(result.status === 204 ? {} : { "Content-Type": result.contentType || "application/octet-stream" }),
         ...SECURITY_HEADERS,
         ...(result.headers || {}),
-      });
-      return res.end(result.raw);
+      };
+      res.writeHead(result.status, headers);
+      return res.end(result.status === 204 ? undefined : result.raw);
     }
     return sendJson(res, result.status, result.data);
   } catch (err) {

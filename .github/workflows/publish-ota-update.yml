@@ -1,0 +1,77 @@
+name: Publish Android OTA Update
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "mobile/src/**"
+      - "mobile/App.tsx"
+      - "mobile/index.ts"
+      - "mobile/app.json"
+      - "mobile/assets/**"
+      - "mobile/scripts/build-ota-bundle.js"
+      - ".github/workflows/publish-ota-update.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-android-ota
+  cancel-in-progress: true
+
+jobs:
+  publish-ota:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck TypeScript
+        run: npx tsc --noEmit
+
+      - name: Export Android Hermes OTA bundle
+        env:
+          EXPO_PUBLIC_API_BASE_URL: https://payit-production.up.railway.app/api/app/v1
+        run: npx expo export --platform android --output-dir .ota-dist
+
+      - name: Package Expo Updates v1 archive
+        run: node scripts/build-ota-bundle.js .ota-dist .ota-package android
+
+      - name: Publish OTA archive to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=$(node -p "require('./.ota-package/ota-release-info.json').tag")
+          ARCHIVE=$(node -p "require('./.ota-package/ota-release-info.json').archivePath")
+          UPDATE_ID=$(node -p "require('./.ota-package/ota-release-info.json').updateId")
+          APP_VER=$(node -p "require('./.ota-package/ota-release-info.json').appVersion")
+          COMMIT=$(node -p "require('./.ota-package/ota-release-info.json').commit")
+          NOTES="Automatic Android OTA update | version: ${APP_VER} | updateId: ${UPDATE_ID} | commit: ${COMMIT}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ARCHIVE" --clobber
+            gh release edit "$TAG" --title "Proxim Android OTA (${TAG})" --notes "$NOTES"
+          else
+            gh release create "$TAG" "$ARCHIVE" --title "Proxim Android OTA (${TAG})" --notes "$NOTES"
+          fi
+
+      - name: Prime Railway OTA cache
+        run: |
+          RV=$(node -p "require('./.ota-package/ota-release-info.json').runtimeVersion")
+          curl -fsS -X POST "https://payit-production.up.railway.app/api/app/v1/ota/refresh" \
+            -H "Content-Type: application/json" \
+            -d "{\"platform\":\"android\",\"runtimeVersion\":\"${RV}\"}" || true

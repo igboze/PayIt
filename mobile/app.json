@@ -2,7 +2,14 @@
   "expo": {
     "name": "Proxim",
     "slug": "proxim-mobile",
-    "version": "1.0.4",
+    "version": "1.0.5",
+    "runtimeVersion": "1",
+    "updates": {
+      "enabled": true,
+      "url": "https://payit-production.up.railway.app/api/app/v1/ota/manifest",
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 3000
+    },
     "orientation": "portrait",
     "scheme": "proxim",
     "userInterfaceStyle": "dark",
@@ -23,7 +30,7 @@
     },
     "android": {
       "package": "app.proxim.mobile",
-      "versionCode": 5,
+      "versionCode": 6,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#07271A"
@@ -57,6 +64,7 @@
       ]
     },
     "plugins": [
+      "expo-updates",
       "./plugins/withReleaseSigning"
     ],
     "extra": {

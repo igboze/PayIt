@@ -20,6 +20,7 @@ import type {
   ScheduleItem,
 } from "../api/types";
 import { useApp } from "../state/AppContext";
+import { useAutoOtaUpdates } from "../hooks/useAutoOtaUpdates";
 import { COLORS, SPACING } from "../theme";
 import {
   Button,
@@ -38,6 +39,7 @@ type ProfileTab = "general" | "kyc" | "security" | "contacts" | "schedules" | "r
 
 export function ProfileScreen() {
   const { user, activeAccount, dataVersion, refreshMe, signOut, requestApproval } = useApp();
+  const ota = useAutoOtaUpdates();
   const [tab, setTab] = useState<ProfileTab>("general");
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -413,6 +415,29 @@ export function ProfileScreen() {
               />
             ) : null}
             <Button title="Save Profile" onPress={handleSaveProfile} loading={loading} />
+          </Card>
+
+          <Card>
+            <SectionHeader title="App Updates (Automatic OTA)" />
+            <KeyValueRow label="Runtime" value={ota.runtimeVersion ? `v${ota.runtimeVersion}` : "1"} />
+            <KeyValueRow
+              label="Installed Build"
+              value={ota.updateId ? `OTA · ${ota.updateId.slice(0, 8)}` : "Embedded release"}
+            />
+            {ota.statusMessage ? (
+              <Text style={[styles.rowSub, { marginVertical: 8 }]}>{ota.statusMessage}</Text>
+            ) : null}
+            {ota.updateReady ? (
+              <Button title="Apply Downloaded Update" onPress={ota.applyNow} style={{ marginTop: 8 }} />
+            ) : (
+              <Button
+                title="Check for Updates"
+                variant="secondary"
+                onPress={() => ota.checkNow({ silent: false })}
+                loading={ota.checking}
+                style={{ marginTop: 8 }}
+              />
+            )}
           </Card>
 
           <Card>

@@ -5,7 +5,11 @@ on:
   push:
     branches: [master]
     paths:
-      - "mobile/**"
+      - "mobile/app.json"
+      - "mobile/package.json"
+      - "mobile/package-lock.json"
+      - "mobile/plugins/**"
+      - "mobile/assets/**"
       - ".github/workflows/build-android-apk.yml"
 
 jobs:

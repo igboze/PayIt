@@ -19,12 +19,14 @@ import { SavingsScreen } from "./src/screens/SavingsScreen";
 import { SwapScreen } from "./src/screens/SwapScreen";
 import { COLORS } from "./src/theme";
 import { PressableScale } from "./src/components/Touch";
+import { useAutoOtaUpdates } from "./src/hooks/useAutoOtaUpdates";
 
 type MainTab = "home" | "accounts" | "cards" | "profile";
 type OverlayScreen = "add" | "send" | "bills" | "savings" | "swap" | "assistant" | null;
 
 function MainShell() {
   const { user, bootstrapping } = useApp();
+  const ota = useAutoOtaUpdates();
   const [tab, setTab] = useState<MainTab>("home");
   const [accountsSection, setAccountsSection] = useState<AccountsSection>("accounts");
   const [overlay, setOverlay] = useState<OverlayScreen>(null);
@@ -148,6 +150,13 @@ function MainShell() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+      {ota.updateReady ? (
+        <PressableScale onPress={ota.applyNow} style={styles.otaBanner}>
+          <Ionicons name="cloud-download-outline" size={16} color="#052E16" />
+          <Text style={styles.otaBannerText}>New Proxim update ready · Tap to apply</Text>
+          <Ionicons name="refresh" size={15} color="#052E16" />
+        </PressableScale>
+      ) : null}
       <AccountSwitcherBar onOpenAssistant={() => setOverlay("assistant")} />
 
       <View style={styles.body}>
@@ -226,5 +235,19 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     fontSize: 11,
     fontWeight: "700",
+  },
+  otaBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: COLORS.primary,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+  },
+  otaBannerText: {
+    color: "#052E16",
+    fontSize: 12,
+    fontWeight: "800",
   },
 });
