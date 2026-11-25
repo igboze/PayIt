@@ -33,11 +33,26 @@
           "action": "VIEW",
           "autoVerify": true,
           "data": [
-            { "scheme": "https", "host": "payit-production.up.railway.app", "pathPrefix": "/link/" },
-            { "scheme": "https", "host": "payit-production.up.railway.app", "pathPrefix": "/pay/" },
-            { "scheme": "https", "host": "payit-production.up.railway.app", "pathPrefix": "/checkout/" }
+            {
+              "scheme": "https",
+              "host": "payit-production.up.railway.app",
+              "pathPrefix": "/link/"
+            },
+            {
+              "scheme": "https",
+              "host": "payit-production.up.railway.app",
+              "pathPrefix": "/pay/"
+            },
+            {
+              "scheme": "https",
+              "host": "payit-production.up.railway.app",
+              "pathPrefix": "/checkout/"
+            }
           ],
-          "category": ["BROWSABLE", "DEFAULT"]
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
         }
       ]
     },

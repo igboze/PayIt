@@ -121,13 +121,15 @@ routes.__setTestDeps({
     getOnrampOrder: async (id) => id === "onramp_ord_123" ? { id, status: "completed", fiatAmount: 50000 } : null,
     createOfframpPayout: async (params) => {
       calls.pajOfframp.push(params);
+      const amtUsdc = params.fiatAmount ? Number((params.fiatAmount / 1550).toFixed(6)) : params.amountUsdc;
+      const fiatAmt = params.fiatAmount ? Math.round(params.fiatAmount) : Math.round(params.amountUsdc * 1550);
       return {
         id: `paj_off_${calls.pajOfframp.length}`,
         address: params.bankCode === "090267"
           ? "So1anaPajFundingAddr1111111111111111111111"
           : "0x2222222222222222222222222222222222222222",
-        amount: params.amountUsdc,
-        fiatAmount: Math.round(params.amountUsdc * 1550),
+        amount: amtUsdc,
+        fiatAmount: fiatAmt,
         rate: 1550,
         accountName: params.accountName || "ADAORA OKAFOR",
         bankName: "GTBank",
@@ -877,4 +879,63 @@ test("business home, profile, invoices, payment links, assistant, and statement 
   assert.equal(lines[0], "id,created_at,account_type,type,status,amount,amount_raw,decimals,chain,tx_hash,narration");
   assert.ok(lines[1].includes("12.5"), `expected formatted amount 12.5 in: ${lines[1]}`);
   assert.ok(lines[1].includes("\"'=SUM(A1:A2), note\""), `expected CSV formula-escaped narration in: ${lines[1]}`);
+});
+
+test("naira-denominated send flows: payout.ngn, transfer.user, and gift.create accept amountNgn", async () => {
+  const senderAuth = new SoftAuthenticator({ rpId: "proxim.test", origin: "https://proxim.test" });
+  const recvAuth = new SoftAuthenticator({ rpId: "proxim.test", origin: "https://proxim.test" });
+  const sender = await signUp(senderAuth, "+2348040000001", "dev-ngn-send-0000001");
+  const recv = await signUp(recvAuth, "+2348040000002", "dev-ngn-recv-0000002");
+  db.syncUsername(Number(recv.user.id), "chidi_ngn");
+  const token = sender.session.accessToken;
+
+  // 1) payout.ngn using amountNgn -> passes fiatAmount directly to Paj and displays Naira in summary
+  calls.pajOfframp.length = 0;
+  const ngnPayout = await approveAction(senderAuth, token, "payout.ngn", {
+    amountNgn: 31000,
+    bankCode: "000013",
+    accountNumber: "0123456789",
+    accountName: "ADAORA OKAFOR",
+    narration: "school fees",
+  });
+  assert.equal(ngnPayout.confirm.status, 200, JSON.stringify(ngnPayout.confirm.body));
+  assert.match(ngnPayout.intent.body.summary.title, /₦31,000/);
+  assert.ok(
+    ngnPayout.intent.body.summary.lines.some(([k, v]) => k === "From your balance" && v.includes("$20.00")),
+    `expected USD balance line in ${JSON.stringify(ngnPayout.intent.body.summary.lines)}`
+  );
+  assert.equal(calls.pajOfframp.length, 1);
+  assert.equal(calls.pajOfframp[0].fiatAmount, 31000);
+  assert.equal(calls.pajOfframp[0].amountUsdc, undefined);
+  assert.equal(ngnPayout.confirm.body.amountNgn, 31000);
+  assert.match(ngnPayout.confirm.body.notice, /₦31,000/);
+
+  // 2) transfer.user using amountNgn -> converts at live offRampRate (1550) to $10.00 USDC
+  const p2pNgn = await approveAction(senderAuth, token, "transfer.user", {
+    recipient: "@chidi_ngn",
+    amountNgn: 15500,
+    narration: "lunch",
+  });
+  assert.equal(p2pNgn.confirm.status, 200, JSON.stringify(p2pNgn.confirm.body));
+  assert.match(p2pNgn.intent.body.summary.title, /₦15,500/);
+  assert.equal(Number(p2pNgn.confirm.body.amountUsdc), 10);
+  assert.equal(p2pNgn.confirm.body.amountNgn, 15500);
+  assert.match(p2pNgn.confirm.body.notice, /₦15,500/);
+
+  // 3) gift.create enforces $1 minimum when amountNgn is too small, and succeeds for ₦3,100 ($2)
+  const smallGift = await call("POST", "/actions/gift.create/intent", {
+    targetUsername: "@new_friend_ngn",
+    amountNgn: 500,
+  }, token);
+  assert.equal(smallGift.status, 400);
+  assert.equal(smallGift.body.error.code, "invalid_amount");
+
+  const giftNgn = await approveAction(senderAuth, token, "gift.create", {
+    targetUsername: "@new_friend_ngn",
+    amountNgn: 3100,
+  });
+  assert.equal(giftNgn.confirm.status, 200, JSON.stringify(giftNgn.confirm.body));
+  assert.match(giftNgn.intent.body.summary.title, /₦3,100/);
+  assert.equal(giftNgn.confirm.body.amountNgn, 3100);
+  assert.match(giftNgn.confirm.body.notice, /₦3,100/);
 });

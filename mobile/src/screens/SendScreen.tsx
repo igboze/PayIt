@@ -101,12 +101,12 @@ export function SendScreen({
   useEffect(() => {
     setError(null);
     if (mode === "user") {
-      api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => {});
+      api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => { });
     } else if (mode === "wallet") {
-      api.listContacts().then((r) => setContacts(r.contacts || [])).catch(() => {});
+      api.listContacts().then((r) => setContacts(r.contacts || [])).catch(() => { });
     } else if (mode === "ngn") {
-      api.getBankRates().then(setRates).catch(() => {});
-      api.listBanks(bankQuery || undefined).then((r) => setBanks(r.banks || [])).catch(() => {});
+      api.getBankRates().then(setRates).catch(() => { });
+      api.listBanks(bankQuery || undefined).then((r) => setBanks(r.banks || [])).catch(() => { });
     } else if (mode === "global") {
       api
         .listGlobalCorridors()
@@ -114,11 +114,11 @@ export function SendScreen({
           setRails(r.rails || []);
           if (!selectedRail && r.rails?.length) setSelectedRail(r.rails[0]);
         })
-        .catch(() => {});
+        .catch(() => { });
       api
         .listGlobalRecipients(undefined, activeAccount)
         .then((r) => setGlobalRecipients(r.recipients || []))
-        .catch(() => {});
+        .catch(() => { });
     } else if (mode === "crypto") {
       api
         .listWithdrawalChains()
@@ -127,15 +127,15 @@ export function SendScreen({
           setFeeUsd(r.feeUsd);
           if (!selectedChain && r.chains?.length) setSelectedChain(r.chains[0]);
         })
-        .catch(() => {});
-      api.listBridgeMoves().then(setBridgeMoves).catch(() => {});
+        .catch(() => { });
+      api.listBridgeMoves().then(setBridgeMoves).catch(() => { });
     }
   }, [mode, activeAccount]);
 
   useEffect(() => {
     if (mode !== "ngn") return;
     const t = setTimeout(() => {
-      api.listBanks(bankQuery.trim() || undefined).then((r) => setBanks(r.banks || [])).catch(() => {});
+      api.listBanks(bankQuery.trim() || undefined).then((r) => setBanks(r.banks || [])).catch(() => { });
     }, 250);
     return () => clearTimeout(t);
   }, [bankQuery, mode]);
@@ -189,9 +189,9 @@ export function SendScreen({
       });
       setNotice(res.notice || "Gift link created!");
       if (res.shareText || res.claimUrl) {
-        Share.share({ message: String(res.shareText || res.claimUrl) }).catch(() => {});
+        Share.share({ message: String(res.shareText || res.claimUrl) }).catch(() => { });
       }
-      api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => {});
+      api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => { });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Could not create gift link.";
       if (!/cancel/i.test(msg)) setError(msg);
@@ -538,7 +538,7 @@ export function SendScreen({
                           requestApproval("gift.cancel", { claimToken: g.claimToken })
                             .then(() => {
                               setNotice("Gift cancelled & refunded.");
-                              api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => {});
+                              api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => { });
                             })
                             .catch((e) => !/cancel/i.test(String(e?.message)) && setError(e.message))
                         }

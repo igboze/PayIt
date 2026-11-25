@@ -150,6 +150,30 @@ function findRecipientUser(raw) {
 const fmt = (n) => Number(n).toFixed(2);
 const cleanBrand = (msg) => String(msg || "").replace(/nuvion/gi, "Global Neobank");
 
+async function getLiveNgnOffRampRate() {
+  let rate = null;
+  try { const r = await dep("paj").getRates("NGN"); rate = Number(r?.offRampRate?.rate) || null; } catch (_) { }
+  if (!rate) { try { rate = Number(await dep("fx").getUsdToNgnRate()) || null; } catch (_) { } }
+  return rate && Number.isFinite(rate) && rate > 0 ? rate : null;
+}
+
+async function resolveUsdcOrNgn(body, { minUsdc = 0.01, minNgn = 100, maxNgn = 50_000_000 } = {}) {
+  const hasNgn = body?.amountNgn !== undefined && body?.amountNgn !== null && body?.amountNgn !== "";
+  const hasUsdc = body?.amountUsdc !== undefined && body?.amountUsdc !== null && body?.amountUsdc !== "";
+  if (hasNgn && !hasUsdc) {
+    const amountNgn = Math.round(money(body, "amountNgn", { min: minNgn, max: maxNgn }));
+    const rate = await getLiveNgnOffRampRate();
+    if (!rate) throw new ActionError(503, "rate_unavailable", "Live NGN exchange rate is unavailable right now. Please try again.");
+    const amountUsdc = Number((amountNgn / rate).toFixed(6));
+    if (amountUsdc < minUsdc) {
+      throw bad(`Minimum amount is ₦${Math.ceil(minUsdc * rate).toLocaleString("en-NG")} ($${fmt(minUsdc)}).`, "invalid_amount");
+    }
+    return { amountUsdc, amountNgn, rate };
+  }
+  const amountUsdc = money(body, "amountUsdc", { min: minUsdc });
+  return { amountUsdc, amountNgn: null, rate: null };
+}
+
 // ─── action definitions ───────────────────────────────────────────────────────
 
 const ACTIONS = {
@@ -184,15 +208,36 @@ const ACTIONS = {
         throw new ActionError(404, "recipient_not_found", "No Proxim user with that username or phone. Send them a claimable gift link instead.");
       }
       if (Number(recipient.telegram_id) === ctx.telegramId) throw bad("You can't send to yourself.", "self_transfer");
-      const amountUsdc = money(body, "amountUsdc");
+      const { amountUsdc, amountNgn, rate } = await resolveUsdcOrNgn(body, { minUsdc: 0.01, minNgn: 100 });
       const narration = str(body, "narration", { optional: true, max: 100 }) || "";
       await precheck(ctx, amountUsdc, `user:${recipient.telegram_id}`, "app_p2p", accountType);
       const label = recipient.username ? `@${recipient.username}` : "Proxim user";
-      return {
-        amountUsd: amountUsdc,
-        action: { accountType, recipientId: String(recipient.telegram_id), recipientLabel: label, toAddress: String(recipient.deposit_address).toLowerCase(), amountUsdc: amountUsdc.toFixed(6), narration },
-        summary: { title: `Send $${fmt(amountUsdc)} to ${label}`, lines: [["To", label], ["Amount", `$${fmt(amountUsdc)}`], ["Fee", "Free"]] },
+      const action = {
+        accountType,
+        recipientId: String(recipient.telegram_id),
+        recipientLabel: label,
+        toAddress: String(recipient.deposit_address).toLowerCase(),
+        amountUsdc: amountUsdc.toFixed(6),
+        ...(amountNgn ? { amountNgn: String(amountNgn), quotedRate: rate } : {}),
+        narration,
       };
+      const summary = amountNgn
+        ? {
+            title: `Send ₦${amountNgn.toLocaleString("en-NG")} to ${label}`,
+            lines: [
+              ...accountTagLines(ctx, accountType),
+              ["To", label],
+              ["Amount", `₦${amountNgn.toLocaleString("en-NG")}`],
+              ["From your balance", `≈ $${fmt(amountUsdc)}`],
+              ["Rate", `$1 = ₦${rate.toLocaleString("en-NG")}`],
+              ["Fee", "Free"],
+            ],
+          }
+        : {
+            title: `Send $${fmt(amountUsdc)} to ${label}`,
+            lines: [...accountTagLines(ctx, accountType), ["To", label], ["Amount", `$${fmt(amountUsdc)}`], ["Fee", "Free"]],
+          };
+      return { amountUsd: amountUsdc, action, summary };
     },
     async execute(ctx, a, pin) {
       const db = dep("db");
@@ -208,7 +253,10 @@ const ACTIONS = {
       try {
         await dep("notify").notify(Number(a.recipientId), { title: "Money received", html: `💸 <b>You received $${fmt(a.amountUsdc)}</b> from ${from}.${a.narration ? `\nNote: ${String(a.narration).replace(/[<>&]/g, "")}` : ""}` });
       } catch (_) { }
-      return { txHash, amountUsdc: a.amountUsdc, to: a.recipientLabel, accountType, notice: `Sent $${fmt(a.amountUsdc)} to ${a.recipientLabel}` };
+      const notice = a.amountNgn
+        ? `Sent ₦${Number(a.amountNgn).toLocaleString("en-NG")} to ${a.recipientLabel}`
+        : `Sent $${fmt(a.amountUsdc)} to ${a.recipientLabel}`;
+      return { txHash, amountUsdc: a.amountUsdc, ...(a.amountNgn ? { amountNgn: Number(a.amountNgn) } : {}), to: a.recipientLabel, accountType, notice };
     },
   },
 
@@ -219,17 +267,33 @@ const ACTIONS = {
       const targetHandle = st.normalizeTelegramHandle(str(body, "targetUsername", { max: 64 }));
       if (!targetHandle) throw bad("Enter a valid @username for the gift link.");
       if (ctx.user.username && ctx.user.username.toLowerCase() === targetHandle) throw bad("You can't send a gift link to yourself.", "self_transfer");
-      const amountUsdc = money(body, "amountUsdc", { min: 1 });
+      const { amountUsdc, amountNgn, rate } = await resolveUsdcOrNgn(body, { minUsdc: 1, minNgn: 500 });
       const expiresHours = Math.min(Math.max(Number(body?.expiresHours || 48), 1), 168);
       await precheck(ctx, amountUsdc, `gift:${targetHandle}`, "app_gift_create", accountType);
-      return {
-        amountUsd: amountUsdc,
-        action: { accountType, targetUsername: targetHandle, amountUsdc: amountUsdc.toFixed(6), expiresHours },
-        summary: {
-          title: `Send $${fmt(amountUsdc)} gift link to @${targetHandle}`,
-          lines: [["Recipient", `@${targetHandle}`], ["Amount", `$${fmt(amountUsdc)}`], ["Expires in", `${expiresHours} hours`]],
-        },
+      const action = {
+        accountType,
+        targetUsername: targetHandle,
+        amountUsdc: amountUsdc.toFixed(6),
+        ...(amountNgn ? { amountNgn: String(amountNgn), quotedRate: rate } : {}),
+        expiresHours,
       };
+      const summary = amountNgn
+        ? {
+            title: `Send ₦${amountNgn.toLocaleString("en-NG")} gift link to @${targetHandle}`,
+            lines: [
+              ...accountTagLines(ctx, accountType),
+              ["Recipient", `@${targetHandle}`],
+              ["Amount", `₦${amountNgn.toLocaleString("en-NG")}`],
+              ["From your balance", `≈ $${fmt(amountUsdc)}`],
+              ["Rate", `$1 = ₦${rate.toLocaleString("en-NG")}`],
+              ["Expires in", `${expiresHours} hours`],
+            ],
+          }
+        : {
+            title: `Send $${fmt(amountUsdc)} gift link to @${targetHandle}`,
+            lines: [...accountTagLines(ctx, accountType), ["Recipient", `@${targetHandle}`], ["Amount", `$${fmt(amountUsdc)}`], ["Expires in", `${expiresHours} hours`]],
+          };
+      return { amountUsd: amountUsdc, action, summary };
     },
     async execute(ctx, a, pin) {
       const st = dep("socialTransfers");
@@ -245,6 +309,9 @@ const ACTIONS = {
         amountUsdc: amount,
         expiresHours: a.expiresHours || 48,
       });
+      const notice = a.amountNgn
+        ? `Created ₦${Number(a.amountNgn).toLocaleString("en-NG")} gift link for @${a.targetUsername}`
+        : `Created $${fmt(amount)} gift link for @${a.targetUsername}`;
       return {
         txHash,
         claimToken: created.claimToken,
@@ -252,7 +319,8 @@ const ACTIONS = {
         shareUrl: created.shareUrl,
         shareText: created.shareText,
         escrow: created.escrow,
-        notice: `Created $${fmt(amount)} gift link for @${a.targetUsername}`,
+        ...(a.amountNgn ? { amountNgn: Number(a.amountNgn) } : {}),
+        notice,
       };
     },
   },
@@ -394,24 +462,55 @@ const ACTIONS = {
   "payout.ngn": {
     async prepare(ctx, body) {
       const accountType = resolveAccountType(ctx, body);
-      const amountUsdc = money(body, "amountUsdc", { min: 1 });
       const bankCode = str(body, "bankCode", { pattern: /^[A-Za-z0-9-]{2,20}$/ });
       const accountNumber = str(body, "accountNumber", { pattern: /^\d{10}$/ });
       const accountName = str(body, "accountName", { optional: true, max: 80 }) || "";
       const narration = str(body, "narration", { optional: true, max: 60 }) || "";
+      const hasNgn = body?.amountNgn !== undefined && body?.amountNgn !== null && body?.amountNgn !== "";
+      const hasUsdc = body?.amountUsdc !== undefined && body?.amountUsdc !== null && body?.amountUsdc !== "";
+      const rate = await getLiveNgnOffRampRate();
+      let amountUsdc;
+      let amountNgn = null;
+      if (hasNgn && !hasUsdc) {
+        amountNgn = Math.round(money(body, "amountNgn", { min: 500, max: 50_000_000 }));
+        if (!rate) throw new ActionError(503, "rate_unavailable", "Live NGN exchange rate is unavailable right now. Please try again.");
+        amountUsdc = Number((amountNgn / rate).toFixed(6));
+      } else {
+        amountUsdc = money(body, "amountUsdc", { min: 1 });
+      }
       await precheck(ctx, amountUsdc, `${bankCode}:${accountNumber}`, "app_offramp_ngn", accountType);
-      let rate = null;
-      try { const r = await dep("paj").getRates("NGN"); rate = Number(r?.offRampRate?.rate) || null; } catch (_) { }
-      if (!rate) { try { rate = Number(await dep("fx").getUsdToNgnRate()) || null; } catch (_) { } }
-      const estNgn = rate ? Math.floor(amountUsdc * rate) : null;
-      return {
-        amountUsd: amountUsdc,
-        action: { accountType, amountUsdc: amountUsdc.toFixed(6), bankCode, accountNumber, accountName, narration, quotedRate: rate },
-        summary: {
-          title: `Send $${fmt(amountUsdc)} to ${accountName || accountNumber}`,
-          lines: [["To", `${accountName || "Account"} · ••${accountNumber.slice(-2)}`], ["They get", estNgn ? `≈ ₦${estNgn.toLocaleString("en-NG")}` : "Shown by the bank partner"], ["Rate", rate ? `$1 = ₦${rate}` : "Live rate"]],
-        },
+      const estNgn = amountNgn || (rate ? Math.floor(amountUsdc * rate) : null);
+      const action = {
+        accountType,
+        amountUsdc: amountUsdc.toFixed(6),
+        ...(amountNgn ? { amountNgn: String(amountNgn) } : {}),
+        bankCode,
+        accountNumber,
+        accountName,
+        narration,
+        quotedRate: rate,
       };
+      const summary = amountNgn
+        ? {
+            title: `Send ₦${amountNgn.toLocaleString("en-NG")} to ${accountName || accountNumber}`,
+            lines: [
+              ...accountTagLines(ctx, accountType),
+              ["To", `${accountName || "Account"} · ••${accountNumber.slice(-2)}`],
+              ["They get", `₦${amountNgn.toLocaleString("en-NG")}`],
+              ["From your balance", `≈ $${fmt(amountUsdc)}`],
+              ["Rate", `$1 = ₦${rate.toLocaleString("en-NG")}`],
+            ],
+          }
+        : {
+            title: `Send $${fmt(amountUsdc)} to ${accountName || accountNumber}`,
+            lines: [
+              ...accountTagLines(ctx, accountType),
+              ["To", `${accountName || "Account"} · ••${accountNumber.slice(-2)}`],
+              ["They get", estNgn ? `≈ ₦${estNgn.toLocaleString("en-NG")}` : "Shown by the bank partner"],
+              ["Rate", rate ? `$1 = ₦${rate.toLocaleString("en-NG")}` : "Live rate"],
+            ],
+          };
+      return { amountUsd: amountUsdc, action, summary };
     },
     async execute(ctx, a, pin) {
       const db = dep("db");
@@ -421,10 +520,19 @@ const ACTIONS = {
       const amount = Number(a.amountUsdc);
       await recordOutbound(ctx, amount, `${a.bankCode}:${a.accountNumber}`, "app_offramp_ngn", accountType);
       const senderName = db.resolveSenderName(ctx.telegramId, accountType);
-      const order = await dep("paj").createOfframpPayout({
-        amountUsdc: amount, bankCode: a.bankCode, accountNumber: a.accountNumber,
-        accountName: a.accountName || undefined, narration: a.narration || undefined, senderName,
-      });
+      const payoutParams = {
+        bankCode: a.bankCode,
+        accountNumber: a.accountNumber,
+        accountName: a.accountName || undefined,
+        narration: a.narration || undefined,
+        senderName,
+      };
+      if (a.amountNgn) {
+        payoutParams.fiatAmount = Number(a.amountNgn);
+      } else {
+        payoutParams.amountUsdc = amount;
+      }
+      const order = await dep("paj").createOfframpPayout(payoutParams);
       const fundingAddress = order.address;
       const fundingAmount = Number(order.amount || amount);
       if (!fundingAddress) throw new ActionError(502, "provider_error", "The bank partner didn't return a funding address. Nothing was sent.");
@@ -444,14 +552,18 @@ const ACTIONS = {
         throw new ActionError(502, "provider_error", "Unsupported funding address from the bank partner. Nothing was sent.");
       }
       const orderId = order.id || order.reference || txHash;
+      const resolvedFiat = order.fiatAmount || (a.amountNgn ? Number(a.amountNgn) : null);
       db.recordOfframpOrder({
         orderId, telegramId: ctx.telegramId, accountType, accountNumber: String(a.accountNumber), bankCode: String(a.bankCode),
         bankName: order.bankName || order.bank?.name || null, accountName: order.accountName || a.accountName || null,
-        amountUsdc: fundingAmount, fiatAmount: order.fiatAmount || null, rate: order.rate || null, rail, txHash,
+        amountUsdc: fundingAmount, fiatAmount: resolvedFiat, rate: order.rate || a.quotedRate || null, rail, txHash,
         narration: a.narration || null, senderName: senderName || null, status: "submitted",
       });
       db.recordTransaction(ctx.telegramId, "offramp", String(walletLib.parseToMicro(fundingAmount.toFixed(6))), "submitted", txHash || orderId, accountType, 18, rail, a.narration || null);
-      return { orderId, txHash, rail, accountType, status: "submitted", notice: `Sending $${fmt(fundingAmount)} to ${order.accountName || a.accountName || "the bank account"}` };
+      const notice = a.amountNgn
+        ? `Sending ₦${Number(a.amountNgn).toLocaleString("en-NG")} to ${order.accountName || a.accountName || "the bank account"}`
+        : `Sending $${fmt(fundingAmount)} to ${order.accountName || a.accountName || "the bank account"}`;
+      return { orderId, txHash, rail, accountType, status: "submitted", ...(resolvedFiat ? { amountNgn: resolvedFiat } : {}), amountUsdc: fundingAmount, notice };
     },
   },
 
