@@ -6842,6 +6842,36 @@ bot.command("help", showHelp);
 bot.command("balance", showBalance);
 bot.command("history", showHistory);
 bot.command("settings", (ctx) => { convState.clearState(ctx.from.id); return showSettings(ctx); });
+// Mobile app linking — registered BEFORE bot.on("text") so /linkapp is never swallowed by the text router.
+bot.command(["linkapp", "link_app"], async (ctx) => {
+  convState.clearState(ctx.from.id);
+  const user = db.getUser(ctx.from.id);
+  if (!user) return ctx.reply("Create your Proxim account first with /start.");
+  if (db.isBlocked(ctx.from.id)) return ctx.reply("Your account is frozen. Please contact support.");
+  const { code, expiresInSec } = appStore.createLinkCode(ctx.from.id);
+  const rpId = (process.env.APP_RP_ID || "").trim();
+  const lines = [
+    "📱 <b>Link the Proxim mobile app</b>",
+    "",
+    `Your one-time code: <code>${code}</code>`,
+    `It expires in ${Math.round(expiresInSec / 60)} minutes and works once.`,
+  ];
+  if (rpId) lines.push("", `Or open this on your phone: https://${rpId}/link/${code}`);
+  lines.push("", "Never share this code. Proxim staff will never ask for it.");
+  return ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
+});
+bot.action(/^app_revoke_([A-Za-z0-9_-]{16,128})$/, async (ctx) => {
+  ctx.answerCbQuery().catch(() => {});
+  const deviceId = ctx.match[1];
+  const device = appStore.getDevice(deviceId);
+  if (!device || Number(device.telegram_id) !== Number(ctx.from.id)) {
+    return ctx.reply("That device isn't linked to your account.");
+  }
+  if (device.revoked) return ctx.reply("That device was already removed.");
+  appStore.revokeDevice(deviceId);
+  appStore.revokeAllSessions(ctx.from.id);
+  return ctx.reply("✅ Device removed and all app sessions signed out. If you didn't link it, also change your PIN in /settings.");
+});
 bot.command("lock", async (ctx) => {
   const user = requireUser(ctx);
   if (!user) return;
@@ -11202,38 +11232,8 @@ bot.on("text", async (ctx) => { }); // placeholder — handled above
 // Already handled above in bot.on("photo") — state "await_logo_upload" is checked first.
 
 // ─── Mobile app linking ───────────────────────────────────────────────────────
-// /linkapp issues a one-time, 5-minute code that the Proxim mobile app exchanges for a
-// passkey on the user's phone. The app also asks for the user's PIN before linking.
-
-bot.command("linkapp", async (ctx) => {
-  const user = db.getUser(ctx.from.id);
-  if (!user) return ctx.reply("Create your Proxim account first with /start.");
-  if (db.isBlocked(ctx.from.id)) return ctx.reply("Your account is frozen. Please contact support.");
-  const { code, expiresInSec } = appStore.createLinkCode(ctx.from.id);
-  const rpId = (process.env.APP_RP_ID || "").trim();
-  const lines = [
-    "📱 <b>Link the Proxim mobile app</b>",
-    "",
-    `Your one-time code: <code>${code}</code>`,
-    `It expires in ${Math.round(expiresInSec / 60)} minutes and works once.`,
-  ];
-  if (rpId) lines.push("", `Or open this on your phone: https://${rpId}/link/${code}`);
-  lines.push("", "Never share this code. Proxim staff will never ask for it.");
-  return ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
-});
-
-bot.action(/^app_revoke_([A-Za-z0-9_-]{16,128})$/, async (ctx) => {
-  ctx.answerCbQuery().catch(() => {});
-  const deviceId = ctx.match[1];
-  const device = appStore.getDevice(deviceId);
-  if (!device || Number(device.telegram_id) !== Number(ctx.from.id)) {
-    return ctx.reply("That device isn't linked to your account.");
-  }
-  if (device.revoked) return ctx.reply("That device was already removed.");
-  appStore.revokeDevice(deviceId);
-  appStore.revokeAllSessions(ctx.from.id);
-  return ctx.reply("✅ Device removed and all app sessions signed out. If you didn't link it, also change your PIN in /settings.");
-});
+// Registered above in the Commands section (before bot.on("text")) so /linkapp
+// is always handled before the natural-language text router.
 
 // ─── Launch ───────────────────────────────────────────────────────────────────
 

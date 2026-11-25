@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import {
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -165,9 +166,11 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
       >
         <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
           <View style={styles.brandHeader}>
-            <View style={styles.logoCircle}>
-              <Text style={styles.logoLetter}>P</Text>
-            </View>
+            <Image
+              source={require("../../assets/icon.png")}
+              style={styles.logoImg}
+              resizeMode="cover"
+            />
             <Text style={styles.brandName}>Proxim</Text>
             <Text style={styles.brandTag}>
               Global Dollars, Naira & Business Banking — secured by Passkey + PIN
@@ -367,19 +370,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: 28,
   },
-  logoCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: COLORS.primary,
-    alignItems: "center",
-    justifyContent: "center",
+  logoImg: {
+    width: 76,
+    height: 76,
+    borderRadius: 20,
     marginBottom: 14,
-  },
-  logoLetter: {
-    color: "#04120D",
-    fontSize: 32,
-    fontWeight: "900",
   },
   brandName: {
     color: COLORS.text,
