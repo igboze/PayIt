@@ -21,7 +21,7 @@ import type {
 } from "../api/types";
 import { useApp } from "../state/AppContext";
 import { useAutoOtaUpdates } from "../hooks/useAutoOtaUpdates";
-import { COLORS, SPACING } from "../theme";
+import { COLORS, SPACING, FONTS } from "../theme";
 import {
   Button,
   Card,
@@ -388,7 +388,7 @@ export function ProfileScreen() {
             <View style={styles.switchRow}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.rowTitle}>Auto-Earn Yield</Text>
-                <Text style={styles.rowSub}>Automatically put idle USDC to work in savings</Text>
+                <Text style={styles.rowSub}>Automatically put idle money to work in savings</Text>
               </View>
               <Switch
                 value={Boolean(user?.autoEarnEnabled)}
@@ -575,7 +575,7 @@ export function ProfileScreen() {
       {tab === "security" ? (
         <>
           <Card>
-            <SectionHeader title="Wallet PIN" />
+            <SectionHeader title="Transaction PIN" />
             <Text style={styles.rowSub}>
               Re-encrypt your Personal and Business keys with a new 4-digit PIN (Passkey required).
             </Text>
@@ -618,7 +618,7 @@ export function ProfileScreen() {
         <Card>
           <SectionHeader title="Saved Contacts" />
           <Input label="Name" placeholder="Ada" value={cName} onChangeText={setCName} />
-          <Input label="Wallet Address (optional 0x...)" value={cWallet} onChangeText={setCWallet} autoCapitalize="none" />
+          <Input label="Wallet address (optional)" value={cWallet} onChangeText={setCWallet} autoCapitalize="none" />
           <Input label="Bank Name (optional)" value={cBank} onChangeText={setCBank} />
           <Input label="10-Digit Account No. (optional)" value={cAcct} onChangeText={setCAcct} keyboardType="number-pad" maxLength={10} />
           <Button title="Save Contact" onPress={handleAddContact} loading={loading} style={{ marginBottom: 14 }} />
@@ -661,7 +661,7 @@ export function ProfileScreen() {
             onChangeText={setSchRecipient}
             autoCapitalize="none"
           />
-          <Input label="Amount (USDC)" value={schAmt} onChangeText={setSchAmt} keyboardType="decimal-pad" />
+          <Input label="Amount (USD)" value={schAmt} onChangeText={setSchAmt} keyboardType="decimal-pad" />
           <View style={styles.pillRow}>
             {(["daily", "weekly", "monthly"] as const).map((f) => (
               <Pill key={f} label={f} active={schFreq === f} onPress={() => setSchFreq(f)} />
@@ -784,7 +784,7 @@ const styles = StyleSheet.create({
     borderBottomColor: COLORS.border,
     gap: 10,
   },
-  rowTitle: { color: COLORS.text, fontSize: 14, fontWeight: "600" },
-  rowSub: { color: COLORS.textSecondary, fontSize: 12, marginTop: 2 },
-  pointsHero: { color: COLORS.primary, fontSize: 32, fontWeight: "800" },
+  rowTitle: { color: COLORS.text, fontSize: 14, fontFamily: FONTS.semibold },
+  rowSub: { color: COLORS.textSecondary, fontFamily: FONTS.regular, fontSize: 12, marginTop: 2 },
+  pointsHero: { color: COLORS.primary, fontSize: 32, fontFamily: FONTS.extrabold },
 });

@@ -17,7 +17,7 @@ import type {
   NgnDepositOrder,
 } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING } from "../theme";
+import { COLORS, RADIUS, SPACING, FONTS } from "../theme";
 import {
   Button,
   Card,
@@ -274,10 +274,10 @@ export function AddMoneyScreen({ onBack }: { onBack: () => void }) {
             paddingVertical: 10,
           }}
         >
-          <Text style={{ color: isBiz ? COLORS.business : COLORS.primary, fontSize: 12, fontWeight: "700" }}>
+          <Text style={{ color: isBiz ? COLORS.business : COLORS.primary, fontSize: 12, fontFamily: FONTS.bold }}>
             DEPOSITING INTO: {isBiz ? "BUSINESS ACCOUNT" : "PERSONAL ACCOUNT"}
           </Text>
-          <Text style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 2 }}>
+          <Text style={{ color: COLORS.textSecondary, fontFamily: FONTS.regular, fontSize: 12, marginTop: 2 }}>
             Funds deposited here credit your {isBiz ? "Business" : "Personal"} balance only.
           </Text>
         </Card>
@@ -347,7 +347,7 @@ export function AddMoneyScreen({ onBack }: { onBack: () => void }) {
           <>
             <Card>
               <SectionHeader
-                title={`Multi-Chain Crypto Deposit (${allChains.length} Networks)`}
+                title={`Deposit crypto · ${allChains.length} networks`}
               />
 
               {loadingCryptoMeta ? (
@@ -492,12 +492,12 @@ export function AddMoneyScreen({ onBack }: { onBack: () => void }) {
               {cryptoMeta ? (
                 <>
                   <KeyValueRow
-                    label="EVM (Base, Eth, Arb, OP, Pol)"
+                    label="Ethereum, Base, Arbitrum, Optimism, Polygon"
                     value={evmDirectAddr || "Unavailable"}
                     onCopy={evmDirectAddr ? () => copy("Deposit address", evmDirectAddr) : undefined}
                   />
                   <KeyValueRow
-                    label="Solana (USDC)"
+                    label="Solana"
                     value={cryptoMeta.directAddresses.solana || "Complete one PIN action to initialize"}
                     onCopy={
                       cryptoMeta.directAddresses.solana
@@ -572,11 +572,11 @@ const styles = StyleSheet.create({
   chainChipName: {
     color: COLORS.text,
     fontSize: 12,
-    fontWeight: "700",
+    fontFamily: FONTS.bold,
   },
   chainChipCount: {
     color: COLORS.textMuted,
-    fontSize: 10,
+    fontFamily: FONTS.regular, fontSize: 10,
   },
   tokenCard: {
     width: 86,
@@ -596,11 +596,11 @@ const styles = StyleSheet.create({
   tokenSym: {
     color: COLORS.text,
     fontSize: 12,
-    fontWeight: "800",
+    fontFamily: FONTS.extrabold,
   },
   tokenPrice: {
     color: COLORS.textMuted,
-    fontSize: 10,
+    fontFamily: FONTS.regular, fontSize: 10,
   },
   resultBox: {
     marginTop: 16,
@@ -610,7 +610,7 @@ const styles = StyleSheet.create({
   },
   mutedText: {
     color: COLORS.textSecondary,
-    fontSize: 13,
+    fontFamily: FONTS.regular, fontSize: 13,
     lineHeight: 19,
   },
 });

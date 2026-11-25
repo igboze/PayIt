@@ -89,6 +89,12 @@ export interface TransactionItem {
   narration: string | null;
   accountType: AccountType;
   createdAt: string | null;
+  /** Bank payouts only. */
+  counterparty?: { name: string | null; detail: string } | null;
+  fiatAmount?: number | null;
+  fiatCurrency?: string | null;
+  payoutStatus?: "processing" | "paid" | "failed" | null;
+  payoutUpdatedAt?: string | null;
 }
 
 export interface ActionIntentResponse {
@@ -361,6 +367,11 @@ export interface SavingsOverview {
     principalUsdc: number;
     accruedYieldUsdc: number;
     apy: number;
+    /** The user's rate (after fees) when they saved. */
+    apyAtDeposit?: number;
+    /** Today's rate for the same vault, if known. */
+    currentApy?: number | null;
+    isAutoEarn?: boolean;
     symbol: string;
     vaultAddress: string | null;
     openedAt: string | null;
@@ -479,4 +490,14 @@ export interface AssistantResponse {
     payload: Record<string, unknown>;
   } | null;
   data: Record<string, unknown> | null;
+}
+
+export interface AppNotification {
+  id: number;
+  title: string;
+  body: string;
+  kind: string | null;
+  data: Record<string, unknown>;
+  createdAt: string;
+  read: boolean;
 }

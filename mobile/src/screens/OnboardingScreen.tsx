@@ -13,7 +13,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api, API_BASE_URL } from "../api/client";
 import { assertPasskey, createPasskey, isPasskeySupported } from "../api/passkey";
 import { useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING } from "../theme";
+import { COLORS, RADIUS, SPACING, FONTS } from "../theme";
 import { Button, Card, ErrorBanner, Input } from "../components/UI";
 import { PressableScale } from "../components/Touch";
 
@@ -161,7 +161,7 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
   return (
     <SafeAreaView style={styles.safe}>
       <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior="padding"
         style={{ flex: 1 }}
       >
         <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
@@ -183,7 +183,7 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
                 <Ionicons name="warning" size={18} color={COLORS.business} />
                 <Text style={styles.warnText}>
                   Passkeys require the native Android APK build (not Expo Go). Build with{" "}
-                  <Text style={{ fontWeight: "700" }}>eas build -p android --profile preview</Text>.
+                  <Text style={{ fontFamily: FONTS.bold }}>eas build -p android --profile preview</Text>.
                 </Text>
               </View>
             </Card>
@@ -319,8 +319,8 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
             <Card>
               <Text style={styles.cardTitle}>Link Telegram account</Text>
               <Text style={styles.cardSub}>
-                1. Open <Text style={{ color: COLORS.primary, fontWeight: "700" }}>@payeetbot</Text>{" "}
-                in Telegram and send <Text style={{ fontWeight: "700", color: COLORS.text }}>/linkapp</Text>.
+                1. Open <Text style={{ color: COLORS.primary, fontFamily: FONTS.bold }}>@payeetbot</Text>{" "}
+                in Telegram and send <Text style={{ fontFamily: FONTS.bold, color: COLORS.text }}>/linkapp</Text>.
                 {"\n"}2. Paste the one-time code below along with your existing 4-digit wallet PIN.
               </Text>
               <Input
@@ -379,12 +379,12 @@ const styles = StyleSheet.create({
   brandName: {
     color: COLORS.text,
     fontSize: 28,
-    fontWeight: "800",
+    fontFamily: FONTS.extrabold,
     letterSpacing: -0.5,
   },
   brandTag: {
     color: COLORS.textSecondary,
-    fontSize: 13,
+    fontFamily: FONTS.regular, fontSize: 13,
     textAlign: "center",
     marginTop: 6,
     lineHeight: 19,
@@ -400,20 +400,20 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   warnText: {
-    color: "#FDE68A",
-    fontSize: 12,
+    color: COLORS.warningText,
+    fontFamily: FONTS.regular, fontSize: 12,
     flex: 1,
     lineHeight: 18,
   },
   cardTitle: {
     color: COLORS.text,
     fontSize: 20,
-    fontWeight: "700",
+    fontFamily: FONTS.bold,
     marginBottom: 6,
   },
   cardSub: {
     color: COLORS.textSecondary,
-    fontSize: 13,
+    fontFamily: FONTS.regular, fontSize: 13,
     lineHeight: 19,
     marginBottom: 18,
   },
@@ -425,12 +425,12 @@ const styles = StyleSheet.create({
   },
   termsText: {
     color: COLORS.textSecondary,
-    fontSize: 13,
+    fontFamily: FONTS.regular, fontSize: 13,
     flex: 1,
   },
   endpointFoot: {
     color: COLORS.textMuted,
-    fontSize: 11,
+    fontFamily: FONTS.regular, fontSize: 11,
     textAlign: "center",
     marginTop: 8,
   },

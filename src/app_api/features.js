@@ -53,6 +53,8 @@ function __setTestDeps(o = {}) {
   Object.assign(overrides, o);
   _banksCache = { rows: null, fetchedAt: 0 };
   _fxRateCache = { rate: null, fetchedAt: 0 };
+  accountNameCache.clear();
+  accountNameInflight.clear();
 }
 
 async function getLiveUsdNgnRate() {
@@ -529,6 +531,82 @@ async function getBankRates() {
   };
 }
 
+// Verified account names are cached so a repeat check is instant, and concurrent checks
+// of the same account share one lookup.
+const ACCOUNT_NAME_TTL_MS = 24 * 60 * 60 * 1000;
+const ACCOUNT_NAME_MAX = 5000;
+const accountNameCache = new Map(); // key -> { accountName, bankName, at }
+const accountNameInflight = new Map(); // key -> Promise
+
+function withTimeout(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("timeout")), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Account name for a Nigerian bank account. Paj's directory search (fast, only knows
+ * accounts registered before) and its NIBSS check (slower, works for any account) run at
+ * the same time; the first one with a name wins.
+ */
+async function lookupBankAccountName(paj, bankCode, accountNumber) {
+  const key = `${String(bankCode).padStart(6, "0")}:${accountNumber}`;
+  const hit = accountNameCache.get(key);
+  if (hit && Date.now() - hit.at < ACCOUNT_NAME_TTL_MS) return hit;
+  if (accountNameInflight.has(key)) return accountNameInflight.get(key);
+
+  const sameBank = (code) => !code || String(code).padStart(6, "0") === String(bankCode).padStart(6, "0");
+
+  const search = typeof paj.searchBankAccount === "function"
+    ? withTimeout(paj.searchBankAccount({ accountNumber, bankCode }), 6000)
+      .then((res) => {
+        const items = Array.isArray(res) ? res : (res?.data ? (Array.isArray(res.data) ? res.data : [res.data]) : [res]);
+        const match = items.find((item) => item && item.accountName && sameBank(item.bank?.code));
+        return match ? { accountName: String(match.accountName).trim(), bankName: match.bank?.name || match.bankName || null } : null;
+      })
+      .catch(() => null)
+    : Promise.resolve(null);
+
+  let registerError = null;
+  const register = typeof paj.registerPermanentBankAccount === "function"
+    ? withTimeout(paj.registerPermanentBankAccount(bankCode, accountNumber), 15000)
+      .then((reg) => {
+        const data = reg?.data || reg;
+        return data?.accountName ? { accountName: String(data.accountName).trim(), bankName: data.bank?.name || data.bankName || null } : null;
+      })
+      .catch((err) => { registerError = err; return null; })
+    : Promise.resolve(null);
+
+  const job = new Promise((resolve) => {
+    let pending = 2;
+    const settle = (result) => {
+      if (result) resolve(result);
+      else if (--pending === 0) resolve(null);
+    };
+    search.then(settle);
+    register.then(settle);
+  }).then((result) => {
+    if (result) {
+      if (accountNameCache.size >= ACCOUNT_NAME_MAX) accountNameCache.delete(accountNameCache.keys().next().value);
+      accountNameCache.set(key, { ...result, at: Date.now() });
+      return result;
+    }
+    if (registerError) {
+      const msg = String(registerError.message || "").toLowerCase();
+      if (msg.includes("invalid") || msg.includes("not found") || msg.includes("could not")) {
+        throw new FeatureError(404, "account_not_found", "Could not verify that bank account. Check the bank and account number.");
+      }
+      throw new FeatureError(502, "provider_error", "Bank name check is temporarily unavailable. Please try again.");
+    }
+    return null;
+  }).finally(() => accountNameInflight.delete(key));
+
+  accountNameInflight.set(key, job);
+  return job;
+}
+
 async function resolveBankAccount(auth, body) {
   const accountNumber = reqStr(body, "accountNumber", { pattern: /^\d{10}$/ });
   const rawBank = optStr(body, "bankCode", { max: 40 }) || optStr(body, "bankName", { max: 80 });
@@ -548,40 +626,9 @@ async function resolveBankAccount(auth, body) {
     throw bad("Could not recognize that bank. Pick a bank from the list.");
   }
 
-  const paj = dep("paj");
-  let accountName = null;
-  let resolvedBankName = bankName;
-
-  // 1. Check Paj's directory search first
-  if (typeof paj.searchBankAccount === "function") {
-    try {
-      const found = await paj.searchBankAccount({ accountNumber, bankCode });
-      const items = Array.isArray(found) ? found : (found?.data ? (Array.isArray(found.data) ? found.data : [found.data]) : [found]);
-      const match = items.find((item) => item && item.accountName && (!item.bank?.code || String(item.bank.code).padStart(6, "0") === String(bankCode).padStart(6, "0")));
-      if (match?.accountName) {
-        accountName = String(match.accountName).trim();
-        resolvedBankName = resolvedBankName || match.bank?.name || match.bankName || null;
-      }
-    } catch (_) {}
-  }
-
-  // 2. Fallback to NIBSS verification via Paj permanent bank account registration (idempotent)
-  if (!accountName && typeof paj.registerPermanentBankAccount === "function") {
-    try {
-      const reg = await paj.registerPermanentBankAccount(bankCode, accountNumber);
-      const data = reg?.data || reg;
-      if (data?.accountName) {
-        accountName = String(data.accountName).trim();
-        resolvedBankName = resolvedBankName || data.bank?.name || data.bankName || null;
-      }
-    } catch (err) {
-      const msg = String(err.message || "").toLowerCase();
-      if (msg.includes("invalid") || msg.includes("not found") || msg.includes("could not")) {
-        throw new FeatureError(404, "account_not_found", "Could not verify that bank account. Check the bank and account number.");
-      }
-      throw new FeatureError(502, "provider_error", "Bank name check is temporarily unavailable. Please try again.");
-    }
-  }
+  const found = await lookupBankAccountName(dep("paj"), bankCode, accountNumber);
+  const accountName = found?.accountName || null;
+  const resolvedBankName = bankName || found?.bankName || null;
 
   if (!accountName) {
     throw new FeatureError(404, "account_not_found", "Could not verify that bank account. Check the bank and account number.");
@@ -1211,6 +1258,15 @@ async function getSavingsOverview(auth, url = null) {
   let pools = [];
   try { pools = await savings.getYieldPools(); } catch (_) {}
   const accruedYieldUsdc = open && typeof savings.calcAccruedYield === "function" ? Number(savings.calcAccruedYield(open) || 0) : 0;
+  // The user's own rate (after Proxim's fee) at the time they saved. Older positions only
+  // stored the vault's gross rate, so derive the user's share for those.
+  const feeFraction = Number(savings.PAYIT_FEE_FRACTION ?? 0.1);
+  const apyAtDeposit = open
+    ? (open.user_apy != null && Number(open.user_apy) > 0 ? Number(open.user_apy) : Number(open.apy || 0) * (1 - feeFraction))
+    : 0;
+  const livePool = open && Array.isArray(pools)
+    ? pools.find((p) => String(p.vaultAddress || "").toLowerCase() === String(open.vault_address || "").toLowerCase()) || null
+    : null;
   return {
     status: 200,
     data: {
@@ -1219,7 +1275,10 @@ async function getSavingsOverview(auth, url = null) {
         id: open.id,
         principalUsdc: Number(open.amount_usdc || 0),
         accruedYieldUsdc,
-        apy: Number(open.apy || 0),
+        apy: Number(apyAtDeposit.toFixed(2)),
+        apyAtDeposit: Number(apyAtDeposit.toFixed(2)),
+        currentApy: livePool ? Number(Number(livePool.userApy ?? livePool.apy ?? 0).toFixed(2)) : null,
+        isAutoEarn: Boolean(open.is_auto_earn),
         symbol: open.symbol || "USDC",
         vaultAddress: open.vault_address || null,
         openedAt: open.opened_at || open.created_at || null,
@@ -2350,7 +2409,7 @@ async function setBusinessSavingsGoal(auth, body) {
   return { status: 200, data: { savingsGoal: bizDb.getSavingsGoal(auth.telegramId) } };
 }
 
-async function getTransactionReceipt(auth, rawId) {
+async function getTransactionReceipt(auth, rawId, opts = {}) {
   const id = Number(rawId);
   if (!Number.isInteger(id) || id <= 0) throw bad("Invalid transaction ID.");
   const db = dep("db");
@@ -2358,12 +2417,20 @@ async function getTransactionReceipt(auth, rawId) {
   if (!tx) throw new FeatureError(404, "not_found", "Transaction not found.");
   const amountNum = Number(formatAmountForCsv(tx.amount_micro ?? tx.amount ?? "0", tx.decimals ?? 18)) || 0;
   const acctType = tx.account_type || "personal";
+  // Bank payouts: name the account that was paid, like the bot's payout receipts.
+  let payout = null;
+  if (/offramp|payout|withdraw/i.test(String(tx.type || "")) && tx.tx_hash && typeof db.getOfframpOrderByOrderId === "function") {
+    try {
+      const o = db.getOfframpOrderByOrderId(tx.tx_hash);
+      if (o && Number(o.telegram_id) === Number(auth.telegramId)) payout = o;
+    } catch (_) {}
+  }
   const outPath = await dep("receiptGenerator").generateReceiptPNG({
     receiptId: `TX-${tx.id}`,
     senderName: db.resolveSenderName(auth.telegramId, acctType),
     senderAddress: acctType === "business" ? (auth.user.business_deposit_address || auth.user.deposit_address) : auth.user.deposit_address,
-    recipientName: tx.narration || tx.type || "Transaction",
-    recipientAddress: tx.tx_hash || "",
+    recipientName: payout?.account_name || tx.narration || tx.type || "Transaction",
+    recipientAddress: payout ? [payout.bank_name, payout.account_number].filter(Boolean).join(" · ") : (tx.tx_hash || ""),
     amountUsdc: amountNum,
     token: "USDC",
     type: tx.type || "Transfer",
@@ -2379,7 +2446,7 @@ async function getTransactionReceipt(auth, rawId) {
     status: 200,
     raw: png,
     contentType: "image/png",
-    headers: { "Content-Disposition": `inline; filename="proxim-receipt-${tx.id}.png"` },
+    headers: { "Content-Disposition": `${opts.download ? "attachment" : "inline"}; filename="proxim-receipt-${tx.id}.png"` },
   };
 }
 

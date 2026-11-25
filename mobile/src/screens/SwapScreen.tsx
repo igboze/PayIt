@@ -3,7 +3,7 @@ import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View }
 import { api } from "../api/client";
 import type { SwapPairRate } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING } from "../theme";
+import { COLORS, RADIUS, SPACING, FONTS } from "../theme";
 import {
   Button,
   Card,
@@ -136,16 +136,16 @@ export function SwapScreen({ onBack }: { onBack: () => void }) {
           {loadingRates ? (
             <View style={styles.rateLoading}>
               <ActivityIndicator size="small" color={COLORS.primary} />
-              <Text style={styles.muted}>Fetching live USDC / EURC FX rate…</Text>
+              <Text style={styles.muted}>Getting the live rate…</Text>
             </View>
           ) : pair?.usdcToEurc ? (
             <>
-              <KeyValueRow label="1 USDC" value={`≈ ${pair.usdcToEurc.toFixed(4)} EURC`} />
-              <KeyValueRow label="1 EURC" value={`≈ ${(pair.eurcToUsdc || 0).toFixed(4)} USDC`} />
+              <KeyValueRow currency="USD" label="$1" value={`≈ €${pair.usdcToEurc.toFixed(4)}`} />
+              <KeyValueRow currency="EUR" label="€1" value={`≈ $${(pair.eurcToUsdc || 0).toFixed(4)}`} />
               <KeyValueRow label="Swap Fee" value={`${pair.feePct}%`} />
             </>
           ) : (
-            <Text style={styles.muted}>Enter an amount below to request a live on-chain quote.</Text>
+            <Text style={styles.muted}>Enter an amount to see a live quote.</Text>
           )}
         </Card>
 
@@ -153,8 +153,8 @@ export function SwapScreen({ onBack }: { onBack: () => void }) {
           <SectionHeader title="Convert Currency" />
           <View style={styles.pillRow}>
             <Pill
-              label="USDC → EURC"
-              currency="USDC"
+              label="Dollars → Euros"
+              currency="USD"
               active={swapDir === "USDC_EURC"}
               onPress={() => {
                 setSwapDir("USDC_EURC");
@@ -162,8 +162,8 @@ export function SwapScreen({ onBack }: { onBack: () => void }) {
               }}
             />
             <Pill
-              label="EURC → USDC"
-              currency="EURC"
+              label="Euros → Dollars"
+              currency="EUR"
               active={swapDir === "EURC_USDC"}
               onPress={() => {
                 setSwapDir("EURC_USDC");
@@ -212,10 +212,10 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: COLORS.bg },
   content: { padding: SPACING.md, paddingBottom: 40 },
   rateLoading: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8 },
-  muted: { color: COLORS.textSecondary, fontSize: 13 },
+  muted: { color: COLORS.textSecondary, fontFamily: FONTS.regular, fontSize: 13 },
   pillRow: { flexDirection: "row", gap: 8, marginBottom: 14 },
   quoteBox: {
-    backgroundColor: COLORS.bg,
+    backgroundColor: COLORS.page,
     borderRadius: RADIUS.md,
     borderWidth: 1,
     borderColor: COLORS.primaryBorder,

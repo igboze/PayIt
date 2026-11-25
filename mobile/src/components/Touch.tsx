@@ -16,6 +16,18 @@ export function tap(kind: HapticKind = "light") {
   }
 }
 
+/** Success or error buzz for finished actions. */
+export function notifyHaptic(kind: "success" | "error" = "success") {
+  if (Platform.OS === "web") return;
+  try {
+    void Haptics.notificationAsync(
+      kind === "success" ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Error
+    ).catch(() => {});
+  } catch (_) {
+    // Native module missing on older builds.
+  }
+}
+
 /**
  * Pressable that physically "sinks" when touched: springs down to `depth` scale and dips
  * slightly, with a light haptic tap, then springs back on release.

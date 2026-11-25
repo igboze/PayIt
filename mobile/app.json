@@ -65,7 +65,9 @@
     },
     "plugins": [
       "expo-updates",
-      "./plugins/withReleaseSigning"
+      "./plugins/withReleaseSigning",
+      "expo-font",
+      "expo-sharing"
     ],
     "extra": {
       "apiBaseUrl": "https://payit-production.up.railway.app/api/app/v1"

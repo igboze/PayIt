@@ -12,7 +12,8 @@ import * as Clipboard from "expo-clipboard";
 import { api } from "../api/client";
 import type { CardItem } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING } from "../theme";
+import { ProximCardFace } from "../components/ProximCardFace";
+import { COLORS, RADIUS, SPACING, FONTS } from "../theme";
 import {
   Button,
   Card,
@@ -20,6 +21,7 @@ import {
   ErrorBanner,
   formatUsdc,
   Input,
+  KeyboardSafe,
   KeyValueRow,
   Pill,
   SectionHeader,
@@ -31,7 +33,7 @@ function cardIdOf(c: CardItem): string {
 }
 
 export function CardsScreen() {
-  const { activeAccount, dataVersion, requestApproval } = useApp();
+  const { user, activeAccount, dataVersion, requestApproval } = useApp();
   const isBiz = activeAccount === "business";
 
   const [cards, setCards] = useState<CardItem[]>([]);
@@ -257,10 +259,17 @@ export function CardsScreen() {
           const bal = c.balanceUsd ?? c.balance;
           return (
             <Card key={id} style={styles.cardVisual}>
+              <ProximCardFace
+                last4={c.last4}
+                expiryMonth={c.expiryMonth}
+                expiryYear={c.expiryYear}
+                holderName={(isBiz ? user?.bizSenderName : user?.senderName) || user?.senderName}
+                frozen={isFrozen}
+              />
               <View style={styles.cardTop}>
                 <View>
-                  <Text style={styles.cardBrand}>{(c.brand || "USD VIRTUAL").toUpperCase()}</Text>
                   <Text style={styles.cardTitle}>{c.name || c.card_name || "Proxim Card"}</Text>
+                  <Text style={styles.cardLabel}>{String(c.brand || "Virtual USD card")}</Text>
                 </View>
                 <Pill
                   label={isFrozen ? "Frozen" : String(c.status || "Active")}
@@ -268,8 +277,6 @@ export function CardsScreen() {
                   tone={isFrozen ? "danger" : "primary"}
                 />
               </View>
-
-              <Text style={styles.cardDigits}>••••  ••••  ••••  {c.last4 || "••••"}</Text>
 
               <View style={styles.cardFooter}>
                 <View>
@@ -301,7 +308,7 @@ export function CardsScreen() {
 
       {/* Top-up Modal */}
       <Modal visible={Boolean(topupCardId)} transparent animationType="slide" onRequestClose={() => setTopupCardId(null)}>
-        <View style={styles.modalBackdrop}>
+        <KeyboardSafe style={styles.modalBackdrop}>
           <View style={styles.modalSheet}>
             <Text style={styles.modalTitle}>Top Up Card</Text>
             <Input
@@ -314,12 +321,12 @@ export function CardsScreen() {
             <Button title="Quote & approve top-up" onPress={handleTopup} />
             <Button title="Cancel" variant="ghost" onPress={() => setTopupCardId(null)} style={{ marginTop: 8 }} />
           </View>
-        </View>
+        </KeyboardSafe>
       </Modal>
 
       {/* Revealed Card Details Modal */}
       <Modal visible={Boolean(revealed)} transparent animationType="fade" onRequestClose={() => setRevealed(null)}>
-        <View style={styles.modalBackdrop}>
+        <KeyboardSafe style={styles.modalBackdrop}>
           <View style={styles.modalSheet}>
             <Text style={styles.modalTitle}>Sensitive Card Details</Text>
             {revealed ? (
@@ -342,12 +349,12 @@ export function CardsScreen() {
             ) : null}
             <Button title="Hide details" onPress={() => setRevealed(null)} style={{ marginTop: 14 }} />
           </View>
-        </View>
+        </KeyboardSafe>
       </Modal>
 
       {/* Card Transactions Modal */}
       <Modal visible={cardTxs !== null} transparent animationType="slide" onRequestClose={() => setCardTxs(null)}>
-        <View style={styles.modalBackdrop}>
+        <KeyboardSafe style={styles.modalBackdrop}>
           <View style={styles.modalSheet}>
             <Text style={styles.modalTitle}>Card Activity</Text>
             <ScrollView style={{ maxHeight: 360 }}>
@@ -366,7 +373,7 @@ export function CardsScreen() {
             </ScrollView>
             <Button title="Close" variant="ghost" onPress={() => setCardTxs(null)} style={{ marginTop: 10 }} />
           </View>
-        </View>
+        </KeyboardSafe>
       </Modal>
     </ScrollView>
   );
@@ -377,32 +384,23 @@ const styles = StyleSheet.create({
   content: { padding: SPACING.md, paddingBottom: 32 },
   pillRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 14 },
   cardVisual: {
-    backgroundColor: COLORS.surfaceElevated,
-    borderColor: COLORS.borderStrong,
+    gap: 4,
   },
   cardTop: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "flex-start",
-    marginBottom: 16,
+    alignItems: "center",
+    marginTop: 8,
+    marginBottom: 12,
   },
-  cardBrand: { color: COLORS.primary, fontSize: 11, fontWeight: "800", letterSpacing: 1 },
-  cardTitle: { color: COLORS.text, fontSize: 17, fontWeight: "700", marginTop: 2 },
-  cardDigits: {
-    color: COLORS.text,
-    fontSize: 18,
-    fontWeight: "600",
-    letterSpacing: 2,
-    marginBottom: 16,
-    fontFamily: "monospace",
-  },
+  cardTitle: { color: COLORS.text, fontSize: 17, fontFamily: FONTS.bold, marginTop: 2 },
   cardFooter: {
     flexDirection: "row",
     justifyContent: "space-between",
     marginBottom: 14,
   },
-  cardLabel: { color: COLORS.textMuted, fontSize: 11 },
-  cardBal: { color: COLORS.text, fontSize: 16, fontWeight: "700", marginTop: 2 },
+  cardLabel: { color: COLORS.textMuted, fontFamily: FONTS.regular, fontSize: 11 },
+  cardBal: { color: COLORS.text, fontSize: 16, fontFamily: FONTS.bold, marginTop: 2 },
   actionsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.75)", justifyContent: "flex-end" },
   modalSheet: {
@@ -413,5 +411,5 @@ const styles = StyleSheet.create({
     borderColor: COLORS.borderStrong,
     padding: SPACING.lg,
   },
-  modalTitle: { color: COLORS.text, fontSize: 18, fontWeight: "700", marginBottom: 14 },
+  modalTitle: { color: COLORS.text, fontSize: 18, fontFamily: FONTS.bold, marginBottom: 14 },
 });

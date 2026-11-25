@@ -1,36 +1,30 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
-  FlatList,
-  Image,
-  Modal,
+  Alert,
+  SectionList,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   Text,
   View,
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { Ionicons } from "@expo/vector-icons";
-import { api, getAccessToken } from "../api/client";
+import { api } from "../api/client";
 import type { TransactionItem, UnifiedBalance } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, DEPTH, RADIUS, SPACING } from "../theme";
+import { BALANCE_GRADIENT, COLORS, DEPTH, HERO, RADIUS, SPACING, TYPE } from "../theme";
 import {
-  Button,
-  Card,
   EmptyState,
   ErrorBanner,
   formatNgn,
   formatRawTxAmount,
   formatUsdc,
-  KeyValueRow,
-  SectionHeader,
-  shortAddr,
   SuccessBanner,
 } from "../components/UI";
 import { CurrencyLogo } from "../components/CurrencyLogo";
 import { PressableScale } from "../components/Touch";
+import { groupByDay, SkeletonRows, TxDetailSheet, TxRow } from "../components/Activity";
 
 export type HomeModalTarget =
   | "add"
@@ -41,31 +35,98 @@ export type HomeModalTarget =
   | "swap"
   | "assistant"
   | "global"
-  | "kyc";
+  | "kyc"
+  | "notifications";
 
-function friendlyTxKind(rawType: string): string {
-  const t = String(rawType || "").toLowerCase();
-  if (/deposit|onramp|receive|credit|claim|refund/.test(t)) return "Deposit";
-  if (/offramp|withdraw|payout|cashout/.test(t)) return "Withdrawal";
-  if (/bill/.test(t)) return "Bill Payment";
-  if (/card/.test(t)) return "Card";
-  if (/swap/.test(t)) return "Swap";
-  if (/saving|yield/.test(t)) return "Savings";
-  if (/transfer|p2p|send/.test(t)) return "Transfer";
-  return t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) || "Transaction";
+type IoniconName = keyof typeof Ionicons.glyphMap;
+
+// Canvas tile tones: [icon colour, tile background].
+const TONES = {
+  green: ["#047857", "rgba(16, 185, 129, 0.14)"],
+  neutral: ["#3F4A45", "rgba(14, 21, 18, 0.06)"],
+  violet: ["#6D28D9", "rgba(139, 92, 246, 0.12)"],
+  amber: ["#B45309", "rgba(245, 158, 11, 0.14)"],
+  teal: ["#0F766E", "rgba(20, 184, 166, 0.14)"],
+  blue: ["#1D4ED8", "rgba(59, 130, 246, 0.12)"],
+} as const;
+const AVATAR_TONES = [
+  ["#047857", "rgba(16, 185, 129, 0.14)"],
+  ["#1D4ED8", "rgba(59, 130, 246, 0.12)"],
+  ["#B45309", "rgba(245, 158, 11, 0.14)"],
+  ["#6D28D9", "rgba(139, 92, 246, 0.12)"],
+  ["#BE185D", "rgba(236, 72, 153, 0.12)"],
+  ["#0F766E", "rgba(20, 184, 166, 0.14)"],
+] as const;
+
+
+
+
+function greeting(): string {
+  const h = new Date().getHours();
+  if (h < 12) return "Good morning";
+  if (h < 17) return "Good afternoon";
+  return "Good evening";
 }
 
-export function HomeScreen({ onNavigate }: { onNavigate: (target: HomeModalTarget) => void }) {
-  const { user, activeAccount, dataVersion } = useApp();
+function initialsOf(name: string): string {
+  const parts = name.replace(/^@/, "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "P";
+  return (parts.length > 1 ? parts[0][0] + parts[parts.length - 1][0] : parts[0].slice(0, 2)).toUpperCase();
+}
+
+function Tile({ icon, tone, size = 44 }: { icon: IoniconName; tone: keyof typeof TONES; size?: number }) {
+  const [fg, bg] = TONES[tone];
+  return (
+    <View style={{ width: size, height: size, borderRadius: Math.round(size / 3), backgroundColor: bg, alignItems: "center", justifyContent: "center" }}>
+      <Ionicons name={icon} size={Math.round(size / 2)} color={fg} />
+    </View>
+  );
+}
+
+/** Canvas balance card background: a diagonal green gradient, drawn as fading bands (no native gradient module). */
+function GradientFill() {
+  const bands = 14;
+  return (
+    <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+      {Array.from({ length: bands }, (_, i) => (
+        <View
+          key={i}
+          style={{
+            position: "absolute",
+            left: "-30%",
+            width: "160%",
+            top: `${(i * 100) / bands - 20}%`,
+            height: `${100 / bands + 1}%`,
+            backgroundColor: BALANCE_GRADIENT.from,
+            opacity: Math.max(0, 1 - i / (bands - 3)),
+            transform: [{ rotate: "-16deg" }],
+          }}
+        />
+      ))}
+      <View style={styles.cardGlow} />
+    </View>
+  );
+}
+
+export function HomeScreen({
+  onNavigate,
+  onOpenProfile,
+  unread = 0,
+}: {
+  onNavigate: (target: HomeModalTarget) => void;
+  onOpenProfile?: () => void;
+  unread?: number;
+}) {
+  const { user, activeAccount, dataVersion, switchAccount, switchingAccount, requestApproval } = useApp();
   const [balance, setBalance] = useState<UnifiedBalance | null>(null);
-  const [fallbackNgnRate, setFallbackNgnRate] = useState<number | null>(null);
   const [transactions, setTransactions] = useState<TransactionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedMsg, setCopiedMsg] = useState<string | null>(null);
   const [selectedTx, setSelectedTx] = useState<TransactionItem | null>(null);
-  const [showReceiptImg, setShowReceiptImg] = useState(false);
+  const [hidden, setHidden] = useState(false);
+  const [fallbackNgnRate, setFallbackNgnRate] = useState<number | null>(null);
 
   const loadData = useCallback(
     async (isRefresh = false) => {
@@ -102,13 +163,18 @@ export function HomeScreen({ onNavigate }: { onNavigate: (target: HomeModalTarge
   const eurcBal = Number(balance?.arc?.eurc ?? 0);
   const pendingBridge = Number(balance?.pendingBridgeUsdc ?? 0);
   const totalUsdNum = Number(balance?.totalUsdc ?? 0);
-  const liveNgnRate = balance?.usdToNgnRate || fallbackNgnRate || null;
-  const totalNgnVal =
+  const ngnRate = balance?.usdToNgnRate || fallbackNgnRate || null;
+  const totalNgn =
     balance && typeof balance.totalNgn === "number"
       ? balance.totalNgn
-      : balance && liveNgnRate && Number.isFinite(totalUsdNum)
-        ? Math.round(totalUsdNum * liveNgnRate)
+      : balance && ngnRate && Number.isFinite(totalUsdNum)
+        ? Math.round(totalUsdNum * ngnRate)
         : null;
+  const displayName = isBiz
+    ? user?.bizSenderName || "Business"
+    : (user?.senderName || "").split(/\s+/)[0] || (user?.username ? `@${user.username}` : "there");
+  const avatarText = initialsOf(isBiz ? user?.bizSenderName || "Business" : user?.senderName || user?.username || "Proxim");
+  const [avFg, avBg] = AVATAR_TONES[[...avatarText].reduce((a, ch) => a + ch.charCodeAt(0), 0) % AVATAR_TONES.length];
 
   const copyText = async (label: string, val: string) => {
     await Clipboard.setStringAsync(val);
@@ -116,316 +182,216 @@ export function HomeScreen({ onNavigate }: { onNavigate: (target: HomeModalTarge
     setTimeout(() => setCopiedMsg(null), 2200);
   };
 
-  const quickActions: Array<{
-    key: HomeModalTarget;
-    label: string;
-    icon: keyof typeof Ionicons.glyphMap;
-  }> = [
-    { key: "add", label: "Add money", icon: "add-circle-outline" },
-    { key: "send", label: "Send", icon: "paper-plane-outline" },
-    { key: "bills", label: "Bills", icon: "receipt-outline" },
-    { key: "cards", label: "Cards", icon: "card-outline" },
-    { key: "savings", label: "Savings", icon: "trending-up-outline" },
-    { key: "swap", label: "Swap", icon: "swap-horizontal-outline" },
-  ];
-
-  const accessToken = getAccessToken();
-
-  const renderTxItem = ({ item: tx, index }: { item: TransactionItem; index: number }) => {
-    const isCredit = /receive|deposit|onramp|claim|refund|credit/i.test(tx.type);
-    const kindLabel = friendlyTxKind(tx.type);
-    return (
-      <PressableScale
-        onPress={() => {
-          setSelectedTx(tx);
-          setShowReceiptImg(false);
-        }}
-        depth={0.98}
-        style={[styles.txRow, index < transactions.length - 1 && styles.txDivider]}
-      >
-        <View
-          style={[
-            styles.txIcon,
-            { backgroundColor: isCredit ? COLORS.primaryMuted : COLORS.surfaceElevated },
-          ]}
-        >
-          <Ionicons
-            name={isCredit ? "arrow-down" : "arrow-up"}
-            size={16}
-            color={isCredit ? COLORS.primary : COLORS.text}
-          />
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.txTitle} numberOfLines={1}>
-            {tx.narration || kindLabel}
-          </Text>
-          <Text style={styles.txMeta} numberOfLines={1}>
-            {kindLabel} · {tx.status}
-            {tx.createdAt ? ` · ${tx.createdAt.slice(0, 16)}` : ""}
-          </Text>
-        </View>
-        <Text
-          style={[
-            styles.txAmount,
-            { color: isCredit ? COLORS.primary : COLORS.text },
-          ]}
-        >
-          {isCredit ? "+" : "-"}
-          {formatRawTxAmount(tx.amount, tx.decimals)}
-        </Text>
-      </PressableScale>
-    );
+  const toggleAccount = () => {
+    if (!user || switchingAccount) return;
+    const target = isBiz ? "personal" : "business";
+    if (target === "business" && !user.hasBusinessAccount) {
+      Alert.alert("Create a business account", "Set up a separate business balance next to your personal one?", [
+        { text: "Not now", style: "cancel" },
+        {
+          text: "Set it up",
+          onPress: async () => {
+            try {
+              await requestApproval("business.setup", {});
+              await switchAccount("business");
+            } catch (err) {
+              setError(err instanceof Error ? err.message : "Could not set up the business account.");
+            }
+          },
+        },
+      ]);
+      return;
+    }
+    switchAccount(target).catch((err) => setError(err instanceof Error ? err.message : "Could not switch account."));
   };
 
-  return (
-    <View style={styles.container}>
-      {/* Fixed Upper Section — never scrolls when browsing Activity */}
-      <View style={styles.topFixed}>
-        <ErrorBanner message={error} onDismiss={() => setError(null)} />
-        <SuccessBanner message={copiedMsg} onDismiss={() => setCopiedMsg(null)} />
+  const quickActions: Array<{ key: HomeModalTarget; label: string; icon: IoniconName; primary?: boolean; rotate?: boolean }> = [
+    { key: "add", label: "Add money", icon: "add", primary: true },
+    { key: "send", label: "Send", icon: "arrow-up", rotate: true },
+    { key: "bills", label: "Bills", icon: "receipt-outline" },
+    { key: "cards", label: "Cards", icon: "card-outline" },
+  ];
 
-        <Card style={[styles.balanceCard, isBiz && styles.bizBalanceCard]}>
-          <View style={styles.balTopRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.acctBadge, { color: isBiz ? COLORS.business : COLORS.primary }]}>
-                {isBiz ? "BUSINESS BALANCE" : "PERSONAL BALANCE"}
-              </Text>
-              <Text style={styles.senderSub} numberOfLines={1}>
-                {isBiz
-                  ? user?.bizSenderName || "Business Account"
-                  : user?.senderName || (user?.username ? `@${user.username}` : "Proxim Account")}
-              </Text>
-            </View>
-            <View style={styles.kycChip}>
-              <Text style={styles.kycChipText}>Tier {user?.kycTier ?? 0}</Text>
-            </View>
-          </View>
 
-          {loading && !balance ? (
-            <View style={styles.balLoading}>
-              <ActivityIndicator color={COLORS.primary} />
-              <Text style={styles.balLoadingText}>Loading live balance…</Text>
-            </View>
-          ) : (
-            <View style={styles.balanceStack}>
-              <View style={styles.amountRow}>
-                <View style={styles.primaryBalRow}>
-                  <CurrencyLogo code="USD" size={22} />
-                  <Text style={styles.totalAmount}>
-                    {balance ? formatUsdc(balance.totalUsdc) : "—"}
-                  </Text>
-                  <Text style={styles.currencyCode}>USD</Text>
-                </View>
-                {eurcBal > 0 ? (
-                  <View style={styles.extraChip}>
-                    <Text style={styles.extraChipText}>€{eurcBal.toFixed(2)} EURC</Text>
-                  </View>
-                ) : null}
-                {pendingBridge > 0 ? (
-                  <View style={[styles.extraChip, { borderColor: COLORS.businessBorder }]}>
-                    <Text style={[styles.extraChipText, { color: COLORS.business }]}>
-                      Pending {formatUsdc(pendingBridge)}
-                    </Text>
-                  </View>
-                ) : null}
-              </View>
+  const header = (
+    <View style={styles.topSection}>
+      <ErrorBanner message={error} onDismiss={() => setError(null)} />
+      <SuccessBanner message={copiedMsg} onDismiss={() => setCopiedMsg(null)} />
 
-              <View style={styles.ngnBalanceRow}>
-                <View style={styles.ngnBalanceLeft}>
-                  <CurrencyLogo code="NGN" size={18} />
-                  <Text style={styles.ngnBalanceValue}>
-                    {totalNgnVal !== null ? formatNgn(totalNgnVal) : "₦—"}
-                  </Text>
-                  <Text style={styles.ngnBalanceCode}>NGN</Text>
-                </View>
-                {liveNgnRate ? (
-                  <Text style={styles.fxRatePill}>
-                    $1 = ₦{Math.round(liveNgnRate).toLocaleString("en-NG")}
-                  </Text>
-                ) : null}
-              </View>
-            </View>
-          )}
-
-          {/* Verified NGN Account Number (replaces Web3 address on balance card) */}
-          {ngnAccount?.accountNumber ? (
-            <PressableScale
-              onPress={() => copyText("NGN account number", ngnAccount.accountNumber)}
-              style={styles.ngnRow}
-            >
-              <View style={{ flex: 1 }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                  <CurrencyLogo code="NGN" size={16} />
-                  <Text style={styles.ngnLabel}>
-                  NGN Account{ngnAccount.bankName ? ` · ${ngnAccount.bankName}` : ""}
-                  </Text>
-                </View>
-                <Text style={styles.ngnNumber}>{ngnAccount.accountNumber}</Text>
-              </View>
-              <View style={styles.copyBadge}>
-                <Ionicons name="copy-outline" size={14} color={COLORS.primary} />
-                <Text style={styles.copyBadgeText}>Copy</Text>
-              </View>
-            </PressableScale>
-          ) : isVerified ? (
-            <PressableScale onPress={() => onNavigate("global")} style={styles.ngnRow}>
-              <CurrencyLogo code="NGN" size={18} style={{ marginRight: 8 }} />
-              <Text style={[styles.ngnCta, { flex: 1 }]}>Get your dedicated NGN account number</Text>
-              <Ionicons name="chevron-forward" size={16} color={COLORS.primary} />
-            </PressableScale>
-          ) : (
-            <PressableScale onPress={() => onNavigate("kyc")} style={styles.ngnRow}>
-              <CurrencyLogo code="NGN" size={18} style={{ marginRight: 8 }} />
-              <Text style={[styles.ngnCta, { flex: 1 }]}>Verify ID to unlock your NGN account number</Text>
-              <Ionicons name="chevron-forward" size={16} color={COLORS.primary} />
-            </PressableScale>
-          )}
-        </Card>
-
-        {/* Quick Actions */}
-        <View style={styles.qaGrid}>
-          {quickActions.map((qa) => (
-            <PressableScale
-              key={qa.key}
-              onPress={() => onNavigate(qa.key)}
-              depth={0.92}
-              style={styles.qaItem}
-            >
-              <View style={styles.qaIconCircle}>
-                <Ionicons name={qa.icon} size={20} color={COLORS.primary} />
-              </View>
-              <Text style={styles.qaLabel}>{qa.label}</Text>
-            </PressableScale>
-          ))}
-        </View>
-
-        {/* Compact Assistant CTA */}
-        <PressableScale
-          onPress={() => onNavigate("assistant")}
-          depth={0.98}
-          style={styles.assistantBar}
-        >
-          <View style={styles.assistantIcon}>
-            <Ionicons name="sparkles" size={16} color={COLORS.primary} />
-          </View>
-          <Text style={styles.assistantTitle} numberOfLines={1}>
-            Ask Proxim Assistant
+      {/* Greeting row */}
+      <View style={styles.greetRow}>
+        <PressableScale onPress={onOpenProfile} depth={0.94} style={[styles.avatar, { backgroundColor: avBg }]}>
+          <Text style={[styles.avatarText, { color: avFg }]}>{avatarText}</Text>
+        </PressableScale>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.greetSub}>{greeting()}</Text>
+          <Text style={styles.greetName} numberOfLines={1}>
+            {displayName}
           </Text>
-          <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
+        </View>
+        <PressableScale onPress={() => onNavigate("assistant")} depth={0.92} style={styles.iconBtn} accessibilityLabel="Ask Proxim">
+          <Ionicons name="sparkles" size={22} color={COLORS.primary} />
+        </PressableScale>
+        <PressableScale
+          onPress={() => onNavigate("notifications")}
+          depth={0.92}
+          style={styles.iconBtn}
+          accessibilityLabel={unread ? `Notifications, ${unread} unread` : "Notifications"}
+        >
+          <Ionicons name="notifications-outline" size={22} color={COLORS.text} />
+          {unread > 0 ? <View style={styles.unreadDot} /> : null}
         </PressableScale>
       </View>
 
-      {/* Independently Scrollable Activity Segment */}
-      <View style={styles.activitySection}>
-        <SectionHeader
-          title={`${isBiz ? "Business" : "Personal"} Activity`}
-          right={
-            <Text style={styles.countText}>
-              {transactions.length} {transactions.length === 1 ? "item" : "items"}
-            </Text>
-          }
-        />
-
-        <View style={styles.activityCard}>
-          {loading && transactions.length === 0 ? (
-            <View style={styles.txLoading}>
-              <ActivityIndicator color={COLORS.primary} />
-            </View>
+      {/* Balance card */}
+      <View style={[styles.balanceCard, isBiz && { borderColor: COLORS.businessBorder }]}>
+        <GradientFill />
+        <PressableScale onPress={toggleAccount} depth={0.97} haptic="selection" style={styles.acctLabelRow}>
+          <Text style={[styles.acctLabel, isBiz && { color: "#F5B83D" }]}>
+            {isBiz ? "Business account" : "Personal account"}
+          </Text>
+          {switchingAccount ? (
+            <ActivityIndicator size="small" color={HERO.textSecondary} />
           ) : (
-            <FlatList
-              data={transactions}
-              keyExtractor={(item) => String(item.id)}
-              renderItem={renderTxItem}
-              showsVerticalScrollIndicator={true}
-              contentContainerStyle={
-                transactions.length === 0 ? { flexGrow: 1, justifyContent: "center" } : styles.txListContent
-              }
-              refreshControl={
-                <RefreshControl
-                  refreshing={refreshing}
-                  onRefresh={() => loadData(true)}
-                  tintColor={COLORS.primary}
-                />
-              }
-              ListEmptyComponent={
-                <EmptyState
-                  icon="wallet-outline"
-                  title="No transactions yet"
-                  subtitle={`Deposit funds into your ${isBiz ? "Business" : "Personal"} balance to get started.`}
-                />
-              }
-            />
+            <Ionicons name="chevron-forward" size={14} color={HERO.textSecondary} />
           )}
+        </PressableScale>
+
+        {loading && !balance ? (
+          <View style={styles.balLoading}>
+            <ActivityIndicator color={HERO.accent} />
+            <Text style={styles.balLoadingText}>Loading your balance…</Text>
+          </View>
+        ) : (
+          <View style={styles.amountRow}>
+            <Text style={styles.totalAmount} numberOfLines={1} adjustsFontSizeToFit>
+              {hidden ? "$••••" : balance ? formatUsdc(balance.totalUsdc) : "—"}
+            </Text>
+            <PressableScale
+              onPress={() => setHidden((h) => !h)}
+              haptic="selection"
+              style={styles.eyeBtn}
+              accessibilityLabel={hidden ? "Show balance" : "Hide balance"}
+            >
+              <Ionicons name={hidden ? "eye-off-outline" : "eye-outline"} size={20} color={HERO.textSecondary} />
+            </PressableScale>
+          </View>
+        )}
+
+        {balance ? (
+          <View style={styles.ngnValueRow}>
+            <View style={styles.ngnValueLeft}>
+              <CurrencyLogo code="NGN" size={20} />
+              <Text style={styles.ngnValue}>{hidden ? "₦••••" : totalNgn !== null ? formatNgn(totalNgn) : "₦—"}</Text>
+            </View>
+            {ngnRate ? <Text style={styles.rateText}>$1 = ₦{Math.round(ngnRate).toLocaleString("en-NG")}</Text> : null}
+          </View>
+        ) : null}
+
+        <View style={styles.chip}>
+          <Ionicons name="globe-outline" size={14} color={HERO.accent} />
+          <Text style={styles.chipText}>One balance, spend anywhere</Text>
         </View>
+        {!hidden && (eurcBal > 0 || pendingBridge > 0) ? (
+          <Text style={styles.extraLine}>
+            {[eurcBal > 0 ? `Includes €${eurcBal.toFixed(2)} in EURC` : null, pendingBridge > 0 ? `${formatUsdc(pendingBridge)} arriving` : null]
+              .filter(Boolean)
+              .join(" · ")}
+          </Text>
+        ) : null}
+
+        {/* Naira receiving account */}
+        {ngnAccount?.accountNumber ? (
+          <PressableScale onPress={() => copyText("Account number", ngnAccount.accountNumber)} depth={0.98} style={styles.ngnRow}>
+            <CurrencyLogo code="NGN" size={22} />
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.ngnLabel} numberOfLines={1}>
+                Naira account{ngnAccount.bankName ? ` · ${ngnAccount.bankName}` : ""}
+              </Text>
+              <Text style={styles.ngnNumber}>{ngnAccount.accountNumber}</Text>
+            </View>
+            <Ionicons name="copy-outline" size={18} color={HERO.accent} />
+          </PressableScale>
+        ) : (
+          <PressableScale onPress={() => onNavigate(isVerified ? "global" : "kyc")} depth={0.98} style={styles.ngnRow}>
+            <CurrencyLogo code="NGN" size={22} />
+            <Text style={[styles.ngnCta, { flex: 1 }]}>
+              {isVerified ? "Get your naira account number" : "Verify your ID to get a naira account"}
+            </Text>
+            <Ionicons name="chevron-forward" size={16} color={HERO.accent} />
+          </PressableScale>
+        )}
       </View>
 
-      {/* Transaction Detail & Receipt Modal */}
-      <Modal
-        visible={Boolean(selectedTx)}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setSelectedTx(null)}
-      >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalSheet}>
-            <Text style={styles.modalTitle}>Transaction Receipt</Text>
-            {selectedTx ? (
-              <ScrollView showsVerticalScrollIndicator={false}>
-                <KeyValueRow label="ID" value={`#${selectedTx.id}`} />
-                <KeyValueRow label="Account" value={selectedTx.accountType} />
-                <KeyValueRow label="Type" value={friendlyTxKind(selectedTx.type)} />
-                <KeyValueRow label="Status" value={selectedTx.status} />
-                <KeyValueRow
-                  label="Amount"
-                  value={formatRawTxAmount(selectedTx.amount, selectedTx.decimals)}
-                />
-                {selectedTx.narration ? (
-                  <KeyValueRow label="Note" value={selectedTx.narration} />
-                ) : null}
-                {selectedTx.txHash ? (
-                  <KeyValueRow
-                    label="Reference"
-                    value={shortAddr(selectedTx.txHash, 10, 8)}
-                    onCopy={() => copyText("Reference", selectedTx.txHash!)}
-                  />
-                ) : null}
-                {selectedTx.createdAt ? (
-                  <KeyValueRow label="Date" value={selectedTx.createdAt} />
-                ) : null}
+      {/* Quick actions */}
+      <View style={styles.qaRow}>
+        {quickActions.map((qa) => (
+          <PressableScale
+            key={qa.key}
+            onPress={() => onNavigate(qa.key)}
+            depth={0.92}
+            haptic={qa.primary ? "medium" : "light"}
+            style={styles.qaItem}
+          >
+            <View style={[styles.qaTile, qa.primary ? styles.qaTilePrimary : null]}>
+              <Ionicons
+                name={qa.icon}
+                size={24}
+                color={qa.primary ? COLORS.onPrimary : COLORS.primary}
+                style={qa.rotate ? { transform: [{ rotate: "45deg" }] } : undefined}
+              />
+            </View>
+            <Text style={styles.qaLabel}>{qa.label}</Text>
+          </PressableScale>
+        ))}
+      </View>
 
-                {showReceiptImg && accessToken ? (
-                  <View style={styles.receiptBox}>
-                    <Image
-                      source={{
-                        uri: api.getReceiptUrl(selectedTx.id),
-                        headers: {
-                          Authorization: `Bearer ${accessToken}`,
-                          "X-Proxim-Account": activeAccount,
-                        },
-                      }}
-                      style={styles.receiptImg}
-                      resizeMode="contain"
-                    />
-                  </View>
-                ) : (
-                  <Button
-                    title="Load Official Receipt Slip (PNG)"
-                    variant="secondary"
-                    onPress={() => setShowReceiptImg(true)}
-                    style={{ marginTop: 14 }}
-                  />
-                )}
-              </ScrollView>
-            ) : null}
-            <Button
-              title="Close"
-              variant="ghost"
-              onPress={() => setSelectedTx(null)}
-              style={{ marginTop: 10 }}
-            />
-          </View>
+      {/* Savings */}
+      <PressableScale onPress={() => onNavigate("savings")} depth={0.98} style={styles.rowCard}>
+        <Tile icon="server-outline" tone="teal" />
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text style={styles.rowTitle}>Savings</Text>
+          <Text style={styles.rowSub}>Earn on your dollars · withdraw anytime</Text>
         </View>
-      </Modal>
+        <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
+      </PressableScale>
+
+      <View style={styles.activityHead}>
+        <Text style={styles.activityTitle}>Recent activity</Text>
+        {transactions.length ? (
+          <Text style={styles.activityCount}>
+            {transactions.length} {transactions.length === 1 ? "item" : "items"}
+          </Text>
+        ) : null}
+      </View>
+    </View>
+  );
+
+  return (
+    <View style={styles.container}>
+      <SectionList
+        sections={loading && transactions.length === 0 ? [] : groupByDay(transactions)}
+        keyExtractor={(item) => String(item.id)}
+        renderItem={({ item }) => <TxRow tx={item} onPress={() => setSelectedTx(item)} />}
+        renderSectionHeader={({ section }) => <Text style={styles.dayHeader}>{section.title}</Text>}
+        stickySectionHeadersEnabled={false}
+        ListHeaderComponent={header}
+        ItemSeparatorComponent={() => <View style={styles.txGap} />}
+        contentContainerStyle={styles.listContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => loadData(true)} tintColor={COLORS.primary} />}
+        ListEmptyComponent={
+          loading ? (
+            <SkeletonRows />
+          ) : (
+            <View style={styles.emptyCard}>
+              <EmptyState icon="time-outline" title="No activity yet" subtitle="Money you add, send or receive shows up here." />
+            </View>
+          )
+        }
+      />
+
+      <TxDetailSheet tx={selectedTx} activeAccount={activeAccount} onClose={() => setSelectedTx(null)} />
     </View>
   );
 }
@@ -434,319 +400,301 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.bg,
-    paddingHorizontal: SPACING.md,
-    paddingTop: SPACING.sm,
   },
-  topFixed: {
-    flexShrink: 0,
+  listContent: {
+    paddingHorizontal: SPACING.md,
+    paddingTop: 12,
+    paddingBottom: 24,
+  },
+  topSection: {
+    gap: 18,
+    marginBottom: 12,
+  },
+  greetRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  avatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarText: {
+    ...TYPE.bodyStrong,
+  },
+  greetSub: {
+    ...TYPE.label,
+    color: COLORS.textMuted,
+  },
+  greetName: {
+    ...TYPE.headline,
+    color: COLORS.text,
+  },
+  iconBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: COLORS.surface,
+    alignItems: "center",
+    justifyContent: "center",
+    ...DEPTH.raised,
+  },
+  unreadDot: {
+    position: "absolute",
+    top: 10,
+    right: 11,
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: COLORS.danger,
+    borderWidth: 1.5,
+    borderColor: COLORS.surface,
   },
   balanceCard: {
-    ...DEPTH.card,
-    shadowOpacity: 0.5,
-    shadowRadius: 24,
-    backgroundColor: COLORS.surface,
-    borderColor: COLORS.primaryBorder,
-    padding: SPACING.md,
-    marginBottom: 10,
-  },
-  bizBalanceCard: {
-    borderColor: COLORS.businessBorder,
-  },
-  balTopRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    marginBottom: 8,
-  },
-  acctBadge: {
-    fontSize: 10,
-    fontWeight: "800",
-    letterSpacing: 1,
-  },
-  senderSub: {
-    color: COLORS.textSecondary,
-    fontSize: 12,
-    marginTop: 1,
-  },
-  kycChip: {
-    backgroundColor: COLORS.surfaceElevated,
+    position: "relative",
+    overflow: "hidden",
+    borderRadius: RADIUS.xl,
+    paddingTop: 20,
+    paddingHorizontal: 22,
+    paddingBottom: 22,
+    backgroundColor: BALANCE_GRADIENT.to,
     borderWidth: 1,
-    borderColor: COLORS.borderStrong,
-    paddingHorizontal: 9,
-    paddingVertical: 3,
-    borderRadius: RADIUS.pill,
+    borderColor: BALANCE_GRADIENT.border,
+    gap: 6,
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 22 },
+    shadowOpacity: 0.6,
+    shadowRadius: 26,
+    elevation: 12,
   },
-  kycChipText: {
-    color: COLORS.text,
-    fontSize: 11,
-    fontWeight: "700",
+  cardGlow: {
+    position: "absolute",
+    right: -60,
+    top: -80,
+    width: 220,
+    height: 220,
+    borderRadius: 110,
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
+  },
+  acctLabelRow: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingVertical: 4,
+  },
+  acctLabel: {
+    ...TYPE.overline,
+    color: HERO.textSecondary,
   },
   balLoading: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    paddingVertical: 8,
+    height: 52,
   },
   balLoadingText: {
-    color: COLORS.textSecondary,
-    fontSize: 13,
-  },
-  balanceStack: {
-    marginBottom: 10,
-    gap: 6,
+    ...TYPE.label,
+    color: HERO.textSecondary,
   },
   amountRow: {
     flexDirection: "row",
     alignItems: "center",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  primaryBalRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+    gap: 10,
   },
   totalAmount: {
-    color: COLORS.text,
-    fontSize: 31,
-    fontWeight: "800",
-    letterSpacing: -0.8,
+    ...TYPE.xl,
+    color: HERO.text,
+    flexShrink: 1,
   },
-  currencyCode: {
-    color: COLORS.textMuted,
-    fontSize: 12,
-    fontWeight: "700",
-    marginTop: 4,
-  },
-  ngnBalanceRow: {
+  ngnValueRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 8,
+    marginBottom: 4,
   },
-  ngnBalanceLeft: {
+  ngnValueLeft: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 7,
+    gap: 8,
   },
-  ngnBalanceValue: {
-    color: COLORS.primary,
-    fontSize: 18,
-    fontWeight: "700",
-    letterSpacing: -0.2,
+  ngnValue: {
+    ...TYPE.title,
+    color: HERO.text,
   },
-  ngnBalanceCode: {
-    color: COLORS.textMuted,
-    fontSize: 11,
-    fontWeight: "700",
-    marginTop: 2,
+  rateText: {
+    ...TYPE.label,
+    color: HERO.textSecondary,
   },
-  fxRatePill: {
-    color: COLORS.textSecondary,
-    fontSize: 11,
-    fontWeight: "600",
+  eyeBtn: {
+    padding: 6,
   },
-  extraChip: {
-    backgroundColor: COLORS.bg,
+  chip: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: HERO.chip,
     borderRadius: RADIUS.pill,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
   },
-  extraChipText: {
-    color: COLORS.textSecondary,
-    fontSize: 11,
-    fontWeight: "600",
+  chipText: {
+    ...TYPE.label,
+    color: HERO.text,
+  },
+  extraLine: {
+    ...TYPE.label,
+    color: HERO.textSecondary,
   },
   ngnRow: {
+    marginTop: 10,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: COLORS.bg,
-    borderRadius: RADIUS.sm,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    gap: 8,
+    gap: 12,
+    backgroundColor: HERO.inset,
+    borderRadius: RADIUS.md,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
   ngnLabel: {
-    color: COLORS.textMuted,
-    fontSize: 11,
-    fontWeight: "600",
+    ...TYPE.label,
+    color: HERO.textSecondary,
   },
   ngnNumber: {
-    color: COLORS.text,
-    fontSize: 14,
-    fontWeight: "700",
-    letterSpacing: 0.6,
-    marginTop: 1,
+    ...TYPE.bodyStrong,
+    color: HERO.text,
+    letterSpacing: 1,
   },
   ngnCta: {
-    color: COLORS.primary,
-    fontSize: 12,
-    fontWeight: "600",
-    flex: 1,
+    ...TYPE.label,
+    color: HERO.accent,
   },
-  copyBadge: {
+  qaRow: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    backgroundColor: COLORS.primaryMuted,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: RADIUS.pill,
-  },
-  copyBadgeText: {
-    color: COLORS.primary,
-    fontSize: 11,
-    fontWeight: "700",
-  },
-  qaGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
     justifyContent: "space-between",
-    rowGap: 8,
-    marginBottom: 10,
   },
   qaItem: {
-    width: "31.5%",
-    backgroundColor: COLORS.surface,
-    borderRadius: RADIUS.md,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingVertical: 10,
+    width: 76,
     alignItems: "center",
-    gap: 5,
+    gap: 8,
   },
-  qaIconCircle: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: COLORS.primaryMuted,
+  qaTile: {
+    width: 60,
+    height: 60,
+    borderRadius: 20,
+    backgroundColor: COLORS.surface,
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 1,
-    borderColor: COLORS.primaryBorder,
     ...DEPTH.raised,
   },
-  qaLabel: {
-    color: COLORS.text,
-    fontSize: 11,
-    fontWeight: "700",
+  qaTilePrimary: {
+    backgroundColor: COLORS.primary,
+    ...DEPTH.glow,
   },
-  assistantBar: {
+  qaLabel: {
+    ...TYPE.label,
+    color: COLORS.text,
+  },
+  rowCard: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    backgroundColor: COLORS.surface,
-    borderRadius: RADIUS.md,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    marginBottom: 10,
-  },
-  assistantIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: COLORS.primaryMuted,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  assistantTitle: {
-    color: COLORS.text,
-    fontSize: 13,
-    fontWeight: "700",
-    flex: 1,
-  },
-  activitySection: {
-    flex: 1,
-    minHeight: 160,
-    paddingBottom: 8,
-  },
-  activityCard: {
-    flex: 1,
-    backgroundColor: COLORS.surface,
+    gap: 12,
+    padding: 14,
     borderRadius: RADIUS.lg,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    overflow: "hidden",
+    backgroundColor: COLORS.surface,
+    ...DEPTH.card,
   },
-  txListContent: {
-    paddingHorizontal: SPACING.md,
-    paddingVertical: 4,
+  rowTitle: {
+    ...TYPE.bodyStrong,
+    color: COLORS.text,
   },
-  countText: {
-    color: COLORS.textMuted,
-    fontSize: 12,
+  rowSub: {
+    ...TYPE.label,
+    color: COLORS.textSecondary,
   },
-  txLoading: {
-    flex: 1,
+  activityHead: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+    justifyContent: "space-between",
+    marginTop: 4,
+  },
+  activityTitle: {
+    ...TYPE.headline,
+    color: COLORS.text,
+  },
+  activityCount: {
+    ...TYPE.label,
+    color: COLORS.textMuted,
   },
   txRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    paddingVertical: 11,
+    gap: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderRadius: RADIUS.md,
+    backgroundColor: COLORS.surface,
   },
-  txDivider: {
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+  dayHeader: {
+    ...TYPE.overline,
+    color: COLORS.textMuted,
+    marginTop: 10,
+    marginBottom: 8,
   },
-  txIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    alignItems: "center",
-    justifyContent: "center",
+  txGap: {
+    height: 6,
   },
   txTitle: {
+    ...TYPE.bodyStrong,
     color: COLORS.text,
-    fontSize: 13,
-    fontWeight: "600",
-    textTransform: "capitalize",
   },
   txMeta: {
-    color: COLORS.textMuted,
-    fontSize: 11,
-    marginTop: 2,
+    ...TYPE.label,
+    color: COLORS.textSecondary,
   },
   txAmount: {
-    fontSize: 13,
-    fontWeight: "700",
+    ...TYPE.bodyStrong,
+  },
+  emptyCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.lg,
   },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.75)",
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
     justifyContent: "flex-end",
   },
   modalSheet: {
     backgroundColor: COLORS.surface,
     borderTopLeftRadius: RADIUS.xl,
     borderTopRightRadius: RADIUS.xl,
-    borderTopWidth: 1,
-    borderColor: COLORS.borderStrong,
     padding: SPACING.lg,
+    paddingTop: 10,
     maxHeight: "88%",
   },
+  sheetHandle: {
+    alignSelf: "center",
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: COLORS.border,
+    marginBottom: 14,
+  },
   modalTitle: {
+    ...TYPE.title,
     color: COLORS.text,
-    fontSize: 18,
-    fontWeight: "700",
-    marginBottom: 12,
+    marginBottom: 8,
   },
   receiptBox: {
-    marginTop: 14,
+    marginTop: 16,
     borderRadius: RADIUS.md,
     overflow: "hidden",
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    backgroundColor: COLORS.bg,
+    backgroundColor: COLORS.page,
   },
   receiptImg: {
     width: "100%",

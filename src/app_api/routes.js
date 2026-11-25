@@ -537,12 +537,37 @@ async function transactions(req, url) {
   const accountType = rawAccount === "all"
     ? null
     : (rawAccount || auth.accountHeader ? resolveAccountType(auth, rawAccount) : null);
-  const rows = dep("db").getTransactions(auth.telegramId, limit, accountType);
+  const db = dep("db");
+  const rows = db.getTransactions(auth.telegramId, limit, accountType);
+  // Bank payouts: show who was paid, the naira amount and where the payout stands.
+  const payoutInfo = (t) => {
+    if (!/offramp|payout|withdraw/i.test(String(t.type || "")) || !t.tx_hash || typeof db.getOfframpOrderByOrderId !== "function") return null;
+    try {
+      const o = db.getOfframpOrderByOrderId(t.tx_hash);
+      if (!o || Number(o.telegram_id) !== Number(auth.telegramId)) return null;
+      const s = String(o.status || "").toLowerCase();
+      const payoutStatus = /complete|success|paid|settled/.test(s) ? "paid" : /fail|reject|refund|cancel|expire/.test(s) ? "failed" : "processing";
+      const acct = String(o.account_number || "");
+      return {
+        counterparty: {
+          name: o.account_name || null,
+          detail: [o.bank_name, acct ? `••${acct.slice(-2)}` : null].filter(Boolean).join(" "),
+        },
+        fiatAmount: o.fiat_amount != null ? Number(o.fiat_amount) : null,
+        fiatCurrency: "NGN",
+        payoutStatus,
+        payoutUpdatedAt: o.completed_at || o.updated_at || null,
+      };
+    } catch (_) {
+      return null;
+    }
+  };
   return {
     status: 200,
     data: {
       accountType: accountType || "all",
       transactions: rows.map((t) => ({
+        ...(payoutInfo(t) || {}),
         id: t.id,
         type: t.type,
         status: t.status,
@@ -805,6 +830,20 @@ const ROUTES = [
   ["GET", "/transactions/statement.csv", (req, url) => features.exportStatementCsv(authenticate(req), url)],
   ["GET", "/devices", devices],
   ["POST", "/push/register", pushRegister],
+  // In-app notification inbox (works with or without push).
+  ["GET", "/notifications", (req, url) => {
+    const auth = authenticate(req);
+    const data = require("./inbox").listNotifications(auth.telegramId, {
+      limit: url.searchParams.get("limit"),
+      afterId: url.searchParams.get("after"),
+    });
+    return { status: 200, data };
+  }],
+  ["POST", "/notifications/read", (req, body) => {
+    const auth = authenticate(req);
+    const changed = require("./inbox").markRead(auth.telegramId, Array.isArray(body?.ids) ? body.ids : null);
+    return { status: 200, data: { success: true, marked: changed } };
+  }],
 
   // Passkey + PIN money actions (and legacy /transfers alias)
   ["POST", "/actions/confirm", actionConfirm],
@@ -954,7 +993,27 @@ const PARAM_ROUTES = [
   ["POST", /^\/actions\/([a-z0-9._-]+)\/intent$/, (req, body, m) => actionIntent(req, body, m[1])],
   ["POST", /^\/devices\/([A-Za-z0-9_-]{16,128})\/revoke\/intent$/, (req, body, m) => deviceRevokeIntent(req, body, m[1])],
   ["POST", /^\/devices\/([A-Za-z0-9_-]{16,128})\/revoke$/, (req, body, m) => deviceRevoke(req, body, m[1])],
-  ["GET", /^\/transactions\/(\d+)\/receipt$/, (req, _arg, m) => features.getTransactionReceipt(authenticate(req), m[1])],
+  ["GET", /^\/transactions\/(\d+)\/receipt$/, (req, url, m) => features.getTransactionReceipt(authenticate(req), m[1], { download: url.searchParams.get("download") === "1" })],
+  // A 10-minute signed link to the receipt, for builds that open it in the browser.
+  ["POST", /^\/transactions\/(\d+)\/receipt-link$/, (req, _body, m) => {
+    const auth = authenticate(req);
+    rateLimit(`receipt-link:${auth.telegramId}`, 30, 60 * 1000);
+    const txId = Number(m[1]);
+    const owned = dep("db").db.prepare("SELECT id FROM transactions WHERE id = ? AND telegram_id = ?").get(txId, Number(auth.telegramId));
+    if (!owned) throw new HttpError(404, "not_found", "Transaction not found.");
+    const { u, e, s } = tokens.signReceiptLink(auth.telegramId, txId);
+    return { status: 200, data: { path: `/receipts/${txId}?u=${u}&e=${e}&s=${encodeURIComponent(s)}`, expiresInSec: 600 } };
+  }],
+  ["GET", /^\/receipts\/(\d+)$/, (req, url, m) => {
+    rateLimit(`receipt-open:${clientIp(req)}`, 60, 60 * 1000);
+    const u = url.searchParams.get("u");
+    if (!tokens.verifyReceiptLink(u, m[1], url.searchParams.get("e"), url.searchParams.get("s"))) {
+      throw new HttpError(403, "link_expired", "This receipt link has expired. Open the receipt again from the app.");
+    }
+    const user = dep("db").getUser(Number(u));
+    if (!user) throw new HttpError(404, "not_found", "Transaction not found.");
+    return features.getTransactionReceipt({ telegramId: Number(u), user }, m[1], { download: true });
+  }],
   ["DELETE", /^\/contacts\/([^/]+)$/, (req, _arg, m) => features.deleteContact(authenticate(req), m[1])],
   ["GET", /^\/deposits\/ngn\/([^/]+)$/, (req, _arg, m) => features.getNgnDepositStatus(authenticate(req), m[1])],
   ["GET", /^\/deposits\/crypto\/(\d+)$/, (req, _arg, m) => features.getCryptoDepositStatus(authenticate(req), m[1])],

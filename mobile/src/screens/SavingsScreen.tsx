@@ -3,7 +3,7 @@ import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View }
 import { api } from "../api/client";
 import type { SavingsOverview } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, SPACING } from "../theme";
+import { COLORS, SPACING, FONTS } from "../theme";
 import {
   Button,
   Card,
@@ -117,20 +117,26 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
         ) : (
           <>
             <Card>
-              <SectionHeader title={`${isBiz ? "Business" : "Personal"} Active Position`} />
+              <SectionHeader title={`${isBiz ? "Business" : "Personal"} savings`} />
               {savings?.position ? (
                 <>
                   <Text style={styles.bigVal}>{formatUsdc(savings.position.principalUsdc)}</Text>
                   <KeyValueRow
-                    label="Earned Yield"
+                    label="Earned so far"
                     value={`+${formatUsdc(savings.position.accruedYieldUsdc, 4)}`}
                   />
                   <KeyValueRow
-                    label="Current APY"
-                    value={savings.position.apy > 0 ? `${savings.position.apy.toFixed(2)}%` : "Live variable"}
+                    label="Rate when you saved"
+                    value={(savings.position.apyAtDeposit ?? savings.position.apy) > 0
+                      ? `${(savings.position.apyAtDeposit ?? savings.position.apy).toFixed(2)}% a year`
+                      : "Variable"}
                   />
+                  {savings.position.currentApy != null && savings.position.currentApy > 0 ? (
+                    <KeyValueRow label="Rate today" value={`${savings.position.currentApy.toFixed(2)}% a year`} />
+                  ) : null}
+                  {savings.position.isAutoEarn ? <KeyValueRow label="Added by" value="Auto-save (idle balance)" /> : null}
                   <Button
-                    title="Withdraw All Savings"
+                    title="Move all to balance"
                     variant="secondary"
                     onPress={handleWithdraw}
                     loading={submitting}
@@ -141,19 +147,19 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
                 <EmptyState
                   icon="trending-up-outline"
                   title="No active savings yet"
-                  subtitle="Earn live dollar yield on idle USDC and withdraw back to your main balance anytime."
+                  subtitle="Earn on your dollars and move them back to your balance anytime."
                 />
               )}
             </Card>
 
             {savings?.pools && savings.pools.length > 0 ? (
               <Card>
-                <SectionHeader title="Live Lending Vaults" />
+                <SectionHeader title="Rates today" />
                 {savings.pools.map((p, i) => (
                   <KeyValueRow
                     key={`${p.name}-${i}`}
-                    label={`${p.name} (${p.symbol})`}
-                    value={p.apy > 0 ? `${p.apy.toFixed(2)}% APY` : "Active"}
+                    label={p.name}
+                    value={p.apy > 0 ? `${p.apy.toFixed(2)}% a year` : "Active"}
                   />
                 ))}
               </Card>
@@ -162,12 +168,12 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
             <Card>
               <SectionHeader title="Deposit into Savings" />
               <Input
-                label="Amount (USDC)"
+                label="Amount (USD)"
                 placeholder="e.g. 50"
                 value={saveAmt}
                 onChangeText={(t) => setSaveAmt(t.replace(/[^\d.]/g, ""))}
                 keyboardType="decimal-pad"
-                hint="Minimum $1.00 USDC. Protected by Passkey + PIN."
+                hint="Minimum $1.00. Approved with your passkey and PIN."
               />
               <Button title="Review & Deposit" onPress={handleDeposit} loading={submitting} />
             </Card>
@@ -181,5 +187,5 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: COLORS.bg },
   content: { padding: SPACING.md, paddingBottom: 40 },
-  bigVal: { color: COLORS.text, fontSize: 34, fontWeight: "800", marginBottom: 10 },
+  bigVal: { color: COLORS.text, fontSize: 34, fontFamily: FONTS.extrabold, marginBottom: 10 },
 });

@@ -71,4 +71,23 @@ function issueSession({ telegramId, deviceId }) {
   return { accessToken, refreshToken, expiresIn };
 }
 
-module.exports = { issueAccessToken, verifyAccessToken, issueSession, getSecret };
+// Short-lived signed receipt links, so a receipt can open in a browser (no auth header)
+// on app builds that can't download and share the file themselves.
+function receiptSig(telegramId, txId, exp) {
+  return sign(`receipt:${Number(telegramId)}:${Number(txId)}:${Number(exp)}`);
+}
+
+function signReceiptLink(telegramId, txId, ttlSec = 10 * 60) {
+  const exp = Math.floor(Date.now() / 1000) + ttlSec;
+  return { u: String(Number(telegramId)), e: String(exp), s: receiptSig(telegramId, txId, exp) };
+}
+
+function verifyReceiptLink(u, txId, e, s) {
+  const exp = Number(e);
+  if (!Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000) || !/^-?\d+$/.test(String(u || ""))) return false;
+  const want = Buffer.from(receiptSig(u, txId, exp));
+  const got = Buffer.from(String(s || ""));
+  return want.length === got.length && crypto.timingSafeEqual(want, got);
+}
+
+module.exports = { issueAccessToken, verifyAccessToken, issueSession, getSecret, signReceiptLink, verifyReceiptLink };

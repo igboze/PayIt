@@ -11,6 +11,26 @@ const IDLE_HOURS = 2; // Funds sitting untouched for 2 hours start earning
 const MIN_AUTO_EARN_BALANCE = 5.0; // Minimum $5.00 to allocate to Auto-Earn
 const GAS_BUFFER_USDC = 0.5; // Retain $0.50 liquid buffer
 
+/** Tell the user (Telegram and app push) that money moved without them asking. Never throws. */
+async function tellUser(telegramId, title, html, data = {}) {
+  try {
+    await require("./notify").notify(Number(telegramId), { title, html, data });
+  } catch (err) {
+    console.warn(`[auto_earn] notify ${telegramId} failed:`, err.message);
+  }
+}
+
+function autoEarnMessage(amountUsdc, pool, accountType) {
+  const apy = Number(pool?.userApy ?? pool?.apy);
+  const where = accountType === "business" ? "business savings" : "savings";
+  const rate = Number.isFinite(apy) && apy > 0 ? ` about ${apy.toFixed(1)}% a year` : "";
+  return (
+    `🌱 <b>$${Number(amountUsdc).toFixed(2)} moved to your ${where}</b>\n` +
+    `Your balance was idle for ${IDLE_HOURS} hours, so it's now earning${rate}.\n` +
+    `It comes back to your balance automatically whenever you spend or send.`
+  );
+}
+
 /**
  * Scan for users whose funds have sat idle for >= 2 hours and allocate to Auto-Earn.
  *
@@ -71,6 +91,7 @@ async function checkAndRunAutoEarn(options = {}) {
               );
 
               allocatedCount++;
+              await tellUser(user.telegram_id, "Savings: your money is earning", autoEarnMessage(depositAmount, bestPool, "personal"), { type: "auto_earn_deposit", accountType: "personal" });
             } else {
               console.warn(`[auto_earn] Personal allocation failed for user ${user.telegram_id}:`, depositResult?.error || "Deposit failed");
             }
@@ -115,6 +136,7 @@ async function checkAndRunAutoEarn(options = {}) {
               );
 
               allocatedCount++;
+              await tellUser(user.telegram_id, "Business savings: your money is earning", autoEarnMessage(depositAmount, bestPool, "business"), { type: "auto_earn_deposit", accountType: "business" });
             } else {
               console.warn(`[auto_earn] Business allocation failed for user ${user.telegram_id}:`, depositResult?.error || "Deposit failed");
             }
@@ -188,6 +210,13 @@ async function ensureLiquidBalance({ userWallet, telegramId, requiredAmountMicro
       "confirmed",
       null,
       targetAccountType || "personal"
+    );
+
+    await tellUser(
+      telegramId,
+      "Savings moved to your balance",
+      `💸 <b>$${Number(withdrawResult.totalUserPayout).toFixed(2)} moved from savings to your balance</b>\nWe did this automatically so your payment could go through.`,
+      { type: "auto_earn_liquidate", accountType: targetAccountType || "personal" }
     );
 
     return {

@@ -2,6 +2,7 @@ import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
 import type {
+  AppNotification,
   AccountSummary,
   AccountType,
   ActionConfirmResponse,
@@ -246,6 +247,18 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
 // ─── Typed Endpoint Methods ───────────────────────────────────────────────────
 
 export const api = {
+  // In-app notification inbox.
+  listNotifications(afterId?: number) {
+    const qs = afterId ? `?after=${afterId}` : "";
+    return request<{ unread: number; notifications: AppNotification[] }>(`/notifications${qs}`);
+  },
+  markNotificationsRead(ids?: number[]) {
+    return request<{ success: boolean }>("/notifications/read", { method: "POST", body: ids ? { ids } : {} });
+  },
+  // Push notifications: the device token FCM gives this install.
+  async registerPush(pushToken: string) {
+    return request<{ success: boolean }>("/push/register", { method: "POST", body: { pushToken } });
+  },
   // Auth
   async signupStart(phone: string) {
     const dev = await getDeviceInfo();
@@ -351,6 +364,11 @@ export const api = {
   exportStatementCsv(limit = 500, account?: AccountType | "all") {
     const qs = `?limit=${limit}${account ? `&account=${encodeURIComponent(account)}` : ""}`;
     return request<string>(`/transactions/statement.csv${qs}`, { rawText: true });
+  },
+  /** Short-lived signed link that opens the receipt without the auth header. */
+  async getReceiptLink(txId: number) {
+    const res = await request<{ path: string; expiresInSec: number }>(`/transactions/${txId}/receipt-link`, { method: "POST", body: {} });
+    return `${API_BASE_URL}${res.path}`;
   },
   getReceiptUrl(txId: number) {
     return `${API_BASE_URL}/transactions/${txId}/receipt`;

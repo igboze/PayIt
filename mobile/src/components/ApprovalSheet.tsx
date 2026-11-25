@@ -1,11 +1,73 @@
 import React, { useEffect, useState } from "react";
 import { Modal, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
 import { api } from "../api/client";
 import { assertPasskey } from "../api/passkey";
 import { useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING } from "../theme";
-import { Button, ErrorBanner, Input, KeyValueRow } from "./UI";
+import { COLORS, RADIUS, SPACING, FONTS, TYPE } from "../theme";
+import type { ActionConfirmResponse, ActionIntentResponse } from "../api/types";
+import { Button, ErrorBanner, Input, KeyboardSafe, KeyValueRow, shortAddr } from "./UI";
+import { notifyHaptic } from "./Touch";
+
+// Actions that move money end on a success page instead of closing silently.
+const SUCCESS_HEADINGS: Record<string, string> = {
+  "transfer.user": "Money sent",
+  "transfer.wallet": "Money sent",
+  "payout.ngn": "Payout on its way",
+  "payout.global": "Payout on its way",
+  "withdraw.crypto": "Withdrawal started",
+  "bridge.move": "Transfer started",
+  "swap.execute": "Swap complete",
+  "bill.pay": "Bill paid",
+  "gift.create": "Gift link ready",
+  "payroll.run": "Payroll sent",
+  "savings.deposit": "Added to savings",
+  "savings.withdraw": "Moved to your balance",
+  "card.issue": "Card ready",
+  "card.topup": "Card topped up",
+  "card.unload": "Moved to your balance",
+};
+const isMoneyAction = (actionType: string) => actionType in SUCCESS_HEADINGS;
+const successHeading = (actionType: string) => SUCCESS_HEADINGS[actionType] || "Done";
+
+function SuccessView({ intent, res, onDone }: { intent: ActionIntentResponse; res: ActionConfirmResponse; onDone: () => void }) {
+  const reference = res.orderId || res.txHash || null;
+  return (
+    <View style={styles.sheet}>
+      <View style={styles.handle} />
+      <View style={styles.successTop}>
+        <View style={styles.successRing}>
+          <View style={styles.successDot}>
+            <Ionicons name="checkmark" size={38} color={COLORS.onPrimary} />
+          </View>
+        </View>
+        <Text style={styles.successHeading}>{successHeading(intent.actionType)}</Text>
+        <Text style={styles.successTitle}>{intent.summary.title}</Text>
+        {res.notice ? <Text style={styles.successNotice}>{res.notice}</Text> : null}
+      </View>
+      <ScrollView style={styles.body} showsVerticalScrollIndicator={false}>
+        <View style={styles.summaryBox}>
+          {(intent.summary.lines || []).map(([label, value], idx) => (
+            <KeyValueRow key={`${label}-${idx}`} label={label} value={value} />
+          ))}
+          {res.meterToken ? (
+            <KeyValueRow
+              currency={false}
+              label="Meter token"
+              value={String(res.meterToken)}
+              onCopy={() => Clipboard.setStringAsync(String(res.meterToken)).catch(() => {})}
+            />
+          ) : null}
+          {reference ? <KeyValueRow label="Reference" value={shortAddr(String(reference), 10, 6)} /> : null}
+        </View>
+      </ScrollView>
+      <View style={styles.footer}>
+        <Button title="Done" onPress={onDone} />
+      </View>
+    </View>
+  );
+}
 
 export function ApprovalSheet() {
   const { pendingApproval, dismissApproval, completeApproval } = useApp();
@@ -13,6 +75,7 @@ export function ApprovalSheet() {
   const [newPin, setNewPin] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<{ intent: ActionIntentResponse; res: ActionConfirmResponse } | null>(null);
 
   useEffect(() => {
     setPin("");
@@ -20,6 +83,16 @@ export function ApprovalSheet() {
     setError(null);
     setSubmitting(false);
   }, [pendingApproval?.intent.challengeId]);
+
+  if (success) {
+    return (
+      <Modal visible transparent animationType="fade" onRequestClose={() => setSuccess(null)}>
+        <KeyboardSafe style={styles.backdrop}>
+          <SuccessView intent={success.intent} res={success.res} onDone={() => setSuccess(null)} />
+        </KeyboardSafe>
+      </Modal>
+    );
+  }
 
   if (!pendingApproval) return null;
 
@@ -47,8 +120,13 @@ export function ApprovalSheet() {
         ...(isPinChange ? { newPin } : {}),
         ...(extraConfirmFields || {}),
       });
+      if (isMoneyAction(intent.actionType)) {
+        setSuccess({ intent, res });
+        notifyHaptic("success");
+      }
       completeApproval(res);
     } catch (err) {
+      notifyHaptic("error");
       setError(err instanceof Error ? err.message : "Approval failed.");
     } finally {
       setSubmitting(false);
@@ -64,7 +142,7 @@ export function ApprovalSheet() {
         if (!submitting) dismissApproval();
       }}
     >
-      <View style={styles.backdrop}>
+      <KeyboardSafe style={styles.backdrop}>
         <View style={styles.sheet}>
           <View style={styles.handle} />
           <View style={styles.headerRow}>
@@ -144,12 +222,55 @@ export function ApprovalSheet() {
             />
           </View>
         </View>
-      </View>
+      </KeyboardSafe>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
+  successTop: {
+    alignItems: "center",
+    gap: 6,
+    paddingTop: 8,
+    paddingBottom: 18,
+  },
+  successRing: {
+    width: 104,
+    height: 104,
+    borderRadius: 52,
+    backgroundColor: COLORS.primaryMuted,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
+  },
+  successDot: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: COLORS.primary,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: COLORS.primary,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 14,
+    elevation: 8,
+  },
+  successHeading: {
+    ...TYPE.display,
+    color: COLORS.text,
+    textAlign: "center",
+  },
+  successTitle: {
+    ...TYPE.body,
+    color: COLORS.textSecondary,
+    textAlign: "center",
+  },
+  successNotice: {
+    ...TYPE.label,
+    color: COLORS.successText,
+    textAlign: "center",
+  },
   backdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.72)",
@@ -193,20 +314,20 @@ const styles = StyleSheet.create({
   kicker: {
     color: COLORS.primary,
     fontSize: 11,
-    fontWeight: "700",
+    fontFamily: FONTS.bold,
     letterSpacing: 0.9,
   },
   title: {
     color: COLORS.text,
     fontSize: 18,
-    fontWeight: "700",
+    fontFamily: FONTS.bold,
     marginTop: 2,
   },
   body: {
     marginBottom: 14,
   },
   summaryBox: {
-    backgroundColor: COLORS.bg,
+    backgroundColor: COLORS.page,
     borderRadius: RADIUS.md,
     borderWidth: 1,
     borderColor: COLORS.border,
@@ -215,7 +336,7 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   payrollPreview: {
-    backgroundColor: COLORS.bg,
+    backgroundColor: COLORS.page,
     borderRadius: RADIUS.md,
     borderWidth: 1,
     borderColor: COLORS.border,
@@ -225,17 +346,17 @@ const styles = StyleSheet.create({
   subLabel: {
     color: COLORS.textSecondary,
     fontSize: 12,
-    fontWeight: "700",
+    fontFamily: FONTS.bold,
     marginBottom: 6,
   },
   payrollRow: {
     color: COLORS.text,
-    fontSize: 12,
+    fontFamily: FONTS.regular, fontSize: 12,
     lineHeight: 18,
   },
   payrollMore: {
     color: COLORS.textMuted,
-    fontSize: 12,
+    fontFamily: FONTS.regular, fontSize: 12,
     marginTop: 4,
   },
   footer: {

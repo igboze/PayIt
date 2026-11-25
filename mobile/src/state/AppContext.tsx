@@ -1,4 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { AppState } from "react-native";
+import { assertPasskey } from "../api/passkey";
 import {
   api,
   clearSessionTokens,
@@ -44,7 +46,13 @@ interface AppContextValue {
   pendingApproval: PendingApproval | null;
   dismissApproval: (err?: Error) => void;
   completeApproval: (res: ActionConfirmResponse) => void;
+  /** True while a returning user must confirm with their passkey before seeing anything. */
+  locked: boolean;
+  unlock: () => Promise<void>;
 }
+
+// Lock again after this long in the background.
+const RELOCK_AFTER_MS = 60 * 1000;
 
 const AppContext = createContext<AppContextValue | null>(null);
 
@@ -58,6 +66,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [dataVersion, setDataVersion] = useState(0);
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
   const pendingRef = useRef<PendingApproval | null>(null);
+  const [locked, setLocked] = useState(false);
+  const backgroundedAt = useRef<number | null>(null);
 
   const syncUser = useCallback((nextUser: ProximUser) => {
     const ctx: AccountType =
@@ -89,6 +99,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const { accessToken, refreshToken } = await loadStoredTokens();
         if (accessToken || refreshToken) {
           const res = await api.me();
+          // A returning user must unlock with their passkey before any balance shows.
+          setLocked(true);
           syncUser(res.user);
         }
       } catch {
@@ -100,10 +112,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     })();
   }, [syncUser]);
 
+  // Re-lock when the app comes back after a while in the background.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "background") {
+        backgroundedAt.current = Date.now();
+      } else if (state === "active") {
+        const since = backgroundedAt.current;
+        backgroundedAt.current = null;
+        if (since && Date.now() - since > RELOCK_AFTER_MS) setLocked(true);
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Unlock = a real passkey sign-in: the server checks the passkey and issues a fresh session.
+  const unlock = useCallback(async () => {
+    const start = await api.loginStart();
+    const response = await assertPasskey(start.options);
+    const res = await api.loginFinish(start.challengeId, response);
+    await saveSessionTokens(res.session);
+    syncUser(res.user);
+    setLocked(false);
+    setDataVersion((v) => v + 1);
+  }, [syncUser]);
+
   const signInWithSession = useCallback(
     async (nextUser: ProximUser, session: AuthSession) => {
       await saveSessionTokens(session);
       setSessionNotice(null);
+      setLocked(false); // they just proved it's them
       syncUser(nextUser);
       bumpDataVersion();
     },
@@ -118,6 +156,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
     await clearSessionTokens();
     setUser(null);
+    setLocked(false);
     setActiveAccount("personal");
     setActiveAccountHeader("personal");
     setOtherAccountBalanceUsdc(null);
@@ -201,6 +240,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         pendingApproval,
         dismissApproval,
         completeApproval,
+        locked: Boolean(user) && locked,
+        unlock,
       }}
     >
       {children}

@@ -51,7 +51,13 @@ async function sendPush(telegramId, { title, body, data = {} }) {
  * @param {{ title?: string, html: string, data?: object, telegramExtra?: object }} message
  */
 async function notify(telegramId, { title = "Proxim", html, data = {}, telegramExtra = {} }) {
-  const result = { telegram: false, push: 0 };
+  const result = { telegram: false, push: 0, inbox: false };
+  try {
+    require("./app_api/inbox").addNotification(telegramId, { title, body: stripHtml(html), data });
+    result.inbox = true;
+  } catch (err) {
+    console.warn(`[notify] inbox write for ${telegramId} failed:`, err.message);
+  }
   if (Number(telegramId) > 0 && _bot?.telegram) {
     try {
       await _bot.telegram.sendMessage(telegramId, html, { parse_mode: "HTML", ...telegramExtra });

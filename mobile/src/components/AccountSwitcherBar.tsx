@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { ActivityIndicator, Alert, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING } from "../theme";
+import { COLORS, RADIUS, SPACING, FONTS } from "../theme";
 import { formatUsdc } from "./UI";
 import { PressableScale } from "./Touch";
 
@@ -150,7 +150,7 @@ const styles = StyleSheet.create({
   segText: {
     color: COLORS.textSecondary,
     fontSize: 12,
-    fontWeight: "700",
+    fontFamily: FONTS.bold,
   },
   right: {
     flexDirection: "row",
@@ -168,7 +168,7 @@ const styles = StyleSheet.create({
   otherText: {
     color: COLORS.textSecondary,
     fontSize: 11,
-    fontWeight: "600",
+    fontFamily: FONTS.semibold,
   },
   aiBtn: {
     width: 34,

@@ -20,7 +20,7 @@ import type {
   SavingsOverview,
 } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, SPACING } from "../theme";
+import { COLORS, SPACING, FONTS } from "../theme";
 import {
   Button,
   Card,
@@ -423,7 +423,7 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
     >
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 14 }}>
         <View style={{ flexDirection: "row", gap: 8 }}>
-          <Pill label="Wallets" active={section === "accounts"} onPress={() => setSection("accounts")} />
+          <Pill label="Balances" active={section === "accounts"} onPress={() => setSection("accounts")} />
           <Pill label="Global Bank" active={section === "global"} onPress={() => setSection("global")} />
           <Pill
             label={isBiz ? "Business Tools" : "Invoices"}
@@ -488,12 +488,12 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
                 </View>
                 <KeyValueRow label="Verification" value={`${a.kycStatus} (Tier ${a.kycTier})`} />
                 <KeyValueRow
-                  label="Deposit Address (EVM)"
+                  label="Your dollar deposit address"
                   value={shortAddr(a.depositAddress, 8, 6)}
                   onCopy={a.depositAddress ? () => copy("Deposit address", a.depositAddress!) : undefined}
                 />
                 <KeyValueRow
-                  label="Solana Address"
+                  label="Your Solana deposit address"
                   value={shortAddr(a.solanaAddress, 8, 6)}
                   onCopy={a.solanaAddress ? () => copy("Solana address", a.solanaAddress!) : undefined}
                 />
@@ -503,7 +503,7 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
 
           {!user?.hasBusinessAccount ? (
             <Card>
-              <SectionHeader title="Open a Dedicated Business Wallet" />
+              <SectionHeader title="Open a business account" />
               <Text style={styles.muted}>
                 Keep business deposits, payouts, invoices, cards, and payroll strictly isolated from
                 your personal wallet.
@@ -702,7 +702,7 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
               <Card>
                 <SectionHeader title="Expenses" />
                 <Input label="Description" placeholder="Server hosting" value={expDesc} onChangeText={setExpDesc} />
-                <Input label="Amount (USDC)" placeholder="e.g. 45" value={expAmt} onChangeText={setExpAmt} keyboardType="decimal-pad" />
+                <Input label="Amount (USD)" placeholder="e.g. 45" value={expAmt} onChangeText={setExpAmt} keyboardType="decimal-pad" />
                 <Button title="Log Expense" variant="secondary" onPress={handleLogExpense} loading={loading} style={{ marginBottom: 12 }} />
                 {expenses.map((e) => (
                   <KeyValueRow key={e.id} currency={e.currency || false} label={`${e.description} (${e.category})`} value={`${e.amount} ${e.currency}`} />
@@ -733,14 +733,14 @@ const styles = StyleSheet.create({
   content: { padding: SPACING.md, paddingBottom: 36 },
   balDualBlock: { marginBottom: 10, gap: 4 },
   balRow: { flexDirection: "row", alignItems: "center", gap: 7 },
-  bigVal: { color: COLORS.text, fontSize: 28, fontWeight: "800" },
-  balCode: { color: COLORS.textMuted, fontSize: 12, fontWeight: "700", marginTop: 3 },
-  ngnVal: { color: COLORS.primary, fontSize: 16, fontWeight: "700" },
-  ngnCode: { color: COLORS.textMuted, fontSize: 11, fontWeight: "700", marginTop: 1 },
-  muted: { color: COLORS.textSecondary, fontSize: 12, lineHeight: 18, marginBottom: 10 },
+  bigVal: { color: COLORS.text, fontSize: 28, fontFamily: FONTS.extrabold },
+  balCode: { color: COLORS.textMuted, fontSize: 12, fontFamily: FONTS.bold, marginTop: 3 },
+  ngnVal: { color: COLORS.primary, fontSize: 16, fontFamily: FONTS.bold },
+  ngnCode: { color: COLORS.textMuted, fontSize: 11, fontFamily: FONTS.bold, marginTop: 1 },
+  muted: { color: COLORS.textSecondary, fontFamily: FONTS.regular, fontSize: 12, lineHeight: 18, marginBottom: 10 },
   pillWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 },
   subCard: {
-    backgroundColor: COLORS.bg,
+    backgroundColor: COLORS.page,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.border,

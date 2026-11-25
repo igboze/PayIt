@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Image, StyleProp, StyleSheet, Text, View, ViewStyle } from "react-native";
-import { COLORS } from "../theme";
+import { COLORS, FONTS } from "../theme";
 
 // Fiat currencies are shown with the issuing country's flag; EUR uses the EU flag.
 const FIAT_COUNTRY: Record<string, string> = {
@@ -76,7 +76,7 @@ export function CurrencyLogo({
   const country = FIAT_COUNTRY[c];
   return (
     <View style={[styles.frame, styles.fallback, box, style]} accessibilityElementsHidden importantForAccessibility="no">
-      <Text style={{ fontSize: country ? size * 0.7 : Math.max(9, Math.round(size * 0.36)), color: COLORS.primary, fontWeight: "800" }}>
+      <Text style={{ fontSize: country ? size * 0.7 : Math.max(9, Math.round(size * 0.36)), color: COLORS.primary, fontFamily: FONTS.extrabold }}>
         {country ? flagEmoji(country) : c.slice(0, 3) || "?"}
       </Text>
     </View>
@@ -118,5 +118,5 @@ const styles = StyleSheet.create({
   frame: { overflow: "hidden", backgroundColor: COLORS.surfaceElevated, alignItems: "center", justifyContent: "center" },
   fallback: { borderWidth: 1, borderColor: COLORS.primaryBorder, backgroundColor: COLORS.primaryMuted },
   tag: { flexDirection: "row", alignItems: "center", gap: 6 },
-  tagText: { fontWeight: "600" },
+  tagText: { fontFamily: FONTS.semibold },
 });

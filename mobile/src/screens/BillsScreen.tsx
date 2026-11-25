@@ -23,9 +23,11 @@ const CATEGORIES = ["airtime", "data", "electricity", "cable", "betting", "trans
 type BillCat = (typeof CATEGORIES)[number];
 
 interface ProviderOpt {
+  /** The id Airbills knows: network id (airtime), plan/package prodId, or disco electId. */
   code: string;
   name: string;
   price?: number;
+  networkId?: string;
 }
 
 function normalizeProviders(raw: unknown[]): ProviderOpt[] {
@@ -33,10 +35,12 @@ function normalizeProviders(raw: unknown[]): ProviderOpt[] {
     .map((item) => {
       if (typeof item === "string") return { code: item, name: item };
       const o = item as Record<string, unknown>;
-      const code = String(o.code || o.id || o.productCode || o.networkId || o.slug || o.name || "");
-      const name = String(o.name || o.label || o.title || code);
-      const price = o.price !== undefined ? Number(o.price) : o.amount !== undefined ? Number(o.amount) : undefined;
-      return { code, name, price: Number.isFinite(price) ? price : undefined };
+      const code = String(o.prodId || o.electId || o.id || o.code || o.networkId || "");
+      const name = String(o.description || o.name || o.label || o.title || code);
+      const rawPrice = o.prodAmount ?? o.price ?? o.amount;
+      const price = rawPrice !== undefined && rawPrice !== null ? Number(rawPrice) : undefined;
+      const networkId = o.networkId ? String(o.networkId) : undefined;
+      return { code, name, price: Number.isFinite(price) && (price as number) > 0 ? price : undefined, networkId };
     })
     .filter((p) => p.code);
 }
@@ -106,7 +110,9 @@ export function BillsScreen({ onBack }: { onBack: () => void }) {
       const res = await requestApproval("bill.pay", {
         accountType: activeAccount,
         category,
-        productCode: selected.code,
+        providerId: selected.code,
+        productCode: selected.code, // older servers read this
+        networkId: selected.networkId,
         providerName: selected.name,
         recipient: recipient.trim(),
         amountNgn: Number(amountNgn),

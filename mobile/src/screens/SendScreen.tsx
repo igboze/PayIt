@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Pressable, ScrollView, Share, StyleSheet, Text, View } from "react-native";
+import { BackHandler, Pressable, ScrollView, Share, StyleSheet, Text, View } from "react-native";
 import { api } from "../api/client";
 import type {
   BankItem,
@@ -12,7 +12,7 @@ import type {
   WithdrawalChain,
 } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING } from "../theme";
+import { COLORS, RADIUS, SPACING, FONTS } from "../theme";
 import {
   Button,
   Card,
@@ -26,6 +26,7 @@ import {
   shortAddr,
   SuccessBanner,
 } from "../components/UI";
+import { SendFlow } from "./SendFlow";
 
 type SendMode = "user" | "wallet" | "ngn" | "global" | "crypto";
 
@@ -41,7 +42,10 @@ export function SendScreen({
   const { activeAccount, requestApproval } = useApp();
   const isBiz = activeAccount === "business";
 
-  const [mode, setMode] = useState<SendMode>(initialMode);
+  const [mode, setMode] = useState<SendMode>(initialMode === "ngn" ? "global" : initialMode);
+  // The everyday sends (bank account, Proxim user) use the recipient-first flow; this screen
+  // keeps the less common ones: abroad, crypto wallets and gift links.
+  const [inFlow, setInFlow] = useState(!initialClaimToken && (initialMode === "ngn" || initialMode === "user"));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -280,6 +284,17 @@ export function SendScreen({
     }
   };
 
+  // Check the account name as soon as all 10 digits are in, without waiting for a tap.
+  useEffect(() => {
+    if (mode !== "ngn" || !selectedBank || !/^\d{10}$/.test(acctNumber.trim())) return;
+    if (resolvedAcct && resolvedAcct.accountNumber === acctNumber.trim()) return;
+    const t = setTimeout(() => {
+      handleResolveBank();
+    }, 250);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, selectedBank?.code, acctNumber]);
+
   const handlePayoutNgn = async () => {
     if (!selectedBank) {
       setError("Select a Nigerian bank.");
@@ -394,21 +409,42 @@ export function SendScreen({
     }
   };
 
+  // Android Back from abroad / wallet / gift returns to the main Send flow.
+  useEffect(() => {
+    if (inFlow || initialClaimToken) return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      setInFlow(true);
+      return true;
+    });
+    return () => sub.remove();
+  }, [inFlow, initialClaimToken]);
+
+  if (inFlow) {
+    return (
+      <SendFlow
+        onBack={onBack}
+        initialTab={initialMode === "user" ? "user" : "bank"}
+        onMore={(m) => {
+          setMode(m === "gift" ? "user" : m);
+          setInFlow(false);
+        }}
+      />
+    );
+  }
+
   return (
     <View style={styles.root}>
       <ScreenHeader
-        title="Send & Cash Out"
-        subtitle={`From ${isBiz ? "Business" : "Personal"} wallet · Passkey + PIN protected`}
-        onBack={onBack}
+        title={mode === "global" ? "Send abroad" : mode === "user" ? "Gift links" : "Send to a wallet"}
+        subtitle={`From your ${isBiz ? "business" : "personal"} balance`}
+        onBack={() => (initialClaimToken ? onBack() : setInFlow(true))}
       />
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <View style={styles.pillRow}>
-          <Pill label="Naira Bank" active={mode === "ngn"} onPress={() => setMode("ngn")} />
-          <Pill label="Proxim User" active={mode === "user"} onPress={() => setMode("user")} />
-          <Pill label="Global 27+" active={mode === "global"} onPress={() => setMode("global")} />
-          <Pill label="Crypto Wallet" active={mode === "wallet"} onPress={() => setMode("wallet")} />
-          <Pill label="Crypto Chains" active={mode === "crypto"} onPress={() => setMode("crypto")} />
+          <Pill label="Abroad" active={mode === "global"} onPress={() => setMode("global")} />
+          <Pill label="Wallet address" active={mode === "wallet" || mode === "crypto"} onPress={() => setMode("wallet")} />
+          <Pill label="Gift link" active={mode === "user"} onPress={() => setMode("user")} />
         </View>
 
         <ErrorBanner message={error} onDismiss={() => setError(null)} />
@@ -607,7 +643,7 @@ export function SendScreen({
 
         {mode === "wallet" ? (
           <Card>
-            <SectionHeader title="Withdraw USDC to EVM Wallet" />
+            <SectionHeader title="Send to a wallet address" />
             {contacts.filter((c) => c.walletAddress).length > 0 ? (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
                 <View style={{ flexDirection: "row", gap: 8 }}>
@@ -625,14 +661,14 @@ export function SendScreen({
               </ScrollView>
             ) : null}
             <Input
-              label="Recipient Wallet Address"
+              label="Wallet address"
               placeholder="0x..."
               value={walletAddr}
               onChangeText={setWalletAddr}
               autoCapitalize="none"
             />
             <Input
-              label="Amount (USDC)"
+              label="Amount (USD)"
               placeholder="e.g. 25"
               value={walletAmt}
               onChangeText={setWalletAmt}
@@ -645,6 +681,12 @@ export function SendScreen({
               onChangeText={setWalletNote}
             />
             <Button title="Review and approve" onPress={handleSendWallet} loading={loading} />
+            <Button
+              title="Sending on Solana, Base or another network?"
+              variant="ghost"
+              onPress={() => setMode("crypto")}
+              style={{ marginTop: 6 }}
+            />
           </Card>
         ) : null}
 
@@ -730,7 +772,7 @@ export function SendScreen({
           <>
             <Card>
               <SectionHeader
-                title="Withdraw to External Chain"
+                title="Send on another network"
                 right={feeUsd !== null ? <Text style={styles.rateTag}>Fee: ${feeUsd.toFixed(2)}</Text> : null}
               />
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
@@ -753,7 +795,7 @@ export function SendScreen({
                 autoCapitalize="none"
               />
               <Input
-                label="Amount (USDC)"
+                label="Amount (USD)"
                 placeholder="e.g. 20"
                 value={cryptoAmt}
                 onChangeText={setCryptoAmt}
@@ -762,48 +804,6 @@ export function SendScreen({
               <Button title="Review and approve withdrawal" onPress={handleCryptoWithdraw} loading={loading} />
             </Card>
 
-            <Card>
-              <SectionHeader title="Internal Transfer (Main ↔ Solana)" />
-              <View style={styles.pillRow}>
-                <Pill
-                  label="Main → Solana"
-                  active={bridgeDir === "arc_to_solana"}
-                  onPress={() => setBridgeDir("arc_to_solana")}
-                />
-                <Pill
-                  label="Solana → Main"
-                  active={bridgeDir === "solana_to_arc"}
-                  onPress={() => setBridgeDir("solana_to_arc")}
-                />
-              </View>
-              <Input
-                label="Amount (USDC)"
-                placeholder="e.g. 10"
-                value={bridgeAmt}
-                onChangeText={setBridgeAmt}
-                keyboardType="decimal-pad"
-              />
-              <Button title="Move between your wallets" variant="secondary" onPress={handleBridgeMove} loading={loading} />
-              {bridgeMoves && (bridgeMoves.arcToSolana.length > 0 || bridgeMoves.solanaToArc.length > 0) ? (
-                <View style={{ marginTop: 14 }}>
-                  <SectionHeader title="Recent Internal Transfers" />
-                  {bridgeMoves.arcToSolana.slice(0, 5).map((m, i) => (
-                    <KeyValueRow
-                      key={`a2s-${i}`}
-                      label={`Main → Solana (${String(m.status || "")})`}
-                      value={formatUsdc(Number(m.amountUsdc || 0))}
-                    />
-                  ))}
-                  {bridgeMoves.solanaToArc.slice(0, 5).map((m, i) => (
-                    <KeyValueRow
-                      key={`s2a-${i}`}
-                      label={`Solana → Main (${String(m.status || "")})`}
-                      value={formatUsdc(Number(m.amountUsdc || 0))}
-                    />
-                  ))}
-                </View>
-              ) : null}
-            </Card>
           </>
         ) : null}
       </ScrollView>
@@ -815,7 +815,7 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: COLORS.bg },
   content: { padding: SPACING.md, paddingBottom: 40 },
   pillRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: SPACING.md },
-  rateTag: { color: COLORS.primary, fontSize: 12, fontWeight: "700" },
+  rateTag: { color: COLORS.primary, fontSize: 12, fontFamily: FONTS.bold },
   verifiedBox: {
     backgroundColor: COLORS.primaryMuted,
     borderWidth: 1,
@@ -824,7 +824,7 @@ const styles = StyleSheet.create({
     padding: 10,
     marginBottom: 12,
   },
-  verifiedText: { color: "#A7F3D0", fontSize: 13, fontWeight: "600" },
+  verifiedText: { color: COLORS.successText, fontSize: 13, fontFamily: FONTS.semibold },
   giftHintBox: {
     backgroundColor: COLORS.businessMuted,
     borderWidth: 1,
@@ -833,7 +833,7 @@ const styles = StyleSheet.create({
     padding: 10,
     marginBottom: 12,
   },
-  giftHintText: { color: "#FDE68A", fontSize: 12, lineHeight: 18 },
+  giftHintText: { color: COLORS.warningText, fontFamily: FONTS.regular, fontSize: 12, lineHeight: 18 },
   listRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -842,7 +842,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
-  rowTitle: { color: COLORS.text, fontSize: 14, fontWeight: "600" },
-  rowSub: { color: COLORS.textSecondary, fontSize: 12 },
-  fieldHint: { color: COLORS.textSecondary, fontSize: 12, fontWeight: "600", marginBottom: 6 },
+  rowTitle: { color: COLORS.text, fontSize: 14, fontFamily: FONTS.semibold },
+  rowSub: { color: COLORS.textSecondary, fontFamily: FONTS.regular, fontSize: 12 },
+  fieldHint: { color: COLORS.textSecondary, fontSize: 12, fontFamily: FONTS.semibold, marginBottom: 6 },
 });

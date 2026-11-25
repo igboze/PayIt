@@ -1,6 +1,7 @@
 import React from "react";
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Pressable,
   StyleProp,
   StyleSheet,
@@ -11,7 +12,7 @@ import {
   ViewStyle,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { COLORS, DEPTH, RADIUS, SPACING } from "../theme";
+import { COLORS, DEPTH, RADIUS, SPACING, FONTS, TYPE } from "../theme";
 import { PressableScale } from "./Touch";
 import { CurrencyLogo, currencyInText } from "./CurrencyLogo";
 
@@ -107,12 +108,12 @@ export function Button({
       ]}
     >
       {loading ? (
-        <ActivityIndicator color={variant === "primary" ? COLORS.bg : COLORS.text} size="small" />
+        <ActivityIndicator color={variant === "primary" ? COLORS.onPrimary : COLORS.text} size="small" />
       ) : (
         <Text
           style={[
             styles.btnText,
-            variant === "primary" && { color: "#04120D" },
+            variant === "primary" && { color: COLORS.onPrimary },
             variant === "danger" && { color: COLORS.danger },
             variant === "ghost" && { color: COLORS.textSecondary },
           ]}
@@ -131,6 +132,9 @@ export function Input({
   ...props
 }: TextInputProps & { label?: string; hint?: string } & CurrencyProp) {
   const code = pickCurrency(currency, label);
+  // Secure fields (PINs) get a show/hide toggle so people can check what they typed.
+  const [reveal, setReveal] = React.useState(false);
+  const secure = Boolean(props.secureTextEntry);
   return (
     <View style={styles.inputWrap}>
       {label ? (
@@ -139,12 +143,26 @@ export function Input({
           <Text style={[styles.inputLabel, { marginBottom: 0 }]}>{label}</Text>
         </View>
       ) : null}
-      <TextInput
-        placeholderTextColor={COLORS.textMuted}
-        selectionColor={COLORS.primary}
-        {...props}
-        style={[styles.input, props.multiline && styles.inputMultiline, props.style]}
-      />
+      <View>
+        <TextInput
+          placeholderTextColor={COLORS.textMuted}
+          selectionColor={COLORS.primary}
+          {...props}
+          secureTextEntry={secure && !reveal}
+          style={[styles.input, props.multiline && styles.inputMultiline, secure && styles.inputSecure, props.style]}
+        />
+        {secure ? (
+          <Pressable
+            onPress={() => setReveal((r) => !r)}
+            hitSlop={10}
+            style={styles.revealBtn}
+            accessibilityRole="button"
+            accessibilityLabel={reveal ? "Hide PIN" : "Show PIN"}
+          >
+            <Ionicons name={reveal ? "eye-off-outline" : "eye-outline"} size={22} color={COLORS.textSecondary} />
+          </Pressable>
+        ) : null}
+      </View>
       {hint ? <Text style={styles.inputHint}>{hint}</Text> : null}
     </View>
   );
@@ -169,14 +187,14 @@ export function Pill({
       ? COLORS.businessMuted
       : tone === "danger"
       ? COLORS.dangerMuted
-      : COLORS.primaryMuted
-    : COLORS.surfaceElevated;
+      : COLORS.deep
+    : "transparent";
   const borderColor = active
     ? tone === "business"
       ? COLORS.businessBorder
       : tone === "danger"
       ? COLORS.dangerBorder
-      : COLORS.primaryBorder
+      : COLORS.primary
     : COLORS.border;
   const textColor = active
     ? tone === "business"
@@ -236,7 +254,7 @@ export function ScreenHeader({
       <View style={styles.screenHeaderLeft}>
         {onBack ? (
           <Pressable onPress={onBack} hitSlop={10} style={styles.backBtn}>
-            <Ionicons name="chevron-back" size={22} color={COLORS.text} />
+            <Ionicons name="chevron-back" size={24} color={COLORS.text} />
           </Pressable>
         ) : null}
         <View style={{ flex: 1 }}>
@@ -341,13 +359,13 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderRadius: RADIUS.lg,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: "transparent",
     padding: SPACING.md,
     marginBottom: SPACING.md,
     ...DEPTH.card,
   },
   btn: {
-    height: 48,
+    height: 56,
     borderRadius: RADIUS.md,
     alignItems: "center",
     justifyContent: "center",
@@ -356,14 +374,14 @@ const styles = StyleSheet.create({
   btnPrimary: {
     backgroundColor: COLORS.primary,
     borderWidth: 1,
-    borderColor: COLORS.primaryDark,
+    borderColor: COLORS.primary,
     borderTopColor: "rgba(255, 255, 255, 0.35)",
     ...DEPTH.glow,
   },
   btnSecondary: {
     backgroundColor: COLORS.surfaceElevated,
     borderWidth: 1,
-    borderColor: COLORS.borderStrong,
+    borderColor: COLORS.surfaceElevated,
     ...DEPTH.raised,
   },
   btnDanger: {
@@ -375,47 +393,62 @@ const styles = StyleSheet.create({
     backgroundColor: "transparent",
   },
   btnText: {
-    fontSize: 15,
-    fontWeight: "700",
+    ...TYPE.bodyStrong,
     color: COLORS.text,
   },
   inputWrap: {
     marginBottom: SPACING.md,
   },
   inputLabel: {
+    ...TYPE.label,
     color: COLORS.textSecondary,
-    fontSize: 12,
-    fontWeight: "600",
-    marginBottom: 6,
+    marginBottom: 8,
   },
   input: {
-    backgroundColor: COLORS.surfaceSoft,
+    minHeight: 56,
+    backgroundColor: COLORS.surface,
     borderWidth: 1,
     borderColor: COLORS.border,
     borderRadius: RADIUS.md,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     color: COLORS.text,
+    fontFamily: FONTS.medium,
     fontSize: 15,
   },
+  inputSecure: {
+    paddingRight: 52,
+    letterSpacing: 6,
+    fontSize: 20,
+  },
+  revealBtn: {
+    position: "absolute",
+    right: 4,
+    top: 0,
+    bottom: 0,
+    width: 48,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   inputMultiline: {
-    minHeight: 84,
+    minHeight: 96,
     textAlignVertical: "top",
   },
   inputHint: {
+    ...TYPE.label,
     color: COLORS.textMuted,
-    fontSize: 12,
-    marginTop: 4,
+    marginTop: 6,
   },
   pill: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    minHeight: 40,
+    justifyContent: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
     borderRadius: RADIUS.pill,
     borderWidth: 1,
   },
   pillText: {
-    fontSize: 12,
-    fontWeight: "700",
+    ...TYPE.label,
   },
   sectionHeader: {
     flexDirection: "row",
@@ -425,47 +458,38 @@ const styles = StyleSheet.create({
     marginTop: SPACING.xs,
   },
   sectionTitle: {
-    color: COLORS.textSecondary,
-    fontSize: 12,
-    fontWeight: "700",
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
+    ...TYPE.overline,
+    color: COLORS.textMuted,
   },
   screenHeader: {
+    height: 56,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: SPACING.md,
-    paddingVertical: SPACING.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    paddingLeft: SPACING.sm,
+    paddingRight: SPACING.md,
     backgroundColor: COLORS.bg,
   },
   screenHeaderLeft: {
     flexDirection: "row",
     alignItems: "center",
     flex: 1,
-    gap: 10,
+    gap: 4,
   },
   backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: RADIUS.pill,
-    backgroundColor: COLORS.surface,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    width: 44,
+    height: 44,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
   },
   screenTitle: {
+    ...TYPE.headline,
     color: COLORS.text,
-    fontSize: 18,
-    fontWeight: "700",
   },
   screenSubtitle: {
+    ...TYPE.label,
     color: COLORS.textSecondary,
-    fontSize: 12,
-    marginTop: 2,
   },
   errorBanner: {
     flexDirection: "row",
@@ -475,14 +499,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.dangerBorder,
     borderRadius: RADIUS.md,
-    padding: 12,
+    padding: 14,
     marginBottom: SPACING.md,
   },
   errorText: {
-    color: "#FCA5A5",
-    fontSize: 13,
+    ...TYPE.label,
+    color: COLORS.dangerText,
     flex: 1,
-    lineHeight: 18,
   },
   successBanner: {
     flexDirection: "row",
@@ -492,14 +515,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.primaryBorder,
     borderRadius: RADIUS.md,
-    padding: 12,
+    padding: 14,
     marginBottom: SPACING.md,
   },
   successText: {
-    color: "#A7F3D0",
-    fontSize: 13,
+    ...TYPE.label,
+    color: COLORS.successText,
     flex: 1,
-    lineHeight: 18,
   },
   empty: {
     alignItems: "center",
@@ -509,29 +531,27 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   emptyTitle: {
+    ...TYPE.bodyStrong,
     color: COLORS.text,
-    fontSize: 15,
-    fontWeight: "600",
     textAlign: "center",
   },
   emptySub: {
+    ...TYPE.label,
     color: COLORS.textSecondary,
-    fontSize: 13,
     textAlign: "center",
-    lineHeight: 18,
   },
   kvRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 8,
+    paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
     gap: 12,
   },
   kvLabel: {
+    ...TYPE.label,
     color: COLORS.textSecondary,
-    fontSize: 13,
   },
   kvRight: {
     flexDirection: "row",
@@ -540,10 +560,21 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   kvValue: {
+    ...TYPE.bodyStrong,
     color: COLORS.text,
-    fontSize: 13,
-    fontWeight: "600",
     textAlign: "right",
     flexShrink: 1,
   },
 });
+
+/**
+ * Lifts content above the on-screen keyboard. Android runs edge to edge, so the window no
+ * longer shrinks for the keyboard by itself; padding works the same on both platforms.
+ */
+export function KeyboardSafe({ children, style }: { children: React.ReactNode; style?: StyleProp<ViewStyle> }) {
+  return (
+    <KeyboardAvoidingView style={[{ flex: 1 }, style]} behavior="padding">
+      {children}
+    </KeyboardAvoidingView>
+  );
+}

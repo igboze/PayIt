@@ -422,10 +422,25 @@ test("money actions: transfer.user, payout.ngn, payout.global, bill.pay, savings
 
   // 4) bill.pay
   const bill = await approveAction(aliceAuth, token, "bill.pay", {
-    category: "electricity", productCode: "101", providerName: "Ikeja Electric", recipient: "45012345678", amountNgn: 5000,
+    category: "electricity", providerId: "ikedc", providerName: "Ikeja Electric", recipient: "45012345678", amountNgn: 5000,
   });
   assert.equal(bill.confirm.status, 200, JSON.stringify(bill.confirm.body));
   assert.equal(calls.bills.length, 1);
+  // Same request shape the bot sends: category product code + meter / disco / plan fields.
+  assert.equal(calls.bills[0].productCode, "101");
+  assert.equal(calls.bills[0].billData.meterNo, "45012345678");
+  assert.equal(calls.bills[0].billData.electId, "ikedc");
+  assert.equal(calls.bills[0].billData.prodId, "101");
+
+  const airtime = await approveAction(aliceAuth, token, "bill.pay", {
+    category: "airtime", providerId: "01", providerName: "MTN", recipient: "0803 123 4567", amountNgn: 500,
+  });
+  assert.equal(airtime.confirm.status, 200, JSON.stringify(airtime.confirm.body));
+  assert.equal(calls.bills[1].productCode, "100");
+  assert.deepEqual(
+    { phoneNumber: calls.bills[1].billData.phoneNumber, networkId: calls.bills[1].billData.networkId },
+    { phoneNumber: "08031234567", networkId: "01" }
+  );
 
   // 5) savings.deposit (uses context { pool }) -> GET /savings -> savings.withdraw
   const savDep = await approveAction(aliceAuth, token, "savings.deposit", { amountUsdc: 50 });

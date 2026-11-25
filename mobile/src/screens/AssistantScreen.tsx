@@ -3,7 +3,7 @@ import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } fr
 import { api } from "../api/client";
 import type { AssistantResponse } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING } from "../theme";
+import { COLORS, RADIUS, SPACING, FONTS } from "../theme";
 import { Button, Card, ErrorBanner, Input, ScreenHeader, SuccessBanner } from "../components/UI";
 
 interface ChatMessage {
@@ -61,7 +61,7 @@ export function AssistantScreen({ onBack }: { onBack: () => void }) {
   return (
     <KeyboardAvoidingView
       style={styles.root}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      enabled={false}
     >
       <ScreenHeader
         title="Proxim Assistant"
@@ -123,8 +123,8 @@ export function AssistantScreen({ onBack }: { onBack: () => void }) {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: COLORS.bg },
   chat: { padding: SPACING.md, paddingBottom: 24, flexGrow: 1 },
-  hintTitle: { color: COLORS.text, fontSize: 14, fontWeight: "700", marginBottom: 8 },
-  hintItem: { color: COLORS.textSecondary, fontSize: 13, lineHeight: 22 },
+  hintTitle: { color: COLORS.text, fontSize: 14, fontFamily: FONTS.bold, marginBottom: 8 },
+  hintItem: { color: COLORS.textSecondary, fontFamily: FONTS.regular, fontSize: 13, lineHeight: 22 },
   bubble: {
     borderRadius: RADIUS.lg,
     padding: 13,
@@ -143,7 +143,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
   },
-  bubbleText: { color: COLORS.text, fontSize: 14, lineHeight: 20 },
+  bubbleText: { color: COLORS.text, fontFamily: FONTS.regular, fontSize: 14, lineHeight: 20 },
   composer: {
     flexDirection: "row",
     alignItems: "flex-end",

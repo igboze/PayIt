@@ -93,6 +93,49 @@ function getWalletAddress(user, accountType) {
   return accountType === "business" ? user?.business_deposit_address : user?.deposit_address;
 }
 
+/**
+ * Airbills needs the category's product code plus category-specific fields — the same
+ * shape the Telegram bot sends (src/flows_bills.js). Builds them from what the app sends.
+ */
+async function buildBillRequest(ctx, { category, providerId, recipient, networkId, phoneNumber, clientBillData }) {
+  const airbills = dep("airbills");
+  const P = airbills.PRODUCTS || {};
+  const codeFor = { airtime: P.AIRTIME, data: P.DATA, internet: P.DATA, electricity: P.ELECTRICITY, cable: P.CABLE, betting: P.BETTING, transport: P.TRANSPORT };
+  const product = codeFor[category];
+  if (!product?.code) throw new ActionError(400, "invalid_request", "That bill type isn't available.");
+  const user = ctx.user || dep("db").getUser(ctx.telegramId) || {};
+  const phone = String(phoneNumber || user.phone_number || "").replace(/^\+234/, "0").trim() || null;
+  const digits = (s) => String(s || "").replace(/\D/g, "");
+
+  let billData;
+  if (category === "airtime") {
+    const net = (airbills.NETWORKS || []).find((n) => n.id === providerId || n.name.toLowerCase() === String(providerId).toLowerCase());
+    if (!net) throw new ActionError(400, "invalid_request", "Pick a network.");
+    billData = { phoneNumber: digits(recipient), networkId: net.id };
+  } else if (category === "data" || category === "internet") {
+    let net = networkId;
+    if (!net && typeof airbills.listDataPlans === "function") {
+      try { net = (await airbills.listDataPlans(null)).find((p) => p.prodId === providerId)?.networkId || null; } catch (_) {}
+    }
+    billData = { phoneNumber: digits(recipient), networkId: net || undefined, prodId: providerId };
+  } else if (category === "electricity") {
+    let prodId = null;
+    if (typeof airbills.listElectricityProviders === "function") {
+      try { prodId = (await airbills.listElectricityProviders()).find((d) => d.electId === providerId)?.prodId || null; } catch (_) {}
+    }
+    billData = { meterNo: digits(recipient), electId: providerId, prodId: prodId || undefined, phoneNumber: phone || undefined };
+  } else if (category === "cable") {
+    billData = { smartCardNo: digits(recipient), phoneNumber: phone || undefined, prodId: providerId };
+  } else if (category === "betting") {
+    billData = { customerId: String(recipient).trim(), prodId: providerId };
+  } else {
+    billData = { phoneNumber: digits(recipient) || phone || undefined, prodId: providerId };
+  }
+  // Fields the app sent explicitly win, but never the wallet/amount fields the server sets.
+  const { pubKey, token, amount, ...extra } = clientBillData || {};
+  return { productCode: product.code, billData: { ...billData, ...extra } };
+}
+
 async function precheck(ctx, amountUsd, reference, action, accountType = "personal") {
   try {
     await dep("fraudGuard").assertOutboundAllowed({
@@ -628,11 +671,20 @@ const ACTIONS = {
     async prepare(ctx, body) {
       const accountType = resolveAccountType(ctx, body);
       const category = str(body, "category", { pattern: /^(airtime|data|electricity|cable|betting|internet|transport)$/ });
-      const productCode = str(body, "productCode", { max: 80 });
+      // providerId: the network / plan / disco / package the user picked. Older app builds
+      // sent it as productCode, so accept that too.
+      const providerId = str(body, "providerId", { optional: true, max: 80 }) || str(body, "productCode", { max: 80 });
       const recipient = str(body, "recipient", { max: 40 });
       const providerName = str(body, "providerName", { optional: true, max: 80 }) || null;
       const amountNgn = money(body, "amountNgn", { min: 50, max: 2_000_000 });
-      const billData = body?.billData && typeof body.billData === "object" ? body.billData : {};
+      const { productCode, billData } = await buildBillRequest(ctx, {
+        category,
+        providerId,
+        recipient,
+        networkId: str(body, "networkId", { optional: true, max: 10 }) || null,
+        phoneNumber: str(body, "phoneNumber", { optional: true, max: 20 }) || null,
+        clientBillData: body?.billData && typeof body.billData === "object" ? body.billData : {},
+      });
       const est = await dep("airbills").estimateBillUsdc(amountNgn);
       const usd = Number(est?.usdc ?? est?.amountUsdc ?? est ?? 0);
       await precheck(ctx, usd, `${category}:${recipient}`, "app_bill", accountType);
@@ -649,7 +701,14 @@ const ACTIONS = {
         user: dep("db").getUser(ctx.telegramId), pin, context: accountType, productCode: a.productCode, category: a.category,
         providerName: a.providerName, recipient: a.recipient, amountNgn: Number(a.amountNgn), billData: a.billData || {},
       });
-      return { result: res, notice: `Paid ₦${Number(a.amountNgn).toLocaleString("en-NG")} ${a.category}` };
+      const meterToken = res?.meterToken || null;
+      return {
+        result: res,
+        meterToken,
+        notice: meterToken
+          ? `Paid ₦${Number(a.amountNgn).toLocaleString("en-NG")} electricity. Your token: ${meterToken}`
+          : `Paid ₦${Number(a.amountNgn).toLocaleString("en-NG")} ${a.category}`,
+      };
     },
   },
 
@@ -660,17 +719,34 @@ const ACTIONS = {
       const pools = await dep("savings").getYieldPools();
       const pool = pools.find((p) => p.symbol === "USDC") || pools[0];
       if (!pool || !pool.vaultAddress) throw new ActionError(503, "unavailable", "Savings are unavailable right now.");
+      // The rate shown here is the one recorded on the position, so the user sees what they signed up for.
+      const userApy = Number(pool.userApy ?? pool.apy ?? 0);
+      const rawApy = Number(pool.rawApy ?? pool.apy ?? userApy);
+      const payitApy = Number(pool.payitApy ?? Math.max(0, rawApy - userApy));
       return {
         amountUsd: amountUsdc,
-        action: { accountType, amountUsdc: amountUsdc.toFixed(6), vaultAddress: String(pool.vaultAddress).toLowerCase() },
-        summary: { title: `Save $${fmt(amountUsdc)}`, lines: [["Into", pool.name || "Dollar lending vault"], ["Amount", `$${fmt(amountUsdc)}`]] },
+        action: { accountType, amountUsdc: amountUsdc.toFixed(6), vaultAddress: String(pool.vaultAddress).toLowerCase(), userApy, rawApy, payitApy },
+        summary: {
+          title: `Save $${fmt(amountUsdc)}`,
+          lines: [
+            ["Into", pool.name || pool.project || "Dollar lending vault"],
+            ["Amount", `$${fmt(amountUsdc)}`],
+            ["You earn", userApy > 0 ? `${userApy.toFixed(2)}% a year (variable)` : "Variable rate"],
+            ["Withdraw", "Anytime"],
+          ],
+        },
         context: { pool },
       };
     },
     async execute(ctx, a, pin, context) {
       const savings = dep("savings");
       const accountType = a.accountType || "personal";
-      const pool = context?.pool || { vaultAddress: a.vaultAddress };
+      // Record the rate the user approved, even if the approval context wasn't kept.
+      const pool = {
+        ...(context?.pool || {}),
+        vaultAddress: a.vaultAddress,
+        ...(a.userApy !== undefined ? { userApy: Number(a.userApy), rawApy: Number(a.rawApy), payitApy: Number(a.payitApy) } : {}),
+      };
       const res = await savings.depositIntoVault(unlockKey(ctx, pin, accountType), a.vaultAddress, Number(a.amountUsdc));
       if (!res || !res.success) throw new ActionError(502, "provider_error", res?.error || "The savings deposit didn't go through. Nothing was moved.");
       savings.openYieldPosition(ctx.telegramId, Number(a.amountUsdc), pool, { vaultAddress: a.vaultAddress, depositTxHash: res.txHash || res.hash || null, accountType });
