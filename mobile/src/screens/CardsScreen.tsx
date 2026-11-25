@@ -330,6 +330,7 @@ export function CardsScreen() {
                     <KeyValueRow
                       key={k}
                       label={k}
+                      currency={false}
                       value={String(v)}
                       onCopy={() => {
                         Clipboard.setStringAsync(String(v));
@@ -354,6 +355,7 @@ export function CardsScreen() {
                 cardTxs.map((t, i) => (
                   <KeyValueRow
                     key={i}
+                    currency={String(t.currency || "USD")}
                     label={String(t.merchant || t.description || t.type || `Tx #${i + 1}`)}
                     value={`${t.amount ?? ""} ${t.currency || "USD"}`}
                   />

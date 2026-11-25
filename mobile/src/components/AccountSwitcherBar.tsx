@@ -1,9 +1,10 @@
 import React, { useState } from "react";
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useApp } from "../state/AppContext";
 import { COLORS, RADIUS, SPACING } from "../theme";
 import { formatUsdc } from "./UI";
+import { PressableScale } from "./Touch";
 
 export function AccountSwitcherBar({ onOpenAssistant }: { onOpenAssistant?: () => void }) {
   const {
@@ -57,7 +58,7 @@ export function AccountSwitcherBar({ onOpenAssistant }: { onOpenAssistant?: () =
   return (
     <View style={styles.bar}>
       <View style={styles.segment}>
-        <Pressable
+        <PressableScale
           onPress={() => handleToggle("personal")}
           style={[styles.segBtn, !isBiz && styles.segPersonalActive]}
         >
@@ -67,9 +68,9 @@ export function AccountSwitcherBar({ onOpenAssistant }: { onOpenAssistant?: () =
             color={!isBiz ? COLORS.primary : COLORS.textSecondary}
           />
           <Text style={[styles.segText, !isBiz && { color: COLORS.primary }]}>Personal</Text>
-        </Pressable>
+        </PressableScale>
 
-        <Pressable
+        <PressableScale
           onPress={() => handleToggle("business")}
           style={[styles.segBtn, isBiz && styles.segBizActive]}
         >
@@ -81,27 +82,27 @@ export function AccountSwitcherBar({ onOpenAssistant }: { onOpenAssistant?: () =
           <Text style={[styles.segText, isBiz && { color: COLORS.business }]}>
             {user.hasBusinessAccount ? "Business" : "+ Business"}
           </Text>
-        </Pressable>
+        </PressableScale>
       </View>
 
       <View style={styles.right}>
         {switchingAccount || busySetup ? (
           <ActivityIndicator size="small" color={isBiz ? COLORS.business : COLORS.primary} />
         ) : otherAccountBalanceUsdc !== null ? (
-          <Pressable
+          <PressableScale
             onPress={() => handleToggle(isBiz ? "personal" : "business")}
             style={styles.otherPill}
           >
             <Text style={styles.otherText}>
               {isBiz ? "Personal" : "Business"}: {formatUsdc(otherAccountBalanceUsdc)}
             </Text>
-          </Pressable>
+          </PressableScale>
         ) : null}
 
         {onOpenAssistant ? (
-          <Pressable onPress={onOpenAssistant} style={styles.aiBtn} hitSlop={8}>
+          <PressableScale onPress={onOpenAssistant} style={styles.aiBtn} hitSlop={8}>
             <Ionicons name="sparkles" size={16} color={COLORS.primary} />
-          </Pressable>
+          </PressableScale>
         ) : null}
       </View>
     </View>

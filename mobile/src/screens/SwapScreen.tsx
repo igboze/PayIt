@@ -154,6 +154,7 @@ export function SwapScreen({ onBack }: { onBack: () => void }) {
           <View style={styles.pillRow}>
             <Pill
               label="USDC → EURC"
+              currency="USDC"
               active={swapDir === "USDC_EURC"}
               onPress={() => {
                 setSwapDir("USDC_EURC");
@@ -162,6 +163,7 @@ export function SwapScreen({ onBack }: { onBack: () => void }) {
             />
             <Pill
               label="EURC → USDC"
+              currency="EURC"
               active={swapDir === "EURC_USDC"}
               onPress={() => {
                 setSwapDir("EURC_USDC");

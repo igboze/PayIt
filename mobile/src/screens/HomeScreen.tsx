@@ -4,7 +4,6 @@ import {
   FlatList,
   Image,
   Modal,
-  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -16,7 +15,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api, getAccessToken } from "../api/client";
 import type { TransactionItem, UnifiedBalance } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING } from "../theme";
+import { COLORS, DEPTH, RADIUS, SPACING } from "../theme";
 import {
   Button,
   Card,
@@ -29,6 +28,8 @@ import {
   shortAddr,
   SuccessBanner,
 } from "../components/UI";
+import { CurrencyLogo } from "../components/CurrencyLogo";
+import { PressableScale } from "../components/Touch";
 
 export type HomeModalTarget =
   | "add"
@@ -121,16 +122,13 @@ export function HomeScreen({ onNavigate }: { onNavigate: (target: HomeModalTarge
     const isCredit = /receive|deposit|onramp|claim|refund|credit/i.test(tx.type);
     const kindLabel = friendlyTxKind(tx.type);
     return (
-      <Pressable
+      <PressableScale
         onPress={() => {
           setSelectedTx(tx);
           setShowReceiptImg(false);
         }}
-        style={({ pressed }) => [
-          styles.txRow,
-          index < transactions.length - 1 && styles.txDivider,
-          pressed && { opacity: 0.75 },
-        ]}
+        depth={0.98}
+        style={[styles.txRow, index < transactions.length - 1 && styles.txDivider]}
       >
         <View
           style={[
@@ -162,7 +160,7 @@ export function HomeScreen({ onNavigate }: { onNavigate: (target: HomeModalTarge
           {isCredit ? "+" : "-"}
           {formatRawTxAmount(tx.amount, tx.decimals)}
         </Text>
-      </Pressable>
+      </PressableScale>
     );
   };
 
@@ -217,54 +215,61 @@ export function HomeScreen({ onNavigate }: { onNavigate: (target: HomeModalTarge
 
           {/* Verified NGN Account Number (replaces Web3 address on balance card) */}
           {ngnAccount?.accountNumber ? (
-            <Pressable
+            <PressableScale
               onPress={() => copyText("NGN account number", ngnAccount.accountNumber)}
               style={styles.ngnRow}
             >
               <View style={{ flex: 1 }}>
-                <Text style={styles.ngnLabel}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <CurrencyLogo code="NGN" size={16} />
+                  <Text style={styles.ngnLabel}>
                   NGN Account{ngnAccount.bankName ? ` · ${ngnAccount.bankName}` : ""}
-                </Text>
+                  </Text>
+                </View>
                 <Text style={styles.ngnNumber}>{ngnAccount.accountNumber}</Text>
               </View>
               <View style={styles.copyBadge}>
                 <Ionicons name="copy-outline" size={14} color={COLORS.primary} />
                 <Text style={styles.copyBadgeText}>Copy</Text>
               </View>
-            </Pressable>
+            </PressableScale>
           ) : isVerified ? (
-            <Pressable onPress={() => onNavigate("global")} style={styles.ngnRow}>
-              <Text style={styles.ngnCta}>Get your dedicated NGN account number</Text>
+            <PressableScale onPress={() => onNavigate("global")} style={styles.ngnRow}>
+              <CurrencyLogo code="NGN" size={18} style={{ marginRight: 8 }} />
+              <Text style={[styles.ngnCta, { flex: 1 }]}>Get your dedicated NGN account number</Text>
               <Ionicons name="chevron-forward" size={16} color={COLORS.primary} />
-            </Pressable>
+            </PressableScale>
           ) : (
-            <Pressable onPress={() => onNavigate("kyc")} style={styles.ngnRow}>
-              <Text style={styles.ngnCta}>Verify ID to unlock your NGN account number</Text>
+            <PressableScale onPress={() => onNavigate("kyc")} style={styles.ngnRow}>
+              <CurrencyLogo code="NGN" size={18} style={{ marginRight: 8 }} />
+              <Text style={[styles.ngnCta, { flex: 1 }]}>Verify ID to unlock your NGN account number</Text>
               <Ionicons name="chevron-forward" size={16} color={COLORS.primary} />
-            </Pressable>
+            </PressableScale>
           )}
         </Card>
 
         {/* Quick Actions */}
         <View style={styles.qaGrid}>
           {quickActions.map((qa) => (
-            <Pressable
+            <PressableScale
               key={qa.key}
               onPress={() => onNavigate(qa.key)}
-              style={({ pressed }) => [styles.qaItem, pressed && { opacity: 0.78 }]}
+              depth={0.92}
+              style={styles.qaItem}
             >
               <View style={styles.qaIconCircle}>
                 <Ionicons name={qa.icon} size={20} color={COLORS.primary} />
               </View>
               <Text style={styles.qaLabel}>{qa.label}</Text>
-            </Pressable>
+            </PressableScale>
           ))}
         </View>
 
         {/* Compact Assistant CTA */}
-        <Pressable
+        <PressableScale
           onPress={() => onNavigate("assistant")}
-          style={({ pressed }) => [styles.assistantBar, pressed && { opacity: 0.85 }]}
+          depth={0.98}
+          style={styles.assistantBar}
         >
           <View style={styles.assistantIcon}>
             <Ionicons name="sparkles" size={16} color={COLORS.primary} />
@@ -273,7 +278,7 @@ export function HomeScreen({ onNavigate }: { onNavigate: (target: HomeModalTarge
             Ask Proxim Assistant
           </Text>
           <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
-        </Pressable>
+        </PressableScale>
       </View>
 
       {/* Independently Scrollable Activity Segment */}
@@ -402,6 +407,9 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   balanceCard: {
+    ...DEPTH.card,
+    shadowOpacity: 0.5,
+    shadowRadius: 24,
     backgroundColor: COLORS.surface,
     borderColor: COLORS.primaryBorder,
     padding: SPACING.md,
@@ -543,6 +551,9 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primaryMuted,
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 1,
+    borderColor: COLORS.primaryBorder,
+    ...DEPTH.raised,
   },
   qaLabel: {
     color: COLORS.text,

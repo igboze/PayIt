@@ -1,9 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Image,
   Linking,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -32,45 +30,10 @@ import {
   SectionHeader,
   SuccessBanner,
 } from "../components/UI";
+import { CurrencyLogo } from "../components/CurrencyLogo";
+import { PressableScale } from "../components/Touch";
 
 type Method = "ngn" | "crypto" | "card";
-
-function AssetLogo({ uri, symbol, size = 26 }: { uri?: string | null; symbol: string; size?: number }) {
-  const [failed, setFailed] = useState(false);
-  useEffect(() => {
-    setFailed(false);
-  }, [uri]);
-
-  if (uri && !failed) {
-    return (
-      <Image
-        source={{ uri }}
-        onError={() => setFailed(true)}
-        style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: COLORS.surfaceElevated }}
-        resizeMode="contain"
-      />
-    );
-  }
-  const letters = String(symbol || "?").replace(/^\$/, "").slice(0, 3).toUpperCase();
-  return (
-    <View
-      style={{
-        width: size,
-        height: size,
-        borderRadius: size / 2,
-        backgroundColor: COLORS.primaryMuted,
-        borderWidth: 1,
-        borderColor: COLORS.primaryBorder,
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      <Text style={{ color: COLORS.primary, fontSize: Math.max(9, Math.round(size * 0.36)), fontWeight: "800" }}>
-        {letters}
-      </Text>
-    </View>
-  );
-}
 
 export function AddMoneyScreen({ onBack }: { onBack: () => void }) {
   const { activeAccount, bumpDataVersion } = useApp();
@@ -406,12 +369,12 @@ export function AddMoneyScreen({ onBack }: { onBack: () => void }) {
                       {filteredChains.map((c) => {
                         const active = c.key === selectedChainKey;
                         return (
-                          <Pressable
+                          <PressableScale
                             key={c.key}
                             onPress={() => handleSelectChain(c.key)}
                             style={[styles.chainChip, active && styles.chainChipActive]}
                           >
-                            <AssetLogo uri={c.logoUrl} symbol={c.short} size={22} />
+                            <CurrencyLogo uri={c.logoUrl} code={c.short} size={22} />
                             <View>
                               <Text style={[styles.chainChipName, active && { color: COLORS.primary }]}>
                                 {c.name}
@@ -420,7 +383,7 @@ export function AddMoneyScreen({ onBack }: { onBack: () => void }) {
                                 {c.tokenCount} {c.tokenCount === 1 ? "token" : "tokens"}
                               </Text>
                             </View>
-                          </Pressable>
+                          </PressableScale>
                         );
                       })}
                     </View>
@@ -442,7 +405,7 @@ export function AddMoneyScreen({ onBack }: { onBack: () => void }) {
                       {filteredTokens.map((tk) => {
                         const active = selectedToken?.assetId === tk.assetId;
                         return (
-                          <Pressable
+                          <PressableScale
                             key={tk.assetId}
                             onPress={() => {
                               setSelectedToken(tk);
@@ -450,7 +413,7 @@ export function AddMoneyScreen({ onBack }: { onBack: () => void }) {
                             }}
                             style={[styles.tokenCard, active && styles.tokenCardActive]}
                           >
-                            <AssetLogo uri={tk.logoUrl} symbol={tk.symbol} size={28} />
+                            <CurrencyLogo uri={tk.logoUrl} code={tk.symbol} size={28} />
                             <Text style={[styles.tokenSym, active && { color: COLORS.primary }]} numberOfLines={1}>
                               {tk.symbol}
                             </Text>
@@ -459,7 +422,7 @@ export function AddMoneyScreen({ onBack }: { onBack: () => void }) {
                                 ${tk.priceUsd >= 1 ? tk.priceUsd.toLocaleString("en-US", { maximumFractionDigits: 2 }) : tk.priceUsd.toFixed(4)}
                               </Text>
                             ) : null}
-                          </Pressable>
+                          </PressableScale>
                         );
                       })}
                     </View>

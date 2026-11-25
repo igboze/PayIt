@@ -73,8 +73,10 @@ export function SendScreen({
   const [selectedBank, setSelectedBank] = useState<BankItem | null>(null);
   const [acctNumber, setAcctNumber] = useState("");
   const [resolvedAcct, setResolvedAcct] = useState<ResolvedBankAccount | null>(null);
-  const [ngnSendUsdc, setNgnSendUsdc] = useState("");
+  const [ngnSendAmount, setNgnSendAmount] = useState("");
   const [ngnNarration, setNgnNarration] = useState("");
+
+  const parseNum = (raw: string) => Number(String(raw || "").replace(/,/g, "").trim());
 
   // Global payout state
   const [rails, setRails] = useState<GlobalRail[]>([]);
@@ -99,14 +101,19 @@ export function SendScreen({
   } | null>(null);
 
   useEffect(() => {
+    api.getBankRates().then(setRates).catch(() => {});
+  }, []);
+
+  useEffect(() => {
     setError(null);
     if (mode === "user") {
-      api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => { });
+      api.getBankRates().then(setRates).catch(() => {});
+      api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => {});
     } else if (mode === "wallet") {
-      api.listContacts().then((r) => setContacts(r.contacts || [])).catch(() => { });
+      api.listContacts().then((r) => setContacts(r.contacts || [])).catch(() => {});
     } else if (mode === "ngn") {
-      api.getBankRates().then(setRates).catch(() => { });
-      api.listBanks(bankQuery || undefined).then((r) => setBanks(r.banks || [])).catch(() => { });
+      api.getBankRates().then(setRates).catch(() => {});
+      api.listBanks(bankQuery || undefined).then((r) => setBanks(r.banks || [])).catch(() => {});
     } else if (mode === "global") {
       api
         .listGlobalCorridors()
@@ -114,11 +121,11 @@ export function SendScreen({
           setRails(r.rails || []);
           if (!selectedRail && r.rails?.length) setSelectedRail(r.rails[0]);
         })
-        .catch(() => { });
+        .catch(() => {});
       api
         .listGlobalRecipients(undefined, activeAccount)
         .then((r) => setGlobalRecipients(r.recipients || []))
-        .catch(() => { });
+        .catch(() => {});
     } else if (mode === "crypto") {
       api
         .listWithdrawalChains()
@@ -127,15 +134,15 @@ export function SendScreen({
           setFeeUsd(r.feeUsd);
           if (!selectedChain && r.chains?.length) setSelectedChain(r.chains[0]);
         })
-        .catch(() => { });
-      api.listBridgeMoves().then(setBridgeMoves).catch(() => { });
+        .catch(() => {});
+      api.listBridgeMoves().then(setBridgeMoves).catch(() => {});
     }
   }, [mode, activeAccount]);
 
   useEffect(() => {
     if (mode !== "ngn") return;
     const t = setTimeout(() => {
-      api.listBanks(bankQuery.trim() || undefined).then((r) => setBanks(r.banks || [])).catch(() => { });
+      api.listBanks(bankQuery.trim() || undefined).then((r) => setBanks(r.banks || [])).catch(() => {});
     }, 250);
     return () => clearTimeout(t);
   }, [bankQuery, mode]);
@@ -156,6 +163,15 @@ export function SendScreen({
   };
 
   const handleSendToUser = async () => {
+    const amtNgn = parseNum(userAmount);
+    if (!recipientQuery.trim()) {
+      setError("Enter a @username or phone number.");
+      return;
+    }
+    if (!Number.isFinite(amtNgn) || amtNgn < 100) {
+      setError("Enter an amount of at least ₦100.");
+      return;
+    }
     setError(null);
     setNotice(null);
     setLoading(true);
@@ -163,7 +179,7 @@ export function SendScreen({
       const res = await requestApproval("transfer.user", {
         accountType: activeAccount,
         recipient: recipientQuery.trim(),
-        amountUsdc: Number(userAmount),
+        amountNgn: Math.round(amtNgn),
         narration: userNote.trim() || undefined,
       });
       setNotice(res.notice || "Transfer completed!");
@@ -178,6 +194,15 @@ export function SendScreen({
   };
 
   const handleCreateGift = async () => {
+    const amtNgn = parseNum(userAmount);
+    if (!recipientQuery.trim()) {
+      setError("Enter a @username for the gift link.");
+      return;
+    }
+    if (!Number.isFinite(amtNgn) || amtNgn < 500) {
+      setError("Enter an amount of at least ₦500.");
+      return;
+    }
     setError(null);
     setNotice(null);
     setLoading(true);
@@ -185,13 +210,14 @@ export function SendScreen({
       const res = await requestApproval("gift.create", {
         accountType: activeAccount,
         targetUsername: recipientQuery.trim(),
-        amountUsdc: Number(userAmount),
+        amountNgn: Math.round(amtNgn),
       });
       setNotice(res.notice || "Gift link created!");
+      setUserAmount("");
       if (res.shareText || res.claimUrl) {
-        Share.share({ message: String(res.shareText || res.claimUrl) }).catch(() => { });
+        Share.share({ message: String(res.shareText || res.claimUrl) }).catch(() => {});
       }
-      api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => { });
+      api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => {});
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Could not create gift link.";
       if (!/cancel/i.test(msg)) setError(msg);
@@ -259,20 +285,29 @@ export function SendScreen({
       setError("Select a Nigerian bank.");
       return;
     }
+    if (acctNumber.trim().length !== 10) {
+      setError("Enter a valid 10-digit account number.");
+      return;
+    }
+    const amtNgn = parseNum(ngnSendAmount);
+    if (!Number.isFinite(amtNgn) || amtNgn < 500) {
+      setError("Enter an amount of at least ₦500.");
+      return;
+    }
     setError(null);
     setNotice(null);
     setLoading(true);
     try {
       const res = await requestApproval("payout.ngn", {
         accountType: activeAccount,
-        amountUsdc: Number(ngnSendUsdc),
+        amountNgn: Math.round(amtNgn),
         bankCode: selectedBank.code,
         accountNumber: acctNumber.trim(),
         accountName: resolvedAcct?.accountName || undefined,
         narration: ngnNarration.trim() || undefined,
       });
       setNotice(res.notice || "Naira payout submitted!");
-      setNgnSendUsdc("");
+      setNgnSendAmount("");
       setNgnNarration("");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Naira payout failed.";
@@ -371,8 +406,8 @@ export function SendScreen({
         <View style={styles.pillRow}>
           <Pill label="Naira Bank" active={mode === "ngn"} onPress={() => setMode("ngn")} />
           <Pill label="Proxim User" active={mode === "user"} onPress={() => setMode("user")} />
-          <Pill label="Wallet 0x" active={mode === "wallet"} onPress={() => setMode("wallet")} />
           <Pill label="Global 27+" active={mode === "global"} onPress={() => setMode("global")} />
+          <Pill label="Crypto Wallet" active={mode === "wallet"} onPress={() => setMode("wallet")} />
           <Pill label="Crypto Chains" active={mode === "crypto"} onPress={() => setMode("crypto")} />
         </View>
 
@@ -431,15 +466,15 @@ export function SendScreen({
             />
 
             <Input
-              label="Amount in USDC"
-              placeholder="e.g. 50"
-              value={ngnSendUsdc}
-              onChangeText={setNgnSendUsdc}
-              keyboardType="decimal-pad"
+              label="Amount in Naira (₦)"
+              placeholder="e.g. 25000"
+              value={ngnSendAmount}
+              onChangeText={(t) => setNgnSendAmount(t.replace(/[^0-9.]/g, ""))}
+              keyboardType="numeric"
               hint={
-                rates?.offRampRate && Number(ngnSendUsdc) > 0
-                  ? `Estimated NGN: ₦${Math.floor(Number(ngnSendUsdc) * rates.offRampRate).toLocaleString("en-NG")}`
-                  : undefined
+                rates?.offRampRate && parseNum(ngnSendAmount) > 0
+                  ? `≈ $${(parseNum(ngnSendAmount) / rates.offRampRate).toFixed(2)} USD from your balance`
+                  : "Minimum ₦500 · Converted live at checkout"
               }
             />
             <Input
@@ -455,7 +490,14 @@ export function SendScreen({
         {mode === "user" ? (
           <>
             <Card>
-              <SectionHeader title="Send to @username or phone" />
+              <SectionHeader
+                title="Send to @username or phone"
+                right={
+                  rates?.offRampRate ? (
+                    <Text style={styles.rateTag}>$1 = ₦{rates.offRampRate.toLocaleString("en-NG")}</Text>
+                  ) : null
+                }
+              />
               <Input
                 label="Recipient (@username or +phone)"
                 placeholder="@ada or +2348012345678"
@@ -491,11 +533,18 @@ export function SendScreen({
               ) : null}
 
               <Input
-                label="Amount (USDC)"
-                placeholder="e.g. 20"
+                label="Amount in Naira (₦)"
+                placeholder="e.g. 15000"
                 value={userAmount}
-                onChangeText={setUserAmount}
-                keyboardType="decimal-pad"
+                onChangeText={(t) => setUserAmount(t.replace(/[^0-9.]/g, ""))}
+                keyboardType="numeric"
+                hint={
+                  rates?.offRampRate && parseNum(userAmount) > 0
+                    ? `≈ $${(parseNum(userAmount) / rates.offRampRate).toFixed(2)} USD from your balance`
+                    : userNotFound
+                      ? "Converted live from Naira at checkout"
+                      : "Minimum ₦100 · Instant & free"
+                }
               />
               <Input
                 label="Note (optional)"
@@ -529,7 +578,11 @@ export function SendScreen({
                     <View key={g.id} style={styles.listRow}>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.rowTitle}>@{g.targetHandle}</Text>
-                        <Text style={styles.rowSub}>{formatUsdc(g.amountUsdc)} · {g.status}</Text>
+                        <Text style={styles.rowSub}>
+                          {rates?.offRampRate
+                            ? `₦${Math.round(g.amountUsdc * rates.offRampRate).toLocaleString("en-NG")} (${formatUsdc(g.amountUsdc)}) · ${g.status}`
+                            : `${formatUsdc(g.amountUsdc)} · ${g.status}`}
+                        </Text>
                       </View>
                       <Button
                         title="Cancel"
@@ -538,7 +591,7 @@ export function SendScreen({
                           requestApproval("gift.cancel", { claimToken: g.claimToken })
                             .then(() => {
                               setNotice("Gift cancelled & refunded.");
-                              api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => { });
+                              api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => {});
                             })
                             .catch((e) => !/cancel/i.test(String(e?.message)) && setError(e.message))
                         }

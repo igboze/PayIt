@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Linking, StyleSheet, Text, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
@@ -18,6 +18,7 @@ import { AssistantScreen } from "./src/screens/AssistantScreen";
 import { SavingsScreen } from "./src/screens/SavingsScreen";
 import { SwapScreen } from "./src/screens/SwapScreen";
 import { COLORS } from "./src/theme";
+import { PressableScale } from "./src/components/Touch";
 
 type MainTab = "home" | "accounts" | "cards" | "profile";
 type OverlayScreen = "add" | "send" | "bills" | "savings" | "swap" | "assistant" | null;
@@ -160,7 +161,7 @@ function MainShell() {
         {tabs.map((t) => {
           const active = tab === t.key;
           return (
-            <Pressable
+            <PressableScale
               key={t.key}
               onPress={() => {
                 if (t.key === "accounts") setAccountsSection("accounts");
@@ -176,7 +177,7 @@ function MainShell() {
               <Text style={[styles.tabLabel, active && { color: COLORS.primary }]}>
                 {t.label}
               </Text>
-            </Pressable>
+            </PressableScale>
           );
         })}
       </View>

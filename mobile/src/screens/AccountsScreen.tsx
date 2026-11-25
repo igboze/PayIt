@@ -516,7 +516,7 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
             ) : (
               globalAccounts.map((ga, idx) => (
                 <View key={ga.id || `${ga.currency}-${idx}`} style={styles.subCard}>
-                  <SectionHeader title={`${ga.currency} · ${ga.status}`} />
+                  <SectionHeader currency={ga.currency || false} title={`${ga.currency} · ${ga.status}`} />
                   {ga.bankName ? <KeyValueRow label="Bank" value={ga.bankName} /> : null}
                   {ga.beneficiaryName ? <KeyValueRow label="Beneficiary" value={ga.beneficiaryName} /> : null}
                   {ga.accountNumber ? (
@@ -551,7 +551,7 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
             <SectionHeader title="Open New Currency Account" />
             <View style={styles.pillWrap}>
               {supportedCurrencies.map((cur) => (
-                <Pill key={cur} label={`+ ${cur}`} onPress={() => handleProvisionGlobal(cur)} />
+                <Pill key={cur} currency={cur} label={`+ ${cur}`} onPress={() => handleProvisionGlobal(cur)} />
               ))}
             </View>
           </Card>
@@ -565,6 +565,7 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
             </View>
             <Input
               label="Currency (3-letter ISO)"
+              currency={/^[A-Z]{3}$/.test(plCurrency) ? plCurrency : false}
               placeholder="GBP, CAD, KES, GHS…"
               value={plCurrency}
               onChangeText={(t) => setPlCurrency(t.toUpperCase())}
@@ -675,7 +676,7 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
                 <Input label="Amount (USDC)" placeholder="e.g. 45" value={expAmt} onChangeText={setExpAmt} keyboardType="decimal-pad" />
                 <Button title="Log Expense" variant="secondary" onPress={handleLogExpense} loading={loading} style={{ marginBottom: 12 }} />
                 {expenses.map((e) => (
-                  <KeyValueRow key={e.id} label={`${e.description} (${e.category})`} value={`${e.amount} ${e.currency}`} />
+                  <KeyValueRow key={e.id} currency={e.currency || false} label={`${e.description} (${e.category})`} value={`${e.amount} ${e.currency}`} />
                 ))}
               </Card>
 

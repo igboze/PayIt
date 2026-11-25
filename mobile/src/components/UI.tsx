@@ -11,7 +11,16 @@ import {
   ViewStyle,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { COLORS, RADIUS, SPACING } from "../theme";
+import { COLORS, DEPTH, RADIUS, SPACING } from "../theme";
+import { PressableScale } from "./Touch";
+import { CurrencyLogo, currencyInText } from "./CurrencyLogo";
+
+/** Explicit code, or false to hide; when omitted the code is read from the label text. */
+type CurrencyProp = { currency?: string | false };
+function pickCurrency(currency: string | false | undefined, text?: string | null): string | null {
+  if (currency === false) return null;
+  return currency || currencyInText(text);
+}
 
 export function formatUsdc(value: number | string | null | undefined, digits = 2): string {
   const n = Number(value);
@@ -49,10 +58,20 @@ export function shortAddr(addr: string | null | undefined, head = 6, tail = 4): 
 export function Card({
   children,
   style,
+  onPress,
 }: {
   children: React.ReactNode;
   style?: StyleProp<ViewStyle>;
+  /** Makes the whole card a raised, pressable surface. */
+  onPress?: () => void;
 }) {
+  if (onPress) {
+    return (
+      <PressableScale onPress={onPress} depth={0.98} style={[styles.card, style]}>
+        {children}
+      </PressableScale>
+    );
+  }
   return <View style={[styles.card, style]}>{children}</View>;
 }
 
@@ -73,17 +92,17 @@ export function Button({
 }) {
   const isDisabled = disabled || loading;
   return (
-    <Pressable
+    <PressableScale
       onPress={onPress}
       disabled={isDisabled}
-      style={({ pressed }) => [
+      haptic={variant === "primary" ? "medium" : "light"}
+      style={[
         styles.btn,
         variant === "primary" && styles.btnPrimary,
         variant === "secondary" && styles.btnSecondary,
         variant === "danger" && styles.btnDanger,
         variant === "ghost" && styles.btnGhost,
-        pressed && !isDisabled && { opacity: 0.85 },
-        isDisabled && { opacity: 0.5 },
+        isDisabled && { opacity: 0.5, shadowOpacity: 0, elevation: 0 },
         style,
       ]}
     >
@@ -101,18 +120,25 @@ export function Button({
           {title}
         </Text>
       )}
-    </Pressable>
+    </PressableScale>
   );
 }
 
 export function Input({
   label,
   hint,
+  currency,
   ...props
-}: TextInputProps & { label?: string; hint?: string }) {
+}: TextInputProps & { label?: string; hint?: string } & CurrencyProp) {
+  const code = pickCurrency(currency, label);
   return (
     <View style={styles.inputWrap}>
-      {label ? <Text style={styles.inputLabel}>{label}</Text> : null}
+      {label ? (
+        <View style={[styles.labelRow, { marginBottom: 6 }]}>
+          {code ? <CurrencyLogo code={code} size={16} /> : null}
+          <Text style={[styles.inputLabel, { marginBottom: 0 }]}>{label}</Text>
+        </View>
+      ) : null}
       <TextInput
         placeholderTextColor={COLORS.textMuted}
         selectionColor={COLORS.primary}
@@ -129,11 +155,14 @@ export function Pill({
   active = false,
   tone = "primary",
   onPress,
+  currency,
 }: {
   label: string;
   active?: boolean;
   tone?: "primary" | "business" | "danger" | "neutral";
   onPress?: () => void;
+  /** Only shown when given; pill labels are too short to guess from. */
+  currency?: string;
 }) {
   const bg = active
     ? tone === "business"
@@ -158,28 +187,34 @@ export function Pill({
     : COLORS.textSecondary;
 
   const inner = (
-    <View style={[styles.pill, { backgroundColor: bg, borderColor }]}>
+    <View style={[styles.pill, { backgroundColor: bg, borderColor }, currency ? styles.pillWithLogo : null]}>
+      {currency ? <CurrencyLogo code={currency} size={16} /> : null}
       <Text style={[styles.pillText, { color: textColor }]}>{label}</Text>
     </View>
   );
   if (!onPress) return inner;
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => pressed && { opacity: 0.8 }}>
+    <PressableScale onPress={onPress} depth={0.94} haptic="selection">
       {inner}
-    </Pressable>
+    </PressableScale>
   );
 }
 
 export function SectionHeader({
   title,
   right,
+  currency,
 }: {
   title: string;
   right?: React.ReactNode;
-}) {
+} & CurrencyProp) {
+  const code = pickCurrency(currency, title);
   return (
     <View style={styles.sectionHeader}>
-      <Text style={styles.sectionTitle}>{title}</Text>
+      <View style={[styles.labelRow, { flexShrink: 1 }]}>
+        {code ? <CurrencyLogo code={code} size={20} /> : null}
+        <Text style={styles.sectionTitle}>{title}</Text>
+      </View>
       {right}
     </View>
   );
@@ -272,14 +307,19 @@ export function KeyValueRow({
   label,
   value,
   onCopy,
+  currency,
 }: {
   label: string;
   value: string;
   onCopy?: () => void;
-}) {
+} & CurrencyProp) {
+  const code = pickCurrency(currency, label);
   return (
     <View style={styles.kvRow}>
-      <Text style={styles.kvLabel}>{label}</Text>
+      <View style={[styles.labelRow, { flexShrink: 1 }]}>
+        {code ? <CurrencyLogo code={code} size={16} /> : null}
+        <Text style={styles.kvLabel}>{label}</Text>
+      </View>
       <View style={styles.kvRight}>
         <Text style={styles.kvValue} selectable numberOfLines={2}>
           {value}
@@ -295,6 +335,8 @@ export function KeyValueRow({
 }
 
 const styles = StyleSheet.create({
+  labelRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  pillWithLogo: { flexDirection: "row", alignItems: "center", gap: 6 },
   card: {
     backgroundColor: COLORS.surface,
     borderRadius: RADIUS.lg,
@@ -302,6 +344,7 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     padding: SPACING.md,
     marginBottom: SPACING.md,
+    ...DEPTH.card,
   },
   btn: {
     height: 48,
@@ -312,11 +355,16 @@ const styles = StyleSheet.create({
   },
   btnPrimary: {
     backgroundColor: COLORS.primary,
+    borderWidth: 1,
+    borderColor: COLORS.primaryDark,
+    borderTopColor: "rgba(255, 255, 255, 0.35)",
+    ...DEPTH.glow,
   },
   btnSecondary: {
     backgroundColor: COLORS.surfaceElevated,
     borderWidth: 1,
     borderColor: COLORS.borderStrong,
+    ...DEPTH.raised,
   },
   btnDanger: {
     backgroundColor: COLORS.dangerMuted,

@@ -3,7 +3,6 @@ import {
   Image,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -16,6 +15,7 @@ import { assertPasskey, createPasskey, isPasskeySupported } from "../api/passkey
 import { useApp } from "../state/AppContext";
 import { COLORS, RADIUS, SPACING } from "../theme";
 import { Button, Card, ErrorBanner, Input } from "../components/UI";
+import { PressableScale } from "../components/Touch";
 
 type Step = "welcome" | "signup_phone" | "signup_otp" | "signup_passkey" | "link_telegram";
 
@@ -298,7 +298,7 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
                 secureTextEntry
                 maxLength={4}
               />
-              <Pressable
+              <PressableScale
                 onPress={() => setAcceptTerms((v) => !v)}
                 style={styles.termsRow}
               >
@@ -310,7 +310,7 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
                 <Text style={styles.termsText}>
                   I accept the Proxim Terms of Service and Privacy Policy.
                 </Text>
-              </Pressable>
+              </PressableScale>
               <Button title="Create passkey" onPress={handleFinishSignup} loading={loading} />
             </Card>
           ) : null}

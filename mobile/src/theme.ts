@@ -46,3 +46,30 @@ export const RADIUS = {
   xl: 24,
   pill: 999,
 } as const;
+
+// Layered depth: a soft drop shadow plus a lighter top edge reads as a raised surface.
+export const DEPTH = {
+  card: {
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.35,
+    shadowRadius: 18,
+    elevation: 8,
+    borderTopColor: "rgba(255, 255, 255, 0.09)",
+  },
+  raised: {
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+    borderTopColor: "rgba(255, 255, 255, 0.12)",
+  },
+  glow: {
+    shadowColor: "#10B981",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.45,
+    shadowRadius: 16,
+    elevation: 10,
+  },
+} as const;
