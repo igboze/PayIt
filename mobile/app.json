@@ -23,6 +23,7 @@
     },
     "android": {
       "package": "app.proxim.mobile",
+      "versionCode": 1,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0B1117"
@@ -40,6 +41,9 @@
         }
       ]
     },
+    "plugins": [
+      "./plugins/withReleaseSigning"
+    ],
     "extra": {
       "apiBaseUrl": "https://payit-production.up.railway.app/api/app/v1"
     }

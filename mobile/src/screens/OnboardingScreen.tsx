@@ -18,9 +18,9 @@ import { Button, Card, ErrorBanner, Input } from "../components/UI";
 
 type Step = "welcome" | "signup_phone" | "signup_otp" | "signup_passkey" | "link_telegram";
 
-export function OnboardingScreen() {
+export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: string }) {
   const { signInWithSession, sessionNotice, clearSessionNotice } = useApp();
-  const [step, setStep] = useState<Step>("welcome");
+  const [step, setStep] = useState<Step>(initialLinkCode ? "link_telegram" : "welcome");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -35,8 +35,15 @@ export function OnboardingScreen() {
   const [acceptTerms, setAcceptTerms] = useState(false);
 
   // Telegram link state
-  const [linkCode, setLinkCode] = useState("");
+  const [linkCode, setLinkCode] = useState(initialLinkCode);
   const [linkPin, setLinkPin] = useState("");
+
+  React.useEffect(() => {
+    if (initialLinkCode) {
+      setLinkCode(initialLinkCode);
+      setStep("link_telegram");
+    }
+  }, [initialLinkCode]);
 
   const passkeyAvailable = isPasskeySupported();
 

@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import React, { useEffect, useState } from "react";
+import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
@@ -25,6 +25,27 @@ function MainShell() {
   const [tab, setTab] = useState<MainTab>("home");
   const [accountsSection, setAccountsSection] = useState<AccountsSection>("accounts");
   const [overlay, setOverlay] = useState<OverlayScreen>(null);
+  const [deepLinkCode, setDeepLinkCode] = useState("");
+  const [deepClaimToken, setDeepClaimToken] = useState("");
+
+  useEffect(() => {
+    const handleUrl = (rawUrl: string | null | undefined) => {
+      if (!rawUrl) return;
+      const linkMatch = rawUrl.match(/\/link\/([A-Za-z0-9]{6,16})/i);
+      if (linkMatch) {
+        setDeepLinkCode(linkMatch[1]);
+        return;
+      }
+      const claimMatch = rawUrl.match(/(?:claim[_-]?|gift\/)([A-Za-z0-9_-]{8,80})/i);
+      if (claimMatch) {
+        setDeepClaimToken(claimMatch[1]);
+        setOverlay("send");
+      }
+    };
+    Linking.getInitialURL().then(handleUrl).catch(() => {});
+    const sub = Linking.addEventListener("url", (ev) => handleUrl(ev.url));
+    return () => sub.remove();
+  }, []);
 
   if (bootstrapping) {
     return (
@@ -36,7 +57,7 @@ function MainShell() {
   }
 
   if (!user) {
-    return <OnboardingScreen />;
+    return <OnboardingScreen initialLinkCode={deepLinkCode} />;
   }
 
   const handleHomeNav = (target: HomeModalTarget) => {
@@ -64,7 +85,14 @@ function MainShell() {
   if (overlay === "send") {
     return (
       <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-        <SendScreen onBack={() => setOverlay(null)} />
+        <SendScreen
+          onBack={() => {
+            setDeepClaimToken("");
+            setOverlay(null);
+          }}
+          initialMode={deepClaimToken ? "user" : "ngn"}
+          initialClaimToken={deepClaimToken}
+        />
         <ApprovalSheet />
       </SafeAreaView>
     );

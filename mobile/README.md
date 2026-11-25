@@ -2,43 +2,31 @@
 
 React Native (Expo SDK 58) client wired directly to the live Proxim backend at `https://payit-production.up.railway.app/api/app/v1`.
 
-- **Zero dummy data**: every balance, FX rate, bank lookup, deposit address, card, invoice, and transaction comes live from `/api/app/v1`.
+- **Zero dummy data**: every balance, FX rate, bank lookup, deposit address, card, invoice, KYC/KYB status, and transaction comes live from `/api/app/v1`.
 - **Personal ↔ Business isolation**: top switcher calls `POST /accounts/switch` and attaches `X-Proxim-Account` on every request so deposits, payouts, cards, and schedules stay strictly separated.
 - **Passkey + PIN approvals**: every money movement calls `/actions/:type/intent` → native Passkey assertion (`react-native-passkey`) + 4-digit PIN → `/actions/confirm`.
+- **Live Railway Digital Asset Links**: `https://payit-production.up.railway.app/.well-known/assetlinks.json` is configured for `app.proxim.mobile` with release cert SHA-256 `3E:C0:9B:C5:94:45:5B:26:45:F5:77:7B:56:09:BE:44:60:42:DF:66:52:F2:B5:B6:12:20:8B:EB:EC:FF:DE:6F`.
 
-## Build an Installable Android `.apk` (No Android Studio Needed)
+## Automated Android APK Builds
 
-Because Passkeys use native Android Credential Manager, test using an EAS APK build rather than Expo Go:
+### Option 1 — GitHub Actions (Automatic on every push to `master`)
+Every push to `mobile/` triggers `.github/workflows/build-android-apk.yml` and uploads `Proxim-Android-APK` under **GitHub → Actions → Build Android APK**.
 
-```bash
+To have GitHub Actions output a **pre-signed** release APK automatically (matching Railway's live Passkey certificate), add these 4 secrets in **GitHub → Settings → Secrets and variables → Actions**:
+- `ANDROID_KEYSTORE_BASE64`: Base64 of `C:\Users\Igboze\.proxim-signing\proxim-release.keystore`
+- `ANDROID_KEYSTORE_PASSWORD`: `storePassword` from `C:\Users\Igboze\.proxim-signing\signing.properties`
+- `ANDROID_KEY_ALIAS`: `proxim-release`
+- `ANDROID_KEY_PASSWORD`: `keyPassword` from `C:\Users\Igboze\.proxim-signing\signing.properties`
+
+Or, if downloading `app-release-unsigned.apk` from Actions, sign it locally in 2 seconds with:
+
+```powershell
+.\mobile\scripts\sign-apk.ps1 -InputApk path\to\app-release-unsigned.apk
+```
+
+### Option 2 — Expo EAS Cloud Build
+```powershell
 cd mobile
-npm install
 npx eas login
 npx eas build -p android --profile preview
 ```
-
-When the cloud build finishes (~5–10 min), EAS gives you a **QR code and direct `.apk` download link** to install on your Android phone.
-
-## Link Your APK Signing Certificate for Android Passkeys (Railway)
-
-After your first EAS build creates the Android keystore, print the signing certificate SHA-256:
-
-```bash
-cd mobile
-npx eas credentials -p android
-```
-
-1. Copy the **SHA-256 Fingerprint** (colon-separated hex, e.g. `AA:BB:CC:...`) into Railway as `APP_ANDROID_CERT_SHA256`.
-2. Convert that hex fingerprint into Android's `apk-key-hash` base64url string:
-
-```bash
-node -e "const hex='AA:BB:CC:...'.replace(/:/g,''); console.log('android:apk-key-hash:' + Buffer.from(hex,'hex').toString('base64url'));"
-```
-
-3. Set Railway `APP_ORIGINS` to:
-
-```text
-https://payit-production.up.railway.app,android:apk-key-hash:<output-from-step-2>
-```
-
-4. Redeploy Railway and verify `https://payit-production.up.railway.app/.well-known/assetlinks.json` returns your package `app.proxim.mobile` and fingerprint.

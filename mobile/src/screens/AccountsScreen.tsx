@@ -83,6 +83,12 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
   const [linkTitle, setLinkTitle] = useState("");
   const [linkAmt, setLinkAmt] = useState("");
   const [payrollCsv, setPayrollCsv] = useState("");
+  const [bizProfName, setBizProfName] = useState("");
+  const [bizProfEmail, setBizProfEmail] = useState("");
+  const [bizProfPhone, setBizProfPhone] = useState("");
+  const [bizProfAddr, setBizProfAddr] = useState("");
+  const [goalPct, setGoalPct] = useState("");
+  const [goalLabel, setGoalLabel] = useState("Tax & Reserve");
 
   useEffect(() => {
     setSection(initialSection);
@@ -117,6 +123,16 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
               api.listBusinessPaymentLinks(),
             ]);
             setBizHome(home);
+            if (home.profile) {
+              setBizProfName(home.profile.businessName || "");
+              setBizProfEmail(home.profile.businessEmail || "");
+              setBizProfPhone(home.profile.phone || "");
+              setBizProfAddr(home.profile.address || "");
+            }
+            if (home.summary?.savingsGoal?.percentage !== undefined) {
+              setGoalPct(String(home.summary.savingsGoal.percentage));
+              if (home.summary.savingsGoal.label) setGoalLabel(home.summary.savingsGoal.label);
+            }
             setInvoices(invs.invoices || []);
             setExpenses(exps.expenses || []);
             setPaymentLinks(links.paymentLinks || []);
@@ -347,6 +363,50 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Payroll failed.";
       if (!/cancel/i.test(msg)) setError(msg);
+    }
+  };
+
+  const handleSaveBizProfile = async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      await api.updateBusinessProfile({
+        businessName: bizProfName.trim(),
+        businessEmail: bizProfEmail.trim() || undefined,
+        phone: bizProfPhone.trim() || undefined,
+        address: bizProfAddr.trim() || undefined,
+      });
+      setNotice("Business profile updated!");
+      loadSection(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update business profile.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSaveGoal = async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      await api.setBusinessSavingsGoal(Number(goalPct), goalLabel.trim() || "Business Savings");
+      setNotice("Business savings goal saved!");
+      loadSection(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save goal.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeactivateLink = async (linkId: string) => {
+    setError(null);
+    try {
+      await api.deactivateBusinessPaymentLink(linkId);
+      setNotice("Payment link deactivated.");
+      loadSection(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not deactivate payment link.");
     }
   };
 
@@ -679,13 +739,34 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
                 <Input label="Amount USD (optional)" placeholder="Leave blank for open amount" value={linkAmt} onChangeText={setLinkAmt} keyboardType="decimal-pad" />
                 <Button title="Create Payment Link" onPress={handleCreateBizLink} loading={loading} style={{ marginBottom: 12 }} />
                 {paymentLinks.map((pl) => (
-                  <KeyValueRow
-                    key={pl.linkId}
-                    label={`${pl.title}${pl.active ? "" : " (inactive)"}`}
-                    value={pl.url}
-                    onCopy={() => copy("Payment link", pl.url)}
-                  />
+                  <View key={pl.linkId} style={styles.subCard}>
+                    <KeyValueRow
+                      label={`${pl.title}${pl.active ? "" : " (inactive)"}`}
+                      value={pl.url}
+                      onCopy={() => copy("Payment link", pl.url)}
+                    />
+                    {pl.active ? (
+                      <Button
+                        title="Deactivate Link"
+                        variant="danger"
+                        onPress={() => handleDeactivateLink(pl.linkId)}
+                        style={{ height: 34, marginTop: 8 }}
+                      />
+                    ) : null}
+                  </View>
                 ))}
+              </Card>
+
+              <Card>
+                <SectionHeader title="Business Profile & Savings Goal" />
+                <Input label="Business Name" value={bizProfName} onChangeText={setBizProfName} />
+                <Input label="Business Email" value={bizProfEmail} onChangeText={setBizProfEmail} keyboardType="email-address" autoCapitalize="none" />
+                <Input label="Phone" value={bizProfPhone} onChangeText={setBizProfPhone} keyboardType="phone-pad" />
+                <Input label="Address" value={bizProfAddr} onChangeText={setBizProfAddr} />
+                <Button title="Save Business Profile" variant="secondary" onPress={handleSaveBizProfile} loading={loading} style={{ marginBottom: 14 }} />
+                <Input label="Auto-Reserve Savings Goal (%)" placeholder="0-90" value={goalPct} onChangeText={setGoalPct} keyboardType="number-pad" />
+                <Input label="Goal Label" value={goalLabel} onChangeText={setGoalLabel} />
+                <Button title="Save Savings Goal" variant="secondary" onPress={handleSaveGoal} loading={loading} />
               </Card>
 
               <Card>

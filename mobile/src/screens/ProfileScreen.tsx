@@ -51,6 +51,7 @@ export function ProfileScreen() {
   // KYC/KYB
   const [kyc, setKyc] = useState<KycStatusResponse | null>(null);
   const [kycFormOpen, setKycFormOpen] = useState(false);
+  const [kybFormOpen, setKybFormOpen] = useState(false);
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
@@ -64,6 +65,26 @@ export function ProfileScreen() {
   const [postalCode, setPostalCode] = useState("");
   const [idType, setIdType] = useState("passport");
   const [idNumber, setIdNumber] = useState("");
+
+  // Business KYB fields
+  const [bizLegalName, setBizLegalName] = useState("");
+  const [bizRegNo, setBizRegNo] = useState("");
+  const [bizCountry, setBizCountry] = useState("");
+  const [bizIncYear, setBizIncYear] = useState("");
+  const [bizIncMonth, setBizIncMonth] = useState("");
+  const [bizIndustry, setBizIndustry] = useState("");
+  const [bizType, setBizType] = useState<"llc" | "corporation" | "sole_proprietorship" | "partnership">("llc");
+  const [bizEmail, setBizEmail] = useState("");
+  const [bizPhone, setBizPhone] = useState("");
+  const [bizStreet, setBizStreet] = useState("");
+  const [bizCity, setBizCity] = useState("");
+  const [bizState, setBizState] = useState("");
+  const [bizPostal, setBizPostal] = useState("");
+  const [officerFirst, setOfficerFirst] = useState("");
+  const [officerLast, setOfficerLast] = useState("");
+  const [officerEmail, setOfficerEmail] = useState("");
+  const [officerDob, setOfficerDob] = useState("");
+  const [officerTitle, setOfficerTitle] = useState("Director");
 
   // Devices
   const [devices, setDevices] = useState<DeviceItem[]>([]);
@@ -195,6 +216,46 @@ export function ProfileScreen() {
       loadTab(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Verification submission failed.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSubmitKyb = async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      const cc = bizCountry.trim().toUpperCase();
+      const res = await api.submitKyb({
+        legalName: bizLegalName.trim(),
+        registrationNumber: bizRegNo.trim(),
+        incorporationCountry: cc,
+        incorporationYear: Number(bizIncYear),
+        incorporationMonth: Number(bizIncMonth),
+        industry: bizIndustry.trim(),
+        businessType: bizType,
+        email: bizEmail.trim(),
+        phoneNumber: bizPhone.trim(),
+        address: {
+          line1: bizStreet.trim(),
+          city: bizCity.trim(),
+          state: bizState.trim(),
+          postalCode: bizPostal.trim(),
+          country: cc,
+        },
+        officer: {
+          firstName: officerFirst.trim(),
+          lastName: officerLast.trim(),
+          email: officerEmail.trim(),
+          dateOfBirth: officerDob.trim(),
+          title: officerTitle.trim(),
+        },
+      });
+      setNotice(`Business KYB submitted (status: ${res.status}).`);
+      setKybFormOpen(false);
+      loadTab(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Business verification submission failed.");
     } finally {
       setLoading(false);
     }
@@ -442,6 +503,45 @@ export function ProfileScreen() {
               <Input label="ID Document Number" value={idNumber} onChangeText={setIdNumber} />
               <Button title="Submit Identity Verification" onPress={handleSubmitKyc} loading={loading} />
             </View>
+          ) : null}
+
+          {user?.hasBusinessAccount ? (
+            <>
+              <Button
+                title={kybFormOpen ? "Hide Business KYB Form" : "Start Business KYB Verification"}
+                variant="secondary"
+                onPress={() => setKybFormOpen((v) => !v)}
+                style={{ marginTop: 10 }}
+              />
+
+              {kybFormOpen ? (
+                <View style={{ marginTop: 14 }}>
+                  <Input label="Business Legal Name" value={bizLegalName} onChangeText={setBizLegalName} />
+                  <Input label="Registration / RC Number" value={bizRegNo} onChangeText={setBizRegNo} />
+                  <Input label="2-Letter Incorporation Country (e.g. NG, US, GB)" value={bizCountry} onChangeText={setBizCountry} autoCapitalize="characters" maxLength={2} />
+                  <Input label="Incorporation Year (YYYY)" placeholder="2023" value={bizIncYear} onChangeText={setBizIncYear} keyboardType="number-pad" maxLength={4} />
+                  <Input label="Incorporation Month (1-12)" placeholder="6" value={bizIncMonth} onChangeText={setBizIncMonth} keyboardType="number-pad" maxLength={2} />
+                  <Input label="Industry" placeholder="Software / Consulting / Retail" value={bizIndustry} onChangeText={setBizIndustry} />
+                  <View style={styles.pillRow}>
+                    {(["llc", "corporation", "sole_proprietorship", "partnership"] as const).map((bt) => (
+                      <Pill key={bt} label={bt.replace("_", " ")} active={bizType === bt} onPress={() => setBizType(bt)} />
+                    ))}
+                  </View>
+                  <Input label="Business Email" value={bizEmail} onChangeText={setBizEmail} keyboardType="email-address" autoCapitalize="none" />
+                  <Input label="Business Phone (+international)" value={bizPhone} onChangeText={setBizPhone} keyboardType="phone-pad" />
+                  <Input label="Business Street Address" value={bizStreet} onChangeText={setBizStreet} />
+                  <Input label="City" value={bizCity} onChangeText={setBizCity} />
+                  <Input label="State / Region" value={bizState} onChangeText={setBizState} />
+                  <Input label="Postal Code" value={bizPostal} onChangeText={setBizPostal} />
+                  <Input label="Officer First Name" value={officerFirst} onChangeText={setOfficerFirst} />
+                  <Input label="Officer Last Name" value={officerLast} onChangeText={setOfficerLast} />
+                  <Input label="Officer Email" value={officerEmail} onChangeText={setOfficerEmail} keyboardType="email-address" autoCapitalize="none" />
+                  <Input label="Officer Date of Birth (YYYY-MM-DD)" placeholder="1990-01-20" value={officerDob} onChangeText={setOfficerDob} />
+                  <Input label="Officer Title" value={officerTitle} onChangeText={setOfficerTitle} />
+                  <Button title="Submit Business KYB Verification" onPress={handleSubmitKyb} loading={loading} />
+                </View>
+              ) : null}
+            </>
           ) : null}
         </Card>
       ) : null}
