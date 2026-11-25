@@ -35,7 +35,7 @@ import {
   SuccessBanner,
 } from "../components/UI";
 
-export type AccountsSection = "accounts" | "global" | "savings" | "business" | "swap";
+export type AccountsSection = "accounts" | "global" | "business";
 
 export function AccountsScreen({ initialSection = "accounts" }: { initialSection?: AccountsSection }) {
   const { user, activeAccount, dataVersion, switchAccount, requestApproval } = useApp();
@@ -108,12 +108,6 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
           setGlobalAccounts(res.accounts || []);
           setGlobalKycStatus(res.kycStatus || "not_started");
           setSupportedCurrencies(res.supportedCurrencies || []);
-        } else if (section === "savings") {
-          const res = await api.getSavings(activeAccount);
-          setSavings(res);
-        } else if (section === "swap") {
-          const res = await api.getSwapRates();
-          setSwapRates(res.rates || null);
         } else if (section === "business") {
           if (isBiz) {
             const [home, invs, exps, links] = await Promise.all([
@@ -423,8 +417,6 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
         <View style={{ flexDirection: "row", gap: 8 }}>
           <Pill label="Wallets" active={section === "accounts"} onPress={() => setSection("accounts")} />
           <Pill label="Global Bank" active={section === "global"} onPress={() => setSection("global")} />
-          <Pill label="Savings" active={section === "savings"} onPress={() => setSection("savings")} />
-          <Pill label="Swap" active={section === "swap"} onPress={() => setSection("swap")} />
           <Pill
             label={isBiz ? "Business Tools" : "Invoices"}
             active={section === "business"}
@@ -467,9 +459,9 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
                 <Text style={styles.bigVal}>{a.balance ? formatUsdc(a.balance.totalUsdc) : "—"}</Text>
                 <KeyValueRow label="Verification" value={`${a.kycStatus} (Tier ${a.kycTier})`} />
                 <KeyValueRow
-                  label="Arc / EVM Address"
+                  label="Deposit Address (EVM)"
                   value={shortAddr(a.depositAddress, 8, 6)}
-                  onCopy={a.depositAddress ? () => copy("EVM address", a.depositAddress!) : undefined}
+                  onCopy={a.depositAddress ? () => copy("Deposit address", a.depositAddress!) : undefined}
                 />
                 <KeyValueRow
                   label="Solana Address"
@@ -590,99 +582,7 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
         </>
       ) : null}
 
-      {/* 3. SAVINGS */}
-      {section === "savings" ? (
-        <Card>
-          <SectionHeader title={`${isBiz ? "Business" : "Personal"} Dollar Savings`} />
-          {savings?.position ? (
-            <>
-              <Text style={styles.bigVal}>{formatUsdc(savings.position.principalUsdc)}</Text>
-              <KeyValueRow
-                label="Accrued Yield"
-                value={`+${formatUsdc(savings.position.accruedYieldUsdc, 4)}`}
-              />
-              <KeyValueRow label="APY" value={`${savings.position.apy.toFixed(2)}%`} />
-              <Button
-                title="Withdraw All Savings"
-                variant="secondary"
-                onPress={handleSaveWithdraw}
-                style={{ marginTop: 14, marginBottom: 18 }}
-              />
-            </>
-          ) : (
-            <EmptyState
-              icon="trending-up-outline"
-              title="No active savings position"
-              subtitle="Earn live on-chain yield on idle USDC and withdraw anytime."
-            />
-          )}
-
-          {savings?.pools?.length ? (
-            <View style={{ marginBottom: 14 }}>
-              <SectionHeader title="Live Vaults" />
-              {savings.pools.map((p, i) => (
-                <KeyValueRow key={i} label={`${p.name} (${p.symbol})`} value={`${p.apy.toFixed(2)}% APY`} />
-              ))}
-            </View>
-          ) : null}
-
-          <Input
-            label="Deposit Amount (USDC)"
-            placeholder="e.g. 100"
-            value={saveAmt}
-            onChangeText={setSaveAmt}
-            keyboardType="decimal-pad"
-          />
-          <Button title="Deposit into Savings" onPress={handleSaveDeposit} />
-        </Card>
-      ) : null}
-
-      {/* 4. SWAP (USDC <-> EURC) */}
-      {section === "swap" ? (
-        <Card>
-          <SectionHeader title="USDC ↔ EURC Swap" />
-          <View style={styles.pillWrap}>
-            <Pill
-              label="USDC → EURC"
-              active={swapDir === "USDC_EURC"}
-              onPress={() => {
-                setSwapDir("USDC_EURC");
-                setSwapQuote(null);
-              }}
-            />
-            <Pill
-              label="EURC → USDC"
-              active={swapDir === "EURC_USDC"}
-              onPress={() => {
-                setSwapDir("EURC_USDC");
-                setSwapQuote(null);
-              }}
-            />
-          </View>
-          {swapRates ? (
-            <Text style={styles.muted}>Live FX: {JSON.stringify(swapRates)}</Text>
-          ) : null}
-          <Input
-            label={`Amount (${swapDir === "USDC_EURC" ? "USDC" : "EURC"})`}
-            placeholder="e.g. 50"
-            value={swapAmt}
-            onChangeText={setSwapAmt}
-            keyboardType="decimal-pad"
-          />
-          <Button title="Get Live Quote" variant="secondary" onPress={handleQuoteSwap} loading={loading} style={{ marginBottom: 10 }} />
-          {swapQuote ? (
-            <View style={styles.subCard}>
-              <KeyValueRow
-                label="Estimated Receive"
-                value={`${swapQuote.amountOut ?? "—"} ${swapDir === "USDC_EURC" ? "EURC" : "USDC"}`}
-              />
-            </View>
-          ) : null}
-          <Button title="Approve & Execute Swap" onPress={handleExecuteSwap} />
-        </Card>
-      ) : null}
-
-      {/* 5. BUSINESS TOOLS & INVOICES */}
+      {/* 3. BUSINESS TOOLS & INVOICES */}
       {section === "business" ? (
         <>
           {isBiz && bizHome ? (

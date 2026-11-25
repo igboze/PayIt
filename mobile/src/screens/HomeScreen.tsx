@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  FlatList,
   Image,
   Modal,
   Pressable,
@@ -29,7 +30,28 @@ import {
   SuccessBanner,
 } from "../components/UI";
 
-export type HomeModalTarget = "add" | "send" | "bills" | "cards" | "savings" | "swap" | "assistant";
+export type HomeModalTarget =
+  | "add"
+  | "send"
+  | "bills"
+  | "cards"
+  | "savings"
+  | "swap"
+  | "assistant"
+  | "global"
+  | "kyc";
+
+function friendlyTxKind(rawType: string): string {
+  const t = String(rawType || "").toLowerCase();
+  if (/deposit|onramp|receive|credit|claim|refund/.test(t)) return "Deposit";
+  if (/offramp|withdraw|payout|cashout/.test(t)) return "Withdrawal";
+  if (/bill/.test(t)) return "Bill Payment";
+  if (/card/.test(t)) return "Card";
+  if (/swap/.test(t)) return "Swap";
+  if (/saving|yield/.test(t)) return "Savings";
+  if (/transfer|p2p|send/.test(t)) return "Transfer";
+  return t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) || "Transaction";
+}
 
 export function HomeScreen({ onNavigate }: { onNavigate: (target: HomeModalTarget) => void }) {
   const { user, activeAccount, dataVersion } = useApp();
@@ -50,7 +72,7 @@ export function HomeScreen({ onNavigate }: { onNavigate: (target: HomeModalTarge
       try {
         const [balRes, txRes] = await Promise.all([
           api.getBalances(activeAccount),
-          api.getTransactions(25, activeAccount),
+          api.getTransactions(40, activeAccount),
         ]);
         setBalance(balRes);
         setTransactions(txRes.transactions || []);
@@ -69,12 +91,9 @@ export function HomeScreen({ onNavigate }: { onNavigate: (target: HomeModalTarge
   }, [loadData, dataVersion]);
 
   const isBiz = activeAccount === "business";
-  const depositAddr = balance?.depositAddress || user?.activeDepositAddress || null;
-  const arcUsdc = Number(balance?.arc?.usdc ?? 0);
-  const arcEurc = Number(balance?.arc?.eurc ?? 0);
-  const baseUsdc = Number(balance?.base?.usdc ?? 0);
-  const solUsdc = Number(balance?.solana?.usdc ?? 0);
-  const gwUsdc = Number(balance?.gateway?.usdc ?? 0);
+  const ngnAccount = balance?.ngnAccount || user?.ngnAccount || null;
+  const isVerified = Number(user?.kycTier ?? 0) >= 1;
+  const eurcBal = Number(balance?.arc?.eurc ?? 0);
   const pendingBridge = Number(balance?.pendingBridgeUsdc ?? 0);
 
   const copyText = async (label: string, val: string) => {
@@ -98,205 +117,208 @@ export function HomeScreen({ onNavigate }: { onNavigate: (target: HomeModalTarge
 
   const accessToken = getAccessToken();
 
-  return (
-    <ScrollView
-      style={styles.scroll}
-      contentContainerStyle={styles.content}
-      refreshControl={
-        <RefreshControl
-          refreshing={refreshing}
-          onRefresh={() => loadData(true)}
-          tintColor={COLORS.primary}
-        />
-      }
-    >
-      <ErrorBanner message={error} onDismiss={() => setError(null)} />
-      <SuccessBanner message={copiedMsg} onDismiss={() => setCopiedMsg(null)} />
-
-      {/* Main Balance Card */}
-      <Card style={[styles.balanceCard, isBiz ? styles.bizBalanceCard : undefined]}>
-        <View style={styles.balTopRow}>
-          <View>
-            <Text style={[styles.acctBadge, { color: isBiz ? COLORS.business : COLORS.primary }]}>
-              {isBiz ? "BUSINESS WALLET" : "PERSONAL WALLET"}
-            </Text>
-            <Text style={styles.senderSub}>
-              {isBiz
-                ? user?.bizSenderName || "Business Account"
-                : user?.senderName || (user?.username ? `@${user.username}` : "Proxim Account")}
-            </Text>
-          </View>
-          <View style={styles.kycChip}>
-            <Text style={styles.kycChipText}>Tier {user?.kycTier ?? 0}</Text>
-          </View>
-        </View>
-
-        {loading && !balance ? (
-          <View style={styles.balLoading}>
-            <ActivityIndicator color={COLORS.primary} />
-            <Text style={styles.balLoadingText}>Loading live on-chain balance…</Text>
-          </View>
-        ) : (
-          <Text style={styles.totalAmount}>
-            {balance ? formatUsdc(balance.totalUsdc) : "—"}
-          </Text>
-        )}
-
-        <Text style={styles.totalLabel}>Unified USDC balance</Text>
-
-        {balance ? (
-          <View style={styles.chainRow}>
-            <View style={styles.chainChip}>
-              <Text style={styles.chainChipText}>Arc {formatUsdc(arcUsdc)}</Text>
-            </View>
-            {arcEurc > 0 ? (
-              <View style={styles.chainChip}>
-                <Text style={styles.chainChipText}>EURC €{arcEurc.toFixed(2)}</Text>
-              </View>
-            ) : null}
-            {baseUsdc > 0 ? (
-              <View style={styles.chainChip}>
-                <Text style={styles.chainChipText}>Base {formatUsdc(baseUsdc)}</Text>
-              </View>
-            ) : null}
-            {solUsdc > 0 ? (
-              <View style={styles.chainChip}>
-                <Text style={styles.chainChipText}>Solana {formatUsdc(solUsdc)}</Text>
-              </View>
-            ) : null}
-            {gwUsdc > 0 ? (
-              <View style={styles.chainChip}>
-                <Text style={styles.chainChipText}>Gateway {formatUsdc(gwUsdc)}</Text>
-              </View>
-            ) : null}
-            {pendingBridge > 0 ? (
-              <View style={[styles.chainChip, { borderColor: COLORS.businessBorder }]}>
-                <Text style={[styles.chainChipText, { color: COLORS.business }]}>
-                  Bridging {formatUsdc(pendingBridge)}
-                </Text>
-              </View>
-            ) : null}
-          </View>
-        ) : null}
-
-        {depositAddr ? (
-          <Pressable
-            onPress={() => copyText("Wallet address", depositAddr)}
-            style={styles.addrRow}
-          >
-            <Text style={styles.addrText}>
-              {isBiz ? "Business" : "Personal"} address: {shortAddr(depositAddr, 8, 6)}
-            </Text>
-            <Ionicons name="copy-outline" size={14} color={COLORS.primary} />
-          </Pressable>
-        ) : null}
-      </Card>
-
-      {/* Quick Actions */}
-      <View style={styles.qaGrid}>
-        {quickActions.map((qa) => (
-          <Pressable
-            key={qa.key}
-            onPress={() => onNavigate(qa.key)}
-            style={({ pressed }) => [styles.qaItem, pressed && { opacity: 0.78 }]}
-          >
-            <View style={styles.qaIconCircle}>
-              <Ionicons name={qa.icon} size={22} color={COLORS.primary} />
-            </View>
-            <Text style={styles.qaLabel}>{qa.label}</Text>
-          </Pressable>
-        ))}
-      </View>
-
-      {/* Assistant CTA */}
+  const renderTxItem = ({ item: tx, index }: { item: TransactionItem; index: number }) => {
+    const isCredit = /receive|deposit|onramp|claim|refund|credit/i.test(tx.type);
+    const kindLabel = friendlyTxKind(tx.type);
+    return (
       <Pressable
-        onPress={() => onNavigate("assistant")}
-        style={({ pressed }) => [styles.assistantBar, pressed && { opacity: 0.85 }]}
+        onPress={() => {
+          setSelectedTx(tx);
+          setShowReceiptImg(false);
+        }}
+        style={({ pressed }) => [
+          styles.txRow,
+          index < transactions.length - 1 && styles.txDivider,
+          pressed && { opacity: 0.75 },
+        ]}
       >
-        <View style={styles.assistantIcon}>
-          <Ionicons name="sparkles" size={18} color={COLORS.primary} />
+        <View
+          style={[
+            styles.txIcon,
+            { backgroundColor: isCredit ? COLORS.primaryMuted : COLORS.surfaceElevated },
+          ]}
+        >
+          <Ionicons
+            name={isCredit ? "arrow-down" : "arrow-up"}
+            size={16}
+            color={isCredit ? COLORS.primary : COLORS.text}
+          />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.assistantTitle}>Ask Proxim Assistant</Text>
-          <Text style={styles.assistantSub}>
-            Check balances, look up contacts, or draft a payment for Passkey approval
+          <Text style={styles.txTitle} numberOfLines={1}>
+            {tx.narration || kindLabel}
+          </Text>
+          <Text style={styles.txMeta} numberOfLines={1}>
+            {kindLabel} · {tx.status}
+            {tx.createdAt ? ` · ${tx.createdAt.slice(0, 16)}` : ""}
           </Text>
         </View>
-        <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+        <Text
+          style={[
+            styles.txAmount,
+            { color: isCredit ? COLORS.primary : COLORS.text },
+          ]}
+        >
+          {isCredit ? "+" : "-"}
+          {formatRawTxAmount(tx.amount, tx.decimals)}
+        </Text>
       </Pressable>
+    );
+  };
 
-      {/* Recent Activity */}
-      <SectionHeader
-        title={`${isBiz ? "Business" : "Personal"} Activity`}
-        right={
-          <Text style={styles.countText}>
-            {transactions.length} {transactions.length === 1 ? "item" : "items"}
-          </Text>
-        }
-      />
+  return (
+    <View style={styles.container}>
+      {/* Fixed Upper Section — never scrolls when browsing Activity */}
+      <View style={styles.topFixed}>
+        <ErrorBanner message={error} onDismiss={() => setError(null)} />
+        <SuccessBanner message={copiedMsg} onDismiss={() => setCopiedMsg(null)} />
 
-      <Card style={{ paddingVertical: 6 }}>
-        {loading && transactions.length === 0 ? (
-          <View style={styles.txLoading}>
-            <ActivityIndicator color={COLORS.primary} />
+        <Card style={[styles.balanceCard, isBiz && styles.bizBalanceCard]}>
+          <View style={styles.balTopRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.acctBadge, { color: isBiz ? COLORS.business : COLORS.primary }]}>
+                {isBiz ? "BUSINESS BALANCE" : "PERSONAL BALANCE"}
+              </Text>
+              <Text style={styles.senderSub} numberOfLines={1}>
+                {isBiz
+                  ? user?.bizSenderName || "Business Account"
+                  : user?.senderName || (user?.username ? `@${user.username}` : "Proxim Account")}
+              </Text>
+            </View>
+            <View style={styles.kycChip}>
+              <Text style={styles.kycChipText}>Tier {user?.kycTier ?? 0}</Text>
+            </View>
           </View>
-        ) : transactions.length === 0 ? (
-          <EmptyState
-            icon="wallet-outline"
-            title="No transactions yet"
-            subtitle={`Add money to your ${isBiz ? "Business" : "Personal"} wallet to get started.`}
-          />
-        ) : (
-          transactions.map((tx, idx) => {
-            const isCredit = /receive|deposit|onramp|claim|refund|credit/i.test(tx.type);
-            return (
-              <Pressable
-                key={tx.id}
-                onPress={() => {
-                  setSelectedTx(tx);
-                  setShowReceiptImg(false);
-                }}
-                style={({ pressed }) => [
-                  styles.txRow,
-                  idx < transactions.length - 1 && styles.txDivider,
-                  pressed && { opacity: 0.75 },
-                ]}
-              >
-                <View
-                  style={[
-                    styles.txIcon,
-                    { backgroundColor: isCredit ? COLORS.primaryMuted : COLORS.surfaceElevated },
-                  ]}
-                >
-                  <Ionicons
-                    name={isCredit ? "arrow-down" : "arrow-up"}
-                    size={16}
-                    color={isCredit ? COLORS.primary : COLORS.text}
-                  />
+
+          {loading && !balance ? (
+            <View style={styles.balLoading}>
+              <ActivityIndicator color={COLORS.primary} />
+              <Text style={styles.balLoadingText}>Loading live balance…</Text>
+            </View>
+          ) : (
+            <View style={styles.amountRow}>
+              <Text style={styles.totalAmount}>
+                {balance ? formatUsdc(balance.totalUsdc) : "—"}
+              </Text>
+              {eurcBal > 0 ? (
+                <View style={styles.extraChip}>
+                  <Text style={styles.extraChipText}>€{eurcBal.toFixed(2)} EURC</Text>
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.txTitle} numberOfLines={1}>
-                    {tx.narration || tx.type.replace(/_/g, " ")}
-                  </Text>
-                  <Text style={styles.txMeta} numberOfLines={1}>
-                    {tx.chain.toUpperCase()} · {tx.status}
-                    {tx.createdAt ? ` · ${tx.createdAt.slice(0, 16)}` : ""}
+              ) : null}
+              {pendingBridge > 0 ? (
+                <View style={[styles.extraChip, { borderColor: COLORS.businessBorder }]}>
+                  <Text style={[styles.extraChipText, { color: COLORS.business }]}>
+                    Pending {formatUsdc(pendingBridge)}
                   </Text>
                 </View>
-                <Text
-                  style={[
-                    styles.txAmount,
-                    { color: isCredit ? COLORS.primary : COLORS.text },
-                  ]}
-                >
-                  {isCredit ? "+" : "-"}
-                  {formatRawTxAmount(tx.amount, tx.decimals)}
+              ) : null}
+            </View>
+          )}
+
+          {/* Verified NGN Account Number (replaces Web3 address on balance card) */}
+          {ngnAccount?.accountNumber ? (
+            <Pressable
+              onPress={() => copyText("NGN account number", ngnAccount.accountNumber)}
+              style={styles.ngnRow}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.ngnLabel}>
+                  NGN Account{ngnAccount.bankName ? ` · ${ngnAccount.bankName}` : ""}
                 </Text>
-              </Pressable>
-            );
-          })
-        )}
-      </Card>
+                <Text style={styles.ngnNumber}>{ngnAccount.accountNumber}</Text>
+              </View>
+              <View style={styles.copyBadge}>
+                <Ionicons name="copy-outline" size={14} color={COLORS.primary} />
+                <Text style={styles.copyBadgeText}>Copy</Text>
+              </View>
+            </Pressable>
+          ) : isVerified ? (
+            <Pressable onPress={() => onNavigate("global")} style={styles.ngnRow}>
+              <Text style={styles.ngnCta}>Get your dedicated NGN account number</Text>
+              <Ionicons name="chevron-forward" size={16} color={COLORS.primary} />
+            </Pressable>
+          ) : (
+            <Pressable onPress={() => onNavigate("kyc")} style={styles.ngnRow}>
+              <Text style={styles.ngnCta}>Verify ID to unlock your NGN account number</Text>
+              <Ionicons name="chevron-forward" size={16} color={COLORS.primary} />
+            </Pressable>
+          )}
+        </Card>
+
+        {/* Quick Actions */}
+        <View style={styles.qaGrid}>
+          {quickActions.map((qa) => (
+            <Pressable
+              key={qa.key}
+              onPress={() => onNavigate(qa.key)}
+              style={({ pressed }) => [styles.qaItem, pressed && { opacity: 0.78 }]}
+            >
+              <View style={styles.qaIconCircle}>
+                <Ionicons name={qa.icon} size={20} color={COLORS.primary} />
+              </View>
+              <Text style={styles.qaLabel}>{qa.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+
+        {/* Compact Assistant CTA */}
+        <Pressable
+          onPress={() => onNavigate("assistant")}
+          style={({ pressed }) => [styles.assistantBar, pressed && { opacity: 0.85 }]}
+        >
+          <View style={styles.assistantIcon}>
+            <Ionicons name="sparkles" size={16} color={COLORS.primary} />
+          </View>
+          <Text style={styles.assistantTitle} numberOfLines={1}>
+            Ask Proxim Assistant
+          </Text>
+          <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
+        </Pressable>
+      </View>
+
+      {/* Independently Scrollable Activity Segment */}
+      <View style={styles.activitySection}>
+        <SectionHeader
+          title={`${isBiz ? "Business" : "Personal"} Activity`}
+          right={
+            <Text style={styles.countText}>
+              {transactions.length} {transactions.length === 1 ? "item" : "items"}
+            </Text>
+          }
+        />
+
+        <View style={styles.activityCard}>
+          {loading && transactions.length === 0 ? (
+            <View style={styles.txLoading}>
+              <ActivityIndicator color={COLORS.primary} />
+            </View>
+          ) : (
+            <FlatList
+              data={transactions}
+              keyExtractor={(item) => String(item.id)}
+              renderItem={renderTxItem}
+              showsVerticalScrollIndicator={true}
+              contentContainerStyle={
+                transactions.length === 0 ? { flexGrow: 1, justifyContent: "center" } : styles.txListContent
+              }
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={() => loadData(true)}
+                  tintColor={COLORS.primary}
+                />
+              }
+              ListEmptyComponent={
+                <EmptyState
+                  icon="wallet-outline"
+                  title="No transactions yet"
+                  subtitle={`Deposit funds into your ${isBiz ? "Business" : "Personal"} balance to get started.`}
+                />
+              }
+            />
+          )}
+        </View>
+      </View>
 
       {/* Transaction Detail & Receipt Modal */}
       <Modal
@@ -312,21 +334,20 @@ export function HomeScreen({ onNavigate }: { onNavigate: (target: HomeModalTarge
               <ScrollView showsVerticalScrollIndicator={false}>
                 <KeyValueRow label="ID" value={`#${selectedTx.id}`} />
                 <KeyValueRow label="Account" value={selectedTx.accountType} />
-                <KeyValueRow label="Type" value={selectedTx.type} />
+                <KeyValueRow label="Type" value={friendlyTxKind(selectedTx.type)} />
                 <KeyValueRow label="Status" value={selectedTx.status} />
                 <KeyValueRow
                   label="Amount"
                   value={formatRawTxAmount(selectedTx.amount, selectedTx.decimals)}
                 />
-                <KeyValueRow label="Chain" value={selectedTx.chain} />
                 {selectedTx.narration ? (
                   <KeyValueRow label="Note" value={selectedTx.narration} />
                 ) : null}
                 {selectedTx.txHash ? (
                   <KeyValueRow
-                    label="Tx Hash"
+                    label="Reference"
                     value={shortAddr(selectedTx.txHash, 10, 8)}
-                    onCopy={() => copyText("Tx hash", selectedTx.txHash!)}
+                    onCopy={() => copyText("Reference", selectedTx.txHash!)}
                   />
                 ) : null}
                 {selectedTx.createdAt ? (
@@ -366,23 +387,25 @@ export function HomeScreen({ onNavigate }: { onNavigate: (target: HomeModalTarge
           </View>
         </View>
       </Modal>
-    </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  scroll: {
+  container: {
     flex: 1,
     backgroundColor: COLORS.bg,
+    paddingHorizontal: SPACING.md,
+    paddingTop: SPACING.sm,
   },
-  content: {
-    padding: SPACING.md,
-    paddingBottom: 32,
+  topFixed: {
+    flexShrink: 0,
   },
   balanceCard: {
     backgroundColor: COLORS.surface,
     borderColor: COLORS.primaryBorder,
-    padding: SPACING.lg,
+    padding: SPACING.md,
+    marginBottom: 10,
   },
   bizBalanceCard: {
     borderColor: COLORS.businessBorder,
@@ -391,24 +414,24 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
-    marginBottom: 14,
+    marginBottom: 8,
   },
   acctBadge: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: "800",
     letterSpacing: 1,
   },
   senderSub: {
     color: COLORS.textSecondary,
-    fontSize: 13,
-    marginTop: 2,
+    fontSize: 12,
+    marginTop: 1,
   },
   kycChip: {
     backgroundColor: COLORS.surfaceElevated,
     borderWidth: 1,
     borderColor: COLORS.borderStrong,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingHorizontal: 9,
+    paddingVertical: 3,
     borderRadius: RADIUS.pill,
   },
   kycChipText: {
@@ -420,44 +443,39 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    paddingVertical: 14,
+    paddingVertical: 8,
   },
   balLoadingText: {
     color: COLORS.textSecondary,
-    fontSize: 14,
+    fontSize: 13,
+  },
+  amountRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 10,
   },
   totalAmount: {
     color: COLORS.text,
-    fontSize: 38,
+    fontSize: 34,
     fontWeight: "800",
-    letterSpacing: -1,
+    letterSpacing: -0.8,
   },
-  totalLabel: {
-    color: COLORS.textSecondary,
-    fontSize: 12,
-    marginTop: 2,
-    marginBottom: 14,
-  },
-  chainRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-    marginBottom: 14,
-  },
-  chainChip: {
+  extraChip: {
     backgroundColor: COLORS.bg,
     borderRadius: RADIUS.pill,
     borderWidth: 1,
     borderColor: COLORS.border,
-    paddingHorizontal: 10,
+    paddingHorizontal: 9,
     paddingVertical: 4,
   },
-  chainChipText: {
+  extraChipText: {
     color: COLORS.textSecondary,
     fontSize: 11,
     fontWeight: "600",
   },
-  addrRow: {
+  ngnRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -466,110 +484,153 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
     paddingHorizontal: 12,
-    paddingVertical: 9,
+    paddingVertical: 8,
+    gap: 8,
   },
-  addrText: {
-    color: COLORS.textSecondary,
+  ngnLabel: {
+    color: COLORS.textMuted,
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  ngnNumber: {
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+    marginTop: 1,
+  },
+  ngnCta: {
+    color: COLORS.primary,
     fontSize: 12,
-    fontFamily: "monospace",
+    fontWeight: "600",
+    flex: 1,
+  },
+  copyBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: COLORS.primaryMuted,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: RADIUS.pill,
+  },
+  copyBadgeText: {
+    color: COLORS.primary,
+    fontSize: 11,
+    fontWeight: "700",
   },
   qaGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
     justifyContent: "space-between",
-    rowGap: 12,
-    marginBottom: SPACING.md,
+    rowGap: 8,
+    marginBottom: 10,
   },
   qaItem: {
-    width: "31%",
+    width: "31.5%",
     backgroundColor: COLORS.surface,
     borderRadius: RADIUS.md,
     borderWidth: 1,
     borderColor: COLORS.border,
-    paddingVertical: 14,
+    paddingVertical: 10,
     alignItems: "center",
-    gap: 8,
+    gap: 5,
   },
   qaIconCircle: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: COLORS.primaryMuted,
     alignItems: "center",
     justifyContent: "center",
   },
   qaLabel: {
     color: COLORS.text,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "700",
   },
   assistantBar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 10,
     backgroundColor: COLORS.surface,
-    borderRadius: RADIUS.lg,
+    borderRadius: RADIUS.md,
     borderWidth: 1,
     borderColor: COLORS.border,
-    padding: 14,
-    marginBottom: SPACING.lg,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginBottom: 10,
   },
   assistantIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     backgroundColor: COLORS.primaryMuted,
     alignItems: "center",
     justifyContent: "center",
   },
   assistantTitle: {
     color: COLORS.text,
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "700",
+    flex: 1,
   },
-  assistantSub: {
-    color: COLORS.textSecondary,
-    fontSize: 12,
-    marginTop: 2,
+  activitySection: {
+    flex: 1,
+    minHeight: 160,
+    paddingBottom: 8,
+  },
+  activityCard: {
+    flex: 1,
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.lg,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    overflow: "hidden",
+  },
+  txListContent: {
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 4,
   },
   countText: {
     color: COLORS.textMuted,
     fontSize: 12,
   },
   txLoading: {
-    paddingVertical: 28,
+    flex: 1,
     alignItems: "center",
+    justifyContent: "center",
   },
   txRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    paddingVertical: 12,
+    paddingVertical: 11,
   },
   txDivider: {
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   txIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     alignItems: "center",
     justifyContent: "center",
   },
   txTitle: {
     color: COLORS.text,
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "600",
     textTransform: "capitalize",
   },
   txMeta: {
     color: COLORS.textMuted,
-    fontSize: 12,
+    fontSize: 11,
     marginTop: 2,
   },
   txAmount: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "700",
   },
   modalBackdrop: {

@@ -12,6 +12,8 @@ const deps = {
   get walletLib() { return require("../wallet"); },
   get fraudGuard() { return require("../fraud_guard"); },
   get notify() { return require("../notify"); },
+  get paj() { return require("../paj"); },
+  get multichain() { return require("../multichain"); },
 };
 const overrides = {};
 const dep = (name) => (name in overrides ? overrides[name] : deps[name]);
@@ -127,7 +129,9 @@ async function runOne(r, now) {
   const telegramId = Number(r.telegram_id);
   const amount = Number(payment.amountUsdc);
   const accountType = payment.accountType === "business" ? "business" : "personal";
-  const reference = r.kind === "transfer.user" ? `user:${payment.recipientId}` : payment.toAddress;
+  const reference = r.kind === "transfer.user" ? `user:${payment.recipientId}`
+    : r.kind === "payout.ngn" ? `${payment.bankCode}:${payment.accountNumber}`
+    : payment.toAddress;
   const user = db.getUser(telegramId);
   if (!user) throw new Error("account not found");
   if (accountType === "business" && !user.business_deposit_address) throw new Error("business account not found");
@@ -138,12 +142,53 @@ async function runOne(r, now) {
   await dep("fraudGuard").assertOutboundAllowed({ telegramId, accountType, action: "app_schedule", amountUsd: amount, reference });
   const key = db.getSystemDecryptedPrivateKey(user, accountType);
   if (!key) throw new Error("wallet key unavailable");
+  if (r.kind === "payout.ngn") return runBankPayout({ telegramId, accountType, amount, payment, key });
   const signer = walletLib.walletFromPrivateKey(key);
   const amountMicro = walletLib.parseToMicro(amount.toFixed(6));
   const tx = await walletLib.sendSponsoredOrDirectTransaction(signer, payment.toAddress, amountMicro, "0x", { waitForConfirmation: false });
   const txHash = tx.txHash || tx.hash;
   db.recordTransaction(telegramId, "scheduled_transfer", String(amountMicro), "completed", txHash, accountType, 18, "arc", payment.narration || null);
   return txHash;
+}
+
+/** NGN bank payout: open a Paj off-ramp order, then fund its address from the user's wallet. */
+async function runBankPayout({ telegramId, accountType, amount, payment, key }) {
+  const db = dep("db");
+  const walletLib = dep("walletLib");
+  const multichain = dep("multichain");
+  const senderName = db.resolveSenderName(telegramId, accountType);
+  const order = await dep("paj").createOfframpPayout({
+    amountUsdc: amount, bankCode: payment.bankCode, accountNumber: payment.accountNumber,
+    accountName: payment.accountName || undefined, narration: payment.narration || undefined, senderName,
+  });
+  const fundingAddress = order && order.address;
+  const fundingAmount = Number((order && order.amount) || amount);
+  if (!fundingAddress) throw new Error("bank partner didn't return a funding address; nothing was sent");
+  // Never fund more than the user approved for this schedule.
+  if (!(fundingAmount > 0) || fundingAmount > amount * 1.01) throw new Error("bank partner asked for a different amount; nothing was sent");
+  let txHash = null;
+  let rail = "arc";
+  if (multichain.isSolanaAddress(fundingAddress)) {
+    rail = "solana";
+    const sol = multichain.deriveSolanaFromEvmKey(key);
+    const tx = await multichain.sendSolanaTransfer({ keypair: sol.keypair, recipientAddress: fundingAddress, amount: fundingAmount });
+    txHash = (tx && (tx.txHash || tx.signature)) || null;
+  } else if (walletLib.isValidAddress(fundingAddress)) {
+    const signer = walletLib.walletFromPrivateKey(key);
+    const tx = await walletLib.sendSponsoredOrDirectTransaction(signer, fundingAddress, walletLib.parseToMicro(fundingAmount.toFixed(6)), "0x", { waitForConfirmation: false });
+    txHash = (tx && (tx.txHash || tx.hash)) || null;
+  } else {
+    throw new Error("unsupported funding address from the bank partner; nothing was sent");
+  }
+  const orderId = order.id || order.reference || txHash;
+  db.recordOfframpOrder({
+    orderId, telegramId, accountType, accountNumber: String(payment.accountNumber), bankCode: String(payment.bankCode),
+    bankName: order.bankName || (order.bank && order.bank.name) || null, accountName: order.accountName || payment.accountName || null,
+    amountUsdc: fundingAmount, fiatAmount: order.fiatAmount || null, rate: order.rate || null, rail, txHash,
+    narration: payment.narration || null, senderName: senderName || null, status: "submitted",
+  });
+  db.recordTransaction(telegramId, "offramp", String(walletLib.parseToMicro(fundingAmount.toFixed(6))), "submitted", txHash || orderId, accountType, 18, rail, payment.narration || null);
+  return txHash || orderId;
 }
 
 /** Runs every due schedule once. Returns { ran, failed }. Safe to call concurrently-free (single process). */

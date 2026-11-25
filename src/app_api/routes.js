@@ -198,6 +198,30 @@ function resolveAccountType(auth, explicit = null) {
   return raw;
 }
 
+function getVerifiedNgnAccount(telegramId, accountType) {
+  try {
+    const db = dep("db");
+    const entity = db.getNuvionEntityByUser?.(telegramId, accountType);
+    if (!entity) return null;
+    const details = db.getNuvionAccountDetailsByEntity?.(entity.entity_id) || [];
+    const ngn = details.find(
+      (d) =>
+        String(d.currency || "").toUpperCase() === "NGN" &&
+        d.account_number &&
+        String(d.asset_type || "fiat").toLowerCase() === "fiat"
+    );
+    if (!ngn) return null;
+    return {
+      bankName: ngn.bank_name || null,
+      accountNumber: ngn.account_number,
+      beneficiaryName: ngn.beneficiary_name || null,
+      status: ngn.status || "active",
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
 function publicUser(user, device) {
   let personalTier1 = false;
   let businessTier1 = false;
@@ -213,6 +237,7 @@ function publicUser(user, device) {
   }
   const activeContext = user.active_context === "business" && user.business_deposit_address ? "business" : "personal";
   const activeDepositAddress = activeContext === "business" ? user.business_deposit_address : (user.deposit_address || null);
+  const ngnAccount = getVerifiedNgnAccount(user.telegram_id, activeContext);
   return {
     id: String(user.telegram_id),
     username: user.username || null,
@@ -226,6 +251,7 @@ function publicUser(user, device) {
     businessKycTier: businessTier1 ? 1 : 0,
     depositAddress: user.deposit_address || null,
     activeDepositAddress,
+    ngnAccount,
     hasBusinessAccount: Boolean(user.business_deposit_address),
     businessDepositAddress: user.business_deposit_address || null,
     activeContext,
@@ -485,6 +511,7 @@ async function balances(req, url) {
     data: {
       accountType,
       depositAddress: accountType === "business" ? auth.user.business_deposit_address : (auth.user.deposit_address || null),
+      ngnAccount: getVerifiedNgnAccount(auth.telegramId, accountType),
       totalUsdc: unified.total,
       arc: unified.arc,
       base: unified.base || { usdc: 0 },

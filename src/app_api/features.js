@@ -673,17 +673,26 @@ async function listCryptoDepositTokens(auth, url = null) {
   const near = dep("near");
   const evmAddr = getStrictAccountArcAddress(auth.user, accountType);
   const solAddr = getStrictAccountSolanaAddress(auth.user, accountType);
-  const [nearTokens, solanaTokens, robinhoodTokens, starknetTokens] = await Promise.all([
+  const [nearTokens, solanaTokens, robinhoodTokens, starknetTokens, allCatalog] = await Promise.all([
     Promise.resolve(near.getSupportedNearTokens()).catch(() => []),
     Promise.resolve(near.getSupportedSolanaTokens()).catch(() => []),
     Promise.resolve(near.getSupportedRobinhoodTokens()).catch(() => []),
     Promise.resolve(near.getSupportedStarknetTokens()).catch(() => []),
+    typeof near.getAllSupportedIntentTokens === "function"
+      ? Promise.resolve(near.getAllSupportedIntentTokens()).catch(() => ({ chains: [], tokensByChain: {} }))
+      : Promise.resolve({ chains: [], tokensByChain: {} }),
   ]);
+  const addLogos = (arr) =>
+    (Array.isArray(arr) ? arr : []).map((t) => ({
+      ...t,
+      logoUrl: t.logoUrl || (typeof near.getTokenLogoUrl === "function" ? near.getTokenLogoUrl(t.symbol) : null),
+    }));
   return {
     status: 200,
     data: {
       accountType,
       directAddresses: {
+        evm: evmAddr || null,
         arc: evmAddr || null,
         base: evmAddr || null,
         arbitrum: evmAddr || null,
@@ -694,19 +703,22 @@ async function listCryptoDepositTokens(auth, url = null) {
         robinhood: evmAddr || null,
         solana: solAddr || null,
       },
+      chains: allCatalog?.chains || [],
+      tokensByChain: allCatalog?.tokensByChain || {},
       intents: {
-        near: nearTokens,
-        solana: solanaTokens,
-        robinhood: robinhoodTokens,
-        starknet: starknetTokens,
+        near: addLogos(nearTokens),
+        solana: addLogos(solanaTokens),
+        robinhood: addLogos(robinhoodTokens),
+        starknet: addLogos(starknetTokens),
       },
     },
   };
 }
 
 async function createCryptoDepositIntent(auth, body) {
-  const chain = reqStr(body, "chain", { pattern: /^(near|solana|robinhood|starknet)$/i }).toLowerCase();
-  const symbol = reqStr(body, "symbol", { max: 24 }).toUpperCase();
+  const rawChain = reqStr(body, "chain", { pattern: /^[A-Za-z0-9_-]{2,24}$/ }).toLowerCase();
+  const symbol = reqStr(body, "symbol", { max: 32 }).toUpperCase();
+  const assetId = optStr(body, "assetId", { max: 180 });
   const amount = Number(body?.amount);
   if (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000) {
     throw bad("Enter a valid deposit amount.", "invalid_amount");
@@ -720,18 +732,22 @@ async function createCryptoDepositIntent(auth, body) {
   let refundTo = optStr(body, "refundTo", { max: 128 });
   let token = null;
   let row = null;
+  const chain = typeof near.normalizeIntentChainKey === "function" ? near.normalizeIntentChainKey(rawChain) : rawChain;
+
+  const deriveNearRefund = () => {
+    try {
+      const sysKey = db.getSystemDecryptedPrivateKey(auth.user, accountType);
+      if (sysKey && typeof near.deriveNearAddress === "function") {
+        return near.deriveNearAddress(sysKey)?.nearAddress || null;
+      }
+    } catch (_) {}
+    return null;
+  };
 
   if (chain === "near") {
-    token = await near.resolveNearToken(symbol);
+    token = await near.resolveNearToken(assetId || symbol);
     if (!token) throw bad(`Unsupported NEAR token: ${symbol}`);
-    if (!refundTo) {
-      try {
-        const sysKey = db.getSystemDecryptedPrivateKey(auth.user, accountType);
-        if (sysKey && typeof near.deriveNearAddress === "function") {
-          refundTo = near.deriveNearAddress(sysKey)?.nearAddress || null;
-        }
-      } catch (_) {}
-    }
+    if (!refundTo) refundTo = deriveNearRefund();
     if (!refundTo) throw bad("refundTo (your NEAR refund address) is required for NEAR deposits.");
     row = await near.createNearDeposit({
       telegramId: auth.telegramId,
@@ -744,8 +760,11 @@ async function createCryptoDepositIntent(auth, body) {
       recipientAddress,
       refundTo,
     });
-  } else if (chain === "solana") {
-    token = await near.resolveSolanaToken(symbol);
+  } else if (chain === "sol" || rawChain === "solana") {
+    token = await near.resolveSolanaToken(assetId || symbol);
+    if (!token && typeof near.resolveIntentToken === "function") {
+      token = await near.resolveIntentToken({ chain: "sol", symbol, assetId });
+    }
     if (!token) throw bad(`Unsupported Solana token: ${symbol}`);
     if (!refundTo) refundTo = getStrictAccountSolanaAddress(auth.user, accountType);
     if (!refundTo) throw bad("refundTo (your Solana refund address) is required for Solana deposits.");
@@ -759,8 +778,8 @@ async function createCryptoDepositIntent(auth, body) {
       recipientAddress,
       refundTo,
     });
-  } else if (chain === "robinhood") {
-    token = await near.resolveRobinhoodToken(symbol);
+  } else if (chain === "hood" || rawChain === "robinhood") {
+    token = await near.resolveRobinhoodToken(assetId || symbol);
     if (!token) throw bad(`Unsupported Robinhood Chain token: ${symbol}`);
     row = await near.createRobinhoodDeposit({
       telegramId: auth.telegramId,
@@ -773,8 +792,17 @@ async function createCryptoDepositIntent(auth, body) {
       refundTo: refundTo || recipientAddress,
     });
   } else if (chain === "starknet") {
-    token = await near.resolveStarknetToken(symbol);
+    token = await near.resolveStarknetToken(assetId || symbol);
     if (!token) throw bad(`Unsupported Starknet token: ${symbol}`);
+    let starkRefund = refundTo;
+    if (!starkRefund) {
+      try {
+        const sysKey = db.getSystemDecryptedPrivateKey(auth.user, accountType);
+        if (sysKey && typeof near.deriveStarknetAddress === "function") {
+          starkRefund = near.deriveStarknetAddress(sysKey)?.starknetAddress || null;
+        }
+      } catch (_) {}
+    }
     row = await near.createStarknetDeposit({
       telegramId: auth.telegramId,
       accountType,
@@ -783,8 +811,39 @@ async function createCryptoDepositIntent(auth, body) {
       originDecimals: token.decimals,
       amount,
       recipientAddress,
-      refundTo: refundTo || recipientAddress,
+      refundTo: starkRefund || recipientAddress,
     });
+  } else if (typeof near.resolveIntentToken === "function" && typeof near.createUniversalCryptoDeposit === "function") {
+    token = await near.resolveIntentToken({ chain, symbol, assetId });
+    if (!token) throw bad(`Unsupported token ${symbol} on ${rawChain}.`);
+    const meta = typeof near.getChainMeta === "function" ? near.getChainMeta(chain) : { isEvm: false, name: rawChain };
+    let refundType = "ORIGIN_CHAIN";
+    if (!refundTo) {
+      if (meta.isEvm) {
+        refundTo = recipientAddress;
+      } else {
+        // Non-EVM origin chains (BTC, Tron, TON, Sui, XRP, DOGE, LTC, Cardano, Stellar, Aptos, Zcash, etc.):
+        // use self-custodial NEAR Intents balance refund so deposits work immediately without requiring a separate refund wallet.
+        refundTo = deriveNearRefund();
+        refundType = "INTENTS";
+      }
+    }
+    if (!refundTo) {
+      throw bad(`Enter your ${meta.name} refund address (refundTo) to continue.`);
+    }
+    row = await near.createUniversalCryptoDeposit({
+      telegramId: auth.telegramId,
+      accountType,
+      originAsset: token.assetId,
+      originSymbol: token.symbol,
+      originDecimals: token.decimals,
+      amount,
+      recipientAddress,
+      refundTo,
+      refundType,
+    });
+  } else {
+    throw bad(`Unsupported chain: ${rawChain}`);
   }
 
   return {
@@ -1102,8 +1161,8 @@ async function getSavingsOverview(auth, url = null) {
       pools: (Array.isArray(pools) ? pools : []).map((p) => ({
         name: p.name || p.project || "Dollar lending vault",
         symbol: p.symbol || "USDC",
-        apy: Number(p.apy || 0),
-        tvlUsd: Number(p.tvlUsd || 0),
+        apy: Number(p.userApy ?? p.rawApy ?? p.apy ?? 0),
+        tvlUsd: Number(p.totalDeposits ?? p.tvlUsd ?? 0),
         vaultAddress: p.vaultAddress || null,
       })),
     },
@@ -1741,8 +1800,26 @@ async function sweepCryptoDeposits(auth, body) {
 }
 
 async function getSwapRates() {
-  const rates = await dep("swap").getFxRates();
-  return { status: 200, data: { rates } };
+  const swap = dep("swap");
+  if (typeof swap.getUsdcEurcPairRate === "function") {
+    const info = await swap.getUsdcEurcPairRate();
+    return {
+      status: 200,
+      data: {
+        pair: {
+          usdcUsd: info.usdcUsd,
+          eurcUsd: info.eurcUsd,
+          usdcToEurc: info.usdcToEurc,
+          eurcToUsdc: info.eurcToUsdc,
+          feePct: info.feePct,
+          updatedAt: info.updatedAt,
+        },
+        rates: info.rawRates || {},
+      },
+    };
+  }
+  const rates = await swap.getFxRates();
+  return { status: 200, data: { pair: null, rates } };
 }
 
 async function quoteSwap(auth, body) {

@@ -15,10 +15,12 @@ import { CardsScreen } from "./src/screens/CardsScreen";
 import { AccountsScreen, type AccountsSection } from "./src/screens/AccountsScreen";
 import { ProfileScreen } from "./src/screens/ProfileScreen";
 import { AssistantScreen } from "./src/screens/AssistantScreen";
+import { SavingsScreen } from "./src/screens/SavingsScreen";
+import { SwapScreen } from "./src/screens/SwapScreen";
 import { COLORS } from "./src/theme";
 
 type MainTab = "home" | "accounts" | "cards" | "profile";
-type OverlayScreen = "add" | "send" | "bills" | "assistant" | null;
+type OverlayScreen = "add" | "send" | "bills" | "savings" | "swap" | "assistant" | null;
 
 function MainShell() {
   const { user, bootstrapping } = useApp();
@@ -61,16 +63,22 @@ function MainShell() {
   }
 
   const handleHomeNav = (target: HomeModalTarget) => {
-    if (target === "add" || target === "send" || target === "bills" || target === "assistant") {
+    if (
+      target === "add" ||
+      target === "send" ||
+      target === "bills" ||
+      target === "savings" ||
+      target === "swap" ||
+      target === "assistant"
+    ) {
       setOverlay(target);
     } else if (target === "cards") {
       setTab("cards");
-    } else if (target === "savings") {
-      setAccountsSection("savings");
+    } else if (target === "global") {
+      setAccountsSection("global");
       setTab("accounts");
-    } else if (target === "swap") {
-      setAccountsSection("swap");
-      setTab("accounts");
+    } else if (target === "kyc") {
+      setTab("profile");
     }
   };
 
@@ -101,6 +109,22 @@ function MainShell() {
     return (
       <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
         <BillsScreen onBack={() => setOverlay(null)} />
+        <ApprovalSheet />
+      </SafeAreaView>
+    );
+  }
+  if (overlay === "savings") {
+    return (
+      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+        <SavingsScreen onBack={() => setOverlay(null)} />
+        <ApprovalSheet />
+      </SafeAreaView>
+    );
+  }
+  if (overlay === "swap") {
+    return (
+      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+        <SwapScreen onBack={() => setOverlay(null)} />
         <ApprovalSheet />
       </SafeAreaView>
     );

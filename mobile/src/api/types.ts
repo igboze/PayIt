@@ -2,6 +2,13 @@
 
 export type AccountType = "personal" | "business";
 
+export interface NgnReceivingAccount {
+  bankName: string | null;
+  accountNumber: string;
+  beneficiaryName: string | null;
+  status: string;
+}
+
 export interface ProximUser {
   id: string;
   username: string | null;
@@ -15,6 +22,7 @@ export interface ProximUser {
   businessKycTier: number;
   depositAddress: string | null;
   activeDepositAddress: string | null;
+  ngnAccount?: NgnReceivingAccount | null;
   hasBusinessAccount: boolean;
   businessDepositAddress: string | null;
   activeContext: AccountType;
@@ -32,6 +40,7 @@ export interface AuthSession {
 export interface UnifiedBalance {
   accountType?: AccountType;
   depositAddress?: string | null;
+  ngnAccount?: NgnReceivingAccount | null;
   totalUsdc: number;
   arc?: { usdc?: number; eurc?: number; [k: string]: unknown };
   base?: { usdc?: number; [k: string]: unknown };
@@ -159,14 +168,46 @@ export interface NgnDepositOrder {
   };
 }
 
+export interface IntentChainInfo {
+  key: string;
+  name: string;
+  short: string;
+  isEvm: boolean;
+  priority: number;
+  logoUrl: string | null;
+  tokenCount: number;
+}
+
+export interface IntentTokenInfo {
+  symbol: string;
+  name: string;
+  assetId: string;
+  decimals: number;
+  blockchain: string;
+  contractAddress?: string | null;
+  priceUsd?: number | null;
+  logoUrl?: string | null;
+}
+
+export interface SwapPairRate {
+  usdcUsd: number | null;
+  eurcUsd: number | null;
+  usdcToEurc: number | null;
+  eurcToUsdc: number | null;
+  feePct: number;
+  updatedAt: string;
+}
+
 export interface CryptoDepositTokensResponse {
   accountType: AccountType;
   directAddresses: Record<string, string | null>;
+  chains?: IntentChainInfo[];
+  tokensByChain?: Record<string, IntentTokenInfo[]>;
   intents: {
-    near: Array<{ symbol: string; assetId?: string; name?: string }>;
-    solana: Array<{ symbol: string; assetId?: string; name?: string }>;
-    robinhood: Array<{ symbol: string; assetId?: string; name?: string }>;
-    starknet: Array<{ symbol: string; assetId?: string; name?: string }>;
+    near: IntentTokenInfo[];
+    solana: IntentTokenInfo[];
+    robinhood: IntentTokenInfo[];
+    starknet: IntentTokenInfo[];
   };
 }
 

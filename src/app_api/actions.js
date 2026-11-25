@@ -203,11 +203,11 @@ const ACTIONS = {
       const txHash = await sendOnchain(ctx, pin, a.toAddress, a.amountUsdc, a.narration, "p2p_send", accountType);
       try {
         db.recordTransaction(Number(a.recipientId), "p2p_receive", String(dep("walletLib").parseToMicro(Number(a.amountUsdc).toFixed(6))), "completed", txHash, "personal", 18, "arc", a.narration || null);
-      } catch (_) {}
+      } catch (_) { }
       const from = ctx.user.username ? `@${ctx.user.username}` : "a Proxim user";
       try {
         await dep("notify").notify(Number(a.recipientId), { title: "Money received", html: `💸 <b>You received $${fmt(a.amountUsdc)}</b> from ${from}.${a.narration ? `\nNote: ${String(a.narration).replace(/[<>&]/g, "")}` : ""}` });
-      } catch (_) {}
+      } catch (_) { }
       return { txHash, amountUsdc: a.amountUsdc, to: a.recipientLabel, accountType, notice: `Sent $${fmt(a.amountUsdc)} to ${a.recipientLabel}` };
     },
   },
@@ -386,7 +386,7 @@ const ACTIONS = {
       const txHash = res?.txHash || res?.hash || res?.transactionHash || null;
       try {
         dep("db").recordTransaction(ctx.telegramId, "swap", String(amountMicro), "completed", txHash, accountType, 18, "arc", `Swap ${a.amountIn} ${a.tokenIn} -> ${a.tokenOut}`);
-      } catch (_) {}
+      } catch (_) { }
       return { result: res, txHash, notice: `Swapped ${fmt(a.amountIn)} ${a.tokenIn} to ${a.tokenOut}` };
     },
   },
@@ -401,8 +401,8 @@ const ACTIONS = {
       const narration = str(body, "narration", { optional: true, max: 60 }) || "";
       await precheck(ctx, amountUsdc, `${bankCode}:${accountNumber}`, "app_offramp_ngn", accountType);
       let rate = null;
-      try { const r = await dep("paj").getRates("NGN"); rate = Number(r?.offRampRate?.rate) || null; } catch (_) {}
-      if (!rate) { try { rate = Number(await dep("fx").getUsdToNgnRate()) || null; } catch (_) {} }
+      try { const r = await dep("paj").getRates("NGN"); rate = Number(r?.offRampRate?.rate) || null; } catch (_) { }
+      if (!rate) { try { rate = Number(await dep("fx").getUsdToNgnRate()) || null; } catch (_) { } }
       const estNgn = rate ? Math.floor(amountUsdc * rate) : null;
       return {
         amountUsd: amountUsdc,
@@ -742,15 +742,21 @@ const ACTIONS = {
 
   "schedule.create": {
     async prepare(ctx, body) {
-      const kind = str(body, "kind", { pattern: /^(transfer\.user|transfer\.wallet)$/ });
+      const kind = str(body, "kind", { pattern: /^(transfer\.user|transfer\.wallet|payout\.ngn)$/ });
       const frequency = str(body, "frequency", { pattern: /^(daily|weekly|monthly)$/ });
       const day = str(body, "day", { optional: true, max: 12 });
       const time = str(body, "time", { optional: true, pattern: /^([01]\d|2[0-3]):[0-5]\d$/ }) || "09:00";
       const inner = await ACTIONS[kind].prepare(ctx, body);
       const label = dep("schedules").describe({ frequency, day, time });
+      const payment = { ...inner.action };
+      if (kind === "payout.ngn") {
+        // The rate is re-quoted by the bank partner on every run; don't keep a stale one.
+        delete payment.quotedRate;
+        payment.recipientLabel = `${payment.accountName || "Account"} · ••${payment.accountNumber.slice(-2)}`;
+      }
       return {
         amountUsd: 0, // nothing moves now; each run is checked against limits when it happens
-        action: { kind, frequency, day: day || null, time, payment: inner.action },
+        action: { kind, frequency, day: day || null, time, payment },
         summary: { title: `${inner.summary.title}, ${label}`, lines: [...inner.summary.lines, ["Repeats", label]] },
       };
     },
@@ -781,13 +787,13 @@ const ACTIONS = {
       }
       const bizWallet = dep("walletLib").generateUserWallet();
       db.addBusinessWallet(ctx.telegramId, bizWallet.address, bizWallet.privateKey, pin);
-      try { dep("solanaAddress").reconcileUser(db.getUser(ctx.telegramId)); } catch (_) {}
+      try { dep("solanaAddress").reconcileUser(db.getUser(ctx.telegramId)); } catch (_) { }
       if (a.businessName) {
         try {
           const bp = dep("bizProfile");
           if (typeof bp.initBizProfileTable === "function") bp.initBizProfileTable();
           bp.upsertBizProfile(ctx.telegramId, { businessName: a.businessName, businessEmail: a.businessEmail || null });
-        } catch (_) {}
+        } catch (_) { }
       }
       return { businessDepositAddress: bizWallet.address, notice: "Business account created" };
     },

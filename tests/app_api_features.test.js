@@ -559,6 +559,75 @@ test("persistent schedule runner executes due schedules once and auto-pauses aft
   schedules.__setTestDeps({});
 });
 
+test("scheduled NGN bank payout: approved once, runs with the system key, funds the Paj order", async () => {
+  const auth = new SoftAuthenticator({ rpId: "proxim.test", origin: "https://proxim.test" });
+  const u = await signUp(auth, "+2348010000011", "dev-sched-0000000002");
+  const uid = Number(u.user.id);
+  const token = u.session.accessToken;
+
+  // 1) The app creates the schedule with the same fields as a one-off payout.ngn.
+  const sched = await approveAction(auth, token, "schedule.create", {
+    kind: "payout.ngn", amountUsdc: 25, bankCode: "058", accountNumber: "0123456742",
+    accountName: "ADA OKAFOR", narration: "rent", frequency: "monthly", day: "1", time: "09:00",
+  });
+  assert.equal(sched.confirm.status, 200, JSON.stringify(sched.confirm.body));
+  const created = sched.confirm.body.schedule;
+  assert.equal(created.kind, "payout.ngn");
+  assert.equal(created.to, "ADA OKAFOR · ••42");
+  assert.equal(created.description, "monthly on day 1 at 09:00");
+  const stored = JSON.parse(db.db.prepare("SELECT payment_json FROM app_schedules WHERE id = ?").get(created.id).payment_json);
+  assert.equal(stored.quotedRate, undefined, "a stale rate must not be stored");
+
+  // A malformed bank account is rejected before anything is stored.
+  const bad = await call("POST", "/actions/schedule.create/intent", {
+    kind: "payout.ngn", amountUsdc: 25, bankCode: "058", accountNumber: "12345", frequency: "daily",
+  }, token);
+  assert.equal(bad.status, 400);
+
+  // 2) The runner opens a Paj order and funds it once.
+  const pajOrders = [];
+  const funded = [];
+  const recorded = [];
+  let orderAmount = null;
+  schedules.__setTestDeps({
+    fraudGuard: { assertOutboundAllowed: async () => {} },
+    paj: { createOfframpPayout: async (p) => { pajOrders.push(p); return { id: `paj_sched_${pajOrders.length}`, address: "0x8888888888888888888888888888888888888888", amount: orderAmount ?? p.amountUsdc, accountName: "ADA OKAFOR" }; } },
+    multichain: { isSolanaAddress: () => false },
+    walletLib: {
+      ...realWallet,
+      sendSponsoredOrDirectTransaction: async (signer, to, amountMicro) => {
+        funded.push({ from: signer.address, to, amountMicro: String(amountMicro) });
+        return { txHash: `0x${String(funded.length).padStart(64, "e")}` };
+      },
+    },
+    db: new Proxy(db, { get: (t, k) => (k === "recordOfframpOrder" ? (o) => { recorded.push(o); return t.recordOfframpOrder(o); } : t[k]) }),
+    notify: { notify: async () => {} },
+  });
+  const past = new Date(Date.now() - 60_000).toISOString();
+  db.db.prepare("UPDATE app_schedules SET next_run_at = ? WHERE id = ?").run(past, created.id);
+  await schedules.runDue(new Date());
+  await schedules.runDue(new Date());
+  assert.equal(pajOrders.length, 1, "must only pay once");
+  assert.equal(pajOrders[0].bankCode, "058");
+  assert.equal(pajOrders[0].accountNumber, "0123456742");
+  assert.equal(pajOrders[0].amountUsdc, 25);
+  assert.equal(funded.length, 1);
+  assert.equal(funded[0].to, "0x8888888888888888888888888888888888888888");
+  assert.equal(funded[0].amountMicro, String(realWallet.parseToMicro("25.000000")));
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].orderId, "paj_sched_1");
+  assert.equal(recorded[0].telegramId, uid);
+  assert.match(schedules.getSchedule(uid, created.id).lastResult, /^sent 0x/);
+
+  // 3) If the partner asks for more than the user approved, nothing is sent.
+  orderAmount = 40;
+  db.db.prepare("UPDATE app_schedules SET next_run_at = ? WHERE id = ?").run(past, created.id);
+  await schedules.runDue(new Date());
+  assert.equal(funded.length, 1);
+  assert.match(schedules.getSchedule(uid, created.id).lastResult, /different amount/);
+  schedules.__setTestDeps({});
+});
+
 // ─── 3. Non-money endpoints: profile, contacts, lookup, banks, deposits, global, cards, bills, rewards, KYC, business, assistant, CSV ─
 
 test("profile, contacts, user lookup, banks, deposits, global accounts, cards, bills, rewards & KYC", async () => {

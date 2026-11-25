@@ -554,7 +554,7 @@ export function SendScreen({
 
         {mode === "wallet" ? (
           <Card>
-            <SectionHeader title="Send USDC to EVM Wallet (Arc)" />
+            <SectionHeader title="Withdraw USDC to EVM Wallet" />
             {contacts.filter((c) => c.walletAddress).length > 0 ? (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
                 <View style={{ flexDirection: "row", gap: 8 }}>
@@ -710,15 +710,15 @@ export function SendScreen({
             </Card>
 
             <Card>
-              <SectionHeader title="Internal Move (Arc ↔ Solana)" />
+              <SectionHeader title="Internal Transfer (Main ↔ Solana)" />
               <View style={styles.pillRow}>
                 <Pill
-                  label="Arc → Solana"
+                  label="Main → Solana"
                   active={bridgeDir === "arc_to_solana"}
                   onPress={() => setBridgeDir("arc_to_solana")}
                 />
                 <Pill
-                  label="Solana → Arc"
+                  label="Solana → Main"
                   active={bridgeDir === "solana_to_arc"}
                   onPress={() => setBridgeDir("solana_to_arc")}
                 />
@@ -730,21 +730,21 @@ export function SendScreen({
                 onChangeText={setBridgeAmt}
                 keyboardType="decimal-pad"
               />
-              <Button title="Move between your chains" variant="secondary" onPress={handleBridgeMove} loading={loading} />
+              <Button title="Move between your wallets" variant="secondary" onPress={handleBridgeMove} loading={loading} />
               {bridgeMoves && (bridgeMoves.arcToSolana.length > 0 || bridgeMoves.solanaToArc.length > 0) ? (
                 <View style={{ marginTop: 14 }}>
-                  <SectionHeader title="Recent Chain Moves" />
+                  <SectionHeader title="Recent Internal Transfers" />
                   {bridgeMoves.arcToSolana.slice(0, 5).map((m, i) => (
                     <KeyValueRow
                       key={`a2s-${i}`}
-                      label={`Arc → Solana (${String(m.status || "")})`}
+                      label={`Main → Solana (${String(m.status || "")})`}
                       value={formatUsdc(Number(m.amountUsdc || 0))}
                     />
                   ))}
                   {bridgeMoves.solanaToArc.slice(0, 5).map((m, i) => (
                     <KeyValueRow
                       key={`s2a-${i}`}
-                      label={`Solana → Arc (${String(m.status || "")})`}
+                      label={`Solana → Main (${String(m.status || "")})`}
                       value={formatUsdc(Number(m.amountUsdc || 0))}
                     />
                   ))}

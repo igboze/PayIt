@@ -31,6 +31,7 @@ import type {
   RewardsOverview,
   SavingsOverview,
   ScheduleItem,
+  SwapPairRate,
   SwitchAccountResponse,
   TransactionItem,
   UnifiedBalance,
@@ -446,8 +447,9 @@ export const api = {
     return request<CryptoDepositTokensResponse>(`/deposits/crypto/tokens${qs}`);
   },
   createCryptoDepositIntent(body: {
-    chain: "near" | "solana" | "robinhood" | "starknet";
+    chain: string;
     symbol: string;
+    assetId?: string;
     amount: number;
     refundTo?: string;
     accountType?: AccountType;
@@ -479,7 +481,7 @@ export const api = {
     );
   },
   getSwapRates() {
-    return request<{ rates: Record<string, unknown> }>("/swap/rates");
+    return request<{ pair?: SwapPairRate | null; rates: Record<string, unknown> }>("/swap/rates");
   },
   quoteSwap(tokenIn: "USDC" | "EURC", tokenOut: "USDC" | "EURC", amountIn: number) {
     return request<{ quote: Record<string, unknown> }>("/swap/quote", {

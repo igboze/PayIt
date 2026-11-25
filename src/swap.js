@@ -20,8 +20,57 @@ async function getFxRates() {
   const kit = getSwapKit();
   const net = getNetworkConfig();
   const chain = net.isTestnet ? "Arc_Testnet" : "Arc";
-  const rates = await kit.getTokenRates({ chain });
+  const apiKey = process.env.CIRCLE_KIT_KEY || process.env.ARC_API_KEY;
+  const rates = await kit.getTokenRates({
+    chain,
+    ...(apiKey ? { config: { apiKey } } : {}),
+  });
   return rates?.rates?.[chain] || {};
+}
+
+async function getUsdcEurcPairRate() {
+  const net = getNetworkConfig();
+  const usdcKey = String(net.usdcAddress || "").toLowerCase();
+  const eurcKey = String(net.eurcAddress || "").toLowerCase();
+  let usdcUsd = null;
+  let eurcUsd = null;
+  let rawRates = {};
+
+  try {
+    rawRates = await getFxRates();
+    const lookup = (addr) => {
+      for (const [k, v] of Object.entries(rawRates || {})) {
+        if (k.toLowerCase() === addr && v?.priceUSD) return Number(v.priceUSD);
+      }
+      return null;
+    };
+    usdcUsd = lookup(usdcKey);
+    eurcUsd = lookup(eurcKey);
+  } catch (_) {}
+
+  let usdcToEurc = usdcUsd && eurcUsd ? Number((usdcUsd / eurcUsd).toFixed(4)) : null;
+  let eurcToUsdc = usdcUsd && eurcUsd ? Number((eurcUsd / usdcUsd).toFixed(4)) : null;
+
+  if (!usdcToEurc) {
+    try {
+      const q = await getSwapQuote("USDC", "EURC", parseUnits("100", 18));
+      const out = Number(q?.amountOut || 0);
+      if (out > 0) {
+        usdcToEurc = Number((out / 100).toFixed(4));
+        eurcToUsdc = Number((100 / out).toFixed(4));
+      }
+    } catch (_) {}
+  }
+
+  return {
+    usdcUsd: usdcUsd ? Number(usdcUsd.toFixed(4)) : null,
+    eurcUsd: eurcUsd ? Number(eurcUsd.toFixed(4)) : null,
+    usdcToEurc,
+    eurcToUsdc,
+    feePct: Number((SWAP_PROTOCOL_FEE_BPS / 100).toFixed(2)),
+    updatedAt: new Date().toISOString(),
+    rawRates,
+  };
 }
 
 const SWAP_PROTOCOL_FEE_BPS = Number(process.env.SWAP_PROTOCOL_FEE_BPS ?? 100); // 1.00% protocol fee
@@ -88,6 +137,7 @@ async function executeSwap(privateKey, tokenIn, tokenOut, amountInMicro) {
 module.exports = {
   getSwapKit,
   getFxRates,
+  getUsdcEurcPairRate,
   getSwapQuote,
   executeSwap,
 };

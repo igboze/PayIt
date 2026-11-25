@@ -99,7 +99,7 @@ routes.__setTestDeps({
     },
     getVelocityConfig: () => ({ tier0HourlyLimitUsd: 300, tier0DailyLimitUsd: 500, tier1HourlyLimitUsd: 10000, tier1DailyLimitUsd: 25000, tier1BizDailyLimitUsd: 100000 }),
     getUserOutboundStats: () => ({ usd1h: 0, usd24h: 0 }),
-    assertOutboundAllowed: async () => {},
+    assertOutboundAllowed: async () => { },
   },
   walletLib: {
     ...realWallet,
@@ -207,7 +207,7 @@ test.before(async () => {
 
 test.after(() => {
   server?.close();
-  for (const f of [tmpDb, `${tmpDb}-wal`, `${tmpDb}-shm`]) { try { fs.unlinkSync(f); } catch (_) {} }
+  for (const f of [tmpDb, `${tmpDb}-wal`, `${tmpDb}-shm`]) { try { fs.unlinkSync(f); } catch (_) { } }
 });
 
 test.beforeEach(() => routes.__resetRateLimits());
@@ -224,7 +224,7 @@ async function call(method, p, body, token, extraHeaders = {}) {
   });
   const buf = Buffer.from(await res.arrayBuffer());
   let json = null;
-  try { json = JSON.parse(buf.toString("utf8")); } catch (_) {}
+  try { json = JSON.parse(buf.toString("utf8")); } catch (_) { }
   return { status: res.status, body: json, buf, headers: res.headers };
 }
 

@@ -1036,7 +1036,7 @@ function defaultDeadline() {
  * @param {boolean} [p.dry=false]
  * @param {Array<{recipient: string, fee: number}>} [p.appFees]
  */
-async function getQuote({ originAsset, destinationAsset, amount, recipient, refundTo, dry = false, appFees = null, swapType = "FLEX_INPUT" }) {
+async function getQuote({ originAsset, destinationAsset, amount, recipient, refundTo, dry = false, appFees = null, swapType = "FLEX_INPUT", refundType = "ORIGIN_CHAIN" }) {
   let resolvedAppFees = appFees;
   if (!resolvedAppFees) {
     const feeRecipient = getNearFeeRecipient();
@@ -1060,7 +1060,7 @@ async function getQuote({ originAsset, destinationAsset, amount, recipient, refu
     destinationAsset,
     amount: String(amount),
     refundTo,
-    refundType: "ORIGIN_CHAIN",
+    refundType: refundType === "INTENTS" ? "INTENTS" : "ORIGIN_CHAIN",
     recipient,
     recipientType: "DESTINATION_CHAIN",
     deadline: defaultDeadline(),
@@ -1575,6 +1575,315 @@ async function createStarknetDeposit({
   }
 }
 
+// ─── Universal Multi-Chain NEAR Intents (1Click) Catalog & Deposit Creator ────
+
+const INTENT_CHAIN_META = {
+  sol: { key: "sol", name: "Solana", short: "SOL", isEvm: false, priority: 1, iconSymbol: "sol" },
+  eth: { key: "eth", name: "Ethereum", short: "ETH", isEvm: true, priority: 2, iconSymbol: "eth" },
+  base: { key: "base", name: "Base", short: "BASE", isEvm: true, priority: 3, iconSymbol: "eth" },
+  btc: { key: "btc", name: "Bitcoin", short: "BTC", isEvm: false, priority: 4, iconSymbol: "btc" },
+  bsc: { key: "bsc", name: "BNB Chain", short: "BNB", isEvm: true, priority: 5, iconSymbol: "bnb" },
+  arb: { key: "arb", name: "Arbitrum", short: "ARB", isEvm: true, priority: 6, iconSymbol: "arb" },
+  pol: { key: "pol", name: "Polygon", short: "POL", isEvm: true, priority: 7, iconSymbol: "matic" },
+  op: { key: "op", name: "Optimism", short: "OP", isEvm: true, priority: 8, iconSymbol: "op" },
+  tron: { key: "tron", name: "Tron", short: "TRX", isEvm: false, priority: 9, iconSymbol: "trx" },
+  ton: { key: "ton", name: "TON", short: "TON", isEvm: false, priority: 10, iconSymbol: "ton" },
+  avax: { key: "avax", name: "Avalanche", short: "AVAX", isEvm: true, priority: 11, iconSymbol: "avax" },
+  near: { key: "near", name: "NEAR", short: "NEAR", isEvm: false, priority: 12, iconSymbol: "near" },
+  sui: { key: "sui", name: "Sui", short: "SUI", isEvm: false, priority: 13, iconSymbol: "sui" },
+  starknet: { key: "starknet", name: "Starknet", short: "STRK", isEvm: false, priority: 14, iconSymbol: "strk" },
+  xrp: { key: "xrp", name: "XRP Ledger", short: "XRP", isEvm: false, priority: 15, iconSymbol: "xrp" },
+  doge: { key: "doge", name: "Dogecoin", short: "DOGE", isEvm: false, priority: 16, iconSymbol: "doge" },
+  ltc: { key: "ltc", name: "Litecoin", short: "LTC", isEvm: false, priority: 17, iconSymbol: "ltc" },
+  bch: { key: "bch", name: "Bitcoin Cash", short: "BCH", isEvm: false, priority: 18, iconSymbol: "bch" },
+  stellar: { key: "stellar", name: "Stellar", short: "XLM", isEvm: false, priority: 19, iconSymbol: "xlm" },
+  cardano: { key: "cardano", name: "Cardano", short: "ADA", isEvm: false, priority: 20, iconSymbol: "ada" },
+  aptos: { key: "aptos", name: "Aptos", short: "APT", isEvm: false, priority: 21, iconSymbol: "apt" },
+  zec: { key: "zec", name: "Zcash", short: "ZEC", isEvm: false, priority: 22, iconSymbol: "zec" },
+  hood: { key: "hood", name: "Robinhood Chain", short: "HOOD", isEvm: true, priority: 23, iconSymbol: "eth" },
+  gnosis: { key: "gnosis", name: "Gnosis", short: "GNO", isEvm: true, priority: 24, iconSymbol: "gno" },
+  bera: { key: "bera", name: "Berachain", short: "BERA", isEvm: true, priority: 25, iconSymbol: "bera" },
+  scroll: { key: "scroll", name: "Scroll", short: "SCR", isEvm: true, priority: 26, iconSymbol: "eth" },
+  monad: { key: "monad", name: "Monad", short: "MON", isEvm: true, priority: 27, iconSymbol: "mon" },
+  xlayer: { key: "xlayer", name: "X Layer", short: "OKB", isEvm: true, priority: 28, iconSymbol: "okb" },
+  dash: { key: "dash", name: "Dash", short: "DASH", isEvm: false, priority: 29, iconSymbol: "dash" },
+  movement: { key: "movement", name: "Movement", short: "MOVE", isEvm: false, priority: 30, iconSymbol: "move" },
+  aleo: { key: "aleo", name: "Aleo", short: "ALEO", isEvm: false, priority: 31, iconSymbol: "aleo" },
+  hypercore: { key: "hypercore", name: "Hyperliquid", short: "HYPE", isEvm: false, priority: 32, iconSymbol: "hype" },
+  plasma: { key: "plasma", name: "Plasma", short: "PLASMA", isEvm: true, priority: 33, iconSymbol: "usdt" },
+  miden: { key: "miden", name: "Miden", short: "MIDEN", isEvm: false, priority: 34, iconSymbol: "miden" },
+  abs: { key: "abs", name: "Abstract", short: "ABS", isEvm: true, priority: 35, iconSymbol: "eth" },
+};
+
+const CHAIN_ALIASES = {
+  solana: "sol",
+  ethereum: "eth",
+  bitcoin: "btc",
+  arbitrum: "arb",
+  optimism: "op",
+  polygon: "pol",
+  matic: "pol",
+  avalanche: "avax",
+  bnb: "bsc",
+  robinhood: "hood",
+  trx: "tron",
+  xlm: "stellar",
+  ada: "cardano",
+  apt: "aptos",
+};
+
+const TOKEN_LOGO_OVERRIDES = {
+  USDC: "https://assets.coincap.io/assets/icons/usdc@2x.png",
+  USDT: "https://assets.coincap.io/assets/icons/usdt@2x.png",
+  ETH: "https://assets.coincap.io/assets/icons/eth@2x.png",
+  WETH: "https://assets.coincap.io/assets/icons/weth@2x.png",
+  BTC: "https://assets.coincap.io/assets/icons/btc@2x.png",
+  WBTC: "https://assets.coincap.io/assets/icons/wbtc@2x.png",
+  CBBTC: "https://assets.coincap.io/assets/icons/btc@2x.png",
+  XBTC: "https://assets.coincap.io/assets/icons/btc@2x.png",
+  SOL: "https://assets.coincap.io/assets/icons/sol@2x.png",
+  NEAR: "https://assets.coincap.io/assets/icons/near@2x.png",
+  WNEAR: "https://assets.coincap.io/assets/icons/near@2x.png",
+  BNB: "https://assets.coincap.io/assets/icons/bnb@2x.png",
+  POL: "https://assets.coincap.io/assets/icons/matic@2x.png",
+  MATIC: "https://assets.coincap.io/assets/icons/matic@2x.png",
+  ARB: "https://assets.coincap.io/assets/icons/arb@2x.png",
+  OP: "https://assets.coincap.io/assets/icons/op@2x.png",
+  AVAX: "https://assets.coincap.io/assets/icons/avax@2x.png",
+  TRX: "https://assets.coincap.io/assets/icons/trx@2x.png",
+  TON: "https://assets.coincap.io/assets/icons/ton@2x.png",
+  SUI: "https://assets.coincap.io/assets/icons/sui@2x.png",
+  XRP: "https://assets.coincap.io/assets/icons/xrp@2x.png",
+  DOGE: "https://assets.coincap.io/assets/icons/doge@2x.png",
+  LTC: "https://assets.coincap.io/assets/icons/ltc@2x.png",
+  BCH: "https://assets.coincap.io/assets/icons/bch@2x.png",
+  XLM: "https://assets.coincap.io/assets/icons/xlm@2x.png",
+  ADA: "https://assets.coincap.io/assets/icons/ada@2x.png",
+  APT: "https://assets.coincap.io/assets/icons/apt@2x.png",
+  ZEC: "https://assets.coincap.io/assets/icons/zec@2x.png",
+  STRK: "https://assets.coincap.io/assets/icons/strk@2x.png",
+  DAI: "https://assets.coincap.io/assets/icons/dai@2x.png",
+  LINK: "https://assets.coincap.io/assets/icons/link@2x.png",
+  UNI: "https://assets.coincap.io/assets/icons/uni@2x.png",
+  AAVE: "https://assets.coincap.io/assets/icons/aave@2x.png",
+  PEPE: "https://assets.coincap.io/assets/icons/pepe@2x.png",
+  SHIB: "https://assets.coincap.io/assets/icons/shib@2x.png",
+  BONK: "https://assets.coincap.io/assets/icons/bonk@2x.png",
+  WIF: "https://assets.coincap.io/assets/icons/wif@2x.png",
+  DASH: "https://assets.coincap.io/assets/icons/dash@2x.png",
+  GNO: "https://assets.coincap.io/assets/icons/gno@2x.png",
+  EURC: "https://assets.coincap.io/assets/icons/eurc@2x.png",
+  USDE: "https://assets.coincap.io/assets/icons/usde@2x.png",
+  FRAX: "https://assets.coincap.io/assets/icons/frax@2x.png",
+  OKB: "https://assets.coincap.io/assets/icons/okb@2x.png",
+  AURORA: "https://assets.coincap.io/assets/icons/aurora@2x.png",
+  SWEAT: "https://assets.coincap.io/assets/icons/sweat@2x.png",
+};
+
+function getTokenLogoUrl(symbol) {
+  const clean = String(symbol || "").replace(/^\$/, "").toUpperCase();
+  if (TOKEN_LOGO_OVERRIDES[clean]) return TOKEN_LOGO_OVERRIDES[clean];
+  if (/^[A-Z0-9]{2,10}$/.test(clean)) {
+    return `https://assets.coincap.io/assets/icons/${clean.toLowerCase()}@2x.png`;
+  }
+  return null;
+}
+
+function normalizeIntentChainKey(raw) {
+  const s = String(raw || "").trim().toLowerCase();
+  return CHAIN_ALIASES[s] || s;
+}
+
+function getChainMeta(rawKey) {
+  const key = normalizeIntentChainKey(rawKey);
+  if (INTENT_CHAIN_META[key]) {
+    const m = INTENT_CHAIN_META[key];
+    return { ...m, logoUrl: getTokenLogoUrl(m.iconSymbol || m.short) };
+  }
+  return {
+    key,
+    name: key ? key.charAt(0).toUpperCase() + key.slice(1) : "Unknown",
+    short: key.toUpperCase().slice(0, 6),
+    isEvm: false,
+    priority: 99,
+    logoUrl: getTokenLogoUrl(key),
+  };
+}
+
+let _cachedAllIntentCatalog = null;
+let _cachedAllIntentCatalogExpiry = 0;
+
+/**
+ * Fetches and groups ALL blockchains and tokens live from NEAR Intents 1Click `/v0/tokens`,
+ * enriched with token logos and chain metadata. Falls back cleanly to curated catalogs offline.
+ */
+async function getAllSupportedIntentTokens(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && _cachedAllIntentCatalog && now < _cachedAllIntentCatalogExpiry) {
+    return _cachedAllIntentCatalog;
+  }
+
+  let rawTokens = [];
+  try {
+    const axios = require("axios");
+    const key = getApiKey();
+    const headers = { "Content-Type": "application/json" };
+    if (key) headers["Authorization"] = `Bearer ${key}`;
+    const res = await axios({
+      method: "GET",
+      url: `${getApiBaseUrl()}/v0/tokens`,
+      timeout: 5000,
+      headers,
+    });
+    if (Array.isArray(res.data)) rawTokens = res.data;
+  } catch (_) {
+    // Fallback to built-in catalogs below
+  }
+
+  const byChain = new Map();
+  const seenAssetIds = new Set();
+
+  const addToken = (item) => {
+    const chainKey = normalizeIntentChainKey(item.blockchain);
+    if (!chainKey || !item.assetId) return;
+    const dedupeKey = `${chainKey}:${String(item.assetId).toLowerCase()}`;
+    if (seenAssetIds.has(dedupeKey)) return;
+    seenAssetIds.add(dedupeKey);
+
+    const symbol = String(item.symbol || "TOKEN").trim();
+    const priceUsd = item.price !== undefined && item.price !== null ? Number(item.price) : (item.priceUsd !== undefined ? Number(item.priceUsd) : null);
+    const entry = {
+      symbol,
+      name: item.name || `${symbol} (${getChainMeta(chainKey).name})`,
+      assetId: item.assetId,
+      decimals: Number(item.decimals ?? 6),
+      blockchain: chainKey,
+      contractAddress: item.contractAddress || null,
+      priceUsd: Number.isFinite(priceUsd) ? priceUsd : null,
+      logoUrl: getTokenLogoUrl(symbol),
+    };
+    if (!byChain.has(chainKey)) byChain.set(chainKey, []);
+    byChain.get(chainKey).push(entry);
+  };
+
+  for (const item of rawTokens) addToken(item);
+  // Ensure curated tokens are always present if live fetch was unavailable or partial
+  for (const t of [...SUPPORTED_SOLANA_TOKENS, ...SUPPORTED_NEAR_TOKENS, ...SUPPORTED_ROBINHOOD_TOKENS, ...SUPPORTED_STARKNET_TOKENS]) {
+    addToken(t);
+  }
+
+  const POPULAR_SYMBOLS = new Map([
+    ["USDC", 1], ["USDT", 2], ["ETH", 3], ["BTC", 4], ["SOL", 5], ["BNB", 6],
+    ["NEAR", 7], ["WNEAR", 8], ["TRX", 9], ["TON", 10], ["SUI", 11], ["AVAX", 12],
+    ["POL", 13], ["ARB", 14], ["OP", 15], ["XRP", 16], ["DOGE", 17], ["LTC", 18],
+    ["ADA", 19], ["XLM", 20], ["APT", 21], ["STRK", 22], ["ZEC", 23], ["WBTC", 24],
+    ["WETH", 25], ["USDG", 26], ["DAI", 27],
+  ]);
+
+  const chains = [];
+  const tokensByChain = {};
+  for (const [chainKey, list] of byChain.entries()) {
+    list.sort((a, b) => {
+      const pa = POPULAR_SYMBOLS.get(a.symbol.toUpperCase()) ?? 99;
+      const pb = POPULAR_SYMBOLS.get(b.symbol.toUpperCase()) ?? 99;
+      if (pa !== pb) return pa - pb;
+      return a.symbol.localeCompare(b.symbol);
+    });
+    const meta = getChainMeta(chainKey);
+    chains.push({
+      key: chainKey,
+      name: meta.name,
+      short: meta.short,
+      isEvm: meta.isEvm,
+      priority: meta.priority,
+      logoUrl: meta.logoUrl,
+      tokenCount: list.length,
+    });
+    tokensByChain[chainKey] = list;
+  }
+
+  chains.sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name));
+  const result = { chains, tokensByChain };
+  _cachedAllIntentCatalog = result;
+  _cachedAllIntentCatalogExpiry = now + 10 * 60 * 1000;
+  return result;
+}
+
+async function resolveIntentToken({ chain = null, symbol = null, assetId = null }) {
+  const catalog = await getAllSupportedIntentTokens();
+  if (assetId) {
+    const target = String(assetId).trim().toLowerCase();
+    for (const list of Object.values(catalog.tokensByChain)) {
+      const hit = list.find((t) => t.assetId.toLowerCase() === target);
+      if (hit) return hit;
+    }
+  }
+  if (chain && symbol) {
+    const ck = normalizeIntentChainKey(chain);
+    const sym = String(symbol).trim().toUpperCase();
+    const list = catalog.tokensByChain[ck] || [];
+    const hit = list.find((t) => t.symbol.toUpperCase() === sym);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+async function createUniversalCryptoDeposit({
+  telegramId,
+  accountType = "personal",
+  originAsset,
+  originSymbol,
+  originDecimals,
+  amount,
+  recipientAddress,
+  refundTo,
+  refundType = "ORIGIN_CHAIN",
+}) {
+  if (!originAsset) throw new Error("originAsset is required");
+  if (!refundTo) throw new Error("refundTo is required");
+
+  const id = db.createNearDeposit({
+    telegramId,
+    accountType,
+    originAsset,
+    originSymbol,
+    amountToken: amount,
+    amountUsdc: amount,
+    recipientAddress,
+    refundTo,
+    status: "quoting",
+  });
+
+  try {
+    const baseUnits = toBaseUnits(amount, originDecimals);
+    const quoteRes = await module.exports.getQuote({
+      originAsset,
+      destinationAsset: ASSETS.BASE_USDC,
+      amount: baseUnits,
+      recipient: recipientAddress,
+      refundTo,
+      refundType,
+      dry: false,
+    });
+    const q = quoteRes?.quote || {};
+    db.updateNearDeposit(id, {
+      status: "awaiting_deposit",
+      deposit_address: q.depositAddress || null,
+      deposit_memo: q.depositMemo || null,
+      amount_out: q.amountOut ? Number(q.amountOut) / 1e6 : null,
+      quote_json: JSON.stringify(quoteRes),
+      deadline: quoteRes?.quoteRequest?.deadline || null,
+      correlation_id: quoteRes?.correlationId || null,
+      origin_symbol: originSymbol,
+      amount_token: Number(amount),
+    });
+    return db.getNearDepositById(id);
+  } catch (err) {
+    db.updateNearDeposit(id, { status: "failed", error: String(err.message).slice(0, 500) });
+    throw err;
+  }
+}
+
 module.exports = {
   ASSETS,
   SUPPORTED_NEAR_TOKENS,
@@ -1585,6 +1894,11 @@ module.exports = {
   toBaseUnits,
   getNearFeeRecipient,
   getNearFeeBps,
+  getTokenLogoUrl,
+  getChainMeta,
+  normalizeIntentChainKey,
+  getAllSupportedIntentTokens,
+  resolveIntentToken,
   getSupportedNearTokens,
   getSupportedSolanaTokens,
   getSupportedRobinhoodTokens,
@@ -1603,6 +1917,7 @@ module.exports = {
   createSolanaDeposit,
   createRobinhoodDeposit,
   createStarknetDeposit,
+  createUniversalCryptoDeposit,
   pollPendingNearDeposits,
   expireStaleNearDeposits,
   apiRequest,
