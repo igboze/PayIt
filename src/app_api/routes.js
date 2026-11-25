@@ -203,13 +203,13 @@ function publicUser(user, device) {
   let businessTier1 = false;
   let senderName = user.sender_name || null;
   let bizSenderName = user.biz_sender_name || null;
-  try { personalTier1 = dep("fraudGuard").isUserTier1Approved(user.telegram_id, "personal"); } catch (_) {}
+  try { personalTier1 = dep("fraudGuard").isUserTier1Approved(user.telegram_id, "personal"); } catch (_) { }
   if (user.business_deposit_address) {
-    try { businessTier1 = dep("fraudGuard").isUserTier1Approved(user.telegram_id, "business"); } catch (_) {}
+    try { businessTier1 = dep("fraudGuard").isUserTier1Approved(user.telegram_id, "business"); } catch (_) { }
   }
-  try { senderName = dep("db").resolveSenderName(user.telegram_id, "personal"); } catch (_) {}
+  try { senderName = dep("db").resolveSenderName(user.telegram_id, "personal"); } catch (_) { }
   if (user.business_deposit_address) {
-    try { bizSenderName = dep("db").resolveSenderName(user.telegram_id, "business"); } catch (_) {}
+    try { bizSenderName = dep("db").resolveSenderName(user.telegram_id, "business"); } catch (_) { }
   }
   const activeContext = user.active_context === "business" && user.business_deposit_address ? "business" : "personal";
   const activeDepositAddress = activeContext === "business" ? user.business_deposit_address : (user.deposit_address || null);
@@ -320,7 +320,7 @@ async function signupFinish(req, body) {
   const wallet = dep("walletLib").generateUserWallet();
   db.createUserWithWallet(userId, null, wallet.address, wallet.privateKey, pin);
   store.setUserPhone(userId, signup.phone_number);
-  try { db.recordTermsAcceptance(userId, dep("compliance").TERMS_VERSION); } catch (_) {}
+  try { db.recordTermsAcceptance(userId, dep("compliance").TERMS_VERSION); } catch (_) { }
 
   store.savePasskey({
     credentialId: reg.credential.id,
@@ -401,7 +401,7 @@ async function linkFinish(req, body) {
       html: `📱 <b>Proxim mobile app linked</b>\nDevice: ${String(deviceName || platform).replace(/[<>&]/g, "")}\n\nIf this wasn't you, tap below to remove it immediately.`,
       telegramExtra: { reply_markup: { inline_keyboard: [[{ text: "Remove this device", callback_data: `app_revoke_${deviceId}` }]] } },
     });
-  } catch (_) {}
+  } catch (_) { }
   if (isNew && !firstDevice) await alertNewDevice(telegramId, deviceName, platform, deviceId);
 
   const session = tokens.issueSession({ telegramId, deviceId });
@@ -448,7 +448,7 @@ async function refresh(req, body) {
         title: "Signed out for your safety",
         html: "⚠️ <b>Proxim signed you out on all devices</b>\nAn old session token was reused, which can mean it was stolen. Sign in again with your passkey.",
       });
-    } catch (_) {}
+    } catch (_) { }
     throw new HttpError(401, "session_revoked", "Session ended for your security. Please sign in again.");
   }
   if (!rotated) throw new HttpError(401, "unauthorized", "Session expired. Please sign in again.");
@@ -675,7 +675,7 @@ async function executeConfirmedAction(req, body, { allowedTypes = null } = {}) {
         html: `✅ <b>${String(result.notice).replace(/[<>&]/g, "")}</b>`,
         data: { type: a.type, txHash: result.txHash || null },
       });
-    } catch (_) {}
+    } catch (_) { }
   }
   return { status: 200, data: { success: true, actionType: a.type, ...result } };
 }
@@ -736,13 +736,13 @@ function wellKnown(pathname) {
 
 function handleWellKnown(req, res) {
   const pathname = (req.url || "").split("?")[0];
-  const doc = req.method === "GET" ? wellKnown(pathname) : null;
+  const doc = req.method === "GET" || req.method === "HEAD" ? wellKnown(pathname) : null;
   if (!doc) {
     res.writeHead(404, { "Content-Type": "application/json" });
-    return res.end(JSON.stringify({ error: "not_found" }));
+    return res.end(req.method === "HEAD" ? undefined : JSON.stringify({ error: "not_found" }));
   }
   res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "public, max-age=3600" });
-  return res.end(JSON.stringify(doc));
+  return res.end(req.method === "HEAD" ? undefined : JSON.stringify(doc));
 }
 
 // ─── router ───────────────────────────────────────────────────────────────────

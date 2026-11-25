@@ -19,11 +19,25 @@ const store = require("./store");
 function getRpConfig() {
   const rpID = (process.env.APP_RP_ID || "").trim();
   if (!rpID) throw new Error("APP_RP_ID is not configured");
-  const origins = (process.env.APP_ORIGINS || `https://${rpID}`)
+  const origins = new Set(
+    (process.env.APP_ORIGINS || `https://${rpID}`)
+      .split(",")
+      .map((o) => o.trim())
+      .filter(Boolean)
+  );
+  // Automatically include android:apk-key-hash:<base64url> for every cert fingerprint
+  // configured in APP_ANDROID_CERT_SHA256 so Android Credential Manager origins always match.
+  const androidPrints = String(process.env.APP_ANDROID_CERT_SHA256 || "")
     .split(",")
-    .map((o) => o.trim())
+    .map((s) => s.trim())
     .filter(Boolean);
-  return { rpID, rpName: (process.env.APP_RP_NAME || "Proxim").trim(), origins };
+  for (const fp of androidPrints) {
+    const hex = fp.replace(/:/g, "");
+    if (/^[0-9a-fA-F]{64}$/.test(hex)) {
+      origins.add(`android:apk-key-hash:${Buffer.from(hex, "hex").toString("base64url")}`);
+    }
+  }
+  return { rpID, rpName: (process.env.APP_RP_NAME || "Proxim").trim(), origins: [...origins] };
 }
 
 function userIdBytes(telegramId) {
@@ -70,6 +84,7 @@ async function finishRegistration({ challengeId, purpose, response }) {
       requireUserVerification: true,
     });
   } catch (err) {
+    console.warn("[app_api:passkey] registration verify failed:", err?.message || err);
     throw Object.assign(new Error("Passkey could not be verified."), { status: 400, code: "passkey_invalid", cause: err });
   }
   if (!verification.verified || !verification.registrationInfo) {
@@ -170,6 +185,7 @@ async function finishAuthentication({ challengeId, purpose, response, expectedTe
       },
     });
   } catch (err) {
+    console.warn("[app_api:passkey] auth verify failed:", err?.message || err);
     throw Object.assign(new Error("Passkey could not be verified."), { status: 401, code: "passkey_invalid", cause: err });
   }
   if (!verification.verified) {
