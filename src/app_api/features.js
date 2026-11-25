@@ -43,6 +43,8 @@ const deps = {
 
 const overrides = {};
 const dep = (name) => (name in overrides ? overrides[name] : deps[name]);
+let _fxRateCache = { rate: null, fetchedAt: 0 };
+
 function __setTestDeps(o = {}) {
   if (process.env.NODE_ENV === "production") {
     throw new Error("__setTestDeps cannot be used in production.");
@@ -50,6 +52,37 @@ function __setTestDeps(o = {}) {
   for (const k of Object.keys(overrides)) delete overrides[k];
   Object.assign(overrides, o);
   _banksCache = { rows: null, fetchedAt: 0 };
+  _fxRateCache = { rate: null, fetchedAt: 0 };
+}
+
+async function getLiveUsdNgnRate() {
+  if (_fxRateCache.rate && Date.now() - _fxRateCache.fetchedAt < 60_000) {
+    return _fxRateCache.rate;
+  }
+  const fetchRate = async () => {
+    let rate = null;
+    try {
+      const r = await dep("paj").getRates("NGN");
+      rate = Number(r?.offRampRate?.rate || r?.onRampRate?.rate || 0) || null;
+    } catch (_) {}
+    if (!rate) {
+      try {
+        rate = Number(await dep("fx").getUsdToNgnRate()) || null;
+      } catch (_) {}
+    }
+    return rate && Number.isFinite(rate) && rate > 0 ? rate : null;
+  };
+  try {
+    const rate = await Promise.race([
+      fetchRate(),
+      new Promise((resolve) => setTimeout(() => resolve(null), 2500)),
+    ]);
+    if (rate) {
+      _fxRateCache = { rate, fetchedAt: Date.now() };
+      return rate;
+    }
+  } catch (_) {}
+  return _fxRateCache.rate || null;
 }
 
 class FeatureError extends Error {
@@ -228,10 +261,29 @@ async function listAccounts(auth) {
 
   let perBal = null;
   let bizBal = null;
-  try { perBal = await chains.getUnifiedBalance(auth.user, "personal", { strictBusiness: false }); } catch (_) {}
-  if (auth.user.business_deposit_address) {
-    try { bizBal = await chains.getUnifiedBalance(auth.user, "business", { strictBusiness: true }); } catch (_) {}
-  }
+  const [perRes, bizRes, ngnRate] = await Promise.all([
+    chains.getUnifiedBalance(auth.user, "personal", { strictBusiness: false }).catch(() => null),
+    auth.user.business_deposit_address
+      ? chains.getUnifiedBalance(auth.user, "business", { strictBusiness: true }).catch(() => null)
+      : Promise.resolve(null),
+    getLiveUsdNgnRate(),
+  ]);
+  perBal = perRes;
+  bizBal = bizRes;
+  const withNgn = (bal) => {
+    if (!bal) return null;
+    const totalNum = Number(bal.total || 0);
+    return {
+      totalUsdc: bal.total,
+      totalNgn: ngnRate && Number.isFinite(totalNum) ? Math.round(totalNum * ngnRate) : null,
+      usdToNgnRate: ngnRate,
+      arc: bal.arc,
+      base: bal.base || { usdc: 0 },
+      gateway: bal.gateway || { usdc: 0 },
+      solana: bal.solana,
+      pendingBridgeUsdc: bal.pendingNear,
+    };
+  };
 
   const accounts = [
     {
@@ -241,7 +293,7 @@ async function listAccounts(auth) {
       solanaAddress: getStrictAccountSolanaAddress(auth.user, "personal"),
       kycStatus: perEnt?.status || "not_started",
       kycTier: String(perEnt?.status || "").toLowerCase() === "approved" ? 1 : 0,
-      balance: perBal ? { totalUsdc: perBal.total, arc: perBal.arc, base: perBal.base || { usdc: 0 }, gateway: perBal.gateway || { usdc: 0 }, solana: perBal.solana, pendingBridgeUsdc: perBal.pendingNear } : null,
+      balance: withNgn(perBal),
     },
   ];
 
@@ -256,7 +308,7 @@ async function listAccounts(auth) {
       solanaAddress: getStrictAccountSolanaAddress(auth.user, "business"),
       kycStatus: bizEnt?.status || "not_started",
       kycTier: String(bizEnt?.status || "").toLowerCase() === "approved" ? 1 : 0,
-      balance: bizBal ? { totalUsdc: bizBal.total, arc: bizBal.arc, base: bizBal.base || { usdc: 0 }, gateway: bizBal.gateway || { usdc: 0 }, solana: bizBal.solana, pendingBridgeUsdc: bizBal.pendingNear } : null,
+      balance: withNgn(bizBal),
     });
   }
 
@@ -283,10 +335,24 @@ async function switchAccount(auth, body, publicUserFn) {
   const chains = dep("chains");
   let balance = null;
   let otherBalanceUsdc = null;
-  try {
-    const u = await chains.getUnifiedBalance(updated, target, { strictBusiness: target === "business" });
-    balance = { totalUsdc: u.total, arc: u.arc, base: u.base || { usdc: 0 }, gateway: u.gateway || { usdc: 0 }, solana: u.solana, byChain: u.byChain || null, pendingBridgeUsdc: u.pendingNear };
-  } catch (_) {}
+  const [uRes, ngnRate] = await Promise.all([
+    chains.getUnifiedBalance(updated, target, { strictBusiness: target === "business" }).catch(() => null),
+    getLiveUsdNgnRate(),
+  ]);
+  if (uRes) {
+    const totalNum = Number(uRes.total || 0);
+    balance = {
+      totalUsdc: uRes.total,
+      totalNgn: ngnRate && Number.isFinite(totalNum) ? Math.round(totalNum * ngnRate) : null,
+      usdToNgnRate: ngnRate,
+      arc: uRes.arc,
+      base: uRes.base || { usdc: 0 },
+      gateway: uRes.gateway || { usdc: 0 },
+      solana: uRes.solana,
+      byChain: uRes.byChain || null,
+      pendingBridgeUsdc: uRes.pendingNear,
+    };
+  }
   if (updated.business_deposit_address) {
     const other = target === "business" ? "personal" : "business";
     try {
@@ -2346,6 +2412,7 @@ module.exports = {
   lookupUser,
   listBanks,
   getBankRates,
+  getLiveUsdNgnRate,
   resolveBankAccount,
   createNgnDeposit,
   getCardDepositLink,

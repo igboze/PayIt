@@ -938,4 +938,16 @@ test("naira-denominated send flows: payout.ngn, transfer.user, and gift.create a
   assert.match(giftNgn.intent.body.summary.title, /₦3,100/);
   assert.equal(giftNgn.confirm.body.amountNgn, 3100);
   assert.match(giftNgn.confirm.body.notice, /₦3,100/);
+
+  // 4) Dual USD + NGN balances on GET /balances and GET /accounts
+  const balRes = await call("GET", "/balances", null, token);
+  assert.equal(balRes.status, 200, JSON.stringify(balRes.body));
+  assert.equal(Number(balRes.body.totalUsdc), 512.75);
+  assert.equal(balRes.body.usdToNgnRate, 1550);
+  assert.equal(balRes.body.totalNgn, Math.round(512.75 * 1550));
+
+  const acctsRes = await call("GET", "/accounts", null, token);
+  assert.equal(acctsRes.status, 200, JSON.stringify(acctsRes.body));
+  assert.equal(acctsRes.body.accounts[0].balance.usdToNgnRate, 1550);
+  assert.equal(acctsRes.body.accounts[0].balance.totalNgn, Math.round(512.75 * 1550));
 });

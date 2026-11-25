@@ -26,6 +26,7 @@ import {
   Card,
   EmptyState,
   ErrorBanner,
+  formatNgn,
   formatUsdc,
   Input,
   KeyValueRow,
@@ -34,6 +35,7 @@ import {
   shortAddr,
   SuccessBanner,
 } from "../components/UI";
+import { CurrencyLogo } from "../components/CurrencyLogo";
 
 export type AccountsSection = "accounts" | "global" | "business";
 
@@ -49,6 +51,7 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
 
   // Accounts list
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
+  const [fallbackNgnRate, setFallbackNgnRate] = useState<number | null>(null);
   const [bizSetupName, setBizSetupName] = useState("");
   const [bizSetupEmail, setBizSetupEmail] = useState("");
 
@@ -101,8 +104,13 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
       setError(null);
       try {
         if (section === "accounts") {
-          const res = await api.listAccounts();
+          const [res, rateRes] = await Promise.all([
+            api.listAccounts(),
+            api.getBankRates().catch(() => null),
+          ]);
           setAccounts(res.accounts || []);
+          const r = rateRes?.offRampRate || rateRes?.onRampRate || null;
+          if (r) setFallbackNgnRate(r);
         } else if (section === "global") {
           const res = await api.listGlobalAccounts(activeAccount);
           setGlobalAccounts(res.accounts || []);
@@ -440,6 +448,14 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
         <>
           {accounts.map((a) => {
             const biz = a.accountType === "business";
+            const usdBal = Number(a.balance?.totalUsdc ?? 0);
+            const rate = a.balance?.usdToNgnRate || fallbackNgnRate || null;
+            const ngnBal =
+              a.balance && typeof a.balance.totalNgn === "number"
+                ? a.balance.totalNgn
+                : a.balance && rate && Number.isFinite(usdBal)
+                  ? Math.round(usdBal * rate)
+                  : null;
             return (
               <Card
                 key={a.accountType}
@@ -456,7 +472,20 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
                     />
                   }
                 />
-                <Text style={styles.bigVal}>{a.balance ? formatUsdc(a.balance.totalUsdc) : "—"}</Text>
+                <View style={styles.balDualBlock}>
+                  <View style={styles.balRow}>
+                    <CurrencyLogo code="USD" size={20} />
+                    <Text style={styles.bigVal}>{a.balance ? formatUsdc(a.balance.totalUsdc) : "—"}</Text>
+                    <Text style={styles.balCode}>USD</Text>
+                  </View>
+                  {ngnBal !== null ? (
+                    <View style={styles.balRow}>
+                      <CurrencyLogo code="NGN" size={16} />
+                      <Text style={styles.ngnVal}>{formatNgn(ngnBal)}</Text>
+                      <Text style={styles.ngnCode}>NGN</Text>
+                    </View>
+                  ) : null}
+                </View>
                 <KeyValueRow label="Verification" value={`${a.kycStatus} (Tier ${a.kycTier})`} />
                 <KeyValueRow
                   label="Deposit Address (EVM)"
@@ -702,7 +731,12 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
 const styles = StyleSheet.create({
   scroll: { flex: 1, backgroundColor: COLORS.bg },
   content: { padding: SPACING.md, paddingBottom: 36 },
-  bigVal: { color: COLORS.text, fontSize: 30, fontWeight: "800", marginBottom: 10 },
+  balDualBlock: { marginBottom: 10, gap: 4 },
+  balRow: { flexDirection: "row", alignItems: "center", gap: 7 },
+  bigVal: { color: COLORS.text, fontSize: 28, fontWeight: "800" },
+  balCode: { color: COLORS.textMuted, fontSize: 12, fontWeight: "700", marginTop: 3 },
+  ngnVal: { color: COLORS.primary, fontSize: 16, fontWeight: "700" },
+  ngnCode: { color: COLORS.textMuted, fontSize: 11, fontWeight: "700", marginTop: 1 },
   muted: { color: COLORS.textSecondary, fontSize: 12, lineHeight: 18, marginBottom: 10 },
   pillWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 },
   subCard: {

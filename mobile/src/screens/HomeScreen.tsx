@@ -21,6 +21,7 @@ import {
   Card,
   EmptyState,
   ErrorBanner,
+  formatNgn,
   formatRawTxAmount,
   formatUsdc,
   KeyValueRow,
@@ -57,6 +58,7 @@ function friendlyTxKind(rawType: string): string {
 export function HomeScreen({ onNavigate }: { onNavigate: (target: HomeModalTarget) => void }) {
   const { user, activeAccount, dataVersion } = useApp();
   const [balance, setBalance] = useState<UnifiedBalance | null>(null);
+  const [fallbackNgnRate, setFallbackNgnRate] = useState<number | null>(null);
   const [transactions, setTransactions] = useState<TransactionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -71,12 +73,15 @@ export function HomeScreen({ onNavigate }: { onNavigate: (target: HomeModalTarge
       else setLoading(true);
       setError(null);
       try {
-        const [balRes, txRes] = await Promise.all([
+        const [balRes, txRes, rateRes] = await Promise.all([
           api.getBalances(activeAccount),
           api.getTransactions(40, activeAccount),
+          api.getBankRates().catch(() => null),
         ]);
         setBalance(balRes);
         setTransactions(txRes.transactions || []);
+        const rate = balRes.usdToNgnRate || rateRes?.offRampRate || rateRes?.onRampRate || null;
+        if (rate) setFallbackNgnRate(rate);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Could not load live wallet data.");
       } finally {
@@ -96,6 +101,14 @@ export function HomeScreen({ onNavigate }: { onNavigate: (target: HomeModalTarge
   const isVerified = Number(user?.kycTier ?? 0) >= 1;
   const eurcBal = Number(balance?.arc?.eurc ?? 0);
   const pendingBridge = Number(balance?.pendingBridgeUsdc ?? 0);
+  const totalUsdNum = Number(balance?.totalUsdc ?? 0);
+  const liveNgnRate = balance?.usdToNgnRate || fallbackNgnRate || null;
+  const totalNgnVal =
+    balance && typeof balance.totalNgn === "number"
+      ? balance.totalNgn
+      : balance && liveNgnRate && Number.isFinite(totalUsdNum)
+        ? Math.round(totalUsdNum * liveNgnRate)
+        : null;
 
   const copyText = async (label: string, val: string) => {
     await Clipboard.setStringAsync(val);
@@ -194,22 +207,43 @@ export function HomeScreen({ onNavigate }: { onNavigate: (target: HomeModalTarge
               <Text style={styles.balLoadingText}>Loading live balance…</Text>
             </View>
           ) : (
-            <View style={styles.amountRow}>
-              <Text style={styles.totalAmount}>
-                {balance ? formatUsdc(balance.totalUsdc) : "—"}
-              </Text>
-              {eurcBal > 0 ? (
-                <View style={styles.extraChip}>
-                  <Text style={styles.extraChipText}>€{eurcBal.toFixed(2)} EURC</Text>
-                </View>
-              ) : null}
-              {pendingBridge > 0 ? (
-                <View style={[styles.extraChip, { borderColor: COLORS.businessBorder }]}>
-                  <Text style={[styles.extraChipText, { color: COLORS.business }]}>
-                    Pending {formatUsdc(pendingBridge)}
+            <View style={styles.balanceStack}>
+              <View style={styles.amountRow}>
+                <View style={styles.primaryBalRow}>
+                  <CurrencyLogo code="USD" size={22} />
+                  <Text style={styles.totalAmount}>
+                    {balance ? formatUsdc(balance.totalUsdc) : "—"}
                   </Text>
+                  <Text style={styles.currencyCode}>USD</Text>
                 </View>
-              ) : null}
+                {eurcBal > 0 ? (
+                  <View style={styles.extraChip}>
+                    <Text style={styles.extraChipText}>€{eurcBal.toFixed(2)} EURC</Text>
+                  </View>
+                ) : null}
+                {pendingBridge > 0 ? (
+                  <View style={[styles.extraChip, { borderColor: COLORS.businessBorder }]}>
+                    <Text style={[styles.extraChipText, { color: COLORS.business }]}>
+                      Pending {formatUsdc(pendingBridge)}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+
+              <View style={styles.ngnBalanceRow}>
+                <View style={styles.ngnBalanceLeft}>
+                  <CurrencyLogo code="NGN" size={18} />
+                  <Text style={styles.ngnBalanceValue}>
+                    {totalNgnVal !== null ? formatNgn(totalNgnVal) : "₦—"}
+                  </Text>
+                  <Text style={styles.ngnBalanceCode}>NGN</Text>
+                </View>
+                {liveNgnRate ? (
+                  <Text style={styles.fxRatePill}>
+                    $1 = ₦{Math.round(liveNgnRate).toLocaleString("en-NG")}
+                  </Text>
+                ) : null}
+              </View>
             </View>
           )}
 
@@ -457,18 +491,60 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     fontSize: 13,
   },
+  balanceStack: {
+    marginBottom: 10,
+    gap: 6,
+  },
   amountRow: {
     flexDirection: "row",
     alignItems: "center",
     flexWrap: "wrap",
     gap: 8,
-    marginBottom: 10,
+  },
+  primaryBalRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   totalAmount: {
     color: COLORS.text,
-    fontSize: 34,
+    fontSize: 31,
     fontWeight: "800",
     letterSpacing: -0.8,
+  },
+  currencyCode: {
+    color: COLORS.textMuted,
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 4,
+  },
+  ngnBalanceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  ngnBalanceLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+  ngnBalanceValue: {
+    color: COLORS.primary,
+    fontSize: 18,
+    fontWeight: "700",
+    letterSpacing: -0.2,
+  },
+  ngnBalanceCode: {
+    color: COLORS.textMuted,
+    fontSize: 11,
+    fontWeight: "700",
+    marginTop: 2,
+  },
+  fxRatePill: {
+    color: COLORS.textSecondary,
+    fontSize: 11,
+    fontWeight: "600",
   },
   extraChip: {
     backgroundColor: COLORS.bg,

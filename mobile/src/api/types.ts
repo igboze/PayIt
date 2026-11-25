@@ -42,6 +42,8 @@ export interface UnifiedBalance {
   depositAddress?: string | null;
   ngnAccount?: NgnReceivingAccount | null;
   totalUsdc: number;
+  totalNgn?: number | null;
+  usdToNgnRate?: number | null;
   arc?: { usdc?: number; eurc?: number; [k: string]: unknown };
   base?: { usdc?: number; [k: string]: unknown };
   gateway?: { usdc?: number; [k: string]: unknown };

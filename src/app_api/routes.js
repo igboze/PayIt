@@ -503,9 +503,13 @@ async function me(req) {
 async function balances(req, url) {
   const auth = authenticate(req);
   const accountType = resolveAccountType(auth, url.searchParams.get("account"));
-  const unified = await dep("chains").getUnifiedBalance(auth.user, accountType, {
-    strictBusiness: accountType === "business",
-  });
+  const [unified, ngnRate] = await Promise.all([
+    dep("chains").getUnifiedBalance(auth.user, accountType, {
+      strictBusiness: accountType === "business",
+    }),
+    features.getLiveUsdNgnRate(),
+  ]);
+  const totalNum = Number(unified.total || 0);
   return {
     status: 200,
     data: {
@@ -513,6 +517,8 @@ async function balances(req, url) {
       depositAddress: accountType === "business" ? auth.user.business_deposit_address : (auth.user.deposit_address || null),
       ngnAccount: getVerifiedNgnAccount(auth.telegramId, accountType),
       totalUsdc: unified.total,
+      totalNgn: ngnRate && Number.isFinite(totalNum) ? Math.round(totalNum * ngnRate) : null,
+      usdToNgnRate: ngnRate,
       arc: unified.arc,
       base: unified.base || { usdc: 0 },
       gateway: unified.gateway || { usdc: 0 },
