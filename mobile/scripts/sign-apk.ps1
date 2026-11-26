@@ -5,21 +5,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Auto-locate downloaded artifact zip or unsigned APK if -InputApk is omitted or missing
+# Auto-locate the NEWEST downloaded artifact zip or unsigned APK if -InputApk is omitted or missing
 if (-not $InputApk -or -not (Test-Path $InputApk)) {
   $downloads = Join-Path $env:USERPROFILE "Downloads"
-  $candidates = @(
-    $InputApk,
-    (Join-Path $downloads "Proxim-Android-APK.zip"),
-    (Join-Path $downloads "Proxim-Android-APK\app-release-unsigned.apk"),
-    (Join-Path $downloads "Proxim-Android-APK\app-release.apk"),
-    (Join-Path $downloads "app-release-unsigned.apk"),
-    (Join-Path $downloads "app-release.apk")
-  ) | Where-Object { $_ -and (Test-Path $_) }
+  $foundFiles = @()
+  if (Test-Path $downloads) {
+    $foundFiles += Get-ChildItem -Path $downloads -Filter "Proxim-Android-APK*.zip" -File -ErrorAction SilentlyContinue
+    $foundFiles += Get-ChildItem -Path $downloads -Filter "app-release*.apk" -File -ErrorAction SilentlyContinue
+  }
+  $newest = $foundFiles | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
-  if ($candidates.Count -gt 0) {
-    $InputApk = $candidates[0]
-    Write-Host "Found input artifact: $InputApk"
+  if ($newest) {
+    $InputApk = $newest.FullName
+    Write-Host "Found newest input artifact ($($newest.LastWriteTime)): $InputApk" -ForegroundColor Cyan
   } else {
     Write-Host ""
     Write-Host "No downloaded APK found in $downloads." -ForegroundColor Yellow
@@ -87,6 +85,13 @@ try {
 
     Write-Host "=== VERIFYING SIGNATURE ==="
     & $apksigner verify --print-certs $OutputApk
+    $aapt2 = Join-Path $buildTools.FullName "aapt2.exe"
+    if (Test-Path $aapt2) {
+      Write-Host "=== APK VERSION & OTA CONFIG ==="
+      & $aapt2 dump xmltree $OutputApk --file AndroidManifest.xml |
+        Select-String -Pattern 'versionCode|versionName|expo\.modules\.updates\.(ENABLED|EXPO_UPDATE_URL)' -Context 0,1 |
+        ForEach-Object { $_.Line.Trim(); if ($_.Context.PostContext) { "  " + $_.Context.PostContext[0].Trim() } }
+    }
     Write-Host ""
     Write-Host "SIGNED APK READY TO INSTALL ON ANDROID:" -ForegroundColor Green
     Write-Host (Resolve-Path $OutputApk).Path -ForegroundColor White
