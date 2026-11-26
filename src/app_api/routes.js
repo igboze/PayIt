@@ -78,8 +78,8 @@ function sendJson(res, status, data) {
 // Endpoints that accept base64 photo/document uploads need a larger JSON body limit.
 const LARGE_BODY_PATHS = new Map([
   ["/me/avatar", 6 * 1024 * 1024],
-  ["/kyc/submit", 12 * 1024 * 1024],
-  ["/kyb/submit", 15 * 1024 * 1024],
+  ["/kyc/submit", 15 * 1024 * 1024],
+  ["/kyb/submit", 25 * 1024 * 1024],
 ]);
 
 function parseBody(req, maxBytes = MAX_BODY_BYTES) {
@@ -1199,6 +1199,7 @@ const ROUTES = [
   // Global accounts, payout corridors, recipients & hosted payment links
   ["GET", "/global/accounts", (req, url) => features.listGlobalAccounts(authenticate(req), url)],
   ["GET", "/global/corridors", (req) => { authenticate(req); return features.listGlobalCorridors(); }],
+  ["GET", "/global/bank-codes", (req, url) => features.listGlobalBankCodes(authenticate(req), url)],
   ["GET", "/global/recipients", (req, url) => features.listGlobalRecipients(authenticate(req), url)],
   ["POST", "/global/payment-links", (req, body) => {
     const auth = authenticate(req);

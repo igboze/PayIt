@@ -179,8 +179,8 @@ function formatContact(p) {
   };
 }
 
-function formatGlobalAccount(d) {
-  const bankCode = d.bank_code || dep("internationalBanks")?.enrichReceivingBankCode(d.currency, d.bank_name) || null;
+function formatGlobalAccount(d, liveBankCode = null) {
+  const bankCode = d.bank_code || liveBankCode || dep("internationalBanks")?.enrichReceivingBankCode(d.currency, d.bank_name) || null;
   return {
     id: d.detail_id || d.id || null,
     accountId: d.account_id || null,
@@ -1015,13 +1015,25 @@ async function listGlobalAccounts(auth, url) {
     };
   }
   const details = db.getNuvionAccountDetailsByEntity(entity.entity_id).filter((d) => d.asset_type === "fiat");
+  const intlBanks = dep("internationalBanks");
+  const accounts = await Promise.all(
+    details.map(async (d) => {
+      let liveCode = null;
+      if (!d.bank_code && d.bank_name && intlBanks && typeof intlBanks.enrichReceivingBankCodeLive === "function") {
+        try {
+          liveCode = await intlBanks.enrichReceivingBankCodeLive(d.currency, d.bank_name);
+        } catch (_) {}
+      }
+      return formatGlobalAccount(d, liveCode);
+    })
+  );
   return {
     status: 200,
     data: {
       accountType,
       kycStatus: entity.status || "pending",
       supportedCurrencies,
-      accounts: details.map(formatGlobalAccount),
+      accounts,
     },
   };
 }
@@ -1036,11 +1048,18 @@ async function provisionGlobalAccount(auth, body, rawCurrency) {
   }
   try {
     const res = await dep("nuvionOrchestrator").provisionGlobalReceivingAccount(auth.telegramId, accountType, currency);
+    const intlBanks = dep("internationalBanks");
+    let liveCode = null;
+    if (res.detail && !res.detail.bank_code && res.detail.bank_name && intlBanks && typeof intlBanks.enrichReceivingBankCodeLive === "function") {
+      try {
+        liveCode = await intlBanks.enrichReceivingBankCodeLive(res.detail.currency, res.detail.bank_name);
+      } catch (_) {}
+    }
     return {
       status: res.cached ? 200 : 201,
       data: {
         accountType,
-        account: formatGlobalAccount(res.detail),
+        account: formatGlobalAccount(res.detail, liveCode),
         isPending: Boolean(res.isPending),
         cached: Boolean(res.cached),
       },
@@ -2163,6 +2182,35 @@ async function claimGift(auth, body) {
 
 // ─── 18. Global payout recipients, hosted payment links & KYC/KYB submit ──────
 
+async function listGlobalBankCodes(_auth, url) {
+  const currency = String(url.searchParams.get("currency") || "").trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(currency)) throw bad("Invalid currency code.");
+  const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
+  const intlBanks = dep("internationalBanks");
+  const list = intlBanks && typeof intlBanks.getLiveBanksForCurrency === "function"
+    ? await intlBanks.getLiveBanksForCurrency(currency)
+    : [];
+  const filtered = q
+    ? list.filter((b) =>
+        String(b.name || "").toLowerCase().includes(q) ||
+        String(b.code || "").toLowerCase().includes(q) ||
+        String(b.swiftBic || "").toLowerCase().includes(q)
+      )
+    : list;
+  return {
+    status: 200,
+    data: {
+      currency,
+      banks: filtered.slice(0, 60).map((b) => ({
+        code: b.bankCode || b.code || "",
+        name: b.name,
+        swiftBic: b.swiftBic || null,
+        institutionNumber: b.institutionNumber || null,
+      })),
+    },
+  };
+}
+
 async function listGlobalRecipients(auth, url) {
   const accountType = resolveAccountType(auth, url.searchParams.get("account"));
   const currency = (url.searchParams.get("currency") || "").trim().toUpperCase() || null;
@@ -2322,6 +2370,20 @@ async function submitKyc(auth, body) {
     },
   };
 
+  const docs = body.documents && typeof body.documents === "object" ? body.documents : null;
+  if (!docs?.idFrontBase64 || !docs?.proofOfAddressBase64) {
+    throw bad("Please upload both your Government ID (front) and Proof of Address document.");
+  }
+  const allowedKycMimes = new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]);
+  const idFrontMime = String(docs.idFrontMimeType || "image/jpeg").trim().toLowerCase();
+  const poaMime = String(docs.proofOfAddressMimeType || "image/jpeg").trim().toLowerCase();
+  if (!allowedKycMimes.has(idFrontMime)) {
+    throw bad("Government ID must be a JPG, PNG, or PDF file.");
+  }
+  if (!allowedKycMimes.has(poaMime)) {
+    throw bad("Proof of Address must be a JPG, PNG, or PDF file.");
+  }
+
   const nuvion = dep("nuvion");
   const db = dep("db");
   const existingLocal = db.getNuvionEntityByUser(auth.telegramId, "personal");
@@ -2345,32 +2407,29 @@ async function submitKyc(auth, body) {
       const entityObj = created?.entity || created;
       entityId = entityObj?.id || created?.id;
       personId = created?.person?.id || entityObj?.person_id || personId || null;
-      entityStatus = String(entityObj?.status || created?.status || "pending").toLowerCase();
+      entityStatus = String(entityObj?.status || created?.status || "incomplete").toLowerCase();
     }
 
-    const docs = body.documents && typeof body.documents === "object" ? body.documents : null;
-    if (docs?.idFrontBase64 && typeof nuvion.uploadDocument === "function") {
+    if (typeof nuvion.uploadDocument === "function") {
       await nuvion.uploadDocument({
         entityId,
         key: "identity",
         description: `${docType} for ${fullName}`,
         fileBase64: stripBase64DataUrl(docs.idFrontBase64),
         fileBackBase64: docs.idBackBase64 ? stripBase64DataUrl(docs.idBackBase64) : null,
-        fileType: docs.idFrontMimeType || "image/jpeg",
+        fileType: idFrontMime,
         personId,
       });
-    }
-    if (docs?.proofOfAddressBase64 && typeof nuvion.uploadDocument === "function") {
       await nuvion.uploadDocument({
         entityId,
         key: "proof_of_address",
         description: `Proof of address for ${fullName}`,
         fileBase64: stripBase64DataUrl(docs.proofOfAddressBase64),
-        fileType: docs.proofOfAddressMimeType || "image/jpeg",
+        fileType: poaMime,
         personId,
       });
     }
-    if ((docs?.idFrontBase64 || docs?.proofOfAddressBase64) && entityStatus === "incomplete" && typeof nuvion.submitOnboarding === "function") {
+    if (entityStatus === "incomplete" && typeof nuvion.submitOnboarding === "function") {
       await nuvion.submitOnboarding(entityId);
       entityStatus = "pending";
     }
@@ -2394,17 +2453,23 @@ async function submitKyc(auth, body) {
 
 async function submitKyb(auth, body) {
   const compliance = dep("compliance");
+  const flowsKyc = dep("flowsKyc");
   const countryCode = compliance.normalizeCountryCode(body?.incorporationCountry || body?.countryCode);
   if (!/^[A-Z]{2}$/.test(countryCode)) throw bad("Valid 2-letter ISO incorporationCountry is required.");
   if (compliance.isSanctionedCountry(countryCode)) {
     throw new FeatureError(403, "jurisdiction_unsupported", `Jurisdiction ${countryCode} is not supported due to compliance restrictions.`);
   }
-  const legalName = reqStr(body, "legalName", { max: 120 });
-  const registrationNumber = reqStr(body, "registrationNumber", { max: 64 });
-  const email = reqStr(body, "email", { max: 120 });
-  const phoneNumber = reqStr(body, "phoneNumber", { max: 32 });
-  const industry = reqStr(body, "industry", { max: 80 });
+  const legalName = reqStr(body, "legalName", { max: 255 });
+  const tradeName = optStr(body, "tradeName", { max: 255 }) || legalName;
+  const registrationNumber = reqStr(body, "registrationNumber", { max: 255 });
+  const taxId = optStr(body, "taxId", { max: 64 }) || registrationNumber;
+  const email = reqStr(body, "email", { max: 120 }).toLowerCase();
+  const rawPhoneNumber = reqStr(body, "phoneNumber", { max: 32 });
+  const phoneNumber = flowsKyc?.normalizePhone?.(rawPhoneNumber, countryCode) || rawPhoneNumber;
+  const industry = reqStr(body, "industry", { max: 100 });
   const businessType = reqStr(body, "businessType", { pattern: /^(llc|corporation|sole_proprietorship|partnership)$/i }).toLowerCase();
+  const description = optStr(body, "description", { max: 1000 }) || `${legalName} operating in ${industry}`;
+
   const currentYear = new Date().getUTCFullYear();
   const incorporationYear = Math.round(Number(body?.incorporationYear));
   const incorporationMonth = Math.round(Number(body?.incorporationMonth));
@@ -2414,111 +2479,352 @@ async function submitKyb(auth, body) {
   if (!Number.isInteger(incorporationMonth) || incorporationMonth < 1 || incorporationMonth > 12) {
     throw bad("incorporationMonth must be an integer between 1 and 12.");
   }
-  if (!body?.address || typeof body.address !== "object") throw bad("address object is required.");
-  if (!body?.officer || typeof body.officer !== "object") throw bad("officer object is required.");
+
+  if (!body?.address || typeof body.address !== "object") throw bad("Business address object is required.");
+  if (!body?.officer || typeof body.officer !== "object") throw bad("Controlling officer / beneficial owner details are required.");
+
+  if (!auth.user?.business_deposit_address) {
+    throw new FeatureError(404, "no_business_account", "Create a Business Account first before submitting Business KYB verification.");
+  }
 
   const rawAddr = body.address || {};
-  const rawOfficer = body.officer || {};
   const addrLine1 = String(rawAddr.line1 || rawAddr.line_1 || rawAddr.street || "").trim();
-  if (!addrLine1) throw bad("address.line1 is required.");
-  const officerFirst = String(rawOfficer.firstName || rawOfficer.first_name || "").trim();
-  const officerLast = String(rawOfficer.lastName || rawOfficer.last_name || "").trim();
-  if (!officerFirst || !officerLast) throw bad("officer.firstName and officer.lastName are required.");
-  const officerEmail = String(rawOfficer.email || "").trim() || email;
-  const officerDob = String(rawOfficer.dateOfBirth || rawOfficer.dob || "").trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(officerDob)) throw bad("officer.dateOfBirth (YYYY-MM-DD) is required.");
-  const officerPhone = dep("flowsKyc")?.normalizePhone?.(rawOfficer.phoneNumber || rawOfficer.phone || phoneNumber, countryCode) || phoneNumber;
+  const addrCity = String(rawAddr.city || "").trim();
+  const addrState = String(rawAddr.state || "").trim();
+  const addrPostal = String(rawAddr.postalCode || rawAddr.postal_code || "").trim();
+  const addrCountry = compliance.normalizeCountryCode(rawAddr.country || rawAddr.country_code || countryCode);
+  if (addrLine1.length < 4) throw bad("Business street address (at least 4 characters) is required.");
+  if (!addrCity || !addrState || !addrPostal) throw bad("Business city, state/region, and postal code are required.");
+
+  const incorporationState = optStr(body, "incorporationState", { max: 100 }) || addrState;
+  const rawWebsite = optStr(body, "website", { max: 200 });
+  const cleanWebsite = rawWebsite && typeof flowsKyc?.normalizeWebsiteUrl === "function"
+    ? flowsKyc.normalizeWebsiteUrl(rawWebsite)
+    : rawWebsite || null;
+  if (rawWebsite && cleanWebsite === undefined) {
+    throw bad("Business website must be a valid URL starting with https:// (or leave blank).");
+  }
 
   const bizAddress = {
     line_1: addrLine1,
-    city: String(rawAddr.city || "").trim() || undefined,
-    state: String(rawAddr.state || "").trim() || undefined,
-    postal_code: String(rawAddr.postalCode || rawAddr.postal_code || "").trim() || undefined,
-    country_code: countryCode,
+    city: addrCity,
+    state: addrState,
+    postal_code: addrPostal,
+    country_code: /^[A-Z]{2}$/.test(addrCountry) ? addrCountry : countryCode,
+  };
+
+  let operatingAddress = { ...bizAddress };
+  if (body.operatingAddress && typeof body.operatingAddress === "object") {
+    const op = body.operatingAddress;
+    const opLine1 = String(op.line1 || op.line_1 || op.street || "").trim();
+    if (opLine1.length >= 4) {
+      operatingAddress = {
+        line_1: opLine1,
+        city: String(op.city || addrCity).trim(),
+        state: String(op.state || addrState).trim(),
+        postal_code: String(op.postalCode || op.postal_code || addrPostal).trim(),
+        country_code: compliance.normalizeCountryCode(op.country || op.country_code || bizAddress.country_code) || bizAddress.country_code,
+      };
+    }
+  }
+
+  const rawOfficer = body.officer || {};
+  const officerFirst = String(rawOfficer.firstName || rawOfficer.first_name || "").trim();
+  const officerLast = String(rawOfficer.lastName || rawOfficer.last_name || "").trim();
+  if (!officerFirst || !officerLast) throw bad("Officer first name and last name are required.");
+  const officerEmail = String(rawOfficer.email || "").trim().toLowerCase() || email;
+  const officerDob = String(rawOfficer.dateOfBirth || rawOfficer.dob || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(officerDob)) throw bad("Officer date of birth (YYYY-MM-DD) is required.");
+  const officerNationality = compliance.normalizeCountryCode(rawOfficer.nationality || countryCode);
+  const officerGender = String(rawOfficer.gender || "m").trim().toLowerCase().startsWith("f") ? "f" : "m";
+  const officerPhoneRaw = String(rawOfficer.phoneNumber || rawOfficer.phone || phoneNumber).trim();
+  const officerPhone = flowsKyc?.normalizePhone?.(officerPhoneRaw, officerNationality) || officerPhoneRaw;
+  const officerJobTitle = String(rawOfficer.jobTitle || rawOfficer.job_title || rawOfficer.title || "Director").trim().slice(0, 100);
+  const officerOwnership = Number(rawOfficer.ownershipPercentage ?? rawOfficer.ownership_percentage ?? 100);
+  if (!Number.isFinite(officerOwnership) || officerOwnership < 0 || officerOwnership > 100) {
+    throw bad("Officer ownership percentage must be between 0 and 100.");
+  }
+  const isControlPerson = rawOfficer.isControlPerson !== undefined ? Boolean(rawOfficer.isControlPerson) : true;
+  const isBeneficialOwner = rawOfficer.isBeneficialOwner !== undefined ? Boolean(rawOfficer.isBeneficialOwner) : officerOwnership >= 25;
+
+  const officerIdDoc = rawOfficer.idDocument && typeof rawOfficer.idDocument === "object" ? rawOfficer.idDocument : {};
+  const officerIdNumber = String(officerIdDoc.number || rawOfficer.idNumber || "").trim();
+  const officerIdTypeRaw = String(officerIdDoc.type || rawOfficer.idType || "international_passport").toLowerCase();
+  const officerIdType = officerIdTypeRaw.includes("driv")
+    ? "drivers_license"
+    : officerIdTypeRaw.includes("nat")
+      ? "national_id"
+      : "international_passport";
+  const officerIdIssue = String(officerIdDoc.issueDate || officerIdDoc.issue_date || rawOfficer.issueDate || "").trim();
+  const officerIdExpiry = String(officerIdDoc.expiryDate || officerIdDoc.expiry_date || rawOfficer.expiryDate || "").trim();
+  const officerIdAuthority = String(officerIdDoc.issuingAuthority || officerIdDoc.issuing_authority || rawOfficer.issuingAuthority || "Government Authority").trim();
+  const officerIdCountry = compliance.normalizeCountryCode(officerIdDoc.country || officerIdDoc.issuing_country || rawOfficer.issuingCountry || officerNationality);
+  const officerBvn = String(rawOfficer.bvn || "").trim();
+  const officerNin = String(rawOfficer.nin || "").trim();
+  const officerSsn = String(rawOfficer.ssn || "").trim();
+
+  // Required KYB documents (all 5 per Nuvion X-API-Version: 2026-02-06)
+  const docs = body.documents && typeof body.documents === "object" ? body.documents : null;
+  if (
+    !docs?.coiBase64 ||
+    !docs?.memartBase64 ||
+    !docs?.businessPoaBase64 ||
+    !docs?.officerIdFrontBase64 ||
+    !docs?.officerPoaBase64
+  ) {
+    throw bad(
+      "Business KYB requires all 5 documents: Certificate of Incorporation (PDF), Memorandum & Articles of Association (PDF/DOCX), Business Proof of Address, Officer Government ID, and Officer Proof of Address."
+    );
+  }
+  const coiMime = String(docs.coiMimeType || "application/pdf").trim().toLowerCase();
+  const memartMime = String(docs.memartMimeType || "application/pdf").trim().toLowerCase();
+  const bizPoaMime = String(docs.businessPoaMimeType || "application/pdf").trim().toLowerCase();
+  const officerIdMime = String(docs.officerIdMimeType || "image/jpeg").trim().toLowerCase();
+  const officerPoaMime = String(docs.officerPoaMimeType || "image/jpeg").trim().toLowerCase();
+
+  const allowedPdfOnly = new Set(["application/pdf"]);
+  const allowedMemart = new Set([
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ]);
+  const allowedImgOrPdf = new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]);
+
+  if (!allowedPdfOnly.has(coiMime)) {
+    throw bad("Certificate of Incorporation must be a PDF file.");
+  }
+  if (!allowedMemart.has(memartMime)) {
+    throw bad("Memorandum & Articles of Association must be a PDF, DOC, or DOCX file.");
+  }
+  if (!allowedImgOrPdf.has(bizPoaMime)) {
+    throw bad("Business Proof of Address must be a PDF, JPG, or PNG file.");
+  }
+  if (!allowedImgOrPdf.has(officerIdMime)) {
+    throw bad("Officer Government ID must be a PDF, JPG, or PNG file.");
+  }
+  if (!allowedImgOrPdf.has(officerPoaMime)) {
+    throw bad("Officer Proof of Address must be a PDF, JPG, or PNG file.");
+  }
+
+  const db = dep("db");
+  const nuvion = dep("nuvion");
+  const existingPersonal = db.getNuvionEntityByUser(auth.telegramId, "personal");
+  const canReusePersonalPersonId = Boolean(
+    existingPersonal?.person_id &&
+    existingPersonal?.email &&
+    String(existingPersonal.email).trim().toLowerCase() === officerEmail
+  );
+
+  let officerEntry;
+  if (canReusePersonalPersonId) {
+    officerEntry = {
+      job_title: officerJobTitle,
+      is_control_person: isControlPerson,
+      is_beneficial_owner: isBeneficialOwner,
+      ownership_percentage: officerOwnership,
+      person_id: existingPersonal.person_id,
+    };
+  } else {
+    let officerAddress = { ...bizAddress };
+    if (rawOfficer.address && typeof rawOfficer.address === "object") {
+      const oa = rawOfficer.address;
+      const oaLine1 = String(oa.line1 || oa.line_1 || oa.street || "").trim();
+      if (oaLine1.length >= 4) {
+        officerAddress = {
+          line_1: oaLine1,
+          city: String(oa.city || addrCity).trim(),
+          state: String(oa.state || addrState).trim(),
+          postal_code: String(oa.postalCode || oa.postal_code || addrPostal).trim(),
+          country_code: compliance.normalizeCountryCode(oa.country || oa.country_code || officerNationality) || officerNationality,
+        };
+      }
+    }
+
+    if ((officerNationality === "NG" || officerAddress.country_code === "NG") && (officerBvn.length !== 11 || officerNin.length !== 11)) {
+      throw bad("Nigerian directors/owners require both an 11-digit BVN and 11-digit NIN.");
+    }
+    if ((officerNationality === "US" || officerAddress.country_code === "US") && !/^\d{9,}$/.test(officerSsn.replace(/-/g, ""))) {
+      throw bad("U.S. directors/owners require a valid 9-digit SSN.");
+    }
+    if (!officerIdNumber) {
+      throw bad("Officer Government ID number is required.");
+    }
+
+    const officerPerson = {
+      first_name: officerFirst,
+      last_name: officerLast,
+      email: officerEmail,
+      phonenumber: officerPhone,
+      date_of_birth: officerDob,
+      gender: officerGender,
+      nationality: officerNationality,
+      ...(officerBvn ? { bvn: officerBvn } : {}),
+      ...(officerNin ? { nin: officerNin } : {}),
+      ...(officerSsn ? { ssn: officerSsn } : {}),
+      address: officerAddress,
+      identification: {
+        document: {
+          type: officerIdType,
+          number: officerIdNumber,
+          ...(officerIdIssue ? { issue_date: officerIdIssue } : {}),
+          ...(officerIdExpiry ? { expiry_date: officerIdExpiry } : {}),
+          issuing_country: officerIdCountry,
+          issuing_authority: officerIdAuthority,
+        },
+        proof_of_address: { type: "utility_bill" },
+      },
+    };
+
+    officerEntry = {
+      job_title: officerJobTitle,
+      is_control_person: isControlPerson,
+      is_beneficial_owner: isBeneficialOwner,
+      ownership_percentage: officerOwnership,
+      person: officerPerson,
+    };
+  }
+
+  const businessObj = {
+    legal_name: legalName,
+    trade_name: tradeName,
+    industry,
+    email,
+    type: businessType,
+    description,
+    registration_number: registrationNumber,
+    phonenumber: phoneNumber,
+    incorporation_meta: {
+      year: incorporationYear,
+      month: incorporationMonth,
+      country: countryCode,
+      state: incorporationState,
+    },
+    ...(cleanWebsite ? { website: cleanWebsite } : {}),
   };
 
   const entityPayload = {
     name: legalName,
-    business: {
-      legal_name: legalName,
-      trade_name: optStr(body, "tradeName", { max: 120 }) || legalName,
-      registration_number: registrationNumber,
-      tax_id: optStr(body, "taxId", { max: 64 }) || registrationNumber,
-      incorporation_country: countryCode,
-      incorporation_state: optStr(body, "incorporationState", { max: 80 }) || String(rawAddr.state || "").trim() || undefined,
-      incorporation_year: incorporationYear,
-      incorporation_month: incorporationMonth,
-      email,
-      phone_number: dep("flowsKyc")?.normalizePhone?.(phoneNumber, countryCode) || phoneNumber,
-      website: optStr(body, "website", { max: 200 }) || undefined,
-      industry,
-      type: businessType,
-    },
+    business: businessObj,
     address: bizAddress,
-    operating_address: { ...bizAddress },
-    business_officers: [
-      {
-        relationship: "director",
-        person: {
-          first_name: officerFirst,
-          last_name: officerLast,
-          email: officerEmail,
-          phone_number: officerPhone,
-          date_of_birth: officerDob,
-          gender: String(rawOfficer.gender || "m").toLowerCase().startsWith("f") ? "f" : "m",
-          nationality: rawOfficer.nationality || countryCode,
-          ...(rawOfficer.bvn ? { bvn: String(rawOfficer.bvn).trim() } : {}),
-          ...(rawOfficer.nin ? { nin: String(rawOfficer.nin).trim() } : {}),
-        },
-        ...(rawOfficer.idNumber ? {
-          identification: {
-            document: {
-              type: String(rawOfficer.idType || "").toLowerCase().includes("driv")
-                ? "drivers_license"
-                : String(rawOfficer.idType || "").toLowerCase().includes("nat")
-                  ? "national_id"
-                  : "international_passport",
-              number: String(rawOfficer.idNumber).trim(),
-              ...(rawOfficer.issueDate ? { issue_date: String(rawOfficer.issueDate).trim() } : {}),
-              ...(rawOfficer.expiryDate ? { expiry_date: String(rawOfficer.expiryDate).trim() } : {}),
-              issuing_country: rawOfficer.issuingCountry || countryCode,
-              issuing_authority: rawOfficer.issuingAuthority || "Government Authority",
-            },
-          },
-        } : {}),
-      },
-    ],
+    operating_address: operatingAddress,
+    business_officers: [officerEntry],
     meta: {
       registration_number: registrationNumber,
-      tax_id: optStr(body, "taxId", { max: 64 }) || registrationNumber,
-      annual_turnover: "100K",
-      monthly_transaction_value: "25K",
-      monthly_payments_count: "50",
-      max_transfer_amount: "10K",
-      customer_types: "Business",
-      sales_channels: "Direct",
-      funding_source: "Business revenue",
+      tax_id: taxId,
+      annual_turnover: optStr(body, "annualTurnover", { max: 40 }) || "100K",
+      monthly_transaction_value: optStr(body, "monthlyTransactionValue", { max: 40 }) || "25K",
+      monthly_payments_count: optStr(body, "monthlyPaymentsCount", { max: 20 }) || "50",
+      max_transfer_amount: optStr(body, "maxTransferAmount", { max: 40 }) || "10K",
+      customer_types: optStr(body, "customerTypes", { max: 80 }) || "Business",
+      sales_channels: optStr(body, "salesChannels", { max: 80 }) || "Direct",
+      funding_source: optStr(body, "fundingSource", { max: 80 }) || "Business revenue",
     },
   };
 
-  let entityRes;
+  const existingLocal = db.getNuvionEntityByUser(auth.telegramId, "business");
+  let entityId = existingLocal?.entity_id || null;
+  let businessId = existingLocal?.business_id || null;
+  let officerPersonId = existingLocal?.person_id || (canReusePersonalPersonId ? existingPersonal.person_id : null);
+  let entityStatus = String(existingLocal?.status || "").toLowerCase();
+
   try {
-    entityRes = await dep("nuvion").createBusinessEntity(entityPayload);
+    if (typeof nuvion.validateBusinessEntityPayload === "function") {
+      nuvion.validateBusinessEntityPayload(entityPayload);
+    }
+
+    if (!entityId || entityStatus !== "incomplete") {
+      let entityRes;
+      try {
+        entityRes = await nuvion.createBusinessEntity(entityPayload);
+      } catch (createErr) {
+        if (createErr?.status === 409 && createErr?.type === "error_duplicate_resource" && typeof nuvion.recoverEntityByName === "function") {
+          entityRes = await nuvion.recoverEntityByName({ name: legalName, type: "business", email });
+          if (!entityRes) throw createErr;
+        } else {
+          throw createErr;
+        }
+      }
+      const entityObj = entityRes?.entity || entityRes;
+      entityId = entityObj?.id || entityRes?.id;
+      businessId = entityRes?.business?.id || entityObj?.business_id || businessId || null;
+      officerPersonId =
+        entityRes?.business_officers?.[0]?.person_id ||
+        entityRes?.business_officers?.[0]?.person?.id ||
+        entityRes?.officers?.[0]?.person_id ||
+        entityRes?.officers?.[0]?.person?.id ||
+        officerPersonId ||
+        null;
+      entityStatus = String(entityObj?.status || entityRes?.status || "incomplete").toLowerCase();
+    }
+
+    if (!officerPersonId && typeof nuvion.getEntity === "function") {
+      try {
+        const live = await nuvion.getEntity(entityId);
+        officerPersonId =
+          live?.business_officers?.[0]?.person_id ||
+          live?.business_officers?.[0]?.person?.id ||
+          live?.officers?.[0]?.person_id ||
+          null;
+      } catch (_) {}
+    }
+
+    if (typeof nuvion.uploadDocument === "function") {
+      await nuvion.uploadDocument({
+        entityId,
+        key: "certificate_of_incorporation",
+        description: `Certificate of Incorporation for ${legalName}`,
+        fileBase64: stripBase64DataUrl(docs.coiBase64),
+        fileType: coiMime,
+      });
+      await nuvion.uploadDocument({
+        entityId,
+        key: "memorandum_of_association",
+        description: `Memorandum & Articles of Association for ${legalName}`,
+        fileBase64: stripBase64DataUrl(docs.memartBase64),
+        fileType: memartMime,
+      });
+      await nuvion.uploadDocument({
+        entityId,
+        key: "proof_of_address",
+        description: `Business Proof of Address for ${legalName}`,
+        fileBase64: stripBase64DataUrl(docs.businessPoaBase64),
+        fileType: bizPoaMime,
+      });
+      await nuvion.uploadDocument({
+        entityId,
+        key: "identity",
+        description: `Officer ID for ${officerFirst} ${officerLast}`,
+        fileBase64: stripBase64DataUrl(docs.officerIdFrontBase64),
+        fileBackBase64: docs.officerIdBackBase64 ? stripBase64DataUrl(docs.officerIdBackBase64) : null,
+        fileType: officerIdMime,
+        personId: officerPersonId,
+      });
+      await nuvion.uploadDocument({
+        entityId,
+        key: "proof_of_address",
+        description: `Officer Proof of Address for ${officerFirst} ${officerLast}`,
+        fileBase64: stripBase64DataUrl(docs.officerPoaBase64),
+        fileType: officerPoaMime,
+        personId: officerPersonId,
+      });
+    }
+
+    if (entityStatus === "incomplete" && typeof nuvion.submitOnboarding === "function") {
+      await nuvion.submitOnboarding(entityId);
+      entityStatus = "pending";
+    }
   } catch (err) {
     throw new FeatureError(Number(err.status || err.statusCode) || 400, "kyb_error", String(err.message || "Could not submit business verification.").replace(/nuvion/gi, "Global Neobank"));
   }
-  const entityObj = entityRes?.entity || entityRes;
-  const entityId = entityObj?.id || entityRes?.id;
-  const officerPersonId = entityRes?.business_officers?.[0]?.person?.id || entityRes?.business_officers?.[0]?.person_id || null;
-  let entityStatus = String(entityObj?.status || entityRes?.status || "pending").toLowerCase();
 
-  dep("db").upsertNuvionEntity({
+  db.upsertNuvionEntity({
     telegramId: auth.telegramId,
     accountType: "business",
     entityId,
     entityType: "business",
     personId: officerPersonId,
-    status: entityStatus,
+    businessId,
+    status: entityStatus || "pending",
     legalName,
     email,
     countryCode,
@@ -3057,6 +3363,7 @@ module.exports = {
   listGlobalAccounts,
   provisionGlobalAccount,
   listGlobalCorridors,
+  listGlobalBankCodes,
   listGlobalRecipients,
   createGlobalPaymentLink,
   listCards,

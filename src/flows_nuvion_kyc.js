@@ -329,10 +329,42 @@ async function showGlobalPortal(ctx, forcedContext = null) {
   }
 
   const accountType = forcedContext || (deps.getContext ? deps.getContext(ctx.from.id) : (user.active_context || "personal"));
-  const entity = db.getNuvionEntityByUser(ctx.from.id, accountType);
-  const draft = db.getNuvionKycDraft(ctx.from.id, accountType);
   const isBiz = accountType === "business";
-  const label = isBiz ? "Business Global Banking" : "Personal Global Banking";
+  if (isBiz && !user.business_deposit_address) {
+    return ctx.reply(
+      `💼 <b>Business Account Required for KYB</b>\n──────────────────────────\n` +
+      `Business Verification (KYB) is strictly separate from Personal KYC and requires a Proxim Business wallet first.\n\n` +
+      `Tap below to set up your Business Account or check your Personal KYC status:`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("💼 Set Up Business Account", "switch_business")],
+          [Markup.button.callback("🪪 View Personal KYC Status", "action_nuvion_portal")],
+          [Markup.button.callback("🏠 Main Menu", "main_menu")],
+        ]),
+      }
+    );
+  }
+
+  const entity = db.getNuvionEntityByUser(ctx.from.id, accountType);
+  const otherType = isBiz ? "personal" : "business";
+  const hasBiz = Boolean(user.business_deposit_address);
+  const otherEntity = (otherType === "personal" || hasBiz) ? db.getNuvionEntityByUser(ctx.from.id, otherType) : null;
+  const otherStatus = String(otherEntity?.status || "not_started").toLowerCase();
+  const otherStatusSummary = otherStatus === "approved"
+    ? "Tier 1 Approved ✅"
+    : otherStatus === "pending" || otherStatus === "incomplete"
+      ? "Under Review ⏳"
+      : "Not Verified";
+  const otherStatusLine = (otherType === "personal" || hasBiz)
+    ? `• <b>${isBiz ? "Personal KYC" : "Business KYB"} Status:</b> ${otherStatusSummary} <i>(tracked separately)</i>\n`
+    : "";
+  const switchPortalRow = (otherType === "personal" || hasBiz)
+    ? [[Markup.button.callback(isBiz ? "🪪 Switch to Personal KYC Portal" : "💼 Switch to Business KYB Portal", isBiz ? "action_nuvion_portal" : "biz_nuvion_portal")]]
+    : [];
+
+  const draft = db.getNuvionKycDraft(ctx.from.id, accountType);
+  const label = isBiz ? "Business Global Banking (KYB)" : "Personal Global Banking (KYC)";
 
   const status = String(entity?.status || "").toLowerCase();
   const isApproved = status === "approved";
@@ -343,16 +375,19 @@ async function showGlobalPortal(ctx, forcedContext = null) {
     const resumeAction = isBiz ? "nuvion_kyb_resume" : "nuvion_kyc_resume";
     const buttons = [];
     if (draft) {
-      buttons.push([Markup.button.callback("▶️ Resume Verification", resumeAction)]);
+      buttons.push([Markup.button.callback(isBiz ? "▶️ Resume Business KYB" : "▶️ Resume Personal KYC", resumeAction)]);
       buttons.push([Markup.button.callback("🔄 Start Fresh", startAction)]);
     } else {
-      buttons.push([Markup.button.callback(isBiz ? "💼 Verify Business (KYB)" : "🪪 Start Tier-1 Verification (KYC)", startAction)]);
+      buttons.push([Markup.button.callback(isBiz ? "💼 Verify Business (KYB)" : "🪪 Start Personal Verification (KYC)", startAction)]);
     }
+    buttons.push(...switchPortalRow);
     buttons.push([Markup.button.callback("🏠 Main Menu", "main_menu")]);
 
     return ctx.reply(
       `🌍 <b>${label} — Upgrade from Tier 0 to Tier 1</b>\n──────────────────────────\n` +
-      `🏷️ <b>Your Current Tier:</b> Tier 0 (Standard — NGN Accounts Only)\n\n` +
+      `🏷️ <b>${isBiz ? "Business KYB" : "Personal KYC"} Status:</b> Tier 0 (Standard — NGN Accounts Only)\n` +
+      otherStatusLine +
+      `\n` +
       `On <b>Tier 0</b>, your ${isBiz ? "Business" : "Personal"} account only has access to <b>Nigerian Naira (NGN)</b> accounts and local transfers.\n` +
       `Getting <b>Global Bank Accounts</b> and <b>Virtual USD Cards</b> requires <b>Tier 1</b>, which unlocks automatically once you complete ${isBiz ? "Business Verification (KYB)" : "ID Verification (KYC)"}:\n\n` +
       `• 🏦 <b>Named Global Bank Accounts</b> (USD, GBP, EUR, NGN, CAD, AED, KES, GHS)\n` +
@@ -382,7 +417,8 @@ async function showGlobalPortal(ctx, forcedContext = null) {
     return ctx.reply(
       `🌍 <b>${label}</b>  ✅ <b>Verified</b>\n──────────────────────────\n` +
       `• <b>Account Name:</b> ${escapeHtml(entity.legal_name || "Verified Account")}\n` +
-      `• <b>Status:</b> Tier-1 Approved\n` +
+      `• <b>${isBiz ? "Business KYB" : "Personal KYC"} Status:</b> Tier-1 Approved ✅\n` +
+      otherStatusLine +
       `• <b>Instant Settlement Bridge:</b> ${bridgeReady ? "✅ Active" : "⏳ Provisioning..."}\n` +
       `• <b>Global Receiving Accounts:</b> ${fiatDetails.length} active\n\n` +
       `<i>All deposits received into your global bank accounts settle automatically into your main Proxim balance.</i>`,
@@ -395,6 +431,7 @@ async function showGlobalPortal(ctx, forcedContext = null) {
           [Markup.button.callback("🔗 Request Payment Link (UK/EU/CA/MoMo)", `nuvion_paylink_menu_${p}`)],
           ...(accountType === "business" ? [[Markup.button.callback("📄 Multi-Currency CSV Payroll", `nuvion_po_csv_start_${p}`)]] : []),
           [Markup.button.callback("🔄 Sync Bridge & Status", `nuvion_refresh_${accountType}`)],
+          ...switchPortalRow,
           [Markup.button.callback("🏠 Main Menu", "main_menu")],
         ]),
       }
@@ -405,13 +442,15 @@ async function showGlobalPortal(ctx, forcedContext = null) {
     return ctx.reply(
       `⏳ <b>${label} — Verification In Progress</b>\n──────────────────────────\n` +
       `• <b>Name:</b> ${escapeHtml(entity.legal_name || "—")}\n` +
-      `• <b>Status:</b> <code>${escapeHtml(status.toUpperCase())}</code>\n` +
+      `• <b>${isBiz ? "Business KYB" : "Personal KYC"} Status:</b> <code>${escapeHtml(status.toUpperCase())}</code>\n` +
+      otherStatusLine +
       `• <b>Compliance Partner:</b> <b>Nuvion</b>\n\n` +
       `We'll message you automatically the moment your verification is approved.`,
       {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard([
           [Markup.button.callback("🔄 Check Status Now", `nuvion_refresh_${accountType}`)],
+          ...switchPortalRow,
           [Markup.button.callback("🏠 Main Menu", "main_menu")],
         ]),
       }
@@ -420,9 +459,16 @@ async function showGlobalPortal(ctx, forcedContext = null) {
 
   return ctx.reply(
     `❌ <b>${label} — Verification ${escapeHtml(status.toUpperCase())}</b>\n──────────────────────────\n` +
+    otherStatusLine +
     `Your verification could not be completed. Your regular Proxim wallet remains fully active.\n` +
     `Please contact support if you'd like us to review your application.`,
-    { parse_mode: "HTML", ...(deps.backToMenu || {}) }
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        ...switchPortalRow,
+        [Markup.button.callback("🏠 Main Menu", "main_menu")],
+      ]),
+    }
   );
 }
 
@@ -1777,12 +1823,24 @@ async function handleNuvionKycMediaUpload(ctx, { fileId, mimeType = "image/jpeg"
 function registerNuvionKycFlows(bot, depsIn = {}) {
   deps = { bot, ...depsIn };
 
-  bot.command(["global", "verify", "kyc"], async (ctx) => showGlobalPortal(ctx));
-  bot.command(["resume", "resume_kyc", "proceed", "proceed_kyc"], async (ctx) => {
+  bot.command(["global", "verify"], async (ctx) => showGlobalPortal(ctx));
+  bot.command("kyc", async (ctx) => showGlobalPortal(ctx, "personal"));
+  bot.command("kyb", async (ctx) => showGlobalPortal(ctx, "business"));
+  bot.command(["resume_kyc", "proceed_kyc"], async (ctx) => {
+    const draft = db.getNuvionKycDraft(ctx.from.id, "personal");
+    if (draft && draft.step) return promptPersonalKycStep(ctx, ctx.from.id, draft.step, draft.data || {});
+    return showGlobalPortal(ctx, "personal");
+  });
+  bot.command(["resume_kyb", "proceed_kyb"], async (ctx) => {
+    const draft = db.getNuvionKycDraft(ctx.from.id, "business");
+    if (draft && draft.step) return promptBusinessKybStep(ctx, ctx.from.id, draft.step, draft.data || {});
+    return showGlobalPortal(ctx, "business");
+  });
+  bot.command(["resume", "proceed"], async (ctx) => {
     const acctType = deps.getContext ? deps.getContext(ctx.from.id) : "personal";
-    const draft = db.getNuvionKycDraft(ctx.from.id, acctType) || db.getNuvionKycDraft(ctx.from.id, "personal") || db.getNuvionKycDraft(ctx.from.id, "business");
+    const draft = db.getNuvionKycDraft(ctx.from.id, acctType);
     if (draft && draft.step) {
-      if (draft.account_type === "business") {
+      if (acctType === "business") {
         return promptBusinessKybStep(ctx, ctx.from.id, draft.step, draft.data || {});
       }
       return promptPersonalKycStep(ctx, ctx.from.id, draft.step, draft.data || {});
@@ -1850,7 +1908,7 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
   bot.action("nuvion_kyc_pause", async (ctx) => {
     ctx.answerCbQuery().catch(() => {});
     const currentState = convState.getState(ctx.from.id);
-    if (currentState && handlesState(currentState.type)) {
+    if (currentState && String(currentState.type || "").startsWith("nuvion_kyc_")) {
       db.saveNuvionKycDraft(ctx.from.id, "personal", currentState.type, currentState.data || {});
     }
     convState.clearState(ctx.from.id);
@@ -1967,7 +2025,7 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
   bot.action("nuvion_kyb_pause", async (ctx) => {
     ctx.answerCbQuery().catch(() => {});
     const currentState = convState.getState(ctx.from.id);
-    if (currentState && handlesState(currentState.type)) {
+    if (currentState && String(currentState.type || "").startsWith("nuvion_kyb_")) {
       db.saveNuvionKycDraft(ctx.from.id, "business", currentState.type, currentState.data || {});
     }
     convState.clearState(ctx.from.id);

@@ -43,7 +43,8 @@ type MainTab = "home" | "accounts" | "cards" | "profile";
 type OverlayScreen = "add" | "send" | "bills" | "savings" | "stocks" | "swap" | "assistant" | "notifications" | "activity" | null;
 
 function MainShell() {
-  const { user, bootstrapping, bumpDataVersion, locked } = useApp();
+  const { user, activeAccount, bootstrapping, bumpDataVersion, locked } = useApp();
+  const isBiz = activeAccount === "business";
   const insets = useSafeAreaInsets();
   const ota = useAutoOtaUpdates();
   usePushRegistration(Boolean(user) && !locked);
@@ -52,6 +53,7 @@ function MainShell() {
   const [tab, setTab] = useState<MainTab>("home");
   const [accountsSection, setAccountsSection] = useState<AccountsSection>("accounts");
   const [profileSection, setProfileSection] = useState<"general" | "kyc">("general");
+  const [profileVerifyMode, setProfileVerifyMode] = useState<"kyc" | "kyb" | null>(null);
   const [overlay, setOverlay] = useState<OverlayScreen>(null);
   const [deepLinkCode, setDeepLinkCode] = useState("");
   const [deepClaimToken, setDeepClaimToken] = useState("");
@@ -165,7 +167,15 @@ function MainShell() {
     } else if (target === "global") {
       setAccountsSection("global");
       setTab("accounts");
+    } else if (target === "business") {
+      setAccountsSection("business");
+      setTab("accounts");
     } else if (target === "kyc") {
+      setProfileVerifyMode("kyc");
+      setProfileSection("kyc");
+      setTab("profile");
+    } else if (target === "kyb") {
+      setProfileVerifyMode("kyb");
       setProfileSection("kyc");
       setTab("profile");
     }
@@ -268,18 +278,19 @@ function MainShell() {
   }
 
   const tabs: Array<{ key: MainTab; label: string; icon: keyof typeof Ionicons.glyphMap; activeIcon: keyof typeof Ionicons.glyphMap }> = [
-    { key: "home", label: "Home", icon: "home-outline", activeIcon: "home" },
-    { key: "accounts", label: "Accounts", icon: "business-outline", activeIcon: "business" },
-    { key: "cards", label: "Cards", icon: "card-outline", activeIcon: "card" },
+    { key: "home", label: isBiz ? "Business" : "Home", icon: isBiz ? "briefcase-outline" : "home-outline", activeIcon: isBiz ? "briefcase" : "home" },
+    { key: "accounts", label: isBiz ? "Tools" : "Accounts", icon: isBiz ? "grid-outline" : "business-outline", activeIcon: isBiz ? "grid" : "business" },
+    { key: "cards", label: isBiz ? "Team Cards" : "Cards", icon: "card-outline", activeIcon: "card" },
     { key: "profile", label: "Profile", icon: "person-outline", activeIcon: "person" },
   ];
 
-  // Home draws its Forest header right up under the status bar; other tabs sit on the stone page.
+  // Home draws its dark header right up under the status bar; other tabs sit on the stone page.
   const onForest = tab === "home";
+  const topInsetBg = onForest ? (isBiz ? "#1B160C" : COLORS.forest) : COLORS.page;
   return (
     <SafeAreaView style={styles.safe} edges={["bottom"]}>
       <StatusBar style={onForest ? "light" : "dark"} />
-      <View style={{ height: insets.top, backgroundColor: onForest ? COLORS.forest : COLORS.page }} />
+      <View style={{ height: insets.top, backgroundColor: topInsetBg }} />
         <KeyboardSafe>
       {ota.updateReady ? (
         <PressableScale onPress={() => setApplyingUpdate(true)} style={styles.otaBanner}>
@@ -320,7 +331,7 @@ function MainShell() {
           /> : null}
         {tab === "accounts" ? <AccountsScreen initialSection={accountsSection} /> : null}
         {tab === "cards" ? <CardsScreen /> : null}
-        {tab === "profile" ? <ProfileScreen initialTab={profileSection} /> : null}
+        {tab === "profile" ? <ProfileScreen initialTab={profileSection} initialVerifyMode={profileVerifyMode} /> : null}
       </View>
 
       <View style={styles.tabBar}>
@@ -330,8 +341,11 @@ function MainShell() {
             <PressableScale
               key={t.key}
               onPress={() => {
-                if (t.key === "accounts") setAccountsSection("accounts");
-                if (t.key === "profile") setProfileSection("general");
+                if (t.key === "accounts") setAccountsSection(isBiz ? "business" : "accounts");
+                if (t.key === "profile") {
+                  setProfileVerifyMode(null);
+                  setProfileSection("general");
+                }
                 setTab(t.key);
               }}
               style={styles.tabItem}

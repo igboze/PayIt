@@ -187,6 +187,38 @@ export function SendScreen({
   const [globalAmount, setGlobalAmount] = useState("");
   const [globalFields, setGlobalFields] = useState<Record<string, string>>({});
   const [globalNote, setGlobalNote] = useState("");
+  const [liveGlobalBanks, setLiveGlobalBanks] = useState<
+    Array<{ code: string; name: string; swiftBic?: string | null; institutionNumber?: string | null }>
+  >([]);
+  const [globalBankQuery, setGlobalBankQuery] = useState("");
+
+  useEffect(() => {
+    const cur = selectedRail?.currency;
+    const needsBankDir = Boolean(
+      cur &&
+        (selectedRail?.requiredFields || []).some((f) => {
+          const k = typeof f === "string" ? f : f.key || f.name || "";
+          return k === "bank_code" || k === "bank_institution_number";
+        })
+    );
+    if (!needsBankDir || !cur) {
+      setLiveGlobalBanks([]);
+      setGlobalBankQuery("");
+      return;
+    }
+    let cancelled = false;
+    api
+      .getGlobalBankCodes(cur)
+      .then((res) => {
+        if (!cancelled) setLiveGlobalBanks(res.banks || []);
+      })
+      .catch(() => {
+        if (!cancelled) setLiveGlobalBanks([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRail?.railKey, selectedRail?.currency]);
 
   const selectGlobalRail = (rail: GlobalRail, defaultCountry?: string | null) => {
     setSelectedRail(rail);
@@ -1036,34 +1068,72 @@ export function SendScreen({
                   Recipient {selectedRail.currency} bank details ({selectedRail.requiredFields.length} required)
                 </Text>
 
-                {POPULAR_INTERNATIONAL_BANKS[selectedRail.currency] ? (
-                  <View style={{ marginBottom: 14 }}>
-                    <Text style={[styles.fieldHint, { color: COLORS.textSecondary }]}>
-                      Popular {selectedRail.currency} banks (auto-fills bank code):
-                    </Text>
-                    <View style={styles.pillRow}>
-                      {POPULAR_INTERNATIONAL_BANKS[selectedRail.currency].map((b) => {
-                        const isChosen =
-                          (globalFields.bank_name || "").toLowerCase() === b.name.toLowerCase() ||
-                          globalFields.bank_code === b.code;
-                        return (
-                          <Pill
-                            key={b.code}
-                            label={b.name}
-                            active={isChosen}
-                            onPress={() => {
-                              setGlobalFields((prev) => ({
-                                ...prev,
-                                bank_name: b.name,
-                                bank_code: b.code,
-                              }));
-                            }}
-                          />
-                        );
-                      })}
+                {(() => {
+                  const bankList =
+                    liveGlobalBanks.length > 0
+                      ? liveGlobalBanks
+                      : (POPULAR_INTERNATIONAL_BANKS[selectedRail.currency] || []).map((b) => ({
+                          code: b.code,
+                          name: b.name,
+                          swiftBic: null,
+                          institutionNumber: null,
+                        }));
+                  if (!bankList.length) return null;
+                  const q = globalBankQuery.trim().toLowerCase();
+                  const filtered = q
+                    ? bankList.filter(
+                        (b) =>
+                          b.name.toLowerCase().includes(q) ||
+                          (b.code || "").toLowerCase().includes(q)
+                      )
+                    : bankList;
+                  return (
+                    <View style={{ marginBottom: 14 }}>
+                      <Text style={[styles.fieldHint, { color: COLORS.textSecondary }]}>
+                        Select {selectedRail.currency} bank (auto-fills bank code):
+                      </Text>
+                      {bankList.length > 8 ? (
+                        <Input
+                          placeholder={`Search ${selectedRail.currency} bank (e.g. First Bank, Choice, Mwanga…)`}
+                          value={globalBankQuery}
+                          onChangeText={setGlobalBankQuery}
+                          currency={false}
+                        />
+                      ) : null}
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 4 }}>
+                        <View style={{ flexDirection: "row", gap: 8 }}>
+                          {filtered.slice(0, 20).map((b, i) => {
+                            const effectiveCode = b.institutionNumber || b.code || "";
+                            const isChosen =
+                              (globalFields.bank_name || "").toLowerCase() === b.name.toLowerCase() ||
+                              (effectiveCode && (globalFields.bank_code === effectiveCode || globalFields.bank_institution_number === effectiveCode));
+                            return (
+                              <Pill
+                                key={`${b.code || b.name}-${i}`}
+                                label={effectiveCode ? `${b.name} (${effectiveCode})` : b.name}
+                                active={Boolean(isChosen)}
+                                onPress={() => {
+                                  setGlobalFields((prev) => ({
+                                    ...prev,
+                                    bank_name: b.name,
+                                    ...(b.institutionNumber
+                                      ? { bank_institution_number: b.institutionNumber }
+                                      : effectiveCode
+                                        ? { bank_code: effectiveCode }
+                                        : {}),
+                                    ...(b.swiftBic && (selectedRail.requiredFields || []).some((rf) => (typeof rf === "string" ? rf : rf.key) === "swift_bic")
+                                      ? { swift_bic: b.swiftBic }
+                                      : {}),
+                                  }));
+                                }}
+                              />
+                            );
+                          })}
+                        </View>
+                      </ScrollView>
                     </View>
-                  </View>
-                ) : null}
+                  );
+                })()}
 
                 {(selectedRail.requiredFields || []).map((f, idx) => {
                   const obj: GlobalRailField = typeof f === "string" ? { key: f } : f;

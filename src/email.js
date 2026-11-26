@@ -68,6 +68,40 @@ async function sendTransactionalEmail({ to, subject, html, text }) {
     }
   }
 
+  // 3. SMTP (e.g. Namecheap Private Email: mail.privateemail.com, port 465 SSL or 587 STARTTLS)
+  const smtpUser = (process.env.SMTP_USER || "").trim();
+  const smtpPass = (process.env.SMTP_PASS || "").trim();
+  if (smtpUser && smtpPass) {
+    try {
+      const nodemailer = require("nodemailer");
+      const host = (process.env.SMTP_HOST || "mail.privateemail.com").trim();
+      const port = Number(process.env.SMTP_PORT || 465);
+      const secure = process.env.SMTP_SECURE !== undefined
+        ? String(process.env.SMTP_SECURE).toLowerCase() === "true"
+        : port === 465;
+      const from = (process.env.SMTP_FROM_EMAIL || `Proxim <${smtpUser}>`).trim();
+      const transporter = nodemailer.createTransport({
+        host,
+        port,
+        secure,
+        auth: { user: smtpUser, pass: smtpPass },
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 15000,
+      });
+      const info = await transporter.sendMail({
+        from,
+        to,
+        subject,
+        html,
+        text: text || html.replace(/<[^>]+>/g, ""),
+      });
+      return { sent: true, provider: "smtp", id: info?.messageId || null };
+    } catch (err) {
+      console.warn(`[email:smtp] Failed to send email to ${to}:`, err.message);
+    }
+  }
+
   // If no email provider is configured, log for operational observability
   console.log(`[email:simulated] To: ${to} | Subject: "${subject}"`);
   return { sent: false, reason: "no_provider_configured", simulated: true };

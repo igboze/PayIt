@@ -11,7 +11,7 @@ import {
 import * as Clipboard from "expo-clipboard";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "../api/client";
-import type { TransactionItem, UnifiedBalance } from "../api/types";
+import type { BusinessHomeResponse, TransactionItem, UnifiedBalance } from "../api/types";
 import { useApp } from "../state/AppContext";
 import { COLORS, DEPTH, HERO, RADIUS, SPACING, TYPE } from "../theme";
 import {
@@ -40,7 +40,9 @@ export type HomeModalTarget =
   | "swap"
   | "assistant"
   | "global"
+  | "business"
   | "kyc"
+  | "kyb"
   | "notifications"
   | "activity";
 
@@ -83,6 +85,7 @@ export function HomeScreen({
     toggleBalanceHidden,
   } = useApp();
   const [balance, setBalance] = useState<UnifiedBalance | null>(null);
+  const [bizHome, setBizHome] = useState<BusinessHomeResponse | null>(null);
   const [transactions, setTransactions] = useState<TransactionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -97,13 +100,15 @@ export function HomeScreen({
       else setLoading(true);
       setError(null);
       try {
-        const [balRes, txRes, rateRes] = await Promise.all([
+        const [balRes, txRes, rateRes, bizRes] = await Promise.all([
           api.getBalances(activeAccount),
           api.getTransactions(40, activeAccount),
           api.getBankRates().catch(() => null),
+          activeAccount === "business" ? api.getBusinessHome().catch(() => null) : Promise.resolve(null),
         ]);
         setBalance(balRes);
         setTransactions(txRes.transactions || []);
+        setBizHome(bizRes);
         const rate = balRes.usdToNgnRate || rateRes?.offRampRate || rateRes?.onRampRate || null;
         if (rate) setFallbackNgnRate(rate);
       } catch (err) {
@@ -116,13 +121,22 @@ export function HomeScreen({
     [activeAccount]
   );
 
+  // Immediately clear stale account data when switching between Personal & Business
+  useEffect(() => {
+    setBalance(null);
+    setTransactions([]);
+    setBizHome(null);
+  }, [activeAccount]);
+
   useEffect(() => {
     loadData(false);
   }, [loadData, dataVersion]);
 
   const isBiz = activeAccount === "business";
-  const ngnAccount = balance?.ngnAccount || user?.ngnAccount || null;
-  const isVerified = Number(user?.kycTier ?? 0) >= 1;
+  const ngnAccount = balance?.ngnAccount || (user?.activeContext === activeAccount ? user?.ngnAccount : null) || null;
+  const isVerified = isBiz
+    ? Number(user?.businessKycTier ?? 0) >= 1
+    : Number(user?.personalKycTier ?? user?.kycTier ?? 0) >= 1;
   const eurcBal = Number(balance?.arc?.eurc ?? 0);
   const pendingBridge = Number(balance?.pendingBridgeUsdc ?? 0);
   const totalUsdNum = Number(balance?.totalUsdc ?? 0);
@@ -134,7 +148,7 @@ export function HomeScreen({
         ? Math.round(totalUsdNum * ngnRate)
         : null;
   const displayName = isBiz
-    ? user?.bizSenderName || "Business"
+    ? bizHome?.profile?.businessName || user?.bizSenderName || "Business Account"
     : (user?.senderName || "").split(/\s+/)[0] || (user?.username ? `@${user.username}` : "there");
 
   const copyText = async (label: string, val: string) => {
@@ -143,9 +157,8 @@ export function HomeScreen({
     setTimeout(() => setCopiedMsg(null), 2200);
   };
 
-  const toggleAccount = () => {
-    if (!user || switchingAccount) return;
-    const target = isBiz ? "personal" : "business";
+  const handleSelectAccount = (target: "personal" | "business") => {
+    if (!user || switchingAccount || target === activeAccount) return;
     if (target === "business" && !user.hasBusinessAccount) {
       Alert.alert("Create a business account", "Set up a separate business balance next to your personal one?", [
         { text: "Not now", style: "cancel" },
@@ -186,25 +199,27 @@ export function HomeScreen({
 
   const header = (
     <View style={styles.topSection}>
-      <View style={styles.hero}>
+      <View style={[styles.hero, isBiz && styles.heroBiz]}>
         {/* Greeting row */}
         <View style={styles.greetRow}>
           <PressableScale onPress={onOpenProfile} depth={0.94} accessibilityLabel="Open profile">
-            <UserAvatar size={42} name={isBiz ? user?.bizSenderName || "Business" : null} />
+            <UserAvatar size={42} name={isBiz ? displayName : null} />
           </PressableScale>
           <View style={{ flex: 1 }}>
-            <Text style={styles.greetSub}>{greeting()}</Text>
+            <Text style={styles.greetSub}>
+              {isBiz ? "BUSINESS WORKSPACE" : greeting()}
+            </Text>
             <Text style={styles.greetName} numberOfLines={1}>
               {displayName}
             </Text>
           </View>
-          <PressableScale onPress={() => onNavigate("assistant")} depth={0.92} style={styles.iconBtn} accessibilityLabel="Ask Proxim">
+          <PressableScale onPress={() => onNavigate("assistant")} depth={0.92} style={[styles.iconBtn, isBiz && styles.iconBtnBiz]} accessibilityLabel="Ask Proxim">
             <Ionicons name="sparkles" size={20} color={HERO.accent} />
           </PressableScale>
           <PressableScale
             onPress={() => onNavigate("notifications")}
             depth={0.92}
-            style={styles.iconBtn}
+            style={[styles.iconBtn, isBiz && styles.iconBtnBiz]}
             accessibilityLabel={unread ? `Notifications, ${unread} unread` : "Notifications"}
           >
             <Ionicons name="notifications-outline" size={20} color={HERO.text} />
@@ -212,16 +227,31 @@ export function HomeScreen({
           </PressableScale>
         </View>
 
-        {/* Account + currency switch */}
+        {/* Explicit 2-pill Personal / Business switch + currency switch */}
         <View style={styles.switchRow}>
-          <PressableScale onPress={toggleAccount} depth={0.97} haptic="selection" style={styles.acctLabelRow} accessibilityLabel="Switch account">
-            <Text style={[styles.acctLabel, isBiz && { color: HERO.accent }]}>{isBiz ? "Business" : "Personal"}</Text>
-            {switchingAccount ? (
-              <ActivityIndicator size="small" color={HERO.textSecondary} />
-            ) : (
-              <Ionicons name="swap-horizontal" size={14} color={HERO.textSecondary} />
-            )}
-          </PressableScale>
+          <View style={[styles.heroSeg, isBiz && styles.heroSegBiz]}>
+            <PressableScale
+              onPress={() => handleSelectAccount("personal")}
+              haptic="selection"
+              style={[styles.heroSegBtn, !isBiz && styles.heroSegBtnOn]}
+              accessibilityLabel="Switch to Personal account"
+            >
+              <Ionicons name="person" size={12} color={!isBiz ? COLORS.primary : HERO.textSecondary} />
+              <Text style={[styles.heroSegText, !isBiz && styles.heroSegTextOn]}>Personal</Text>
+            </PressableScale>
+            <PressableScale
+              onPress={() => handleSelectAccount("business")}
+              haptic="selection"
+              style={[styles.heroSegBtn, isBiz && styles.heroSegBtnBizOn]}
+              accessibilityLabel="Switch to Business account"
+            >
+              <Ionicons name="briefcase" size={12} color={isBiz ? COLORS.onGold : HERO.textSecondary} />
+              <Text style={[styles.heroSegText, isBiz && styles.heroSegTextBizOn]}>
+                {user?.hasBusinessAccount ? "Business" : "+ Business"}
+              </Text>
+            </PressableScale>
+            {switchingAccount ? <ActivityIndicator size="small" color={HERO.accent} style={{ marginLeft: 4 }} /> : null}
+          </View>
           <View style={{ flex: 1 }} />
           {curTabs.map((code) => {
             const on = code === showCur;
@@ -230,7 +260,7 @@ export function HomeScreen({
                 key={code}
                 onPress={() => setShowCur(code)}
                 haptic="selection"
-                style={[styles.curChip, on && styles.curChipOn]}
+                style={[styles.curChip, isBiz && styles.curChipBiz, on && styles.curChipOn]}
                 accessibilityRole="button"
                 accessibilityState={{ selected: on }}
                 accessibilityLabel={`Show balance in ${code}`}
@@ -299,10 +329,16 @@ export function HomeScreen({
             </PressableScale>
           </View>
         ) : (
-          <PressableScale onPress={() => onNavigate(isVerified ? "global" : "kyc")} depth={0.98} style={styles.ngnRow}>
+          <PressableScale onPress={() => onNavigate(isVerified ? "global" : isBiz ? "kyb" : "kyc")} depth={0.98} style={[styles.ngnRow, isBiz && styles.ngnRowBiz]}>
             <CurrencyLogo code="NGN" size={22} />
             <Text style={[styles.ngnCta, { flex: 1 }]}>
-              {isVerified ? "Get your naira account number" : "Verify your ID to get a naira account"}
+              {isVerified
+                ? isBiz
+                  ? "Open your company global bank accounts"
+                  : "Get your naira account number"
+                : isBiz
+                  ? "Verify your business (KYB) for company accounts"
+                  : "Verify your ID (KYC) to get a naira account"}
             </Text>
             <Ionicons name="chevron-forward" size={16} color={HERO.accent} />
           </PressableScale>
@@ -339,32 +375,116 @@ export function HomeScreen({
         <ErrorBanner message={error} onDismiss={() => setError(null)} />
         <SuccessBanner message={copiedMsg} onDismiss={() => setCopiedMsg(null)} />
 
-        {/* Grow your money */}
-        <Text style={styles.activityTitle}>Grow your money</Text>
-        <View style={styles.growRow}>
-          <PressableScale onPress={() => onNavigate("savings")} depth={0.97} style={styles.featureCard}>
-            <SavingsLogoMerger size={26} showBadge={false} />
-            <View style={{ gap: 2 }}>
-              <Text style={styles.rowTitle}>Savings</Text>
-              <Text style={styles.rowSub}>Earn daily, withdraw anytime</Text>
+        {isBiz ? (
+          <>
+            {/* Business Cash Flow & Unpaid Invoices summary (matching Telegram bot Business menu) */}
+            <View style={styles.bizSummaryCard}>
+              <View style={styles.bizSummaryHead}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <Ionicons name="briefcase" size={16} color={COLORS.business} />
+                  <Text style={styles.bizSummaryTitle}>This Month · Cash Flow</Text>
+                </View>
+                <PressableScale onPress={() => onNavigate(isVerified ? "global" : "kyb")} style={styles.bizTierBadge}>
+                  <Text style={styles.bizTierBadgeText}>{isVerified ? "KYB Tier 1 ✅" : "Verify KYB →"}</Text>
+                </PressableScale>
+              </View>
+              <View style={styles.bizMetricsRow}>
+                <View style={styles.bizMetric}>
+                  <Text style={styles.bizMetricLabel}>Income</Text>
+                  <Text style={[styles.bizMetricVal, { color: COLORS.success }]}>
+                    {hidden ? "••••" : formatUsdc(bizHome?.summary?.monthIncomeUsd ?? 0)}
+                  </Text>
+                </View>
+                <View style={styles.bizMetric}>
+                  <Text style={styles.bizMetricLabel}>Expenses</Text>
+                  <Text style={styles.bizMetricVal}>
+                    {hidden ? "••••" : formatUsdc(bizHome?.summary?.monthExpensesUsd ?? 0)}
+                  </Text>
+                </View>
+                <View style={styles.bizMetric}>
+                  <Text style={styles.bizMetricLabel}>Unpaid Inv.</Text>
+                  <Text style={styles.bizMetricVal}>
+                    {bizHome?.summary?.pendingInvoiceCount ?? 0}
+                  </Text>
+                </View>
+              </View>
             </View>
-          </PressableScale>
-          <PressableScale onPress={() => onNavigate("stocks")} depth={0.97} style={styles.featureCard}>
-            <StockLogoMerger size={26} />
-            <View style={{ gap: 2 }}>
-              <Text style={styles.rowTitle}>US Stocks & ETFs</Text>
-              <Text style={styles.rowSub}>Start from $1</Text>
-            </View>
-          </PressableScale>
-        </View>
 
-        {/* Pay bills: one tap per bill type */}
-        <Text style={styles.activityTitle}>Pay bills</Text>
-        <View style={styles.billGrid}>
-          {BILL_CATEGORIES.map((c) => (
-            <BillCategoryTile key={c.key} cat={c} onPress={() => onOpenBill?.(c.key)} />
-          ))}
-        </View>
+            {/* Dedicated Business Operations Grid (mirrors Telegram Bot Business Menu) */}
+            <Text style={styles.activityTitle}>Business tools</Text>
+            <View style={styles.bizGrid}>
+              <PressableScale onPress={() => onNavigate("business")} depth={0.97} style={styles.bizTile}>
+                <Ionicons name="document-text-outline" size={22} color={COLORS.business} />
+                <Text style={styles.rowTitle}>Invoices</Text>
+                <Text style={styles.rowSub}>Create &amp; bill clients</Text>
+              </PressableScale>
+              <PressableScale onPress={() => onNavigate("business")} depth={0.97} style={styles.bizTile}>
+                <Ionicons name="people-outline" size={22} color={COLORS.business} />
+                <Text style={styles.rowTitle}>Pay Team</Text>
+                <Text style={styles.rowSub}>27-currency CSV payroll</Text>
+              </PressableScale>
+              <PressableScale onPress={() => onNavigate("business")} depth={0.97} style={styles.bizTile}>
+                <Ionicons name="receipt-outline" size={22} color={COLORS.business} />
+                <Text style={styles.rowTitle}>Expenses</Text>
+                <Text style={styles.rowSub}>Track monthly spend</Text>
+              </PressableScale>
+              <PressableScale onPress={() => onNavigate("business")} depth={0.97} style={styles.bizTile}>
+                <Ionicons name="link-outline" size={22} color={COLORS.business} />
+                <Text style={styles.rowTitle}>Payment Links</Text>
+                <Text style={styles.rowSub}>Share checkout URLs</Text>
+              </PressableScale>
+              <PressableScale onPress={() => onNavigate("global")} depth={0.97} style={styles.bizTile}>
+                <Ionicons name="globe-outline" size={22} color={COLORS.business} />
+                <Text style={styles.rowTitle}>Global Accounts</Text>
+                <Text style={styles.rowSub}>USD, GBP, EUR &amp; more</Text>
+              </PressableScale>
+              <PressableScale onPress={() => onNavigate("cards")} depth={0.97} style={styles.bizTile}>
+                <Ionicons name="card-outline" size={22} color={COLORS.business} />
+                <Text style={styles.rowTitle}>Team USD Cards</Text>
+                <Text style={styles.rowSub}>Virtual company cards</Text>
+              </PressableScale>
+              <PressableScale onPress={() => onNavigate("savings")} depth={0.97} style={styles.bizTile}>
+                <Ionicons name="trending-up-outline" size={22} color={COLORS.success} />
+                <Text style={styles.rowTitle}>Treasury Yield</Text>
+                <Text style={styles.rowSub}>Business savings</Text>
+              </PressableScale>
+              <PressableScale onPress={() => onNavigate("bills")} depth={0.97} style={styles.bizTile}>
+                <Ionicons name="flash-outline" size={22} color={COLORS.primary} />
+                <Text style={styles.rowTitle}>Pay Bills</Text>
+                <Text style={styles.rowSub}>Utilities &amp; office</Text>
+              </PressableScale>
+            </View>
+          </>
+        ) : (
+          <>
+            {/* Grow your money (Personal) */}
+            <Text style={styles.activityTitle}>Grow your money</Text>
+            <View style={styles.growRow}>
+              <PressableScale onPress={() => onNavigate("savings")} depth={0.97} style={styles.featureCard}>
+                <SavingsLogoMerger size={26} showBadge={false} />
+                <View style={{ gap: 2 }}>
+                  <Text style={styles.rowTitle}>Savings</Text>
+                  <Text style={styles.rowSub}>Earn daily, withdraw anytime</Text>
+                </View>
+              </PressableScale>
+              <PressableScale onPress={() => onNavigate("stocks")} depth={0.97} style={styles.featureCard}>
+                <StockLogoMerger size={26} />
+                <View style={{ gap: 2 }}>
+                  <Text style={styles.rowTitle}>US Stocks & ETFs</Text>
+                  <Text style={styles.rowSub}>Start from $1</Text>
+                </View>
+              </PressableScale>
+            </View>
+
+            {/* Pay bills: one tap per bill type */}
+            <Text style={styles.activityTitle}>Pay bills</Text>
+            <View style={styles.billGrid}>
+              {BILL_CATEGORIES.map((c) => (
+                <BillCategoryTile key={c.key} cat={c} onPress={() => onOpenBill?.(c.key)} />
+              ))}
+            </View>
+          </>
+        )}
 
         <View style={styles.activityHead}>
           <Text style={styles.activityTitle}>Recent activity</Text>
@@ -442,6 +562,132 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: RADIUS.xl,
     gap: 6,
     ...DEPTH.forest,
+  },
+  heroBiz: {
+    backgroundColor: "#1B160C",
+    borderBottomWidth: 2,
+    borderBottomColor: COLORS.goldDark,
+  },
+  iconBtnBiz: {
+    backgroundColor: "#2C2415",
+    borderColor: "#4A3B1E",
+  },
+  heroSeg: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: HERO.chip,
+    borderWidth: 1,
+    borderColor: HERO.border,
+    borderRadius: RADIUS.pill,
+    padding: 3,
+    gap: 3,
+  },
+  heroSegBiz: {
+    backgroundColor: "#2C2415",
+    borderColor: "#4A3B1E",
+  },
+  heroSegBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: RADIUS.pill,
+  },
+  heroSegBtnOn: {
+    backgroundColor: COLORS.white,
+  },
+  heroSegBtnBizOn: {
+    backgroundColor: COLORS.gold,
+  },
+  heroSegText: {
+    ...TYPE.label,
+    fontSize: 12,
+    color: HERO.textSecondary,
+  },
+  heroSegTextOn: {
+    color: COLORS.primary,
+    fontFamily: TYPE.title.fontFamily,
+  },
+  heroSegTextBizOn: {
+    color: COLORS.onGold,
+    fontFamily: TYPE.title.fontFamily,
+  },
+  curChipBiz: {
+    backgroundColor: "#2C2415",
+    borderColor: "#4A3B1E",
+  },
+  ngnRowBiz: {
+    backgroundColor: "#2C2415",
+    borderColor: "#4A3B1E",
+  },
+  bizSummaryCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.lg,
+    padding: 14,
+    gap: 10,
+    ...DEPTH.card,
+    borderColor: COLORS.businessBorder,
+  },
+  bizSummaryHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  bizSummaryTitle: {
+    ...TYPE.bodyStrong,
+    color: COLORS.text,
+  },
+  bizTierBadge: {
+    backgroundColor: COLORS.businessMuted,
+    borderWidth: 1,
+    borderColor: COLORS.businessBorder,
+    borderRadius: RADIUS.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  bizTierBadgeText: {
+    ...TYPE.label,
+    fontSize: 11,
+    color: COLORS.business,
+    fontFamily: TYPE.title.fontFamily,
+  },
+  bizMetricsRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  bizMetric: {
+    flex: 1,
+    backgroundColor: COLORS.page,
+    borderRadius: RADIUS.sm,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  bizMetricLabel: {
+    ...TYPE.label,
+    fontSize: 11,
+    color: COLORS.textSecondary,
+  },
+  bizMetricVal: {
+    ...TYPE.bodyStrong,
+    fontSize: 15,
+    color: COLORS.text,
+    marginTop: 2,
+  },
+  bizGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  bizTile: {
+    flexBasis: "47%",
+    flexGrow: 1,
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.lg,
+    padding: 13,
+    gap: 4,
+    ...DEPTH.card,
   },
   below: {
     gap: 14,

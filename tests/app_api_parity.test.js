@@ -384,8 +384,14 @@ test("full cards lifecycle, social gift links (create, claim, cancel), KYC/KYB s
 
   const kycSub = await call("POST", "/kyc/submit", {
     countryCode: "NG", firstName: "Adaora", lastName: "Okafor", email: "ada@proxim.app", phoneNumber: "+2348091000010",
-    dateOfBirth: "1995-05-05", gender: "female", address: { line1: "10 Lekki Way", city: "Lagos", state: "LA", country: "NG" },
+    dateOfBirth: "1995-05-05", gender: "female", address: { line1: "10 Lekki Way", city: "Lagos", state: "LA", postalCode: "100001", country: "NG" },
     idDocument: { type: "national_id", number: "12345678901" },
+    documents: {
+      idFrontBase64: Buffer.from("fake-id-front").toString("base64"),
+      idFrontMimeType: "image/jpeg",
+      proofOfAddressBase64: Buffer.from("fake-poa").toString("base64"),
+      proofOfAddressMimeType: "application/pdf",
+    },
   }, tokenA);
   assert.equal(kycSub.status, 201, JSON.stringify(kycSub.body));
   assert.equal(kycSub.body.status, "pending");

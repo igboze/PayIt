@@ -64,14 +64,26 @@ function getBotTelegram(bot) {
 
 // ── 1. Tier 0 vs Tier 1 Comparison Card ──────────────────────────────────────
 
-function buildTierComparisonHtml(isBusiness = false, nuvionStatus = "") {
-  const status = String(nuvionStatus || "").toLowerCase();
-  const statusBadge =
-    status === "approved"
-      ? "Tier 1 Global Verified ✅"
-      : status === "pending" || status === "incomplete"
-        ? "Tier 0 Active · ⏳ Tier 1 Under Review"
-        : "Tier 0 — Active Now (No KYC Needed)";
+function _formatTierStatusBadge(st, kind = "KYC") {
+  const s = String(st || "").toLowerCase();
+  if (s === "approved") return `Tier 1 ${kind} Verified ✅`;
+  if (s === "pending" || s === "incomplete") return `Tier 0 Active · ⏳ ${kind} Under Review`;
+  if (s === "rejected" || s === "failed" || s === "blocked") return `❌ ${kind} Action Needed`;
+  return `Tier 0 — Active Now (No ${kind} Needed)`;
+}
+
+function buildTierComparisonHtml(isBusiness = false, nuvionStatus = "", extra = {}) {
+  const activeKind = isBusiness ? "KYB" : "KYC";
+  const statusBadge = _formatTierStatusBadge(nuvionStatus, activeKind);
+
+  const hasSeparateStatuses = extra && (extra.personalStatus !== undefined || extra.businessStatus !== undefined);
+  const statusSection = hasSeparateStatuses
+    ? `• <b>Personal KYC:</b> ${_formatTierStatusBadge(extra.personalStatus, "KYC")}\n` +
+      (extra.hasBusiness
+        ? `• <b>Business KYB:</b> ${_formatTierStatusBadge(extra.businessStatus, "KYB")}\n`
+        : `• <b>Business KYB:</b> <i>No Business account set up yet</i>\n`) +
+      `• <b>Active Account:</b> ${isBusiness ? "Business 💼" : "Personal 👤"}\n\n`
+    : `<b>Your Status (${isBusiness ? "Business KYB" : "Personal KYC"}):</b> ${statusBadge}\n\n`;
 
   const tier1Label = isBusiness ? "Tier 1 — Business KYB" : "Tier 1 — Personal KYC";
   const tier1Limit = isBusiness ? "$50,000/hr · $100,000/day" : "$10,000/hr · $25,000/day";
@@ -82,8 +94,8 @@ function buildTierComparisonHtml(isBusiness = false, nuvionStatus = "") {
   return (
     `🏷️ <b>Proxim Account Tiers &amp; Limits</b>\n` +
     `──────────────────────────\n` +
-    `<b>Your Status:</b> ${statusBadge}\n\n` +
-    `✅ <b>Tier 0 — Ready Now (No KYC Needed)</b>\n` +
+    statusSection +
+    `✅ <b>Tier 0 — Ready Now (No ${activeKind} Needed)</b>\n` +
     `• Nigerian Naira (NGN) deposits &amp; bank transfers\n` +
     `• Crypto deposits &amp; transfers (11 chains) + instant @username sends\n` +
     `• Dollar Savings (auto-yield), Bills &amp; Airtime, Crypto Invoices\n` +

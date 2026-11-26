@@ -162,6 +162,203 @@ test("Direct User Email Dispatch: formats and dispatches KYC status emails to en
   assert.equal(res.simulated, true);
 });
 
+test("Live Nuvion Bank Codes: resolves First Bank Ghana, Choice Bank (KE), and Mwanga Hakika Bank (TZ)", async () => {
+  const mockNuvion = {
+    async listBankCodes(country) {
+      if (country === "GH") {
+        return [
+          { bank_code: "200100", bank_name: "FBNBank Ghana Limited", swift_bic: "FBNKGHAC" },
+          { bank_code: "030100", bank_name: "GCB Bank PLC", swift_bic: "GHCBGHAC" },
+        ];
+      }
+      if (country === "KE") {
+        return [
+          { bank_code: "07500", bank_name: "Choice Microfinance Bank Limited", swift_bic: null },
+          { bank_code: "03400", bank_name: "ABSA BANK KENYA PLC", swift_bic: "BARCKENX" },
+        ];
+      }
+      if (country === "TZ") {
+        return [
+          { bank_code: "015001", bank_name: "MWANGA HAKIKA BANK LIMITED", swift_bic: "MHBKTZTZ" },
+        ];
+      }
+      return [];
+    },
+  };
+
+  // Ghana: "First Bank Ghana" -> matches live "FBNBank Ghana Limited" via synonym expansion
+  const gh = await internationalBanks.resolveInternationalBankLive("GHS", "First Bank Ghana", null, { nuvionClient: mockNuvion });
+  assert.equal(gh.code, "200100");
+  assert.equal(gh.source, "nuvion_live");
+
+  // Kenya: "Choice Bank" -> matches live 5-digit "Choice Microfinance Bank Limited"
+  const ke = await internationalBanks.resolveInternationalBankLive("KES", "Choice Bank", null, { nuvionClient: mockNuvion });
+  assert.equal(ke.code, "07500");
+  assert.equal(ke.source, "nuvion_live");
+
+  // Tanzania: typo "nwanga hakika bank" -> matches live 6-digit "MWANGA HAKIKA BANK LIMITED"
+  const tz = await internationalBanks.resolveInternationalBankLive("TZS", "nwanga hakika bank", null, { nuvionClient: mockNuvion });
+  assert.equal(tz.code, "015001");
+  assert.equal(tz.source, "nuvion_live");
+
+  // Receiving account enrichment helper returns exact live code
+  const enrichedKe = await internationalBanks.enrichReceivingBankCodeLive("KES", "Choice Bank", null, { nuvionClient: mockNuvion });
+  assert.equal(enrichedKe, "07500");
+});
+
+test("Email SMTP Support: nodemailer is installed and email footer has no Nuvion branding", () => {
+  const nodemailer = require("nodemailer");
+  assert.equal(typeof nodemailer.createTransport, "function");
+  const emailSrc = fs.readFileSync(path.join(__dirname, "../src/email.js"), "utf8");
+  assert.ok(emailSrc.includes("mail.privateemail.com"), "Default Namecheap Private Email SMTP host must be configured");
+  assert.ok(!/powered by nuvion/i.test(emailSrc), "User emails must not expose Nuvion branding");
+});
+
+test("Telegram Bot KYC vs KYB Separation: retention tier card renders distinct Personal KYC and Business KYB statuses", () => {
+  const retention = require("../src/retention");
+  const html = retention.buildTierComparisonHtml(true, "not_started", {
+    personalStatus: "approved",
+    businessStatus: "not_started",
+    hasBusiness: true,
+  });
+  assert.ok(html.includes("Personal KYC"), "Must explicitly label Personal KYC");
+  assert.ok(html.includes("Tier 1 KYC Verified"), "Personal KYC approved must show verified");
+  assert.ok(html.includes("Business KYB"), "Must explicitly label Business KYB");
+  assert.ok(html.includes("No KYB Needed"), "Business KYB not started must remain Tier 0 even when Personal KYC is approved");
+});
+
+test("Mobile KYB Canonical Schema & 5 Required Docs: validates Nuvion 2026-02-06 payload and uploads all 5 docs", async () => {
+  const features = require("../src/app_api/features");
+  const compliance = require("../src/compliance");
+  const capturedPayloads = [];
+  const uploadedDocs = [];
+  let submittedOnboardingId = null;
+
+  const mockNuvion = {
+    validateBusinessEntityPayload: nuvion.validateBusinessEntityPayload,
+    async createBusinessEntity(payload) {
+      nuvion.validateBusinessEntityPayload(payload);
+      capturedPayloads.push(payload);
+      return {
+        entity: { id: "ent_biz_test_1", status: "incomplete" },
+        business: { id: "biz_test_1" },
+        business_officers: [{ person_id: "per_off_1" }],
+      };
+    },
+    async uploadDocument(doc) {
+      uploadedDocs.push(doc);
+      return { id: `doc_${uploadedDocs.length}` };
+    },
+    async submitOnboarding(entityId) {
+      submittedOnboardingId = entityId;
+      return { status: "pending" };
+    },
+  };
+
+  features.__setTestDeps({
+    db,
+    nuvion: mockNuvion,
+    compliance,
+    flowsKyc,
+  });
+
+  const auth = {
+    telegramId: 99112233,
+    user: {
+      telegram_id: 99112233,
+      business_deposit_address: "0x1111111111111111111111111111111111111111",
+    },
+  };
+
+  const baseBody = {
+    legalName: "Acme Global Solutions Ltd",
+    tradeName: "Acme Global",
+    registrationNumber: "RC7654321",
+    taxId: "10293847-0001",
+    incorporationCountry: "NG",
+    incorporationState: "Lagos",
+    incorporationYear: 2023,
+    incorporationMonth: 6,
+    industry: "Technology",
+    description: "Cross-border software and digital consulting services",
+    businessType: "llc",
+    email: "finance@acmeglobal.ng",
+    phoneNumber: "+2348012345678",
+    website: "https://acmeglobal.ng",
+    address: {
+      line1: "14 Admiralty Way, Lekki Phase 1",
+      city: "Lagos",
+      state: "Lagos",
+      postalCode: "106104",
+      country: "NG",
+    },
+    officer: {
+      firstName: "Chinedu",
+      lastName: "Okafor",
+      email: "chinedu@acmeglobal.ng",
+      phoneNumber: "+2348098765432",
+      dateOfBirth: "1990-04-12",
+      gender: "male",
+      nationality: "NG",
+      jobTitle: "Chief Executive Officer",
+      ownershipPercentage: 100,
+      bvn: "12345678901",
+      nin: "10987654321",
+      idDocument: {
+        type: "international_passport",
+        number: "A98765432",
+        issueDate: "2022-01-01",
+        expiryDate: "2032-01-01",
+        issuingAuthority: "Nigeria Immigration Service",
+        country: "NG",
+      },
+    },
+  };
+
+  // Must reject when KYB documents are missing
+  await assert.rejects(
+    () => features.submitKyb(auth, baseBody),
+    (err) => err.status === 400 && /5 documents/i.test(err.message)
+  );
+
+  // With all 5 required documents, must pass Nuvion validation, upload all 5 docs, and submit onboarding
+  const b64 = Buffer.from("sample-document-bytes").toString("base64");
+  const res = await features.submitKyb(auth, {
+    ...baseBody,
+    documents: {
+      coiBase64: b64,
+      coiMimeType: "application/pdf",
+      memartBase64: b64,
+      memartMimeType: "application/pdf",
+      businessPoaBase64: b64,
+      businessPoaMimeType: "image/jpeg",
+      officerIdFrontBase64: b64,
+      officerIdMimeType: "image/jpeg",
+      officerPoaBase64: b64,
+      officerPoaMimeType: "application/pdf",
+    },
+  });
+
+  assert.equal(res.status, 201);
+  assert.equal(res.data.status, "pending");
+  assert.equal(capturedPayloads.length, 1);
+  assert.equal(capturedPayloads[0].business.incorporation_meta.year, 2023);
+  assert.equal(capturedPayloads[0].business.incorporation_meta.state, "Lagos");
+  assert.equal(capturedPayloads[0].business.phonenumber, "+2348012345678");
+  assert.equal(capturedPayloads[0].business_officers[0].job_title, "Chief Executive Officer");
+  assert.equal(capturedPayloads[0].business_officers[0].is_control_person, true);
+  assert.equal(capturedPayloads[0].business_officers[0].is_beneficial_owner, true);
+  assert.equal(capturedPayloads[0].business_officers[0].ownership_percentage, 100);
+  assert.equal(uploadedDocs.length, 5);
+  assert.deepEqual(
+    uploadedDocs.map((d) => d.key),
+    ["certificate_of_incorporation", "memorandum_of_association", "proof_of_address", "identity", "proof_of_address"]
+  );
+  assert.equal(uploadedDocs[3].personId, "per_off_1");
+  assert.equal(uploadedDocs[4].personId, "per_off_1");
+  assert.equal(submittedOnboardingId, "ent_biz_test_1");
+});
+
 test.after(() => {
   try {
     if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);

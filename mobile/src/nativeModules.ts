@@ -10,6 +10,7 @@ import { requireOptionalNativeModule } from "expo-modules-core";
 import { reportError } from "./crashReporter";
 
 type ImagePicker = typeof import("expo-image-picker");
+type DocumentPicker = typeof import("expo-document-picker");
 type Sharing = typeof import("expo-sharing");
 type LegacyFileSystem = typeof import("expo-file-system/legacy");
 type Notifications = typeof import("expo-notifications");
@@ -66,6 +67,13 @@ export const getImagePicker = () =>
     "expo-image-picker",
     () => hasAnyNativeModule(["ExponentImagePicker", "ExpoImagePicker"]),
     () => require("expo-image-picker")
+  );
+
+export const getDocumentPicker = () =>
+  load<DocumentPicker>(
+    "expo-document-picker",
+    () => hasAnyNativeModule(["ExpoDocumentPicker", "RNDocumentPicker"]),
+    () => require("expo-document-picker")
   );
 
 export const getSharing = () =>

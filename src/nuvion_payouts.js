@@ -328,7 +328,20 @@ async function ensurePayoutRecipient(entityId, rail, details) {
   const cpPayload = corridors.buildCounterpartyPayload(entityId, rail, details);
   const cp = await nuvion.createCounterparty(cpPayload);
 
-  const pdPayload = corridors.buildPaymentDetailPayload(entityId, cp.id, rail, details);
+  // Enrich/resolve exact live Nuvion bank_code from GET /bank-codes/{country} when bank_name is supplied
+  let enrichedDetails = { ...details };
+  if (rail.fields?.includes("bank_code") && !enrichedDetails.bank_code && enrichedDetails.bank_name) {
+    try {
+      const intlBanks = require("./international_banks");
+      const resolved = await intlBanks.resolveInternationalBankLive(currency, enrichedDetails.bank_name, null, { nuvionClient: nuvion });
+      if (resolved?.code) {
+        enrichedDetails.bank_code = resolved.code;
+        if (resolved.name && !enrichedDetails.bank_name) enrichedDetails.bank_name = resolved.name;
+      }
+    } catch (_) {}
+  }
+
+  const pdPayload = corridors.buildPaymentDetailPayload(entityId, cp.id, rail, enrichedDetails);
   const pd = await nuvion.createPaymentDetail(pdPayload);
 
   const label = `${details.account_holder_name} (${currency} · ${rail.label.split("(")[0].trim()})`.slice(0, 80);

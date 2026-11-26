@@ -24,11 +24,12 @@ const INTERNATIONAL_BANKS = {
     { code: "180100", name: "Prudential Bank Ghana", aliases: ["prudential", "prudential bank"] },
     { code: "090100", name: "Agricultural Development Bank (ADB)", aliases: ["adb", "agricultural development bank"] },
     { code: "190100", name: "Bank of Africa Ghana", aliases: ["boa", "bank of africa"] },
-    { code: "110100", name: "FBNBank Ghana", aliases: ["fbn", "fbnbank", "first bank of nigeria"] },
+    { code: "200100", name: "First Bank Ghana (FBNBank)", aliases: ["first bank ghana", "firstbank ghana", "first bank", "fbn", "fbnbank", "fbnbank ghana", "first bank of nigeria"] },
     { code: "050100", name: "Societe Generale Ghana", aliases: ["sg", "societe generale"] },
   ],
 
   TZS: [
+    { code: "MWCBTZTZ", name: "Mwanga Hakika Bank", aliases: ["mwanga hakika", "mwanga hakika bank", "mwanga hakika bank limited", "nwanga hakika", "nwanga hakika bank", "mhb"] },
     { code: "015", name: "CRDB Bank", aliases: ["crdb", "crdb bank plc"] },
     { code: "012", name: "NMB Bank", aliases: ["nmb", "national microfinance bank", "nmb bank plc"] },
     { code: "011", name: "National Bank of Commerce (NBC)", aliases: ["nbc", "national bank of commerce"] },
@@ -47,6 +48,7 @@ const INTERNATIONAL_BANKS = {
   ],
 
   KES: [
+    { code: "CHFIKENX", name: "Choice Bank (Choice Microfinance Bank)", aliases: ["choice bank", "choice", "choice microfinance", "choice microfinance bank", "choice mfb"] },
     { code: "01", name: "KCB Bank Kenya", aliases: ["kcb", "kenya commercial bank"] },
     { code: "68", name: "Equity Bank Kenya", aliases: ["equity", "equity bank"] },
     { code: "11", name: "Co-operative Bank of Kenya", aliases: ["co-op", "coop", "cooperative bank"] },
@@ -158,7 +160,7 @@ function resolveInternationalBank(currency, bankName = null, explicitBankCode = 
 }
 
 /**
- * Enrich virtual receiving account details with clearing bank code for display.
+ * Enrich virtual receiving account details with clearing bank code for display (sync fallback).
  */
 function enrichReceivingBankCode(currency, bankName, existingCode = null) {
   if (existingCode && String(existingCode).trim()) return String(existingCode).trim();
@@ -166,9 +168,139 @@ function enrichReceivingBankCode(currency, bankName, existingCode = null) {
   return res.code || null;
 }
 
+// Currencies backed by Nuvion's live GET /bank-codes/{country} directory
+const CURRENCY_TO_NUVION_BANK_COUNTRY = {
+  NGN: "NG",
+  GHS: "GH",
+  KES: "KE",
+  TZS: "TZ",
+  UGX: "UG",
+  ZAR: "ZA",
+  PHP: "PH",
+  HKD: "HK",
+  CNY: "CN",
+  CAD: "CA",
+};
+
+// Known spelling aliases for Nuvion partner banks when matching against live /bank-codes/{country}
+const BANK_NAME_SYNONYMS = [
+  ["first bank ghana", "fbnbank ghana", "fbn bank ghana", "firstbank ghana"],
+  ["choice bank", "choice microfinance bank", "choice mfb"],
+  ["mwanga hakika bank", "mwanga hakika", "nwanga hakika bank", "nwanga hakika", "mwanga community bank"],
+];
+
+function _expandSearchTargets(rawName) {
+  const norm = normalizeText(rawName);
+  if (!norm) return [];
+  const targets = new Set([norm]);
+  for (const group of BANK_NAME_SYNONYMS) {
+    const norms = group.map(normalizeText);
+    if (norms.some((n) => norm === n || norm.includes(n) || n.includes(norm))) {
+      for (const n of norms) targets.add(n);
+    }
+  }
+  return [...targets];
+}
+
+/**
+ * Fetch Nuvion's live (24h cached) bank directory for a currency, falling back to
+ * the built-in directory when offline or unconfigured.
+ */
+async function getLiveBanksForCurrency(currency, { nuvionClient = null } = {}) {
+  const cur = String(currency || "").trim().toUpperCase();
+  const country = CURRENCY_TO_NUVION_BANK_COUNTRY[cur] || null;
+  if (country) {
+    try {
+      const nuv = nuvionClient || require("./nuvion");
+      if (nuv && typeof nuv.listBankCodes === "function" && (nuvionClient || (typeof nuv.isNuvionConfigured === "function" && nuv.isNuvionConfigured()))) {
+        const live = await nuv.listBankCodes(country);
+        if (Array.isArray(live) && live.length > 0) {
+          return live
+            .filter((b) => b && (b.bank_name || b.bank_code || b.bank_institution_number || b.swift_bic))
+            .map((b) => ({
+              code: String(b.bank_code || b.bank_institution_number || b.swift_bic || "").trim(),
+              bankCode: b.bank_code ? String(b.bank_code).trim() : null,
+              institutionNumber: b.bank_institution_number ? String(b.bank_institution_number).trim() : null,
+              swiftBic: b.swift_bic ? String(b.swift_bic).trim() : null,
+              name: String(b.bank_name || "").trim(),
+              source: "nuvion_live",
+            }));
+        }
+      }
+    } catch (err) {
+      console.warn(`[international_banks] live /bank-codes/${country} fallback:`, err.message);
+    }
+  }
+  return getBanksForCurrency(cur).map((b) => ({
+    code: b.code,
+    bankCode: b.code,
+    institutionNumber: null,
+    swiftBic: null,
+    name: b.name,
+    aliases: b.aliases || [],
+    source: "static",
+  }));
+}
+
+/**
+ * Resolve a bank's exact Nuvion routing code using the live /bank-codes/{country} directory first,
+ * with synonym + fuzzy matching (e.g. First Bank Ghana <-> FBNBank Ghana, Choice Bank <-> Choice Microfinance Bank,
+ * Mwanga Hakika Bank) and static fallback.
+ */
+async function resolveInternationalBankLive(currency, bankName = null, explicitBankCode = null, options = {}) {
+  const cleanExplicit = String(explicitBankCode || "").trim();
+  const banks = await getLiveBanksForCurrency(currency, options);
+
+  if (cleanExplicit) {
+    const direct = banks.find(
+      (b) =>
+        (b.bankCode && b.bankCode.toLowerCase() === cleanExplicit.toLowerCase()) ||
+        (b.code && b.code.toLowerCase() === cleanExplicit.toLowerCase())
+    );
+    if (direct) {
+      return { code: direct.bankCode || direct.code, name: direct.name, swiftBic: direct.swiftBic || null, institutionNumber: direct.institutionNumber || null, source: direct.source };
+    }
+    return { code: cleanExplicit, name: bankName ? String(bankName).trim() : null, swiftBic: null, institutionNumber: null, source: "explicit" };
+  }
+
+  if (bankName) {
+    const targets = _expandSearchTargets(bankName);
+    // 1. Exact normalized match
+    for (const b of banks) {
+      const bn = normalizeText(b.name);
+      if (targets.some((t) => bn === t)) {
+        return { code: b.bankCode || b.code || null, name: b.name, swiftBic: b.swiftBic || null, institutionNumber: b.institutionNumber || null, source: b.source };
+      }
+    }
+    // 2. Substring match
+    for (const b of banks) {
+      const bn = normalizeText(b.name);
+      if (!bn) continue;
+      if (targets.some((t) => t.length >= 4 && (bn.includes(t) || t.includes(bn)))) {
+        return { code: b.bankCode || b.code || null, name: b.name, swiftBic: b.swiftBic || null, institutionNumber: b.institutionNumber || null, source: b.source };
+      }
+    }
+  }
+
+  return resolveInternationalBank(currency, bankName, explicitBankCode);
+}
+
+/**
+ * Enrich a provisioned receiving account with its exact Nuvion live clearing bank code.
+ */
+async function enrichReceivingBankCodeLive(currency, bankName, existingCode = null, options = {}) {
+  if (existingCode && String(existingCode).trim()) return String(existingCode).trim();
+  const res = await resolveInternationalBankLive(currency, bankName, null, options);
+  return res?.code || null;
+}
+
 module.exports = {
   INTERNATIONAL_BANKS,
+  CURRENCY_TO_NUVION_BANK_COUNTRY,
   getBanksForCurrency,
+  getLiveBanksForCurrency,
   resolveInternationalBank,
+  resolveInternationalBankLive,
   enrichReceivingBankCode,
+  enrichReceivingBankCodeLive,
 };

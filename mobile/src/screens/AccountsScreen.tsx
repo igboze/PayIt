@@ -111,6 +111,21 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
     setSection(initialSection);
   }, [initialSection]);
 
+  // When switching into Business mode on the Accounts tab, jump straight into Business Tools
+  // if the user was on the generic Balances list so the Business UI appears immediately.
+  const prevBizRef = React.useRef(isBiz);
+  useEffect(() => {
+    if (prevBizRef.current !== isBiz) {
+      prevBizRef.current = isBiz;
+      setGlobalAccounts([]);
+      setInvoices([]);
+      setBizHome(null);
+      if (isBiz && section === "accounts") {
+        setSection("business");
+      }
+    }
+  }, [isBiz, section]);
+
   const loadSection = useCallback(
     async (isRefresh = false) => {
       if (isRefresh) setRefreshing(true);

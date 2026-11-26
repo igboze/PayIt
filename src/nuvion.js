@@ -1228,6 +1228,30 @@ function getAccountDetailStatusReason(detail) {
   return String(reason).slice(0, 300);
 }
 
+// ── 9b. Bank Codes Directory (GET /bank-codes/{country}, cached 24h) ─────────
+// Supported countries per docs.nuvion.co/api-reference/bank-codes:
+//   NG, HK, CN, TZ, CA, GH, KE, UG, ZA, PH
+const _bankCodesCache = new Map(); // country -> { data: Array, fetchedAt: number }
+const BANK_CODES_TTL_MS = 24 * 60 * 60 * 1000;
+
+async function listBankCodes(country, { forceRefresh = false } = {}) {
+  const code = String(country || "").trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(code)) return [];
+  const cached = _bankCodesCache.get(code);
+  if (!forceRefresh && cached && Date.now() - cached.fetchedAt < BANK_CODES_TTL_MS) {
+    return cached.data;
+  }
+  const res = await nuvionRequest({
+    method: "GET",
+    path: `/bank-codes/${encodeURIComponent(code)}`,
+    role: "operations",
+    timeoutMs: 15000,
+  });
+  const list = Array.isArray(res?.data) ? res.data : [];
+  _bankCodesCache.set(code, { data: list, fetchedAt: Date.now() });
+  return list;
+}
+
 module.exports = {
   isAccountDetailReady,
   isAccountDetailDead,
@@ -1277,6 +1301,7 @@ module.exports = {
   listCounterparties,
   createPaymentDetail,
   listPaymentDetails,
+  listBankCodes,
   // FX & Transfers
   createFxQuote,
   getFxQuote,

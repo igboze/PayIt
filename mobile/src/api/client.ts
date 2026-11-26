@@ -578,6 +578,19 @@ export const api = {
       rails: GlobalRail[];
     }>("/global/corridors");
   },
+  getGlobalBankCodes(currency: string, q?: string) {
+    const params = new URLSearchParams({ currency: currency.toUpperCase() });
+    if (q) params.set("q", q);
+    return request<{
+      currency: string;
+      banks: Array<{
+        code: string;
+        name: string;
+        swiftBic: string | null;
+        institutionNumber: string | null;
+      }>;
+    }>(`/global/bank-codes?${params.toString()}`);
+  },
   listGlobalRecipients(currency?: string, account?: AccountType) {
     const params = new URLSearchParams();
     if (currency) params.set("currency", currency);
