@@ -103,7 +103,7 @@ async function sendKycStatusEmail({ to, name, status, accountType = "personal" }
           </p>
           <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 24px 0;" />
           <p style="font-size: 12px; color: #999;">
-            Proxim Platform · Regulated Global Banking & Compliance Infrastructure powered by Nuvion
+            Proxim Platform · Regulated Global Banking Infrastructure
           </p>
         </div>
       `,

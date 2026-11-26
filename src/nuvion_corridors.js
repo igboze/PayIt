@@ -512,6 +512,16 @@ function parseRecipientInputForRail(rail, rawText) {
     out.bank_name = rawParts.slice(rail.fields.length - 1).join(",").trim();
   }
 
+  // Auto-resolve missing bank_code from bank_name using the international clearing bank directory
+  // (e.g. GHS, TZS, KES, UGX, ZAR) so users never get stuck when Nuvion didn't display a code.
+  if (rail.fields.includes("bank_code") && !out.bank_code && out.bank_name) {
+    const resolved = internationalBanks.resolveInternationalBank(rail.currency, out.bank_name);
+    if (resolved?.code) {
+      out.bank_code = resolved.code;
+      if (resolved.name) out.bank_name = resolved.name;
+    }
+  }
+
   // Validate required fields present
   const missing = rail.fields.filter((f) => !out[f]);
   if (missing.length > 0) {
