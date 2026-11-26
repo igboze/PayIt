@@ -15,7 +15,7 @@ import { assertPasskey, createPasskey, isPasskeySupported } from "../api/passkey
 import * as SecureStore from "expo-secure-store";
 import { RETURNING_USER_KEY, useApp } from "../state/AppContext";
 import { COLORS, RADIUS, SPACING, FONTS } from "../theme";
-import { Button, Card, ErrorBanner, Input } from "../components/UI";
+import { Button, Card, ErrorBanner, Input, Pill } from "../components/UI";
 import { PressableScale } from "../components/Touch";
 import { PoweredBy } from "../components/PoweredBy";
 
@@ -28,6 +28,8 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
   const [error, setError] = useState<string | null>(null);
 
   // Signup state
+  const [signupChannel, setSignupChannel] = useState<"email" | "phone">("email");
+  const [signupEmail, setSignupEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [signupId, setSignupId] = useState("");
   const [otpCode, setOtpCode] = useState("");
@@ -70,7 +72,12 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
       const finished = await api.loginFinish(start.challengeId, assertion);
       await signInWithSession(finished.user, finished.session);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not sign in with passkey.");
+      const msg = err instanceof Error ? err.message : "Could not sign in with passkey.";
+      if (/no passkey|no.?credential|not.?found/i.test(msg)) {
+        setError("No Proxim passkey is saved on this device yet. Tap 'Create new account' to set up your wallet and passkey in seconds.");
+      } else {
+        setError(msg);
+      }
     } finally {
       setLoading(false);
     }
@@ -78,9 +85,18 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
 
   const handleSignupStart = async () => {
     setError(null);
+    const contact = signupChannel === "email" ? signupEmail.trim() : phone.trim();
+    if (signupChannel === "email" && (!contact || !contact.includes("@"))) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    if (signupChannel === "phone" && contact.length < 8) {
+      setError("Enter your phone number in international format (e.g. +2348012345678).");
+      return;
+    }
     setLoading(true);
     try {
-      const res = await api.signupStart(phone.trim());
+      const res = await api.signupStart(contact, signupChannel);
       setSignupId(res.signupId);
       setStep("signup_otp");
     } catch (err) {
@@ -273,30 +289,29 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
               <Card>
                 <Text style={styles.cardTitle}>Get started</Text>
                 <Text style={styles.cardSub}>
-                  Create a new Proxim wallet with your phone number, link your existing Telegram bot
-                  wallet, or sign in with your saved passkey.
+                  New to Proxim? Create your account directly in the app with a passkey — no Telegram needed. Already have a passkey? Sign in below.
                 </Text>
                 <Button
-                  title="Sign in with passkey"
+                  title="Create new account"
+                  onPress={() => {
+                    setError(null);
+                    setStep("signup_phone");
+                  }}
+                  style={{ marginBottom: 10 }}
+                />
+                <Button
+                  title="Sign in with existing passkey"
+                  variant="secondary"
                   onPress={handlePasskeySignIn}
                   loading={loading}
                   style={{ marginBottom: 10 }}
                 />
                 <Button
-                  title="I already use Proxim on Telegram"
-                  variant="secondary"
-                  onPress={() => {
-                    setError(null);
-                    setStep("link_telegram");
-                  }}
-                  style={{ marginBottom: 10 }}
-                />
-                <Button
-                  title="Create new account with phone"
+                  title="Link existing Telegram wallet"
                   variant="ghost"
                   onPress={() => {
                     setError(null);
-                    setStep("signup_phone");
+                    setStep("link_telegram");
                   }}
                 />
               </Card>
@@ -308,17 +323,34 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
             <Card>
               <Text style={styles.cardTitle}>Create your account</Text>
               <Text style={styles.cardSub}>
-                Enter your phone number in international format to receive a one-time SMS code.
+                {signupChannel === "email"
+                  ? "Enter your email address to receive a one-time 6-digit verification code, then create your device passkey."
+                  : "Enter your phone number in international format to receive a one-time SMS code."}
               </Text>
-              <Input
-                label="Phone number"
-                placeholder="+2348012345678"
-                value={phone}
-                onChangeText={setPhone}
-                keyboardType="phone-pad"
-                autoCapitalize="none"
-              />
-              <Button title="Continue" onPress={handleSignupStart} loading={loading} />
+              <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
+                <Pill label="Email (Instant)" active={signupChannel === "email"} onPress={() => { setError(null); setSignupChannel("email"); }} />
+                <Pill label="Phone SMS" active={signupChannel === "phone"} onPress={() => { setError(null); setSignupChannel("phone"); }} />
+              </View>
+              {signupChannel === "email" ? (
+                <Input
+                  label="Email address"
+                  placeholder="you@example.com"
+                  value={signupEmail}
+                  onChangeText={setSignupEmail}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                />
+              ) : (
+                <Input
+                  label="Phone number"
+                  placeholder="+2348012345678"
+                  value={phone}
+                  onChangeText={setPhone}
+                  keyboardType="phone-pad"
+                  autoCapitalize="none"
+                />
+              )}
+              <Button title="Send verification code" onPress={handleSignupStart} loading={loading} />
               <Button
                 title="Back"
                 variant="ghost"
@@ -330,8 +362,12 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
 
           {step === "signup_otp" ? (
             <Card>
-              <Text style={styles.cardTitle}>Verify your phone</Text>
-              <Text style={styles.cardSub}>Enter the code sent to {phone}.</Text>
+              <Text style={styles.cardTitle}>
+                {signupChannel === "email" ? "Verify your email" : "Verify your phone"}
+              </Text>
+              <Text style={styles.cardSub}>
+                Enter the code sent to {signupChannel === "email" ? signupEmail.trim() : phone.trim()}.
+              </Text>
               <Input
                 label="Verification code"
                 placeholder="123456"

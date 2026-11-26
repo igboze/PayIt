@@ -1296,7 +1296,7 @@ async function showBizBalance(ctx) {
       [btnPrimary("📊 Cash Flow", "action_cash_flow")],
       [btnPrimary("💸 Log Expense", "action_log_expense"),
       btnPrimary("🔄 Refresh Balance", "action_sweep_deposits")],
-      ...accountToggle("business")
+      ...(accountToggle("business").reply_markup?.inline_keyboard || [])
     );
 
     const otherWalletHint = await getOtherAccountBalanceHint(user, "business");

@@ -359,6 +359,35 @@ test("Mobile KYB Canonical Schema & 5 Required Docs: validates Nuvion 2026-02-06
   assert.equal(submittedOnboardingId, "ent_biz_test_1");
 });
 
+test("Hosted KYC/KYB Document Upload Bridge: stages file in RAM, returns documentId, and wipes after submit", async () => {
+  const features = require("../src/app_api/features");
+  const auth = { telegramId: 77712345 };
+  const sess = features.createKycUploadSession(auth, { slot: "kyb_coi", label: "Certificate of Incorporation (PDF)" }, { headers: { host: "payit-production.up.railway.app" } });
+  assert.equal(sess.status, 201);
+  assert.ok(sess.data.uploadUrl.includes("/api/app/v1/kyc/upload-page?token="));
+
+  const page = features.renderKycUploadPage(new URL(sess.data.uploadUrl));
+  assert.equal(page.status, 200);
+  assert.ok(page.raw.includes("Certificate of Incorporation (PDF)"));
+
+  const before = features.getKycUploadSessionStatus(auth, sess.data.sessionId);
+  assert.equal(before.data.ready, false);
+
+  const up = features.completeKycUploadPage({
+    token: sess.data.sessionId,
+    name: "coi.pdf",
+    mimeType: "application/pdf",
+    base64: Buffer.from("%PDF-1.4 fake pdf bytes for testing").toString("base64"),
+  });
+  assert.equal(up.status, 200);
+  assert.ok(up.data.documentId);
+
+  const after = features.getKycUploadSessionStatus(auth, sess.data.sessionId);
+  assert.equal(after.data.ready, true);
+  assert.equal(after.data.documentId, up.data.documentId);
+  assert.equal(after.data.name, "coi.pdf");
+});
+
 test.after(() => {
   try {
     if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);

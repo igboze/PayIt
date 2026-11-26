@@ -78,6 +78,7 @@ function sendJson(res, status, data) {
 // Endpoints that accept base64 photo/document uploads need a larger JSON body limit.
 const LARGE_BODY_PATHS = new Map([
   ["/me/avatar", 6 * 1024 * 1024],
+  ["/kyc/upload-page", 10 * 1024 * 1024],
   ["/kyc/submit", 15 * 1024 * 1024],
   ["/kyb/submit", 25 * 1024 * 1024],
 ]);
@@ -299,17 +300,65 @@ async function alertNewDevice(telegramId, deviceName, platform, excludeDeviceId)
 
 async function signupStart(req, body) {
   const { deviceId, platform } = requireDevice(body);
-  const phone = normalizePhone(body.phone);
+  const rawEmail = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
+  const rawPhone = typeof body?.phone === "string" ? body.phone.trim() : "";
+  const isEmailSignup = Boolean(rawEmail) || (!rawPhone && rawEmail.includes("@"));
+
   rateLimit(`signup-ip:${clientIp(req)}`, 10, 60 * 60 * 1000);
-  rateLimit(`signup-phone:${phone}`, 3, 60 * 60 * 1000);
   await requireIntegrity(platform, body);
 
+  if (isEmailSignup) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(rawEmail) || rawEmail.length > 120) {
+      throw new HttpError(400, "invalid_email", "Enter a valid email address.");
+    }
+    rateLimit(`signup-email:${rawEmail}`, 5, 60 * 60 * 1000);
+    const emailKey = `email:${rawEmail}`;
+    if (store.findUserByPhone(emailKey)) {
+      throw new HttpError(409, "email_registered", "This email already has a Proxim account. Sign in with your passkey instead.");
+    }
+    const code = String(crypto.randomInt(100000, 1000000));
+    const codeHash = crypto.createHash("sha256").update(`${rawEmail}:${code}`).digest("hex");
+    const emailMod = require("../email");
+    const sendRes = await emailMod.sendTransactionalEmail({
+      to: rawEmail,
+      subject: `Your Proxim verification code is ${code}`,
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; color: #13110C;">
+          <h2 style="color: #002018; margin-bottom: 8px;">Verify your email for Proxim</h2>
+          <p style="font-size: 15px; line-height: 1.5; color: #5C5546;">Enter this 6-digit code in the Proxim app to create your wallet and passkey:</p>
+          <div style="background: #F5F1E8; border: 1px solid #DCD3C1; border-radius: 14px; padding: 18px; text-align: center; margin: 20px 0;">
+            <span style="font-size: 32px; font-weight: 800; letter-spacing: 6px; color: #002018;">${code}</span>
+          </div>
+          <p style="font-size: 13px; color: #776F5F;">This code expires in 10 minutes. If you didn't request it, you can safely ignore this email.</p>
+        </div>
+      `,
+      text: `Your Proxim verification code is ${code}. It expires in 10 minutes.`,
+    });
+    if (!sendRes?.sent && process.env.NODE_ENV === "production") {
+      throw new HttpError(503, "email_unavailable", "Couldn't send verification email right now. Please try again in a moment.");
+    }
+    const signupId = store.createSignup({ phone: emailKey, otpPinId: `email_otp:${codeHash}`, deviceId, platform });
+    return { status: 201, data: { signupId, channel: "email", otpExpiresInSec: 600 } };
+  }
+
+  const phone = normalizePhone(rawPhone);
+  rateLimit(`signup-phone:${phone}`, 3, 60 * 60 * 1000);
   if (store.findUserByPhone(phone)) {
     throw new HttpError(409, "phone_registered", "This phone number already has a Proxim account. Sign in instead.");
   }
-  const { pinId } = await dep("otp").sendOtp(phone.replace(/^\+/, ""));
+  let pinId;
+  try {
+    const otpRes = await dep("otp").sendOtp(phone.replace(/^\+/, ""));
+    pinId = otpRes.pinId;
+  } catch (err) {
+    throw new HttpError(
+      503,
+      "sms_unavailable",
+      "SMS verification is temporarily unavailable for this number. Tap 'Email' to sign up instantly with your email address."
+    );
+  }
   const signupId = store.createSignup({ phone, otpPinId: pinId, deviceId, platform });
-  return { status: 201, data: { signupId, otpExpiresInSec: 600 } };
+  return { status: 201, data: { signupId, channel: "phone", otpExpiresInSec: 600 } };
 }
 
 async function signupVerifyOtp(req, body) {
@@ -324,7 +373,17 @@ async function signupVerifyOtp(req, body) {
   if (Number(signup.attempts) >= 5) throw new HttpError(429, "too_many_attempts", "Too many wrong codes. Please start again.");
 
   if (!signup.otp_verified) {
-    const ok = await dep("otp").verifyOtp(signup.otp_pin_id, code);
+    let ok = false;
+    if (String(signup.otp_pin_id || "").startsWith("email_otp:")) {
+      const expectedHex = String(signup.otp_pin_id).slice("email_otp:".length);
+      const rawEmail = String(signup.phone_number || "").replace(/^email:/, "");
+      const actualHex = crypto.createHash("sha256").update(`${rawEmail}:${code}`).digest("hex");
+      const a = Buffer.from(expectedHex, "utf8");
+      const b = Buffer.from(actualHex, "utf8");
+      ok = a.length === b.length && crypto.timingSafeEqual(a, b);
+    } else {
+      ok = await dep("otp").verifyOtp(signup.otp_pin_id, code);
+    }
     if (!ok) {
       store.updateSignup(signupId, { attempts: Number(signup.attempts) + 1 });
       throw new HttpError(400, "otp_invalid", "That code is not correct.");
@@ -333,9 +392,10 @@ async function signupVerifyOtp(req, body) {
   const reservedId = signup.reserved_id ? Number(signup.reserved_id) : store.allocateAppUserId();
   store.updateSignup(signupId, { otp_verified: 1, reserved_id: reservedId });
 
+  const displayHandle = String(signup.phone_number || "").replace(/^email:/, "");
   const { challengeId, options } = await passkeys.startRegistration({
     telegramId: reservedId,
-    userName: signup.phone_number,
+    userName: displayHandle,
     displayName: "Proxim account",
     purpose: "signup",
     context: { signupId },
@@ -1221,6 +1281,16 @@ const ROUTES = [
   // Rewards, KYC/KYB, savings & investments
   ["GET", "/rewards", (req, url) => features.getRewards(authenticate(req), url)],
   ["GET", "/kyc/status", (req) => features.getKycStatus(authenticate(req))],
+  ["POST", "/kyc/upload-session", (req, body) => {
+    const auth = authenticate(req);
+    rateLimit(`kyc-upsess:${auth.telegramId}`, 40, 60 * 60 * 1000);
+    return features.createKycUploadSession(auth, body, req);
+  }],
+  ["GET", "/kyc/upload-page", (_req, url) => features.renderKycUploadPage(url)],
+  ["POST", "/kyc/upload-page", (req, body) => {
+    rateLimit(`kyc-uppage:${clientIp(req)}`, 40, 15 * 60 * 1000);
+    return features.completeKycUploadPage(body);
+  }],
   ["POST", "/kyc/submit", (req, body) => {
     const auth = authenticate(req);
     rateLimit(`kyc-sub:${auth.telegramId}`, 5, 60 * 60 * 1000);
@@ -1353,6 +1423,7 @@ const PARAM_ROUTES = [
     return features.downloadInvoiceImage({ telegramId: Number(u), user }, m[2], m[1], { download: true });
   }],
   ["DELETE", /^\/business\/payment-links\/([^/]+)$/, (req, _arg, m) => features.deactivateBusinessPaymentLink(authenticate(req), m[1])],
+  ["GET", /^\/kyc\/upload-session\/([^/]+)$/, (req, _arg, m) => features.getKycUploadSessionStatus(authenticate(req), m[1])],
 ];
 
 async function handleAppApiRequest(req, res) {

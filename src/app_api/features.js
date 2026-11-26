@@ -1022,7 +1022,7 @@ async function listGlobalAccounts(auth, url) {
       if (!d.bank_code && d.bank_name && intlBanks && typeof intlBanks.enrichReceivingBankCodeLive === "function") {
         try {
           liveCode = await intlBanks.enrichReceivingBankCodeLive(d.currency, d.bank_name);
-        } catch (_) {}
+        } catch (_) { }
       }
       return formatGlobalAccount(d, liveCode);
     })
@@ -1053,7 +1053,7 @@ async function provisionGlobalAccount(auth, body, rawCurrency) {
     if (res.detail && !res.detail.bank_code && res.detail.bank_name && intlBanks && typeof intlBanks.enrichReceivingBankCodeLive === "function") {
       try {
         liveCode = await intlBanks.enrichReceivingBankCodeLive(res.detail.currency, res.detail.bank_name);
-      } catch (_) {}
+      } catch (_) { }
     }
     return {
       status: res.cached ? 200 : 201,
@@ -2192,10 +2192,10 @@ async function listGlobalBankCodes(_auth, url) {
     : [];
   const filtered = q
     ? list.filter((b) =>
-        String(b.name || "").toLowerCase().includes(q) ||
-        String(b.code || "").toLowerCase().includes(q) ||
-        String(b.swiftBic || "").toLowerCase().includes(q)
-      )
+      String(b.name || "").toLowerCase().includes(q) ||
+      String(b.code || "").toLowerCase().includes(q) ||
+      String(b.swiftBic || "").toLowerCase().includes(q)
+    )
     : list;
   return {
     status: 200,
@@ -2288,6 +2288,388 @@ function stripBase64DataUrl(val) {
   return m ? m[1] : s;
 }
 
+// ─── 18b. Hosted KYC/KYB document upload bridge (works on any APK via browser) ─
+
+const crypto = require("node:crypto");
+
+const KYC_UPLOAD_SLOT_CONFIG = {
+  kyc_front: {
+    label: "Government ID (Front)",
+    accept: ".pdf,image/jpeg,image/png",
+    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+    hint: "Upload a clear photo or PDF of the front of your Passport, National ID, or Driver's License.",
+  },
+  kyc_back: {
+    label: "Government ID (Back)",
+    accept: ".pdf,image/jpeg,image/png",
+    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+    hint: "Upload a clear photo or PDF of the back of your ID (optional for passports).",
+  },
+  kyc_poa: {
+    label: "Proof of Address",
+    accept: ".pdf,image/jpeg,image/png",
+    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+    hint: "Utility bill, bank statement, or government letter dated within the last 3 months (PDF, JPG, or PNG).",
+  },
+  kyb_coi: {
+    label: "Certificate of Incorporation (PDF)",
+    accept: "application/pdf,.pdf",
+    mimes: new Set(["application/pdf"]),
+    hint: "Upload your company's official Certificate of Incorporation as a PDF file.",
+  },
+  kyb_memart: {
+    label: "Memorandum & Articles of Association",
+    accept: ".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    mimes: new Set([
+      "application/pdf",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ]),
+    hint: "Upload your Memorandum & Articles of Association (PDF, DOC, or DOCX).",
+  },
+  kyb_biz_poa: {
+    label: "Business Proof of Address",
+    accept: ".pdf,image/jpeg,image/png",
+    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+    hint: "Company utility bill or bank statement dated within the last 3 months (PDF, JPG, or PNG).",
+  },
+  kyb_officer_id_front: {
+    label: "Officer Government ID (Front)",
+    accept: ".pdf,image/jpeg,image/png",
+    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+    hint: "Clear photo or PDF of the controlling director/owner's valid government ID.",
+  },
+  kyb_officer_id_back: {
+    label: "Officer Government ID (Back)",
+    accept: ".pdf,image/jpeg,image/png",
+    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+    hint: "Clear photo or PDF of the back of the officer's government ID (optional for passports).",
+  },
+  kyb_officer_poa: {
+    label: "Officer Proof of Address",
+    accept: ".pdf,image/jpeg,image/png",
+    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+    hint: "Personal utility bill or bank statement (< 3 months) for the controlling director/owner (PDF, JPG, or PNG).",
+  },
+};
+
+const KYC_UPLOAD_TTL_MS = 15 * 60 * 1000; // 15 minutes in RAM only
+const kycUploadSessions = new Map(); // sessionId -> { sessionId, telegramId, slot, label, createdAt, documentId, base64, mimeType, name }
+
+function pruneKycUploadSessions() {
+  const cutoff = Date.now() - KYC_UPLOAD_TTL_MS;
+  for (const [id, sess] of kycUploadSessions.entries()) {
+    if (!sess || sess.createdAt < cutoff) kycUploadSessions.delete(id);
+  }
+  while (kycUploadSessions.size > 250) {
+    const oldest = kycUploadSessions.keys().next().value;
+    if (!oldest) break;
+    kycUploadSessions.delete(oldest);
+  }
+}
+
+function escapeHtmlBasic(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function createKycUploadSession(auth, body, req) {
+  pruneKycUploadSessions();
+  const slot = String(body?.slot || "").trim();
+  const cfg = KYC_UPLOAD_SLOT_CONFIG[slot];
+  if (!cfg) throw bad("Invalid verification document slot.");
+
+  const sessionId = crypto.randomBytes(24).toString("base64url");
+  const label = optStr(body, "label", { max: 120 }) || cfg.label;
+  kycUploadSessions.set(sessionId, {
+    sessionId,
+    telegramId: Number(auth.telegramId),
+    slot,
+    label,
+    createdAt: Date.now(),
+    documentId: null,
+    base64: null,
+    mimeType: null,
+    name: null,
+  });
+
+  const proto = String(req?.headers?.["x-forwarded-proto"] || "https").split(",")[0].trim() || "https";
+  const host = String(req?.headers?.["x-forwarded-host"] || req?.headers?.host || "").split(",")[0].trim();
+  const envBase = String(process.env.APP_PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "");
+  const origin = envBase || (host ? `${proto}://${host}` : "https://payit-production.up.railway.app");
+  const uploadUrl = `${origin}/api/app/v1/kyc/upload-page?token=${encodeURIComponent(sessionId)}`;
+
+  return {
+    status: 201,
+    data: {
+      sessionId,
+      slot,
+      uploadUrl,
+      expiresInSec: Math.round(KYC_UPLOAD_TTL_MS / 1000),
+    },
+  };
+}
+
+function getKycUploadSessionStatus(auth, sessionId) {
+  pruneKycUploadSessions();
+  const sess = kycUploadSessions.get(String(sessionId || "").trim());
+  if (!sess || Number(sess.telegramId) !== Number(auth.telegramId)) {
+    throw new FeatureError(404, "upload_session_expired", "Upload session expired. Tap the document button again.");
+  }
+  return {
+    status: 200,
+    data: {
+      ready: Boolean(sess.documentId && sess.base64),
+      slot: sess.slot,
+      documentId: sess.documentId,
+      name: sess.name,
+      mimeType: sess.mimeType,
+    },
+  };
+}
+
+function renderKycUploadPage(url) {
+  pruneKycUploadSessions();
+  const token = String(url?.searchParams?.get("token") || "").trim();
+  const sess = kycUploadSessions.get(token);
+  const cspHeader = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data: blob:";
+
+  if (!sess) {
+    const expiredHtml = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Proxim Document Upload</title><style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:#F5F1E8;color:#13110C;margin:0;padding:24px;display:flex;align-items:center;justify-content:center;min-height:100vh}.card{background:#fff;border:1px solid #DCD3C1;border-radius:18px;padding:24px;max-width:440px;width:100%;text-align:center}h1{font-size:20px;margin:0 0 10px;color:#002018}p{color:#5C5546;font-size:14px;line-height:1.5}</style></head><body><div class="card"><h1>Upload Link Expired</h1><p>Please return to the Proxim app and tap the document button again to get a fresh secure upload link.</p></div></body></html>`;
+    return { status: 410, raw: expiredHtml, contentType: "text/html; charset=utf-8", headers: { "Content-Security-Policy": cspHeader } };
+  }
+
+  const cfg = KYC_UPLOAD_SLOT_CONFIG[sess.slot];
+  const safeTitle = escapeHtmlBasic(sess.label || cfg.label);
+  const safeHint = escapeHtmlBasic(cfg.hint);
+  const safeAccept = escapeHtmlBasic(cfg.accept);
+  const safeTokenJson = JSON.stringify(token);
+  const safeAllowedJson = JSON.stringify([...cfg.mimes]);
+
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Proxim · ${safeTitle}</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #F5F1E8; color: #13110C; margin: 0; padding: 20px; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .card { background: #FFFFFF; border: 1px solid #DCD3C1; border-bottom: 3px solid #CFC5B0; border-radius: 20px; padding: 24px; max-width: 460px; width: 100%; box-shadow: 0 8px 24px rgba(0,32,24,0.08); }
+  .badge { display: inline-block; background: #002018; color: #E0A82E; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; text-transform: uppercase; padding: 5px 10px; border-radius: 999px; margin-bottom: 12px; }
+  h1 { font-size: 20px; margin: 0 0 8px; color: #002018; }
+  p { font-size: 14px; color: #5C5546; line-height: 1.5; margin: 0 0 18px; }
+  .drop { display: block; border: 2px dashed #BDB29C; background: #FAF7F0; border-radius: 14px; padding: 22px 16px; text-align: center; cursor: pointer; margin-bottom: 14px; }
+  .drop strong { display: block; color: #002018; font-size: 15px; margin-bottom: 4px; }
+  .drop span { color: #776F5F; font-size: 12px; }
+  input[type=file] { display: none; }
+  .btn { width: 100%; background: #E0A82E; color: #002018; border: none; border-bottom: 3px solid #8A6410; border-radius: 14px; padding: 14px; font-size: 16px; font-weight: 800; cursor: pointer; text-decoration: none; display: inline-block; text-align: center; }
+  .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+  .btn-dark { background: #002018; color: #FFFFFF; border-bottom-color: #00140F; margin-top: 10px; }
+  .msg { margin-top: 14px; padding: 12px 14px; border-radius: 12px; font-size: 13px; display: none; line-height: 1.45; }
+  .err { background: #FBE1DC; color: #A32816; border: 1px solid #F0B6AB; }
+  .ok { background: #E5F6EC; color: #005C30; border: 1px solid #A8DEC0; }
+  .foot { margin-top: 16px; font-size: 11px; color: #776F5F; text-align: center; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">Proxim Secure Verification</div>
+    <h1>${safeTitle}</h1>
+    <p>${safeHint}</p>
+    <label class="drop" for="fileInput" id="dropBox">
+      <strong id="fileLabel">Tap here to pick a file or take a photo</strong>
+      <span>Max 6 MB · Encrypted &amp; auto-deleted after verification</span>
+      <input id="fileInput" type="file" accept="${safeAccept}" />
+    </label>
+    <button id="uploadBtn" class="btn" disabled>Upload Document</button>
+    <div id="errBox" class="msg err"></div>
+    <div id="okBox" class="msg ok">
+      <strong>Document attached!</strong><br/>
+      Return to the Proxim app — your file will appear automatically on the verification form.
+      <a class="btn btn-dark" href="proxim://kyc-uploaded">Return to Proxim App</a>
+    </div>
+    <div class="foot">Encrypted in transit · Stored in temporary memory only for this session</div>
+  </div>
+<script>
+(function() {
+  const TOKEN = ${safeTokenJson};
+  const ALLOWED = new Set(${safeAllowedJson});
+  const input = document.getElementById("fileInput");
+  const label = document.getElementById("fileLabel");
+  const btn = document.getElementById("uploadBtn");
+  const errBox = document.getElementById("errBox");
+  const okBox = document.getElementById("okBox");
+  let chosen = null;
+
+  function showErr(t) { errBox.textContent = t; errBox.style.display = "block"; okBox.style.display = "none"; }
+  function inferMime(f) {
+    const m = (f.type || "").toLowerCase();
+    if (m) return m;
+    const n = (f.name || "").toLowerCase();
+    if (n.endsWith(".pdf")) return "application/pdf";
+    if (n.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    if (n.endsWith(".doc")) return "application/msword";
+    if (n.endsWith(".png")) return "image/png";
+    if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
+    return "";
+  }
+  function readBase64(file, mime) {
+    return new Promise((resolve, reject) => {
+      if (mime.startsWith("image/") && file.size > 1400000) {
+        const img = new Image();
+        const objUrl = URL.createObjectURL(file);
+        img.onload = () => {
+          try {
+            const maxDim = 1800;
+            let w = img.width, h = img.height;
+            if (w > maxDim || h > maxDim) {
+              const s = Math.min(maxDim / w, maxDim / h);
+              w = Math.round(w * s); h = Math.round(h * s);
+            }
+            const c = document.createElement("canvas");
+            c.width = w; c.height = h;
+            c.getContext("2d").drawImage(img, 0, 0, w, h);
+            const dataUrl = c.toDataURL("image/jpeg", 0.78);
+            URL.revokeObjectURL(objUrl);
+            resolve({ base64: dataUrl.split(",")[1], mimeType: "image/jpeg" });
+          } catch (e) { URL.revokeObjectURL(objUrl); reject(e); }
+        };
+        img.onerror = () => { URL.revokeObjectURL(objUrl); reject(new Error("Could not read image.")); };
+        img.src = objUrl;
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const res = String(reader.result || "");
+        const idx = res.indexOf(",");
+        resolve({ base64: idx >= 0 ? res.slice(idx + 1) : res, mimeType: mime });
+      };
+      reader.onerror = () => reject(new Error("Could not read selected file."));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  input.addEventListener("change", () => {
+    errBox.style.display = "none";
+    okBox.style.display = "none";
+    const f = input.files && input.files[0];
+    if (!f) { chosen = null; btn.disabled = true; return; }
+    const mime = inferMime(f);
+    if (!ALLOWED.has(mime)) {
+      chosen = null; btn.disabled = true;
+      showErr("Unsupported file type (" + (mime || f.name) + "). Please pick an allowed file format.");
+      return;
+    }
+    if (f.size > 6.5 * 1024 * 1024 && !mime.startsWith("image/")) {
+      chosen = null; btn.disabled = true;
+      showErr("File is larger than 6 MB. Please upload a smaller file.");
+      return;
+    }
+    chosen = { file: f, mime };
+    label.textContent = "Selected: " + f.name;
+    btn.disabled = false;
+  });
+
+  btn.addEventListener("click", async () => {
+    if (!chosen) return;
+    btn.disabled = true;
+    btn.textContent = "Uploading securely...";
+    errBox.style.display = "none";
+    try {
+      const encoded = await readBase64(chosen.file, chosen.mime);
+      const resp = await fetch("/api/app/v1/kyc/upload-page", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: TOKEN,
+          name: chosen.file.name || "document",
+          mimeType: encoded.mimeType,
+          base64: encoded.base64
+        })
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error((json.error && json.error.message) || "Upload failed. Please try again.");
+      btn.style.display = "none";
+      okBox.style.display = "block";
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = "Upload Document";
+      showErr(e && e.message ? e.message : "Could not upload document.");
+    }
+  });
+})();
+</script>
+</body>
+</html>`;
+
+  return {
+    status: 200,
+    raw: html,
+    contentType: "text/html; charset=utf-8",
+    headers: { "Content-Security-Policy": cspHeader },
+  };
+}
+
+function completeKycUploadPage(body) {
+  pruneKycUploadSessions();
+  const token = String(body?.token || "").trim();
+  const sess = kycUploadSessions.get(token);
+  if (!sess) {
+    throw new FeatureError(410, "upload_session_expired", "Upload link expired. Please return to Proxim and try again.");
+  }
+  const cfg = KYC_UPLOAD_SLOT_CONFIG[sess.slot];
+  const rawBase64 = stripBase64DataUrl(body?.base64);
+  if (!rawBase64 || rawBase64.length < 16) throw bad("Uploaded document is empty.");
+  if (rawBase64.length > Math.ceil(6.5 * 1024 * 1024 * 1.37)) {
+    throw bad("Uploaded document is too large (max 6 MB).");
+  }
+  const mimeType = String(body?.mimeType || "").trim().toLowerCase();
+  if (!cfg.mimes.has(mimeType)) {
+    throw bad(`Unsupported file type for ${cfg.label}.`);
+  }
+  const name = String(body?.name || `${sess.slot}`).trim().slice(0, 120);
+  const documentId = `doc_${crypto.randomBytes(16).toString("base64url")}`;
+  sess.documentId = documentId;
+  sess.base64 = rawBase64;
+  sess.mimeType = mimeType;
+  sess.name = name;
+  sess.createdAt = Date.now(); // refresh 15m TTL from upload time
+  return {
+    status: 200,
+    data: { ok: true, documentId, name, mimeType },
+  };
+}
+
+function resolveSubmittedDocument(telegramId, rawBase64, rawMime, documentId, fallbackMime) {
+  if (rawBase64 && String(rawBase64).trim()) {
+    return {
+      base64: stripBase64DataUrl(rawBase64),
+      mimeType: String(rawMime || fallbackMime).trim().toLowerCase(),
+      sessionIdToClear: null,
+    };
+  }
+  if (documentId && String(documentId).trim()) {
+    pruneKycUploadSessions();
+    const targetId = String(documentId).trim();
+    for (const [sid, sess] of kycUploadSessions.entries()) {
+      if (sess.documentId === targetId && Number(sess.telegramId) === Number(telegramId) && sess.base64) {
+        return {
+          base64: sess.base64,
+          mimeType: String(sess.mimeType || rawMime || fallbackMime).trim().toLowerCase(),
+          sessionIdToClear: sid,
+        };
+      }
+    }
+    throw bad("One of your uploaded documents expired. Please re-attach it and submit again.");
+  }
+  return null;
+}
+
 async function submitKyc(auth, body) {
   const compliance = dep("compliance");
   const countryCode = compliance.normalizeCountryCode(body?.countryCode || body?.nationality || body?.country_code);
@@ -2371,12 +2753,15 @@ async function submitKyc(auth, body) {
   };
 
   const docs = body.documents && typeof body.documents === "object" ? body.documents : null;
-  if (!docs?.idFrontBase64 || !docs?.proofOfAddressBase64) {
+  const resolvedFront = resolveSubmittedDocument(auth.telegramId, docs?.idFrontBase64, docs?.idFrontMimeType, docs?.idFrontDocumentId, "image/jpeg");
+  const resolvedBack = resolveSubmittedDocument(auth.telegramId, docs?.idBackBase64, docs?.idBackMimeType, docs?.idBackDocumentId, "image/jpeg");
+  const resolvedPoa = resolveSubmittedDocument(auth.telegramId, docs?.proofOfAddressBase64, docs?.proofOfAddressMimeType, docs?.proofOfAddressDocumentId, "image/jpeg");
+  if (!resolvedFront || !resolvedPoa) {
     throw bad("Please upload both your Government ID (front) and Proof of Address document.");
   }
   const allowedKycMimes = new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]);
-  const idFrontMime = String(docs.idFrontMimeType || "image/jpeg").trim().toLowerCase();
-  const poaMime = String(docs.proofOfAddressMimeType || "image/jpeg").trim().toLowerCase();
+  const idFrontMime = resolvedFront.mimeType;
+  const poaMime = resolvedPoa.mimeType;
   if (!allowedKycMimes.has(idFrontMime)) {
     throw bad("Government ID must be a JPG, PNG, or PDF file.");
   }
@@ -2415,8 +2800,8 @@ async function submitKyc(auth, body) {
         entityId,
         key: "identity",
         description: `${docType} for ${fullName}`,
-        fileBase64: stripBase64DataUrl(docs.idFrontBase64),
-        fileBackBase64: docs.idBackBase64 ? stripBase64DataUrl(docs.idBackBase64) : null,
+        fileBase64: resolvedFront.base64,
+        fileBackBase64: resolvedBack ? resolvedBack.base64 : null,
         fileType: idFrontMime,
         personId,
       });
@@ -2424,7 +2809,7 @@ async function submitKyc(auth, body) {
         entityId,
         key: "proof_of_address",
         description: `Proof of address for ${fullName}`,
-        fileBase64: stripBase64DataUrl(docs.proofOfAddressBase64),
+        fileBase64: resolvedPoa.base64,
         fileType: poaMime,
         personId,
       });
@@ -2433,6 +2818,9 @@ async function submitKyc(auth, body) {
       await nuvion.submitOnboarding(entityId);
       entityStatus = "pending";
     }
+    [resolvedFront, resolvedBack, resolvedPoa].forEach((r) => {
+      if (r?.sessionIdToClear) kycUploadSessions.delete(r.sessionIdToClear);
+    });
   } catch (err) {
     throw new FeatureError(Number(err.status || err.statusCode) || 400, "kyc_error", String(err.message || "Could not submit verification.").replace(/nuvion/gi, "Global Neobank"));
   }
@@ -2571,24 +2959,30 @@ async function submitKyb(auth, body) {
   const officerNin = String(rawOfficer.nin || "").trim();
   const officerSsn = String(rawOfficer.ssn || "").trim();
 
-  // Required KYB documents (all 5 per Nuvion X-API-Version: 2026-02-06)
+  // Required KYB documents (all 5 per Nuvion X-API-Version: 2026-02-06 — direct base64 or hosted upload documentId)
   const docs = body.documents && typeof body.documents === "object" ? body.documents : null;
+  const resolvedCoi = resolveSubmittedDocument(auth.telegramId, docs?.coiBase64, docs?.coiMimeType, docs?.coiDocumentId, "application/pdf");
+  const resolvedMemart = resolveSubmittedDocument(auth.telegramId, docs?.memartBase64, docs?.memartMimeType, docs?.memartDocumentId, "application/pdf");
+  const resolvedBizPoa = resolveSubmittedDocument(auth.telegramId, docs?.businessPoaBase64, docs?.businessPoaMimeType, docs?.businessPoaDocumentId, "application/pdf");
+  const resolvedOffIdFront = resolveSubmittedDocument(auth.telegramId, docs?.officerIdFrontBase64, docs?.officerIdMimeType, docs?.officerIdFrontDocumentId, "image/jpeg");
+  const resolvedOffIdBack = resolveSubmittedDocument(auth.telegramId, docs?.officerIdBackBase64, docs?.officerIdBackMimeType, docs?.officerIdBackDocumentId, "image/jpeg");
+  const resolvedOffPoa = resolveSubmittedDocument(auth.telegramId, docs?.officerPoaBase64, docs?.officerPoaMimeType, docs?.officerPoaDocumentId, "image/jpeg");
   if (
-    !docs?.coiBase64 ||
-    !docs?.memartBase64 ||
-    !docs?.businessPoaBase64 ||
-    !docs?.officerIdFrontBase64 ||
-    !docs?.officerPoaBase64
+    !resolvedCoi ||
+    !resolvedMemart ||
+    !resolvedBizPoa ||
+    !resolvedOffIdFront ||
+    !resolvedOffPoa
   ) {
     throw bad(
       "Business KYB requires all 5 documents: Certificate of Incorporation (PDF), Memorandum & Articles of Association (PDF/DOCX), Business Proof of Address, Officer Government ID, and Officer Proof of Address."
     );
   }
-  const coiMime = String(docs.coiMimeType || "application/pdf").trim().toLowerCase();
-  const memartMime = String(docs.memartMimeType || "application/pdf").trim().toLowerCase();
-  const bizPoaMime = String(docs.businessPoaMimeType || "application/pdf").trim().toLowerCase();
-  const officerIdMime = String(docs.officerIdMimeType || "image/jpeg").trim().toLowerCase();
-  const officerPoaMime = String(docs.officerPoaMimeType || "image/jpeg").trim().toLowerCase();
+  const coiMime = resolvedCoi.mimeType;
+  const memartMime = resolvedMemart.mimeType;
+  const bizPoaMime = resolvedBizPoa.mimeType;
+  const officerIdMime = resolvedOffIdFront.mimeType;
+  const officerPoaMime = resolvedOffPoa.mimeType;
 
   const allowedPdfOnly = new Set(["application/pdf"]);
   const allowedMemart = new Set([
@@ -2773,7 +3167,7 @@ async function submitKyb(auth, body) {
           live?.business_officers?.[0]?.person?.id ||
           live?.officers?.[0]?.person_id ||
           null;
-      } catch (_) {}
+      } catch (_) { }
     }
 
     if (typeof nuvion.uploadDocument === "function") {
@@ -2781,29 +3175,29 @@ async function submitKyb(auth, body) {
         entityId,
         key: "certificate_of_incorporation",
         description: `Certificate of Incorporation for ${legalName}`,
-        fileBase64: stripBase64DataUrl(docs.coiBase64),
+        fileBase64: resolvedCoi.base64,
         fileType: coiMime,
       });
       await nuvion.uploadDocument({
         entityId,
         key: "memorandum_of_association",
         description: `Memorandum & Articles of Association for ${legalName}`,
-        fileBase64: stripBase64DataUrl(docs.memartBase64),
+        fileBase64: resolvedMemart.base64,
         fileType: memartMime,
       });
       await nuvion.uploadDocument({
         entityId,
         key: "proof_of_address",
         description: `Business Proof of Address for ${legalName}`,
-        fileBase64: stripBase64DataUrl(docs.businessPoaBase64),
+        fileBase64: resolvedBizPoa.base64,
         fileType: bizPoaMime,
       });
       await nuvion.uploadDocument({
         entityId,
         key: "identity",
         description: `Officer ID for ${officerFirst} ${officerLast}`,
-        fileBase64: stripBase64DataUrl(docs.officerIdFrontBase64),
-        fileBackBase64: docs.officerIdBackBase64 ? stripBase64DataUrl(docs.officerIdBackBase64) : null,
+        fileBase64: resolvedOffIdFront.base64,
+        fileBackBase64: resolvedOffIdBack ? resolvedOffIdBack.base64 : null,
         fileType: officerIdMime,
         personId: officerPersonId,
       });
@@ -2811,7 +3205,7 @@ async function submitKyb(auth, body) {
         entityId,
         key: "proof_of_address",
         description: `Officer Proof of Address for ${officerFirst} ${officerLast}`,
-        fileBase64: stripBase64DataUrl(docs.officerPoaBase64),
+        fileBase64: resolvedOffPoa.base64,
         fileType: officerPoaMime,
         personId: officerPersonId,
       });
@@ -2821,6 +3215,9 @@ async function submitKyb(auth, body) {
       await nuvion.submitOnboarding(entityId);
       entityStatus = "pending";
     }
+    [resolvedCoi, resolvedMemart, resolvedBizPoa, resolvedOffIdFront, resolvedOffIdBack, resolvedOffPoa].forEach((r) => {
+      if (r?.sessionIdToClear) kycUploadSessions.delete(r.sessionIdToClear);
+    });
   } catch (err) {
     throw new FeatureError(Number(err.status || err.statusCode) || 400, "kyb_error", String(err.message || "Could not submit business verification.").replace(/nuvion/gi, "Global Neobank"));
   }
@@ -3391,6 +3788,10 @@ module.exports = {
   updateScheduleStatus,
   getRewards,
   getKycStatus,
+  createKycUploadSession,
+  getKycUploadSessionStatus,
+  renderKycUploadPage,
+  completeKycUploadPage,
   submitKyc,
   submitKyb,
   refreshKycStatus,

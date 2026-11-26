@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
   Alert,
+  AppState,
   Linking,
   Platform,
   RefreshControl,
@@ -41,7 +42,7 @@ import {
 import { EditableAvatar } from "../components/Avatar";
 
 type ProfileTab = "general" | "kyc" | "security" | "contacts" | "schedules" | "rewards";
-type PickedDoc = { base64: string; mimeType: string; name: string };
+type PickedDoc = { base64?: string; documentId?: string; mimeType: string; name: string };
 type DocSlot =
   | "kyc_front"
   | "kyc_back"
@@ -185,28 +186,68 @@ export function ProfileScreen({
     }
   };
 
-  const pickFileDocument = async (slot: DocSlot, mimeTypes: string[], fallbackMime: string) => {
+  const [pendingUpload, setPendingUpload] = useState<{ sessionId: string; slot: DocSlot; label: string } | null>(null);
+
+  const checkPendingUpload = useCallback(async (target: { sessionId: string; slot: DocSlot; label: string } | null) => {
+    if (!target) return;
+    try {
+      const status = await api.getKycUploadSession(target.sessionId);
+      if (status.ready && status.documentId) {
+        assignPickedDoc(target.slot, {
+          documentId: status.documentId,
+          mimeType: status.mimeType || "application/pdf",
+          name: status.name || target.label,
+        });
+        setPendingUpload(null);
+        setNotice(`${target.label} attached!`);
+        setError(null);
+      }
+    } catch {
+      // Ignore transient check errors while user is still selecting a file in browser
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!pendingUpload) return;
+    const sub = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") {
+        checkPendingUpload(pendingUpload);
+      }
+    });
+    const timer = setInterval(() => {
+      checkPendingUpload(pendingUpload);
+    }, 3000);
+    return () => {
+      sub.remove();
+      clearInterval(timer);
+    };
+  }, [pendingUpload, checkPendingUpload]);
+
+  const openHostedDocumentUpload = async (slot: DocSlot, label: string) => {
+    setError(null);
+    setLoading(true);
+    try {
+      const sess = await api.createKycUploadSession(slot, label);
+      setPendingUpload({ sessionId: sess.sessionId, slot, label });
+      await Linking.openURL(sess.uploadUrl);
+      setNotice(`Secure uploader opened for "${label}". Upload your file there and return to Proxim.`);
+    } catch (err) {
+      setError(toUserError(err, "Could not open secure document uploader."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const pickFileDocument = async (slot: DocSlot, mimeTypes: string[], fallbackMime: string, label = "Verification Document") => {
     if (Platform.OS === "web") {
-      setError("Use the Proxim mobile app to upload verification documents.");
+      await openHostedDocumentUpload(slot, label);
       return;
     }
     const DocPicker = getDocumentPicker();
     const FS = getLegacyFileSystem();
     if (!DocPicker || !FS?.readAsStringAsync) {
-      Alert.alert(
-        "Update Proxim APK for PDF / File Uploads",
-        "Your installed Proxim build doesn't include PDF/document file upload yet. Install the latest Proxim APK once to attach PDFs and DOCX files.",
-        [
-          { text: "Not now", style: "cancel" },
-          {
-            text: "Download APK",
-            onPress: () =>
-              Linking.openURL("https://github.com/igboze/PayIt/releases/download/android-latest/Proxim.apk").catch(
-                () => {}
-              ),
-          },
-        ]
-      );
+      // Seamlessly open Proxim's secure browser uploader — works on EVERY APK without reinstalling!
+      await openHostedDocumentUpload(slot, label);
       return;
     }
     try {
@@ -239,27 +280,15 @@ export function ProfileScreen({
     }
   };
 
-  const pickPhotoDocument = async (slot: DocSlot, fromCamera = false) => {
+  const pickPhotoDocument = async (slot: DocSlot, fromCamera = false, label = "Verification Document") => {
     if (Platform.OS === "web") {
-      setError("Use the Proxim mobile app to upload verification documents.");
+      await openHostedDocumentUpload(slot, label);
       return;
     }
     const Picker = getImagePicker();
     if (!Picker) {
-      Alert.alert(
-        "Reinstall latest APK",
-        "Your installed Proxim build doesn't include photo upload yet. Download and install the latest APK once.",
-        [
-          { text: "Not now", style: "cancel" },
-          {
-            text: "Download APK",
-            onPress: () =>
-              Linking.openURL("https://github.com/igboze/PayIt/releases/download/android-latest/Proxim.apk").catch(
-                () => {}
-              ),
-          },
-        ]
-      );
+      // Seamlessly open Proxim's secure browser uploader — supports camera, gallery & PDFs on any APK!
+      await openHostedDocumentUpload(slot, label);
       return;
     }
     try {
@@ -302,12 +331,18 @@ export function ProfileScreen({
   };
 
   const promptPickImageOrPdf = (slot: DocSlot, title: string) => {
+    const hasNativePicker = Boolean(getImagePicker() || getDocumentPicker());
+    if (!hasNativePicker) {
+      // Go straight to secure browser upload (supports camera, gallery & PDF with 1 tap)
+      openHostedDocumentUpload(slot, title);
+      return;
+    }
     const imgPdfMimes = ["application/pdf", "image/jpeg", "image/jpg", "image/png"];
     Alert.alert(title, "Choose how to attach this document (PDF, JPG, or PNG):", [
       { text: "Cancel", style: "cancel" },
-      { text: "📄 Pick File (PDF / Image)", onPress: () => pickFileDocument(slot, imgPdfMimes, "application/pdf") },
-      { text: "🖼️ Photo Library", onPress: () => pickPhotoDocument(slot, false) },
-      { text: "📷 Take Photo", onPress: () => pickPhotoDocument(slot, true) },
+      { text: "📄 Pick File (PDF / Image)", onPress: () => pickFileDocument(slot, imgPdfMimes, "application/pdf", title) },
+      { text: "🖼️ Photo Library", onPress: () => pickPhotoDocument(slot, false, title) },
+      { text: "📷 Take Photo", onPress: () => pickPhotoDocument(slot, true, title) },
     ]);
   };
 
@@ -482,10 +517,14 @@ export function ProfileScreen({
           country: cc,
         },
         documents: {
-          idFrontBase64: docIdFront.base64,
+          ...(docIdFront.base64 ? { idFrontBase64: docIdFront.base64 } : { idFrontDocumentId: docIdFront.documentId }),
           idFrontMimeType: docIdFront.mimeType,
-          ...(docIdBack ? { idBackBase64: docIdBack.base64 } : {}),
-          proofOfAddressBase64: docPoa.base64,
+          ...(docIdBack
+            ? docIdBack.base64
+              ? { idBackBase64: docIdBack.base64 }
+              : { idBackDocumentId: docIdBack.documentId }
+            : {}),
+          ...(docPoa.base64 ? { proofOfAddressBase64: docPoa.base64 } : { proofOfAddressDocumentId: docPoa.documentId }),
           proofOfAddressMimeType: docPoa.mimeType,
         },
       });
@@ -647,16 +686,24 @@ export function ProfileScreen({
           },
         },
         documents: {
-          coiBase64: docKybCoi.base64,
+          ...(docKybCoi.base64 ? { coiBase64: docKybCoi.base64 } : { coiDocumentId: docKybCoi.documentId }),
           coiMimeType: docKybCoi.mimeType,
-          memartBase64: docKybMemart.base64,
+          ...(docKybMemart.base64 ? { memartBase64: docKybMemart.base64 } : { memartDocumentId: docKybMemart.documentId }),
           memartMimeType: docKybMemart.mimeType,
-          businessPoaBase64: docKybBizPoa.base64,
+          ...(docKybBizPoa.base64 ? { businessPoaBase64: docKybBizPoa.base64 } : { businessPoaDocumentId: docKybBizPoa.documentId }),
           businessPoaMimeType: docKybBizPoa.mimeType,
-          officerIdFrontBase64: docKybOfficerIdFront.base64,
+          ...(docKybOfficerIdFront.base64
+            ? { officerIdFrontBase64: docKybOfficerIdFront.base64 }
+            : { officerIdFrontDocumentId: docKybOfficerIdFront.documentId }),
           officerIdMimeType: docKybOfficerIdFront.mimeType,
-          ...(docKybOfficerIdBack ? { officerIdBackBase64: docKybOfficerIdBack.base64 } : {}),
-          officerPoaBase64: docKybOfficerPoa.base64,
+          ...(docKybOfficerIdBack
+            ? docKybOfficerIdBack.base64
+              ? { officerIdBackBase64: docKybOfficerIdBack.base64 }
+              : { officerIdBackDocumentId: docKybOfficerIdBack.documentId }
+            : {}),
+          ...(docKybOfficerPoa.base64
+            ? { officerPoaBase64: docKybOfficerPoa.base64 }
+            : { officerPoaDocumentId: docKybOfficerPoa.documentId }),
           officerPoaMimeType: docKybOfficerPoa.mimeType,
         },
       });
@@ -792,6 +839,27 @@ export function ProfileScreen({
 
       <ErrorBanner message={error} onDismiss={() => setError(null)} />
       <SuccessBanner message={notice} onDismiss={() => setNotice(null)} />
+      {pendingUpload ? (
+        <Card style={{ borderColor: COLORS.businessBorder, marginBottom: 12 }}>
+          <Text style={styles.rowTitle}>Waiting for "{pendingUpload.label}"</Text>
+          <Text style={styles.rowSub}>
+            Finish selecting &amp; uploading the file in your browser, then return here — it will attach automatically.
+          </Text>
+          <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
+            <Button
+              title="Check Upload Now"
+              onPress={() => checkPendingUpload(pendingUpload)}
+              style={{ flex: 1, height: 38 }}
+            />
+            <Button
+              title="Cancel"
+              variant="secondary"
+              onPress={() => setPendingUpload(null)}
+              style={{ height: 38 }}
+            />
+          </View>
+        </Card>
+      ) : null}
 
       {/* GENERAL */}
       {tab === "general" ? (
@@ -1063,7 +1131,7 @@ export function ProfileScreen({
                     <Pill
                       label={docKybCoi ? `COI (${docKybCoi.name.slice(0, 14)}) ✅` : "📄 Certificate of Incorp. (PDF) *"}
                       active={Boolean(docKybCoi)}
-                      onPress={() => pickFileDocument("kyb_coi", ["application/pdf"], "application/pdf")}
+                      onPress={() => pickFileDocument("kyb_coi", ["application/pdf"], "application/pdf", "Certificate of Incorporation (PDF)")}
                     />
                     <Pill
                       label={docKybMemart ? `MemArt (${docKybMemart.name.slice(0, 12)}) ✅` : "📄 Memo & Articles (PDF/DOCX) *"}
@@ -1076,7 +1144,8 @@ export function ProfileScreen({
                             "application/msword",
                             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                           ],
-                          "application/pdf"
+                          "application/pdf",
+                          "Memorandum & Articles of Association"
                         )
                       }
                     />
@@ -1298,7 +1367,7 @@ export function ProfileScreen({
                     <Pill
                       label={docKybCoi ? `COI ✅` : "📄 Certificate of Incorp. (PDF) *"}
                       active={Boolean(docKybCoi)}
-                      onPress={() => pickFileDocument("kyb_coi", ["application/pdf"], "application/pdf")}
+                      onPress={() => pickFileDocument("kyb_coi", ["application/pdf"], "application/pdf", "Certificate of Incorporation (PDF)")}
                     />
                     <Pill
                       label={docKybMemart ? `MemArt ✅` : "📄 Memo & Articles (PDF/DOCX) *"}
@@ -1311,7 +1380,8 @@ export function ProfileScreen({
                             "application/msword",
                             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                           ],
-                          "application/pdf"
+                          "application/pdf",
+                          "Memorandum & Articles of Association"
                         )
                       }
                     />

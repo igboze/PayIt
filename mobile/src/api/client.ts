@@ -295,12 +295,14 @@ export const api = {
     return request<{ success: boolean }>("/push/register", { method: "POST", body: { pushToken } });
   },
   // Auth
-  async signupStart(phone: string) {
+  async signupStart(phoneOrEmail: string, channel?: "email" | "phone") {
     const dev = await getDeviceInfo();
-    return request<{ signupId: string; otpExpiresInSec: number }>("/auth/signup/start", {
+    const trimmed = phoneOrEmail.trim();
+    const isEmail = channel === "email" || (!channel && trimmed.includes("@"));
+    return request<{ signupId: string; channel?: "email" | "phone"; otpExpiresInSec: number }>("/auth/signup/start", {
       method: "POST",
       auth: false,
-      body: { ...dev, phone },
+      body: isEmail ? { ...dev, email: trimmed.toLowerCase() } : { ...dev, phone: trimmed },
     });
   },
   async signupVerifyOtp(signupId: string, code: string) {
@@ -665,6 +667,21 @@ export const api = {
       method: "POST",
       body: accountType ? { accountType } : {},
     });
+  },
+  createKycUploadSession(slot: string, label?: string) {
+    return request<{ sessionId: string; slot: string; uploadUrl: string; expiresInSec: number }>("/kyc/upload-session", {
+      method: "POST",
+      body: { slot, ...(label ? { label } : {}) },
+    });
+  },
+  getKycUploadSession(sessionId: string) {
+    return request<{
+      ready: boolean;
+      slot: string;
+      documentId: string | null;
+      name: string | null;
+      mimeType: string | null;
+    }>(`/kyc/upload-session/${encodeURIComponent(sessionId)}`);
   },
   submitKyc(body: Record<string, unknown>) {
     return request<{ status: string; tier: number }>("/kyc/submit", { method: "POST", body });
