@@ -2432,6 +2432,30 @@ function getKycUploadSessionStatus(auth, sessionId) {
   };
 }
 
+function listKycUploadSessions(auth) {
+  pruneKycUploadSessions();
+  const bySlot = new Map();
+  for (const sess of kycUploadSessions.values()) {
+    if (Number(sess.telegramId) !== Number(auth.telegramId)) continue;
+    if (!sess.documentId || !sess.base64) continue;
+    const prev = bySlot.get(sess.slot);
+    if (!prev || sess.createdAt >= prev.createdAt) {
+      bySlot.set(sess.slot, sess);
+    }
+  }
+  return {
+    status: 200,
+    data: {
+      documents: [...bySlot.values()].map((s) => ({
+        slot: s.slot,
+        documentId: s.documentId,
+        name: s.name,
+        mimeType: s.mimeType,
+      })),
+    },
+  };
+}
+
 function renderKycUploadPage(url) {
   pruneKycUploadSessions();
   const token = String(url?.searchParams?.get("token") || "").trim();
@@ -3790,6 +3814,7 @@ module.exports = {
   getKycStatus,
   createKycUploadSession,
   getKycUploadSessionStatus,
+  listKycUploadSessions,
   renderKycUploadPage,
   completeKycUploadPage,
   submitKyc,

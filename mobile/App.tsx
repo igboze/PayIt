@@ -111,6 +111,12 @@ function MainShell() {
       if (claimMatch) {
         setDeepClaimToken(claimMatch[1]);
         setOverlay("send");
+        return;
+      }
+      if (/kyc-uploaded/i.test(rawUrl)) {
+        setOverlay(null);
+        setProfileSection("kyc");
+        setTab("profile");
       }
     };
     Linking.getInitialURL().then(handleUrl).catch(() => {});
@@ -139,15 +145,15 @@ function MainShell() {
     );
   }
 
-  if (locked) {
-    return (
+  const lockOverlay = locked ? (
+    <View style={styles.lockOverlay}>
       <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
         <KeyboardSafe>
-        <LockScreen />
+          <LockScreen />
         </KeyboardSafe>
       </SafeAreaView>
-    );
-  }
+    </View>
+  ) : null;
 
   const handleHomeNav = (target: HomeModalTarget) => {
     if (
@@ -367,6 +373,7 @@ function MainShell() {
 
       <ApprovalSheet />
         </KeyboardSafe>
+      {lockOverlay}
     </SafeAreaView>
   );
 }
@@ -412,6 +419,16 @@ export default function App() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.bg },
+  lockOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 999,
+    elevation: 999,
+    backgroundColor: COLORS.bg,
+  },
   splash: {
     flex: 1,
     backgroundColor: COLORS.page,

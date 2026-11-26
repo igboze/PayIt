@@ -1281,6 +1281,7 @@ const ROUTES = [
   // Rewards, KYC/KYB, savings & investments
   ["GET", "/rewards", (req, url) => features.getRewards(authenticate(req), url)],
   ["GET", "/kyc/status", (req) => features.getKycStatus(authenticate(req))],
+  ["GET", "/kyc/upload-sessions", (req) => features.listKycUploadSessions(authenticate(req))],
   ["POST", "/kyc/upload-session", (req, body) => {
     const auth = authenticate(req);
     rateLimit(`kyc-upsess:${auth.telegramId}`, 40, 60 * 60 * 1000);

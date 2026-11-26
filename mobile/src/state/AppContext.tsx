@@ -57,6 +57,8 @@ interface AppContextValue {
   /** True while a returning user must confirm with their passkey before seeing anything. */
   locked: boolean;
   unlock: () => Promise<void>;
+  /** Pause the 60s background auto-lock briefly while user interacts with external camera/file/browser pickers. */
+  suspendAutoLock: (durationMs?: number) => void;
   /** True when the user has chosen to hide balances across the app (persisted on device). */
   balanceHidden: boolean;
   toggleBalanceHidden: () => void;
@@ -81,6 +83,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [locked, setLocked] = useState(false);
   const [balanceHidden, setBalanceHiddenState] = useState<boolean>(_cachedBalanceHidden ?? false);
   const backgroundedAt = useRef<number | null>(null);
+  const autoLockSuspendedUntil = useRef<number>(0);
+
+  const suspendAutoLock = useCallback((durationMs = 5 * 60 * 1000) => {
+    autoLockSuspendedUntil.current = Math.max(autoLockSuspendedUntil.current, Date.now() + durationMs);
+  }, []);
 
   const setBalanceHidden = useCallback((next: boolean) => {
     _cachedBalanceHidden = next;
@@ -154,6 +161,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       } else if (state === "active") {
         const since = backgroundedAt.current;
         backgroundedAt.current = null;
+        if (Date.now() < autoLockSuspendedUntil.current) return;
         if (since && Date.now() - since > RELOCK_AFTER_MS) setLocked(true);
       }
     });
@@ -279,6 +287,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         completeApproval,
         locked: Boolean(user) && locked,
         unlock,
+        suspendAutoLock,
         balanceHidden,
         toggleBalanceHidden,
         setBalanceHidden,

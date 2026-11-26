@@ -683,6 +683,16 @@ export const api = {
       mimeType: string | null;
     }>(`/kyc/upload-session/${encodeURIComponent(sessionId)}`);
   },
+  listKycUploadSessions() {
+    return request<{
+      documents: Array<{
+        slot: string;
+        documentId: string;
+        name: string;
+        mimeType: string;
+      }>;
+    }>("/kyc/upload-sessions");
+  },
   submitKyc(body: Record<string, unknown>) {
     return request<{ status: string; tier: number }>("/kyc/submit", { method: "POST", body });
   },

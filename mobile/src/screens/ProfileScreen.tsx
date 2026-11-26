@@ -13,6 +13,7 @@ import {
   View,
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
+import * as SecureStore from "expo-secure-store";
 import { api } from "../api/client";
 import { getDocumentPicker, getImagePicker, getLegacyFileSystem } from "../nativeModules";
 import { toUserError } from "../utils/errors";
@@ -55,6 +56,7 @@ type DocSlot =
   | "kyb_officer_poa";
 
 const MAX_DOC_BASE64_CHARS = Math.ceil(6 * 1024 * 1024 * 1.37); // ~6MB raw file per document
+const KYC_DRAFT_STORE_KEY = "proxim_kyc_kyb_draft_v1";
 
 function inferMimeFromName(name: string, fallback: string): string {
   const lower = String(name || "").toLowerCase();
@@ -73,7 +75,7 @@ export function ProfileScreen({
   initialTab?: ProfileTab;
   initialVerifyMode?: "kyc" | "kyb" | null;
 } = {}) {
-  const { user, activeAccount, dataVersion, refreshMe, signOut, requestApproval, balanceHidden } = useApp();
+  const { user, activeAccount, dataVersion, refreshMe, signOut, requestApproval, balanceHidden, suspendAutoLock } = useApp();
   const isBiz = activeAccount === "business";
   const ota = useAutoOtaUpdates();
   const [tab, setTab] = useState<ProfileTab>(initialTab);
@@ -188,6 +190,122 @@ export function ProfileScreen({
 
   const [pendingUpload, setPendingUpload] = useState<{ sessionId: string; slot: DocSlot; label: string } | null>(null);
 
+  const persistFormDraft = useCallback(async () => {
+    try {
+      const payload = {
+        kycFormOpen,
+        kybFormOpen,
+        firstName, lastName, email, phoneNumber, dob, gender, countryCode, street, city, stateRegion, postalCode,
+        idType, idNumber, idIssueDate, idExpiryDate, idIssuingAuthority, bvn, nin, ssn,
+        bizLegalName, bizTradeName, bizRegNo, bizTaxId, bizCountry, bizIncState, bizIncYear, bizIncMonth,
+        bizIndustry, bizDescription, bizType, bizEmail, bizPhone, bizWebsite, bizStreet, bizCity, bizState, bizPostal,
+        officerFirst, officerLast, officerEmail, officerPhone, officerDob, officerGender, officerNationality,
+        officerTitle, officerOwnership, officerIdType, officerIdNumber, officerIdIssueDate, officerIdExpiryDate,
+        officerIdAuthority, officerBvn, officerNin, officerSsn,
+      };
+      await SecureStore.setItemAsync(KYC_DRAFT_STORE_KEY, JSON.stringify(payload));
+    } catch {
+      // ignore storage errors
+    }
+  }, [
+    kycFormOpen, kybFormOpen,
+    firstName, lastName, email, phoneNumber, dob, gender, countryCode, street, city, stateRegion, postalCode,
+    idType, idNumber, idIssueDate, idExpiryDate, idIssuingAuthority, bvn, nin, ssn,
+    bizLegalName, bizTradeName, bizRegNo, bizTaxId, bizCountry, bizIncState, bizIncYear, bizIncMonth,
+    bizIndustry, bizDescription, bizType, bizEmail, bizPhone, bizWebsite, bizStreet, bizCity, bizState, bizPostal,
+    officerFirst, officerLast, officerEmail, officerPhone, officerDob, officerGender, officerNationality,
+    officerTitle, officerOwnership, officerIdType, officerIdNumber, officerIdIssueDate, officerIdExpiryDate,
+    officerIdAuthority, officerBvn, officerNin, officerSsn,
+  ]);
+
+  const syncStagedServerDocs = useCallback(async () => {
+    try {
+      const res = await api.listKycUploadSessions();
+      const docs = res.documents || [];
+      if (!docs.length) return;
+      for (const d of docs) {
+        const slot = d.slot as DocSlot;
+        assignPickedDoc(slot, {
+          documentId: d.documentId,
+          mimeType: d.mimeType || "application/pdf",
+          name: d.name || slot,
+        });
+      }
+      if (docs.some((d) => d.slot.startsWith("kyb_"))) setKybFormOpen(true);
+      else if (docs.some((d) => d.slot.startsWith("kyc_"))) setKycFormOpen(true);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Restore saved draft & any recently uploaded browser documents whenever Verify tab opens
+  useEffect(() => {
+    if (tab !== "kyc") return;
+    SecureStore.getItemAsync(KYC_DRAFT_STORE_KEY)
+      .then((raw) => {
+        if (!raw) return;
+        const d = JSON.parse(raw);
+        if (d.kycFormOpen) setKycFormOpen(true);
+        if (d.kybFormOpen) setKybFormOpen(true);
+        if (d.firstName) setFirstName((prev) => prev || d.firstName);
+        if (d.lastName) setLastName((prev) => prev || d.lastName);
+        if (d.email) setEmail((prev) => prev || d.email);
+        if (d.phoneNumber) setPhoneNumber((prev) => prev || d.phoneNumber);
+        if (d.dob) setDob((prev) => prev || d.dob);
+        if (d.gender) setGender(d.gender);
+        if (d.countryCode) setCountryCode(d.countryCode);
+        if (d.street) setStreet((prev) => prev || d.street);
+        if (d.city) setCity((prev) => prev || d.city);
+        if (d.stateRegion) setStateRegion((prev) => prev || d.stateRegion);
+        if (d.postalCode) setPostalCode((prev) => prev || d.postalCode);
+        if (d.idType) setIdType(d.idType);
+        if (d.idNumber) setIdNumber((prev) => prev || d.idNumber);
+        if (d.idIssueDate) setIdIssueDate((prev) => prev || d.idIssueDate);
+        if (d.idExpiryDate) setIdExpiryDate((prev) => prev || d.idExpiryDate);
+        if (d.idIssuingAuthority) setIdIssuingAuthority((prev) => prev || d.idIssuingAuthority);
+        if (d.bvn) setBvn((prev) => prev || d.bvn);
+        if (d.nin) setNin((prev) => prev || d.nin);
+        if (d.ssn) setSsn((prev) => prev || d.ssn);
+        if (d.bizLegalName) setBizLegalName((prev) => prev || d.bizLegalName);
+        if (d.bizTradeName) setBizTradeName((prev) => prev || d.bizTradeName);
+        if (d.bizRegNo) setBizRegNo((prev) => prev || d.bizRegNo);
+        if (d.bizTaxId) setBizTaxId((prev) => prev || d.bizTaxId);
+        if (d.bizCountry) setBizCountry(d.bizCountry);
+        if (d.bizIncState) setBizIncState((prev) => prev || d.bizIncState);
+        if (d.bizIncYear) setBizIncYear((prev) => prev || d.bizIncYear);
+        if (d.bizIncMonth) setBizIncMonth((prev) => prev || d.bizIncMonth);
+        if (d.bizIndustry) setBizIndustry((prev) => prev || d.bizIndustry);
+        if (d.bizDescription) setBizDescription((prev) => prev || d.bizDescription);
+        if (d.bizType) setBizType(d.bizType);
+        if (d.bizEmail) setBizEmail((prev) => prev || d.bizEmail);
+        if (d.bizPhone) setBizPhone((prev) => prev || d.bizPhone);
+        if (d.bizWebsite) setBizWebsite((prev) => prev || d.bizWebsite);
+        if (d.bizStreet) setBizStreet((prev) => prev || d.bizStreet);
+        if (d.bizCity) setBizCity((prev) => prev || d.bizCity);
+        if (d.bizState) setBizState((prev) => prev || d.bizState);
+        if (d.bizPostal) setBizPostal((prev) => prev || d.bizPostal);
+        if (d.officerFirst) setOfficerFirst((prev) => prev || d.officerFirst);
+        if (d.officerLast) setOfficerLast((prev) => prev || d.officerLast);
+        if (d.officerEmail) setOfficerEmail((prev) => prev || d.officerEmail);
+        if (d.officerPhone) setOfficerPhone((prev) => prev || d.officerPhone);
+        if (d.officerDob) setOfficerDob((prev) => prev || d.officerDob);
+        if (d.officerGender) setOfficerGender(d.officerGender);
+        if (d.officerNationality) setOfficerNationality(d.officerNationality);
+        if (d.officerTitle) setOfficerTitle((prev) => prev || d.officerTitle);
+        if (d.officerOwnership) setOfficerOwnership((prev) => prev || d.officerOwnership);
+        if (d.officerIdType) setOfficerIdType(d.officerIdType);
+        if (d.officerIdNumber) setOfficerIdNumber((prev) => prev || d.officerIdNumber);
+        if (d.officerIdIssueDate) setOfficerIdIssueDate((prev) => prev || d.officerIdIssueDate);
+        if (d.officerIdExpiryDate) setOfficerIdExpiryDate((prev) => prev || d.officerIdExpiryDate);
+        if (d.officerIdAuthority) setOfficerIdAuthority((prev) => prev || d.officerIdAuthority);
+        if (d.officerBvn) setOfficerBvn((prev) => prev || d.officerBvn);
+        if (d.officerNin) setOfficerNin((prev) => prev || d.officerNin);
+        if (d.officerSsn) setOfficerSsn((prev) => prev || d.officerSsn);
+      })
+      .catch(() => {});
+    syncStagedServerDocs();
+  }, [tab, syncStagedServerDocs]);
+
   const checkPendingUpload = useCallback(async (target: { sessionId: string; slot: DocSlot; label: string } | null) => {
     if (!target) return;
     try {
@@ -208,29 +326,34 @@ export function ProfileScreen({
   }, []);
 
   useEffect(() => {
-    if (!pendingUpload) return;
+    if (tab !== "kyc") return;
     const sub = AppState.addEventListener("change", (nextState) => {
       if (nextState === "active") {
-        checkPendingUpload(pendingUpload);
+        if (pendingUpload) checkPendingUpload(pendingUpload);
+        syncStagedServerDocs();
       }
     });
-    const timer = setInterval(() => {
-      checkPendingUpload(pendingUpload);
-    }, 3000);
+    const timer = pendingUpload
+      ? setInterval(() => {
+          checkPendingUpload(pendingUpload);
+        }, 3000)
+      : null;
     return () => {
       sub.remove();
-      clearInterval(timer);
+      if (timer) clearInterval(timer);
     };
-  }, [pendingUpload, checkPendingUpload]);
+  }, [tab, pendingUpload, checkPendingUpload, syncStagedServerDocs]);
 
   const openHostedDocumentUpload = async (slot: DocSlot, label: string) => {
     setError(null);
     setLoading(true);
+    suspendAutoLock(5 * 60 * 1000);
+    await persistFormDraft();
     try {
       const sess = await api.createKycUploadSession(slot, label);
       setPendingUpload({ sessionId: sess.sessionId, slot, label });
       await Linking.openURL(sess.uploadUrl);
-      setNotice(`Secure uploader opened for "${label}". Upload your file there and return to Proxim.`);
+      setNotice(`Secure uploader opened for "${label}". Upload your file there and switch back to Proxim.`);
     } catch (err) {
       setError(toUserError(err, "Could not open secure document uploader."));
     } finally {
@@ -239,6 +362,8 @@ export function ProfileScreen({
   };
 
   const pickFileDocument = async (slot: DocSlot, mimeTypes: string[], fallbackMime: string, label = "Verification Document") => {
+    suspendAutoLock(5 * 60 * 1000);
+    await persistFormDraft();
     if (Platform.OS === "web") {
       await openHostedDocumentUpload(slot, label);
       return;
@@ -281,6 +406,8 @@ export function ProfileScreen({
   };
 
   const pickPhotoDocument = async (slot: DocSlot, fromCamera = false, label = "Verification Document") => {
+    suspendAutoLock(5 * 60 * 1000);
+    await persistFormDraft();
     if (Platform.OS === "web") {
       await openHostedDocumentUpload(slot, label);
       return;
@@ -530,6 +657,7 @@ export function ProfileScreen({
       });
       setNotice(`Personal KYC submitted! (Status: ${res.status.toUpperCase()}).`);
       setKycFormOpen(false);
+      SecureStore.deleteItemAsync(KYC_DRAFT_STORE_KEY).catch(() => {});
       loadTab(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Verification submission failed.");
@@ -709,6 +837,7 @@ export function ProfileScreen({
       });
       setNotice(`Business KYB submitted! (Status: ${res.status.toUpperCase()}).`);
       setKybFormOpen(false);
+      SecureStore.deleteItemAsync(KYC_DRAFT_STORE_KEY).catch(() => {});
       loadTab(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Business verification submission failed.");
