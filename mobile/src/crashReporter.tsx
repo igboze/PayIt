@@ -86,14 +86,14 @@ export class AppErrorBoundary extends React.Component<{ children: React.ReactNod
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#ECF0EE", alignItems: "center", justifyContent: "center", padding: 28, gap: 12 },
+  root: { flex: 1, backgroundColor: "#F5F1E8", alignItems: "center", justifyContent: "center", padding: 28, gap: 12 },
   logo: { width: 72, height: 72, borderRadius: 20, marginBottom: 8 },
-  title: { fontSize: 22, fontWeight: "700", color: "#0E1512", textAlign: "center" },
-  body: { fontSize: 15, lineHeight: 22, color: "#3F4A45", textAlign: "center" },
+  title: { fontSize: 22, fontWeight: "700", color: "#13110C", textAlign: "center" },
+  body: { fontSize: 15, lineHeight: 22, color: "#5C5546", textAlign: "center" },
   button: {
     marginTop: 12,
     overflow: "hidden",
-    backgroundColor: "#067F48",
+    backgroundColor: "#002018",
     color: "#FFFFFF",
     fontSize: 16,
     fontWeight: "700",

@@ -31,13 +31,13 @@ type Recipient =
   | { kind: "bank"; name: string; bankCode: string; bankName: string; accountNumber: string }
   | { kind: "user"; name: string; handle: string; query: string };
 
+// Initials avatars use solid brand pairs only (text, fill).
 const AVATAR_TONES = [
-  ["#047857", "rgba(16, 185, 129, 0.14)"],
-  ["#1D4ED8", "rgba(59, 130, 246, 0.12)"],
-  ["#B45309", "rgba(245, 158, 11, 0.14)"],
-  ["#6D28D9", "rgba(139, 92, 246, 0.12)"],
-  ["#BE185D", "rgba(236, 72, 153, 0.12)"],
-  ["#0F766E", "rgba(20, 184, 166, 0.14)"],
+  ["#002018", "#E0A82E"],
+  ["#E0A82E", "#002018"],
+  ["#002018", "#F6E7BF"],
+  ["#002018", "#EDE7DA"],
+  ["#FFFFFF", "#007840"],
 ] as const;
 
 function initials(name: string): string {
@@ -386,6 +386,30 @@ export function SendFlow({
     <View style={styles.root}>
       <ScreenHeader title="Send money" onBack={onBack} />
       <ScrollView contentContainerStyle={styles.pickBody} keyboardShouldPersistTaps="handled">
+        {savedBank.length ? (
+          <View>
+            <Text style={styles.overline}>Recent</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.recentRow}>
+              {savedBank.slice(0, 8).map((c, i) => {
+                const nm = titleCase(c.accountName || c.name);
+                return (
+                  <PressableScale
+                    key={`r-${c.accountNumber}-${i}`}
+                    onPress={() => chooseSavedBank(c)}
+                    depth={0.94}
+                    style={styles.recentItem}
+                    accessibilityLabel={`Send to ${nm}`}
+                  >
+                    <Avatar name={nm} size={54} />
+                    <Text style={styles.recentName} numberOfLines={1}>
+                      {nm.split(" ")[0]}
+                    </Text>
+                  </PressableScale>
+                );
+              })}
+            </ScrollView>
+          </View>
+        ) : null}
         <View style={styles.segment}>
           {(["bank", "user"] as Tab[]).map((t) => (
             <PressableScale key={t} onPress={() => setTab(t)} haptic="selection" depth={0.97} style={[styles.segItem, tab === t && styles.segItemOn]}>
@@ -617,6 +641,9 @@ const styles = StyleSheet.create({
   segText: { ...TYPE.label, color: COLORS.textSecondary },
   segTextOn: { color: COLORS.text, fontFamily: FONTS.semibold },
   overline: { ...TYPE.overline, color: COLORS.textMuted },
+  recentRow: { gap: 14, paddingTop: 10, paddingBottom: 4, paddingRight: 8 },
+  recentItem: { width: 60, alignItems: "center", gap: 6 },
+  recentName: { ...TYPE.label, fontSize: 12, color: COLORS.text, fontFamily: FONTS.semibold },
   formCard: { backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, padding: 6, ...DEPTH.card },
   field: { flexDirection: "row", alignItems: "center", gap: 12, minHeight: 56, paddingHorizontal: 12 },
   fieldText: { ...TYPE.bodyStrong, color: COLORS.text, flex: 1 },

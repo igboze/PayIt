@@ -13,7 +13,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "../api/client";
 import type { TransactionItem, UnifiedBalance } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { BALANCE_GRADIENT, COLORS, DEPTH, HERO, RADIUS, SPACING, TYPE } from "../theme";
+import { COLORS, DEPTH, HERO, RADIUS, SPACING, TYPE } from "../theme";
 import {
   Button,
   EmptyState,
@@ -44,31 +44,9 @@ export type HomeModalTarget =
   | "notifications"
   | "activity";
 
-type IoniconName = keyof typeof Ionicons.glyphMap;
 
 // Home shows only the newest few; "See all" opens the full Activity screen.
 const HOME_ACTIVITY_COUNT = 5;
-
-// Canvas tile tones: [icon colour, tile background].
-const TONES = {
-  green: ["#047857", "rgba(16, 185, 129, 0.14)"],
-  neutral: ["#3F4A45", "rgba(14, 21, 18, 0.06)"],
-  violet: ["#6D28D9", "rgba(139, 92, 246, 0.12)"],
-  amber: ["#B45309", "rgba(245, 158, 11, 0.14)"],
-  teal: ["#0F766E", "rgba(20, 184, 166, 0.14)"],
-  blue: ["#1D4ED8", "rgba(59, 130, 246, 0.12)"],
-} as const;
-const AVATAR_TONES = [
-  ["#047857", "rgba(16, 185, 129, 0.14)"],
-  ["#1D4ED8", "rgba(59, 130, 246, 0.12)"],
-  ["#B45309", "rgba(245, 158, 11, 0.14)"],
-  ["#6D28D9", "rgba(139, 92, 246, 0.12)"],
-  ["#BE185D", "rgba(236, 72, 153, 0.12)"],
-  ["#0F766E", "rgba(20, 184, 166, 0.14)"],
-] as const;
-
-
-
 
 function greeting(): string {
   const h = new Date().getHours();
@@ -81,40 +59,6 @@ function initialsOf(name: string): string {
   const parts = name.replace(/^@/, "").trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return "P";
   return (parts.length > 1 ? parts[0][0] + parts[parts.length - 1][0] : parts[0].slice(0, 2)).toUpperCase();
-}
-
-function Tile({ icon, tone, size = 44 }: { icon: IoniconName; tone: keyof typeof TONES; size?: number }) {
-  const [fg, bg] = TONES[tone];
-  return (
-    <View style={{ width: size, height: size, borderRadius: Math.round(size / 3), backgroundColor: bg, alignItems: "center", justifyContent: "center" }}>
-      <Ionicons name={icon} size={Math.round(size / 2)} color={fg} />
-    </View>
-  );
-}
-
-/** Canvas balance card background: a diagonal green gradient, drawn as fading bands (no native gradient module). */
-function GradientFill() {
-  const bands = 14;
-  return (
-    <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-      {Array.from({ length: bands }, (_, i) => (
-        <View
-          key={i}
-          style={{
-            position: "absolute",
-            left: "-30%",
-            width: "160%",
-            top: `${(i * 100) / bands - 20}%`,
-            height: `${100 / bands + 1}%`,
-            backgroundColor: BALANCE_GRADIENT.from,
-            opacity: Math.max(0, 1 - i / (bands - 3)),
-            transform: [{ rotate: "-16deg" }],
-          }}
-        />
-      ))}
-      <View style={styles.cardGlow} />
-    </View>
-  );
 }
 
 export function HomeScreen({
@@ -214,55 +158,81 @@ export function HomeScreen({
     switchAccount(target).catch((err) => setError(err instanceof Error ? err.message : "Could not switch account."));
   };
 
-  const quickActions: Array<{ key: HomeModalTarget; label: string; icon: IoniconName; primary?: boolean; rotate?: boolean }> = [
-    { key: "add", label: "Add money", icon: "add", primary: true },
-    { key: "send", label: "Send", icon: "arrow-up", rotate: true },
-  ];
-
+  // Which currency the big number shows; the other one sits underneath.
+  const [showCur, setShowCur] = useState<"NGN" | "USD">("NGN");
+  const curTabs: Array<"NGN" | "USD"> = ["NGN", "USD"];
+  const mainText =
+    showCur === "NGN" && totalNgn !== null ? formatNgn(totalNgn) : balance ? formatUsdc(balance.totalUsdc) : "—";
+  const subText =
+    showCur === "NGN"
+      ? balance
+        ? `≈ ${formatUsdc(balance.totalUsdc)}`
+        : ""
+      : totalNgn !== null
+        ? `≈ ${formatNgn(totalNgn)}`
+        : "";
+  // Two-weight number: whole part large, decimals smaller and softer.
+  const dot = mainText.lastIndexOf(".");
+  const whole = dot > 0 ? mainText.slice(0, dot) : mainText;
+  const cents = dot > 0 ? mainText.slice(dot) : "";
 
   const header = (
     <View style={styles.topSection}>
-      <ErrorBanner message={error} onDismiss={() => setError(null)} />
-      <SuccessBanner message={copiedMsg} onDismiss={() => setCopiedMsg(null)} />
-
-      {/* Greeting row */}
-      <View style={styles.greetRow}>
-        <PressableScale onPress={onOpenProfile} depth={0.94} accessibilityLabel="Open profile">
-          <UserAvatar size={44} name={isBiz ? user?.bizSenderName || "Business" : null} />
-        </PressableScale>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.greetSub}>{greeting()}</Text>
-          <Text style={styles.greetName} numberOfLines={1}>
-            {displayName}
-          </Text>
+      <View style={styles.hero}>
+        {/* Greeting row */}
+        <View style={styles.greetRow}>
+          <PressableScale onPress={onOpenProfile} depth={0.94} accessibilityLabel="Open profile">
+            <UserAvatar size={42} name={isBiz ? user?.bizSenderName || "Business" : null} />
+          </PressableScale>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.greetSub}>{greeting()}</Text>
+            <Text style={styles.greetName} numberOfLines={1}>
+              {displayName}
+            </Text>
+          </View>
+          <PressableScale onPress={() => onNavigate("assistant")} depth={0.92} style={styles.iconBtn} accessibilityLabel="Ask Proxim">
+            <Ionicons name="sparkles" size={20} color={HERO.accent} />
+          </PressableScale>
+          <PressableScale
+            onPress={() => onNavigate("notifications")}
+            depth={0.92}
+            style={styles.iconBtn}
+            accessibilityLabel={unread ? `Notifications, ${unread} unread` : "Notifications"}
+          >
+            <Ionicons name="notifications-outline" size={20} color={HERO.text} />
+            {unread > 0 ? <View style={styles.unreadDot} /> : null}
+          </PressableScale>
         </View>
-        <PressableScale onPress={() => onNavigate("assistant")} depth={0.92} style={styles.iconBtn} accessibilityLabel="Ask Proxim">
-          <Ionicons name="sparkles" size={22} color={COLORS.primary} />
-        </PressableScale>
-        <PressableScale
-          onPress={() => onNavigate("notifications")}
-          depth={0.92}
-          style={styles.iconBtn}
-          accessibilityLabel={unread ? `Notifications, ${unread} unread` : "Notifications"}
-        >
-          <Ionicons name="notifications-outline" size={22} color={COLORS.text} />
-          {unread > 0 ? <View style={styles.unreadDot} /> : null}
-        </PressableScale>
-      </View>
 
-      {/* Balance card */}
-      <View style={[styles.balanceCard, isBiz && { borderColor: COLORS.businessBorder }]}>
-        <GradientFill />
-        <PressableScale onPress={toggleAccount} depth={0.97} haptic="selection" style={styles.acctLabelRow}>
-          <Text style={[styles.acctLabel, isBiz && { color: "#F5B83D" }]}>
-            {isBiz ? "Business account" : "Personal account"}
-          </Text>
-          {switchingAccount ? (
-            <ActivityIndicator size="small" color={HERO.textSecondary} />
-          ) : (
-            <Ionicons name="chevron-forward" size={14} color={HERO.textSecondary} />
-          )}
-        </PressableScale>
+        {/* Account + currency switch */}
+        <View style={styles.switchRow}>
+          <PressableScale onPress={toggleAccount} depth={0.97} haptic="selection" style={styles.acctLabelRow} accessibilityLabel="Switch account">
+            <Text style={[styles.acctLabel, isBiz && { color: HERO.accent }]}>{isBiz ? "Business" : "Personal"}</Text>
+            {switchingAccount ? (
+              <ActivityIndicator size="small" color={HERO.textSecondary} />
+            ) : (
+              <Ionicons name="swap-horizontal" size={14} color={HERO.textSecondary} />
+            )}
+          </PressableScale>
+          <View style={{ flex: 1 }} />
+          {curTabs.map((code) => {
+            const on = code === showCur;
+            return (
+              <PressableScale
+                key={code}
+                onPress={() => setShowCur(code)}
+                haptic="selection"
+                style={[styles.curChip, on && styles.curChipOn]}
+                accessibilityRole="button"
+                accessibilityState={{ selected: on }}
+                accessibilityLabel={`Show balance in ${code}`}
+              >
+                <CurrencyLogo code={code} size={18} />
+                <Text style={[styles.curChipText, on && styles.curChipTextOn]}>{code}</Text>
+              </PressableScale>
+            );
+          })}
+        </View>
 
         {loading && !balance ? (
           <View style={styles.balLoading}>
@@ -272,13 +242,8 @@ export function HomeScreen({
         ) : (
           <View style={styles.amountRow}>
             <Text style={styles.totalAmount} numberOfLines={1} adjustsFontSizeToFit>
-              {hidden
-                ? "₦••••"
-                : totalNgn !== null
-                  ? formatNgn(totalNgn)
-                  : balance
-                    ? formatUsdc(balance.totalUsdc)
-                    : "—"}
+              {hidden ? (showCur === "NGN" ? "₦••••" : "$••••") : whole}
+              {!hidden && cents ? <Text style={styles.totalCents}>{cents}</Text> : null}
             </Text>
             <PressableScale
               onPress={() => setHidden((h) => !h)}
@@ -290,21 +255,12 @@ export function HomeScreen({
             </PressableScale>
           </View>
         )}
-
         {balance ? (
-          <View style={styles.ngnValueRow}>
-            <View style={styles.ngnValueLeft}>
-              <CurrencyLogo code="USD" size={20} />
-              <Text style={styles.ngnValue}>{hidden ? "$••••" : formatUsdc(balance.totalUsdc)}</Text>
-            </View>
-            {ngnRate ? <Text style={styles.rateText}>$1 = ₦{Math.round(ngnRate).toLocaleString("en-NG")}</Text> : null}
-          </View>
+          <Text style={styles.subLine}>
+            {hidden ? "Balance hidden" : subText}
+            {ngnRate ? `  ·  $1 = ₦${Math.round(ngnRate).toLocaleString("en-NG")}` : ""}
+          </Text>
         ) : null}
-
-        <View style={styles.chip}>
-          <Ionicons name="globe-outline" size={14} color={HERO.accent} />
-          <Text style={styles.chipText}>One balance, spend anywhere</Text>
-        </View>
         {!hidden && (eurcBal > 0 || pendingBridge > 0) ? (
           <Text style={styles.extraLine}>
             {[eurcBal > 0 ? `Includes €${eurcBal.toFixed(2)} in EURC` : null, pendingBridge > 0 ? `${formatUsdc(pendingBridge)} arriving` : null]
@@ -315,7 +271,7 @@ export function HomeScreen({
 
         {/* Naira receiving account */}
         {ngnAccount?.accountNumber ? (
-          <PressableScale onPress={() => copyText("Account number", ngnAccount.accountNumber)} depth={0.98} style={styles.ngnRow}>
+          <View style={styles.ngnRow}>
             <CurrencyLogo code="NGN" size={22} />
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={styles.ngnLabel} numberOfLines={1}>
@@ -323,8 +279,17 @@ export function HomeScreen({
               </Text>
               <Text style={styles.ngnNumber}>{ngnAccount.accountNumber}</Text>
             </View>
-            <Ionicons name="copy-outline" size={18} color={HERO.accent} />
-          </PressableScale>
+            <PressableScale
+              onPress={() => copyText("Account number", ngnAccount.accountNumber)}
+              haptic="selection"
+              style={styles.copyPill}
+              accessibilityRole="button"
+              accessibilityLabel="Copy account number"
+            >
+              <Ionicons name="copy-outline" size={14} color={COLORS.onGold} />
+              <Text style={styles.copyPillText}>Copy</Text>
+            </PressableScale>
+          </View>
         ) : (
           <PressableScale onPress={() => onNavigate(isVerified ? "global" : "kyc")} depth={0.98} style={styles.ngnRow}>
             <CurrencyLogo code="NGN" size={22} />
@@ -334,82 +299,74 @@ export function HomeScreen({
             <Ionicons name="chevron-forward" size={16} color={HERO.accent} />
           </PressableScale>
         )}
-      </View>
 
-      {/* Quick actions */}
-      <View style={styles.qaRow}>
-        {quickActions.map((qa) => (
+        {/* The two main actions live on the header, where the thumb is */}
+        <View style={styles.qaRow}>
           <PressableScale
-            key={qa.key}
-            onPress={() => onNavigate(qa.key)}
+            onPress={() => onNavigate("add")}
             depth={0.95}
-            haptic={qa.primary ? "medium" : "light"}
-            style={[styles.qaWide, qa.primary ? styles.qaWidePrimary : null]}
+            haptic="medium"
+            style={[styles.qaWide, styles.qaGold]}
             accessibilityRole="button"
-            accessibilityLabel={qa.label}
+            accessibilityLabel="Add money"
           >
-            <Ionicons
-              name={qa.icon}
-              size={24}
-              color={qa.primary ? COLORS.onPrimary : COLORS.primary}
-              style={qa.rotate ? { transform: [{ rotate: "45deg" }] } : undefined}
-            />
-            <Text style={[styles.qaWideLabel, qa.primary ? { color: COLORS.onPrimary } : null]}>{qa.label}</Text>
+            <Ionicons name="add" size={22} color={COLORS.onGold} />
+            <Text style={[styles.qaWideLabel, { color: COLORS.onGold }]}>Add money</Text>
           </PressableScale>
-        ))}
+          <PressableScale
+            onPress={() => onNavigate("send")}
+            depth={0.95}
+            haptic="light"
+            style={[styles.qaWide, styles.qaWhite]}
+            accessibilityRole="button"
+            accessibilityLabel="Send"
+          >
+            <Ionicons name="arrow-up" size={22} color={COLORS.primary} style={{ transform: [{ rotate: "45deg" }] }} />
+            <Text style={styles.qaWideLabel}>Send</Text>
+          </PressableScale>
+        </View>
       </View>
 
-      {/* Grow your money: Savings & US Stocks with merged asset logos */}
-      <View style={styles.growStack}>
-        <PressableScale onPress={() => onNavigate("savings")} depth={0.98} style={styles.featureCard}>
-          <View style={styles.featureTopRow}>
-            <View style={{ flex: 1, gap: 2 }}>
+      <View style={styles.below}>
+        <ErrorBanner message={error} onDismiss={() => setError(null)} />
+        <SuccessBanner message={copiedMsg} onDismiss={() => setCopiedMsg(null)} />
+
+        {/* Grow your money */}
+        <Text style={styles.activityTitle}>Grow your money</Text>
+        <View style={styles.growRow}>
+          <PressableScale onPress={() => onNavigate("savings")} depth={0.97} style={styles.featureCard}>
+            <SavingsLogoMerger size={26} showBadge={false} />
+            <View style={{ gap: 2 }}>
               <Text style={styles.rowTitle}>Savings</Text>
-              <Text style={styles.rowSub}>USDC & EURC vaults · withdraw anytime</Text>
+              <Text style={styles.rowSub}>Earn daily, withdraw anytime</Text>
             </View>
-            <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
-          </View>
-          <View style={styles.featureLogoRow}>
-            <SavingsLogoMerger size={30} showBadge={false} />
-            <View style={styles.featureTagTeal}>
-              <Text style={styles.featureTagTealText}>Earn daily APY</Text>
-            </View>
-          </View>
-        </PressableScale>
-
-        <PressableScale onPress={() => onNavigate("stocks")} depth={0.98} style={styles.featureCard}>
-          <View style={styles.featureTopRow}>
-            <View style={{ flex: 1, gap: 2 }}>
-              <Text style={styles.rowTitle}>US Stocks & ETFs</Text>
-              <Text style={styles.rowSub}>Apple, NVIDIA, Tesla, Microsoft & more</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
-          </View>
-          <View style={styles.featureLogoRow}>
-            <StockLogoMerger size={30} showCount />
-            <View style={styles.featureTagBlue}>
-              <Text style={styles.featureTagBlueText}>Live charts</Text>
-            </View>
-          </View>
-        </PressableScale>
-      </View>
-
-      {/* Pay bills: one tap per bill type */}
-      <Text style={styles.activityTitle}>Pay bills</Text>
-      <View style={styles.billGrid}>
-        {BILL_CATEGORIES.map((c) => (
-          <BillCategoryTile key={c.key} cat={c} onPress={() => onOpenBill?.(c.key)} />
-        ))}
-      </View>
-
-      <View style={styles.activityHead}>
-        <Text style={styles.activityTitle}>Recent activity</Text>
-        {transactions.length > 0 ? (
-          <PressableScale onPress={() => onNavigate("activity")} haptic="selection" style={styles.seeAll} accessibilityRole="button">
-            <Text style={styles.seeAllText}>See all</Text>
-            <Ionicons name="chevron-forward" size={16} color={COLORS.primary} />
           </PressableScale>
-        ) : null}
+          <PressableScale onPress={() => onNavigate("stocks")} depth={0.97} style={styles.featureCard}>
+            <StockLogoMerger size={26} />
+            <View style={{ gap: 2 }}>
+              <Text style={styles.rowTitle}>US Stocks & ETFs</Text>
+              <Text style={styles.rowSub}>Start from $1</Text>
+            </View>
+          </PressableScale>
+        </View>
+
+        {/* Pay bills: one tap per bill type */}
+        <Text style={styles.activityTitle}>Pay bills</Text>
+        <View style={styles.billGrid}>
+          {BILL_CATEGORIES.map((c) => (
+            <BillCategoryTile key={c.key} cat={c} onPress={() => onOpenBill?.(c.key)} />
+          ))}
+        </View>
+
+        <View style={styles.activityHead}>
+          <Text style={styles.activityTitle}>Recent activity</Text>
+          {transactions.length > 0 ? (
+            <PressableScale onPress={() => onNavigate("activity")} haptic="selection" style={styles.seeAll} accessibilityRole="button">
+              <Text style={styles.seeAllText}>See all</Text>
+              <Ionicons name="chevron-forward" size={16} color={COLORS.goldDark} />
+            </PressableScale>
+          ) : null}
+        </View>
       </View>
     </View>
   );
@@ -456,102 +413,113 @@ export function HomeScreen({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.bg,
+    backgroundColor: COLORS.page,
   },
   listContent: {
     paddingHorizontal: SPACING.md,
-    paddingTop: 12,
+    paddingTop: 0,
     paddingBottom: 24,
   },
   topSection: {
-    gap: 18,
-    marginBottom: 12,
+    marginBottom: 8,
+  },
+  // Edge-to-edge Proxim Forest header: the balance owns the top of the screen.
+  hero: {
+    marginHorizontal: -SPACING.md,
+    paddingHorizontal: SPACING.md + 4,
+    paddingTop: 8,
+    paddingBottom: 22,
+    backgroundColor: COLORS.forest,
+    borderBottomLeftRadius: RADIUS.xl,
+    borderBottomRightRadius: RADIUS.xl,
+    gap: 6,
+    ...DEPTH.forest,
+  },
+  below: {
+    gap: 14,
+    paddingTop: 18,
   },
   greetRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-  },
-  avatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  avatarText: {
-    ...TYPE.bodyStrong,
+    gap: 10,
+    marginBottom: 10,
   },
   greetSub: {
     ...TYPE.label,
-    color: COLORS.textMuted,
+    color: HERO.textSecondary,
   },
   greetName: {
     ...TYPE.headline,
-    color: COLORS.text,
+    color: HERO.text,
   },
   iconBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
-    backgroundColor: COLORS.surface,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: HERO.chip,
+    borderWidth: 1,
+    borderColor: HERO.border,
     alignItems: "center",
     justifyContent: "center",
-    ...DEPTH.raised,
   },
   unreadDot: {
     position: "absolute",
-    top: 10,
-    right: 11,
+    top: 9,
+    right: 10,
     width: 9,
     height: 9,
     borderRadius: 5,
     backgroundColor: COLORS.danger,
     borderWidth: 1.5,
-    borderColor: COLORS.surface,
+    borderColor: COLORS.forest,
   },
-  balanceCard: {
-    position: "relative",
-    overflow: "hidden",
-    borderRadius: RADIUS.xl,
-    paddingTop: 20,
-    paddingHorizontal: 22,
-    paddingBottom: 22,
-    backgroundColor: BALANCE_GRADIENT.to,
-    borderWidth: 1,
-    borderColor: BALANCE_GRADIENT.border,
-    gap: 6,
-    shadowColor: "#000000",
-    shadowOffset: { width: 0, height: 22 },
-    shadowOpacity: 0.6,
-    shadowRadius: 26,
-    elevation: 12,
-  },
-  cardGlow: {
-    position: "absolute",
-    right: -60,
-    top: -80,
-    width: 220,
-    height: 220,
-    borderRadius: 110,
-    backgroundColor: "rgba(255, 255, 255, 0.04)",
-  },
-  acctLabelRow: {
-    alignSelf: "flex-start",
+  switchRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
-    paddingVertical: 4,
+    gap: 6,
+  },
+  acctLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingVertical: 6,
+    paddingRight: 6,
+    minHeight: 36,
   },
   acctLabel: {
     ...TYPE.overline,
     color: HERO.textSecondary,
   },
+  curChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingLeft: 5,
+    paddingRight: 11,
+    height: 32,
+    borderRadius: RADIUS.pill,
+    backgroundColor: HERO.chip,
+    borderWidth: 1,
+    borderColor: HERO.border,
+  },
+  curChipOn: {
+    backgroundColor: COLORS.white,
+    borderColor: COLORS.white,
+  },
+  curChipText: {
+    ...TYPE.label,
+    fontFamily: TYPE.overline.fontFamily,
+    color: HERO.textSecondary,
+  },
+  curChipTextOn: {
+    color: COLORS.forest,
+  },
   balLoading: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    height: 52,
+    height: 56,
   },
   balLoadingText: {
     ...TYPE.label,
@@ -560,62 +528,39 @@ const styles = StyleSheet.create({
   amountRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 8,
+    marginTop: 4,
   },
   totalAmount: {
     ...TYPE.xl,
     color: HERO.text,
     flexShrink: 1,
   },
-  ngnValueRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 8,
-    marginBottom: 4,
+  totalCents: {
+    fontSize: 26,
+    color: HERO.textSecondary,
   },
-  ngnValueLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  ngnValue: {
-    ...TYPE.title,
-    color: HERO.text,
-  },
-  rateText: {
+  subLine: {
     ...TYPE.label,
     color: HERO.textSecondary,
   },
   eyeBtn: {
-    padding: 6,
-  },
-  chip: {
-    alignSelf: "flex-start",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: HERO.chip,
-    borderRadius: RADIUS.pill,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-  },
-  chipText: {
-    ...TYPE.label,
-    color: HERO.text,
+    padding: 8,
   },
   extraLine: {
     ...TYPE.label,
     color: HERO.textSecondary,
   },
   ngnRow: {
-    marginTop: 10,
+    marginTop: 12,
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
     backgroundColor: HERO.inset,
+    borderWidth: 1,
+    borderColor: HERO.border,
     borderRadius: RADIUS.md,
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     paddingVertical: 10,
   },
   ngnLabel: {
@@ -631,108 +576,61 @@ const styles = StyleSheet.create({
     ...TYPE.label,
     color: HERO.accent,
   },
-  qaWide: {
-    flex: 1,
-    minHeight: 60,
+  copyPill: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-    borderRadius: RADIUS.md,
-    backgroundColor: COLORS.surface,
-    ...DEPTH.raised,
+    gap: 5,
+    height: 34,
+    paddingHorizontal: 12,
+    borderRadius: RADIUS.pill,
+    backgroundColor: COLORS.gold,
   },
-  qaWidePrimary: {
-    backgroundColor: COLORS.primary,
-    ...DEPTH.glow,
-  },
-  qaWideLabel: {
-    ...TYPE.bodyStrong,
-    fontSize: 16,
-    color: COLORS.text,
-  },
-  billGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
+  copyPillText: {
+    ...TYPE.label,
+    fontFamily: TYPE.title.fontFamily,
+    color: COLORS.onGold,
   },
   qaRow: {
     flexDirection: "row",
     gap: 12,
+    marginTop: 16,
   },
-  qaItem: {
-    width: 76,
-    alignItems: "center",
-    gap: 8,
-  },
-  qaTile: {
-    width: 60,
-    height: 60,
-    borderRadius: 20,
-    backgroundColor: COLORS.surface,
-    alignItems: "center",
-    justifyContent: "center",
-    ...DEPTH.raised,
-  },
-  qaTilePrimary: {
-    backgroundColor: COLORS.primary,
-    ...DEPTH.glow,
-  },
-  qaLabel: {
-    ...TYPE.label,
-    color: COLORS.text,
-  },
-  rowCard: {
+  qaWide: {
+    flex: 1,
+    minHeight: 56,
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderRadius: RADIUS.md,
+  },
+  qaGold: {
+    backgroundColor: COLORS.gold,
+    borderBottomWidth: 3,
+    borderBottomColor: COLORS.goldDark,
+  },
+  qaWhite: {
+    backgroundColor: COLORS.white,
+    borderBottomWidth: 3,
+    borderBottomColor: "#C9D3CE",
+  },
+  qaWideLabel: {
+    ...TYPE.bodyStrong,
+    fontFamily: TYPE.xl.fontFamily,
+    fontSize: 16,
+    color: COLORS.primary,
+  },
+  growRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  featureCard: {
+    flex: 1,
     gap: 12,
     padding: 14,
     borderRadius: RADIUS.lg,
     backgroundColor: COLORS.surface,
     ...DEPTH.card,
-  },
-  growStack: {
-    gap: 10,
-  },
-  featureCard: {
-    gap: 10,
-    padding: 14,
-    borderRadius: RADIUS.lg,
-    backgroundColor: COLORS.surface,
-    ...DEPTH.card,
-  },
-  featureTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  featureLogoRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingTop: 2,
-  },
-  featureTagTeal: {
-    backgroundColor: "rgba(15, 118, 110, 0.12)",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: RADIUS.pill,
-  },
-  featureTagTealText: {
-    ...TYPE.label,
-    fontSize: 11,
-    color: "#0F766E",
-  },
-  featureTagBlue: {
-    backgroundColor: "rgba(29, 78, 216, 0.10)",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: RADIUS.pill,
-  },
-  featureTagBlueText: {
-    ...TYPE.label,
-    fontSize: 11,
-    color: "#1D4ED8",
   },
   rowTitle: {
     ...TYPE.bodyStrong,
@@ -740,30 +638,24 @@ const styles = StyleSheet.create({
   },
   rowSub: {
     ...TYPE.label,
+    fontSize: 12,
     color: COLORS.textSecondary,
+  },
+  billGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
   },
   activityHead: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginTop: 4,
   },
   activityTitle: {
     ...TYPE.headline,
+    fontFamily: TYPE.xl.fontFamily,
     color: COLORS.text,
-  },
-  activityCount: {
-    ...TYPE.label,
-    color: COLORS.textMuted,
-  },
-  txRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 14,
-    paddingVertical: 14,
-    paddingHorizontal: 12,
-    borderRadius: RADIUS.md,
-    backgroundColor: COLORS.surface,
+    marginBottom: -4,
   },
   dayHeader: {
     ...TYPE.overline,
@@ -773,17 +665,6 @@ const styles = StyleSheet.create({
   },
   txGap: {
     height: 6,
-  },
-  txTitle: {
-    ...TYPE.bodyStrong,
-    color: COLORS.text,
-  },
-  txMeta: {
-    ...TYPE.label,
-    color: COLORS.textSecondary,
-  },
-  txAmount: {
-    ...TYPE.bodyStrong,
   },
   emptyCard: {
     backgroundColor: COLORS.surface,
@@ -799,42 +680,6 @@ const styles = StyleSheet.create({
   },
   seeAllText: {
     ...TYPE.bodyStrong,
-    color: COLORS.primary,
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.7)",
-    justifyContent: "flex-end",
-  },
-  modalSheet: {
-    backgroundColor: COLORS.surface,
-    borderTopLeftRadius: RADIUS.xl,
-    borderTopRightRadius: RADIUS.xl,
-    padding: SPACING.lg,
-    paddingTop: 10,
-    maxHeight: "88%",
-  },
-  sheetHandle: {
-    alignSelf: "center",
-    width: 40,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: COLORS.border,
-    marginBottom: 14,
-  },
-  modalTitle: {
-    ...TYPE.title,
-    color: COLORS.text,
-    marginBottom: 8,
-  },
-  receiptBox: {
-    marginTop: 16,
-    borderRadius: RADIUS.md,
-    overflow: "hidden",
-    backgroundColor: COLORS.page,
-  },
-  receiptImg: {
-    width: "100%",
-    height: 360,
+    color: COLORS.goldDark,
   },
 });

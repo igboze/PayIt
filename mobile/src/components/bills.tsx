@@ -9,12 +9,12 @@ import { PressableScale } from "./Touch";
 export type BillCat = "airtime" | "data" | "electricity" | "cable" | "transport" | "betting";
 
 export const BILL_CATEGORIES: Array<{ key: BillCat; label: string; icon: keyof typeof Ionicons.glyphMap; fg: string; bg: string }> = [
-  { key: "airtime", label: "Airtime", icon: "call", fg: "#047857", bg: "#D1FAE5" },
-  { key: "data", label: "Data", icon: "wifi", fg: "#1D4ED8", bg: "#DBEAFE" },
-  { key: "electricity", label: "Electricity", icon: "flash", fg: "#B45309", bg: "#FEF3C7" },
-  { key: "cable", label: "Cable TV", icon: "tv", fg: "#6D28D9", bg: "#EDE9FE" },
-  { key: "transport", label: "Transport", icon: "bus", fg: "#0F766E", bg: "#CCFBF1" },
-  { key: "betting", label: "Betting", icon: "football", fg: "#BE185D", bg: "#FCE7F3" },
+  { key: "airtime", label: "Airtime", icon: "call", fg: "#E0A82E", bg: "#002018" },
+  { key: "data", label: "Data", icon: "wifi", fg: "#E0A82E", bg: "#002018" },
+  { key: "electricity", label: "Electricity", icon: "flash", fg: "#E0A82E", bg: "#002018" },
+  { key: "cable", label: "Cable TV", icon: "tv", fg: "#E0A82E", bg: "#002018" },
+  { key: "transport", label: "Transport", icon: "bus", fg: "#E0A82E", bg: "#002018" },
+  { key: "betting", label: "Betting", icon: "football", fg: "#E0A82E", bg: "#002018" },
 ];
 
 // Provider name fragment -> website domain, for the logo.
@@ -109,9 +109,9 @@ export function ProviderTile({
 }) {
   const badgeColors =
     badgeTone === "prepaid"
-      ? { bg: "#D1FAE5", fg: "#065F46" }
+      ? { bg: "#DDF1E5", fg: "#007840" }
       : badgeTone === "postpaid"
-        ? { bg: "#FEF3C7", fg: "#92400E" }
+        ? { bg: "#FBEBCB", fg: "#8A5600" }
         : { bg: COLORS.surfaceElevated, fg: COLORS.textSecondary };
   return (
     <PressableScale

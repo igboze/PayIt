@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Modal, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Modal, ScrollView, Share, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { api } from "../api/client";
@@ -39,7 +39,7 @@ function SuccessView({ intent, res, onDone }: { intent: ActionIntentResponse; re
       <View style={styles.successTop}>
         <View style={styles.successRing}>
           <View style={styles.successDot}>
-            <Ionicons name="checkmark" size={38} color={COLORS.onPrimary} />
+            <Ionicons name="checkmark" size={40} color={COLORS.forest} />
           </View>
         </View>
         <Text style={styles.successHeading}>{successHeading(intent.actionType)}</Text>
@@ -63,6 +63,20 @@ function SuccessView({ intent, res, onDone }: { intent: ActionIntentResponse; re
         </View>
       </ScrollView>
       <View style={styles.footer}>
+        {isMoneyAction(intent.actionType) ? (
+          <Button
+            title="Share receipt"
+            variant="secondary"
+            onPress={() => {
+              const lines = (intent.summary.lines || []).map(([label, value]) => `${label}: ${value}`);
+              if (reference) lines.push(`Reference: ${reference}`);
+              Share.share({
+                message: [`Proxim receipt · ${successHeading(intent.actionType)}`, intent.summary.title, ...lines].join("\n"),
+              }).catch(() => {});
+            }}
+            style={{ marginBottom: 10 }}
+          />
+        ) : null}
         <Button title="Done" onPress={onDone} />
       </View>
     </View>
@@ -238,7 +252,7 @@ const styles = StyleSheet.create({
     width: 104,
     height: 104,
     borderRadius: 52,
-    backgroundColor: COLORS.primaryMuted,
+    backgroundColor: "#D6F2E3",
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 12,
@@ -247,10 +261,10 @@ const styles = StyleSheet.create({
     width: 72,
     height: 72,
     borderRadius: 36,
-    backgroundColor: COLORS.primary,
+    backgroundColor: COLORS.brandGreen,
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: COLORS.primary,
+    shadowColor: COLORS.success,
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.35,
     shadowRadius: 14,
@@ -273,7 +287,7 @@ const styles = StyleSheet.create({
   },
   backdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.72)",
+    backgroundColor: "rgba(0,20,15,0.72)",
     justifyContent: "flex-end",
   },
   sheet: {

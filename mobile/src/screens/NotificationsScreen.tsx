@@ -11,12 +11,12 @@ type IoniconName = keyof typeof Ionicons.glyphMap;
 
 function iconFor(kind: string | null): { icon: IoniconName; fg: string; bg: string } {
   const k = String(kind || "");
-  if (/auto_earn|saving/.test(k)) return { icon: "server-outline", fg: "#0F766E", bg: "rgba(20, 184, 166, 0.14)" };
-  if (/receive|deposit|credit/.test(k)) return { icon: "arrow-down", fg: "#047857", bg: "rgba(16, 185, 129, 0.14)" };
-  if (/device|security|pin/.test(k)) return { icon: "shield-checkmark-outline", fg: "#1D4ED8", bg: "rgba(59, 130, 246, 0.12)" };
-  if (/card/.test(k)) return { icon: "card-outline", fg: "#6D28D9", bg: "rgba(139, 92, 246, 0.12)" };
+  if (/auto_earn|saving/.test(k)) return { icon: "server-outline", fg: "#E0A82E", bg: "#002018" };
+  if (/receive|deposit|credit/.test(k)) return { icon: "arrow-down", fg: "#007840", bg: "#DDF1E5" };
+  if (/device|security|pin/.test(k)) return { icon: "shield-checkmark-outline", fg: "#002018", bg: "#F6E7BF" };
+  if (/card/.test(k)) return { icon: "card-outline", fg: "#002018", bg: "#EDE7DA" };
   if (/fail|error/.test(k)) return { icon: "alert-circle-outline", fg: COLORS.dangerText, bg: COLORS.dangerMuted };
-  return { icon: "notifications-outline", fg: "#3F4A45", bg: "rgba(14, 21, 18, 0.06)" };
+  return { icon: "notifications-outline", fg: "#002018", bg: "#EDE7DA" };
 }
 
 export function NotificationsScreen({ onBack, onOpened }: { onBack: () => void; onOpened?: () => void }) {

@@ -463,7 +463,7 @@ const styles = StyleSheet.create({
   formTitle: { ...TYPE.headline, color: COLORS.text, flex: 1 },
   filters: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 4 },
   filterChip: { minHeight: 40, paddingHorizontal: 14, justifyContent: "center", borderRadius: RADIUS.pill, backgroundColor: COLORS.surface, ...DEPTH.raised },
-  filterChipOn: { backgroundColor: COLORS.primary, borderColor: COLORS.primary, borderBottomColor: "#044F2D" },
+  filterChipOn: { backgroundColor: COLORS.primary, borderColor: COLORS.primary, borderBottomColor: "#00140F" },
   filterText: { ...TYPE.label, fontFamily: FONTS.semibold, color: COLORS.text },
   filterTextOn: { color: COLORS.onPrimary },
   amountLabel: { ...TYPE.label, color: COLORS.textSecondary, marginBottom: 8 },

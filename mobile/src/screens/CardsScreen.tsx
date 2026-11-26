@@ -402,7 +402,7 @@ const styles = StyleSheet.create({
   cardLabel: { color: COLORS.textMuted, fontFamily: FONTS.regular, fontSize: 11 },
   cardBal: { color: COLORS.text, fontSize: 16, fontFamily: FONTS.bold, marginTop: 2 },
   actionsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.75)", justifyContent: "flex-end" },
+  modalBackdrop: { flex: 1, backgroundColor: "rgba(0, 20, 15, 0.72)", justifyContent: "flex-end" },
   modalSheet: {
     backgroundColor: COLORS.surface,
     borderTopLeftRadius: RADIUS.xl,

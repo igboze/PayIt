@@ -108,12 +108,12 @@ export function Button({
       ]}
     >
       {loading ? (
-        <ActivityIndicator color={variant === "primary" ? COLORS.onPrimary : COLORS.text} size="small" />
+        <ActivityIndicator color={variant === "primary" ? COLORS.onGold : COLORS.text} size="small" />
       ) : (
         <Text
           style={[
             styles.btnText,
-            variant === "primary" && { color: COLORS.onPrimary },
+            variant === "primary" && { color: COLORS.onGold, fontFamily: FONTS.extrabold },
             variant === "danger" && { color: COLORS.danger },
             variant === "ghost" && { color: COLORS.textSecondary },
           ]}
@@ -370,9 +370,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.md,
   },
   btnPrimary: {
-    backgroundColor: COLORS.primary,
+    backgroundColor: COLORS.gold,
     ...DEPTH.glow,
-    borderTopColor: "rgba(255, 255, 255, 0.35)",
   },
   btnSecondary: {
     backgroundColor: COLORS.surface,
@@ -402,7 +401,7 @@ const styles = StyleSheet.create({
     minHeight: 56,
     backgroundColor: COLORS.surface,
     borderWidth: 1.5,
-    borderColor: "#8E9A94", // ~3:1 against white so field edges are visible
+    borderColor: "#A69B84", // ~3:1 against white so field edges are visible
     borderRadius: RADIUS.md,
     paddingHorizontal: 16,
     paddingVertical: 14,

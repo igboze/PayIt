@@ -8,12 +8,11 @@ import { PressableScale } from "./Touch";
 import { getImagePicker } from "../nativeModules";
 
 const TONES = [
-  ["#047857", "rgba(16, 185, 129, 0.16)"],
-  ["#1D4ED8", "rgba(59, 130, 246, 0.14)"],
-  ["#B45309", "rgba(245, 158, 11, 0.16)"],
-  ["#6D28D9", "rgba(139, 92, 246, 0.14)"],
-  ["#BE185D", "rgba(236, 72, 153, 0.14)"],
-  ["#0F766E", "rgba(20, 184, 166, 0.16)"],
+  ["#002018", "#E0A82E"],
+  ["#E0A82E", "#002018"],
+  ["#002018", "#F6E7BF"],
+  ["#002018", "#EDE7DA"],
+  ["#FFFFFF", "#007840"],
 ] as const;
 
 function initialsOf(name: string): string {

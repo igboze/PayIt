@@ -13,12 +13,12 @@ import { getLegacyFileSystem, getSharing } from "../nativeModules";
 type IoniconName = keyof typeof Ionicons.glyphMap;
 
 const TONES = {
-  green: ["#047857", "rgba(16, 185, 129, 0.14)"],
-  neutral: ["#3F4A45", "rgba(14, 21, 18, 0.06)"],
-  violet: ["#6D28D9", "rgba(139, 92, 246, 0.12)"],
-  amber: ["#B45309", "rgba(245, 158, 11, 0.14)"],
-  teal: ["#0F766E", "rgba(20, 184, 166, 0.14)"],
-  blue: ["#1D4ED8", "rgba(59, 130, 246, 0.12)"],
+  green: ["#007840", "#DDF1E5"],
+  neutral: ["#002018", "#EDE7DA"],
+  violet: ["#002018", "#F6E7BF"],
+  amber: ["#8A6410", "#F6E7BF"],
+  teal: ["#E0A82E", "#002018"],
+  blue: ["#002018", "#EDE7DA"],
 } as const;
 
 export function isCreditTx(tx: TransactionItem): boolean {
@@ -376,7 +376,7 @@ const styles = StyleSheet.create({
   chip: { borderRadius: RADIUS.pill, paddingHorizontal: 8, paddingVertical: 2 },
   chipText: { ...TYPE.label, fontSize: 12, lineHeight: 16 },
   bone: { height: 12, borderRadius: 6, backgroundColor: COLORS.surfaceElevated },
-  backdrop: { flex: 1, backgroundColor: "rgba(14, 21, 18, 0.45)", justifyContent: "flex-end" },
+  backdrop: { flex: 1, backgroundColor: "rgba(0, 20, 15, 0.55)", justifyContent: "flex-end" },
   sheet: {
     backgroundColor: COLORS.surface,
     borderTopLeftRadius: RADIUS.xl,

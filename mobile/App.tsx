@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { ActivityIndicator, BackHandler, Image, Linking, StyleSheet, Text, View } from "react-native";
-import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { AppProvider, useApp } from "./src/state/AppContext";
@@ -21,7 +21,6 @@ import { SwapScreen } from "./src/screens/SwapScreen";
 import { COLORS, FONTS } from "./src/theme";
 import { PressableScale } from "./src/components/Touch";
 import { KeyboardSafe } from "./src/components/UI";
-import { FloatingBackdrop } from "./src/components/FloatingBackdrop";
 import { AppErrorBoundary } from "./src/crashReporter";
 import { getNotifications } from "./src/nativeModules";
 import { UpdatingScreen } from "./src/components/UpdatingScreen";
@@ -45,6 +44,7 @@ type OverlayScreen = "add" | "send" | "bills" | "savings" | "stocks" | "swap" | 
 
 function MainShell() {
   const { user, bootstrapping, bumpDataVersion, locked } = useApp();
+  const insets = useSafeAreaInsets();
   const ota = useAutoOtaUpdates();
   usePushRegistration(Boolean(user) && !locked);
   const inbox = useInbox(Boolean(user) && !locked, bumpDataVersion);
@@ -265,15 +265,19 @@ function MainShell() {
     );
   }
 
-  const tabs: Array<{ key: MainTab; label: string; icon: keyof typeof Ionicons.glyphMap }> = [
-    { key: "home", label: "Home", icon: "home-outline" },
-    { key: "accounts", label: "Accounts", icon: "business-outline" },
-    { key: "cards", label: "Cards", icon: "card-outline" },
-    { key: "profile", label: "Profile", icon: "person-outline" },
+  const tabs: Array<{ key: MainTab; label: string; icon: keyof typeof Ionicons.glyphMap; activeIcon: keyof typeof Ionicons.glyphMap }> = [
+    { key: "home", label: "Home", icon: "home-outline", activeIcon: "home" },
+    { key: "accounts", label: "Accounts", icon: "business-outline", activeIcon: "business" },
+    { key: "cards", label: "Cards", icon: "card-outline", activeIcon: "card" },
+    { key: "profile", label: "Profile", icon: "person-outline", activeIcon: "person" },
   ];
 
+  // Home draws its Forest header right up under the status bar; other tabs sit on the stone page.
+  const onForest = tab === "home";
   return (
-    <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+    <SafeAreaView style={styles.safe} edges={["bottom"]}>
+      <StatusBar style={onForest ? "light" : "dark"} />
+      <View style={{ height: insets.top, backgroundColor: onForest ? COLORS.forest : COLORS.page }} />
         <KeyboardSafe>
       {ota.updateReady ? (
         <PressableScale onPress={() => setApplyingUpdate(true)} style={styles.otaBanner}>
@@ -329,12 +333,14 @@ function MainShell() {
               }}
               style={styles.tabItem}
             >
-              <Ionicons
-                name={t.icon}
-                size={24}
-                color={active ? COLORS.primary : COLORS.textMuted}
-              />
-              <Text style={[styles.tabLabel, active && { color: COLORS.primary }]}>
+              <View style={[styles.tabIcon, active && styles.tabIconActive]}>
+                <Ionicons
+                  name={active ? t.activeIcon : t.icon}
+                  size={22}
+                  color={active ? COLORS.primary : COLORS.textMuted}
+                />
+              </View>
+              <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>
                 {t.label}
               </Text>
             </PressableScale>
@@ -378,8 +384,7 @@ export default function App() {
       <StatusBar style="dark" />
       <AppErrorBoundary onReset={() => setBootKey((k) => k + 1)}>
         <AppProvider key={bootKey}>
-          <View style={{ flex: 1 }}>
-            <FloatingBackdrop />
+          <View style={{ flex: 1, backgroundColor: COLORS.page }}>
             <MainShell />
           </View>
         </AppProvider>
@@ -417,9 +422,12 @@ const styles = StyleSheet.create({
   tabLabel: {
     color: COLORS.textMuted,
     fontFamily: FONTS.medium,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 12,
+    lineHeight: 16,
   },
+  tabLabelActive: { color: COLORS.primary, fontFamily: FONTS.bold },
+  tabIcon: { width: 56, height: 30, borderRadius: 15, alignItems: "center", justifyContent: "center" },
+  tabIconActive: { backgroundColor: COLORS.goldSoft },
   inboxBanner: {
     flexDirection: "row",
     alignItems: "center",
