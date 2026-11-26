@@ -1,6 +1,7 @@
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
+import { toUserError } from "../utils/errors";
 import type {
   AppNotification,
   AccountSummary,
@@ -56,7 +57,7 @@ export class ApiError extends Error {
   status: number;
   code: string;
   constructor(status: number, code: string, message: string) {
-    super(message);
+    super(toUserError(message));
     this.status = status;
     this.code = code;
   }
@@ -165,7 +166,7 @@ async function refreshSessionTokens(): Promise<boolean> {
         const code = json?.error?.code || "unauthorized";
         await clearSessionTokens();
         if (_onSessionInvalid) {
-          _onSessionInvalid(json?.error?.message || "Session expired. Please sign in again.");
+          _onSessionInvalid(toUserError(json?.error?.message, "Session expired. Please sign in again."));
         }
         if (code === "account_frozen" || code === "session_revoked") return false;
         return false;
@@ -209,11 +210,20 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
     });
   };
 
-  let res = await exec();
+  let res: Response;
+  try {
+    res = await exec();
+  } catch (netErr) {
+    throw new ApiError(0, "network_error", toUserError(netErr, "Couldn't connect to Proxim. Check your internet connection and try again."));
+  }
   if (res.status === 401 && auth && _refreshToken) {
     const refreshed = await refreshSessionTokens();
     if (refreshed) {
-      res = await exec();
+      try {
+        res = await exec();
+      } catch (netErr) {
+        throw new ApiError(0, "network_error", toUserError(netErr, "Couldn't connect to Proxim. Check your internet connection and try again."));
+      }
     }
   }
 
@@ -229,7 +239,7 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
       throw new ApiError(
         res.status,
         parsed?.error?.code || "request_failed",
-        parsed?.error?.message || `Request failed (${res.status})`
+        toUserError(parsed?.error?.message, res.status >= 500 ? "Proxim is temporarily busy. Please try again in a moment." : "Something went wrong. Please try again.")
       );
     }
     return text as unknown as T;
@@ -238,7 +248,10 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const code = data?.error?.code || "request_failed";
-    const msg = data?.error?.message || `Request failed (${res.status})`;
+    const msg = toUserError(
+      data?.error?.message,
+      res.status >= 500 ? "Proxim is temporarily busy. Please try again in a moment." : "Something went wrong. Please try again."
+    );
     if (res.status === 403 && code === "account_frozen") {
       await clearSessionTokens();
       if (_onSessionInvalid) _onSessionInvalid(msg);

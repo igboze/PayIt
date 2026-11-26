@@ -5,6 +5,7 @@
 // We therefore check `requireOptionalNativeModule` from `expo-modules-core` FIRST — it
 // safely returns `null` without throwing or invoking `requireNativeModule`.
 /* eslint-disable @typescript-eslint/no-require-imports */
+import { NativeModules } from "react-native";
 import { requireOptionalNativeModule } from "expo-modules-core";
 import { reportError } from "./crashReporter";
 
@@ -15,26 +16,38 @@ type Notifications = typeof import("expo-notifications");
 
 const cache = new Map<string, unknown>();
 
-function hasAllNativeModules(nativeNames: string[]): boolean {
+function probeNativeModule(name: string): boolean {
   try {
-    return nativeNames.every((n) => Boolean(requireOptionalNativeModule(n)));
+    if (requireOptionalNativeModule(name)) return true;
   } catch {
-    return false;
+    // Fall through to secondary probes
   }
+  try {
+    const expoModules = (globalThis as { expo?: { modules?: Record<string, unknown> } }).expo?.modules;
+    if (expoModules && expoModules[name]) return true;
+  } catch {
+    // ignore
+  }
+  try {
+    if (NativeModules && (NativeModules as Record<string, unknown>)[name]) return true;
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
+function hasAllNativeModules(nativeNames: string[]): boolean {
+  return nativeNames.every((n) => probeNativeModule(n));
 }
 
 function hasAnyNativeModule(nativeNames: string[]): boolean {
-  try {
-    return nativeNames.some((n) => Boolean(requireOptionalNativeModule(n)));
-  } catch {
-    return false;
-  }
+  return nativeNames.some((n) => probeNativeModule(n));
 }
 
 function load<T>(name: string, available: () => boolean, loader: () => T): T | null {
-  if (cache.has(name)) return cache.get(name) as T | null;
+  if (cache.has(name)) return cache.get(name) as T;
   if (!available()) {
-    cache.set(name, null);
+    // Never cache `null` permanently so a late-initialized module can still be loaded later.
     return null;
   }
   let mod: T | null = null;
@@ -44,14 +57,14 @@ function load<T>(name: string, available: () => boolean, loader: () => T): T | n
     reportError(err, `load:${name}`);
     mod = null;
   }
-  cache.set(name, mod);
+  if (mod) cache.set(name, mod);
   return mod;
 }
 
 export const getImagePicker = () =>
   load<ImagePicker>(
     "expo-image-picker",
-    () => hasAllNativeModules(["ExponentImagePicker"]),
+    () => hasAnyNativeModule(["ExponentImagePicker", "ExpoImagePicker"]),
     () => require("expo-image-picker")
   );
 

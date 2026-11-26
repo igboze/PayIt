@@ -15,6 +15,7 @@ const invoiceDb = require("./invoice_db");
 const walletLib = require("./wallet");
 const apiRoutes = require("./api_routes");
 const fraudGuard = require("./fraud_guard");
+const internationalBanks = require("./international_banks");
 const { generateReceiptPNG } = require("./receipt_generator");
 
 const CURRENCY_META = {
@@ -226,7 +227,9 @@ function formatReceivingDetailsCard(detail, fallbackBeneficiary = "Proxim Accoun
     `──────────────────────────`,
     `• <b>Account Name:</b> ${escapeHtml(detail.beneficiary_name || fallbackBeneficiary)}`,
   ];
+  const bankCode = detail.bank_code || internationalBanks.enrichReceivingBankCode(detail.currency, detail.bank_name);
   if (detail.bank_name) lines.push(`• <b>Bank:</b> ${escapeHtml(detail.bank_name)}`);
+  if (bankCode) lines.push(`• <b>Bank Code:</b> <code>${escapeHtml(bankCode)}</code>`);
   if (detail.account_number) lines.push(`• <b>Account Number:</b> <code>${escapeHtml(detail.account_number)}</code>`);
   if (detail.routing_number) lines.push(`• <b>Routing Number:</b> <code>${escapeHtml(detail.routing_number)}</code>`);
   if (detail.sort_code) lines.push(`• <b>Sort Code:</b> <code>${escapeHtml(detail.sort_code)}</code>`);

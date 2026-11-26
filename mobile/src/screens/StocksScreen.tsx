@@ -23,6 +23,7 @@ import { useApp } from "../state/AppContext";
 import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TYPE } from "../theme";
 import {
   Button,
+  ForestHero,
   Card,
   EmptyState,
   ErrorBanner,
@@ -60,8 +61,8 @@ function MarketBanner({ market }: { market: StockMarketStatus }) {
   return (
     <View style={[styles.marketBanner, open ? styles.marketBannerOpen : styles.marketBannerClosed]}>
       <View style={styles.marketRowTop}>
-        <View style={[styles.marketDot, { backgroundColor: open ? "#059669" : "#D97706" }]} />
-        <Text style={[styles.marketTitle, { color: open ? "#065F46" : "#92400E" }]}>
+        <View style={[styles.marketDot, { backgroundColor: open ? "#007840" : "#8A6410" }]} />
+        <Text style={[styles.marketTitle, { color: open ? "#007840" : "#8A5600" }]}>
           {market.label}
         </Text>
         <Text style={styles.marketEt}>{market.etTimeLabel}</Text>
@@ -73,7 +74,7 @@ function MarketBanner({ market }: { market: StockMarketStatus }) {
 }
 
 export function StocksScreen({ onBack }: { onBack: () => void }) {
-  const { activeAccount, dataVersion, requestApproval } = useApp();
+  const { activeAccount, dataVersion, requestApproval, balanceHidden } = useApp();
   const isBiz = activeAccount === "business";
 
   // Catalog / portfolio state
@@ -335,9 +336,9 @@ export function StocksScreen({ onBack }: { onBack: () => void }) {
                           { color: pos.pnlUsd >= 0 ? COLORS.successText : COLORS.dangerText },
                         ]}
                       >
-                        {pos.pnlUsd >= 0 ? "+" : ""}
-                        {formatUsdc(pos.pnlUsd)} ({pos.pnlPct >= 0 ? "+" : ""}
-                        {pos.pnlPct.toFixed(2)}%)
+                        {balanceHidden
+                          ? "••••"
+                          : `${pos.pnlUsd >= 0 ? "+" : ""}${formatUsdc(pos.pnlUsd)} (${pos.pnlPct >= 0 ? "+" : ""}${pos.pnlPct.toFixed(2)}%)`}
                       </Text>
                     }
                   />
@@ -356,22 +357,24 @@ export function StocksScreen({ onBack }: { onBack: () => void }) {
                         {pos.currentPrice ? `$${pos.currentPrice.toFixed(2)}` : "—"}
                       </Text>
                       <Text style={styles.compareSub}>
-                        Value: {pos.currentValueNgn ? formatNgn(pos.currentValueNgn) : formatUsdc(pos.currentValueUsd)}
+                        Value: {balanceHidden ? "••••" : pos.currentValueNgn ? formatNgn(pos.currentValueNgn) : formatUsdc(pos.currentValueUsd)}
                       </Text>
                     </View>
                   </View>
 
-                  <KeyValueRow label="Shares owned" value={`${pos.shares.toFixed(4)} ${st.ticker}`} />
+                  <KeyValueRow label="Shares owned" value={balanceHidden ? "••••" : `${pos.shares.toFixed(4)} ${st.ticker}`} />
                   <KeyValueRow
                     label="Current value"
                     value={
-                      pos.currentValueNgn
-                        ? `${formatNgn(pos.currentValueNgn)} (${formatUsdc(pos.currentValueUsd)})`
-                        : formatUsdc(pos.currentValueUsd)
+                      balanceHidden
+                        ? "••••"
+                        : pos.currentValueNgn
+                          ? `${formatNgn(pos.currentValueNgn)} (${formatUsdc(pos.currentValueUsd)})`
+                          : formatUsdc(pos.currentValueUsd)
                     }
                   />
                   {pos.pendingBuyUsd > 0 ? (
-                    <KeyValueRow label="Pending settlement" value={`${formatUsdc(pos.pendingBuyUsd)} (~2–5 min)`} />
+                    <KeyValueRow label="Pending settlement" value={balanceHidden ? "••••" : `${formatUsdc(pos.pendingBuyUsd)} (~2–5 min)`} />
                   ) : null}
 
                   {pos.purchases.length > 0 ? (
@@ -382,7 +385,7 @@ export function StocksScreen({ onBack }: { onBack: () => void }) {
                           key={p.id}
                           currency={false}
                           label={`${formatDateTime(p.timestamp)} · ${p.status}`}
-                          value={`${formatUsdc(p.amountUsd)}${p.priceAtBuy ? ` @ $${p.priceAtBuy.toFixed(2)}` : ""}`}
+                          value={balanceHidden ? "••••" : `${formatUsdc(p.amountUsd)}${p.priceAtBuy ? ` @ $${p.priceAtBuy.toFixed(2)}` : ""}`}
                         />
                       ))}
                     </View>
@@ -426,7 +429,7 @@ export function StocksScreen({ onBack }: { onBack: () => void }) {
 
                 {!detail.configured ? (
                   <View style={styles.warnBox}>
-                    <Ionicons name="information-circle-outline" size={18} color="#92400E" />
+                    <Ionicons name="information-circle-outline" size={18} color="#8A5600" />
                     <Text style={styles.warnText}>
                       Live price charts are active. Stock order execution is finishing backend activation.
                     </Text>
@@ -435,7 +438,7 @@ export function StocksScreen({ onBack }: { onBack: () => void }) {
 
                 {mkt && !mkt.tradable ? (
                   <View style={styles.warnBox}>
-                    <Ionicons name="time-outline" size={18} color="#92400E" />
+                    <Ionicons name="time-outline" size={18} color="#8A5600" />
                     <Text style={styles.warnText}>
                       {st.ticker} trading is currently paused ({mkt.blockingReason || mkt.label}). {mkt.nextChangeLabel}.
                     </Text>
@@ -519,26 +522,28 @@ export function StocksScreen({ onBack }: { onBack: () => void }) {
 
         {/* Portfolio Summary Card */}
         {portfolio && holdings.length > 0 ? (
-          <Card style={{ borderColor: COLORS.primaryBorder }}>
-            <SectionHeader title="Your Stock Portfolio" />
-            <Text style={styles.portBigNgn}>
-              {portfolio.totalValueNgn != null
-                ? formatNgn(portfolio.totalValueNgn)
-                : formatUsdc(portfolio.totalValueUsd)}
+          <>
+          <ForestHero
+            overline="Your stock portfolio"
+            amount={
+              balanceHidden
+                ? portfolio.totalValueNgn != null
+                  ? "₦••••"
+                  : "$••••"
+                : portfolio.totalValueNgn != null
+                  ? formatNgn(portfolio.totalValueNgn)
+                  : formatUsdc(portfolio.totalValueUsd)
+            }
+            sub={balanceHidden ? "Balance hidden" : portfolio.totalValueNgn != null ? `≈ ${formatUsdc(portfolio.totalValueUsd)}` : null}
+          >
+            <Text style={[styles.portPnl, { color: portfolio.totalPnlUsd >= 0 ? COLORS.brandGreen : "#FF8A7A" }]}>
+              {balanceHidden
+                ? "•••• all time"
+                : `${portfolio.totalPnlUsd >= 0 ? "▲ +" : "▼ "}${formatUsdc(portfolio.totalPnlUsd)} (${portfolio.totalPnlPct >= 0 ? "+" : ""}${portfolio.totalPnlPct.toFixed(2)}%) all time`}
             </Text>
-            <View style={styles.portSubRow}>
-              <Text style={styles.portSubUsd}>{formatUsdc(portfolio.totalValueUsd)}</Text>
-              <Text
-                style={[
-                  styles.portPnl,
-                  { color: portfolio.totalPnlUsd >= 0 ? COLORS.successText : COLORS.dangerText },
-                ]}
-              >
-                {portfolio.totalPnlUsd >= 0 ? "+" : ""}
-                {formatUsdc(portfolio.totalPnlUsd)} ({portfolio.totalPnlPct >= 0 ? "+" : ""}
-                {portfolio.totalPnlPct.toFixed(2)}%)
-              </Text>
-            </View>
+          </ForestHero>
+          <Card>
+            <SectionHeader title="Your holdings" />
 
             <View style={{ marginTop: 12, gap: 8 }}>
               {holdings.map((h) => {
@@ -553,7 +558,7 @@ export function StocksScreen({ onBack }: { onBack: () => void }) {
                     />
                     <View style={{ flex: 1, minWidth: 0 }}>
                       <Text style={styles.stockTicker} numberOfLines={1}>
-                        {h.ticker} · {h.shares > 0 ? `${h.shares.toFixed(4)} sh` : "Pending"}
+                        {h.ticker} · {balanceHidden ? "••••" : h.shares > 0 ? `${h.shares.toFixed(4)} sh` : "Pending"}
                       </Text>
                       <Text style={styles.stockName} numberOfLines={1}>
                         Bought {h.avgBuyPrice ? `@ $${h.avgBuyPrice.toFixed(2)}` : "recently"}
@@ -561,11 +566,10 @@ export function StocksScreen({ onBack }: { onBack: () => void }) {
                     </View>
                     <View style={{ alignItems: "flex-end" }}>
                       <Text style={styles.stockPrice}>
-                        {h.currentValueNgn ? formatNgn(h.currentValueNgn) : formatUsdc(h.currentValueUsd)}
+                        {balanceHidden ? "••••" : h.currentValueNgn ? formatNgn(h.currentValueNgn) : formatUsdc(h.currentValueUsd)}
                       </Text>
                       <Text style={[styles.stockChange, { color: up ? COLORS.successText : COLORS.dangerText }]}>
-                        {up ? "+" : ""}
-                        {h.pnlPct.toFixed(2)}%
+                        {balanceHidden ? "••••" : `${up ? "+" : ""}${h.pnlPct.toFixed(2)}%`}
                       </Text>
                     </View>
                   </PressableScale>
@@ -573,6 +577,7 @@ export function StocksScreen({ onBack }: { onBack: () => void }) {
               })}
             </View>
           </Card>
+          </>
         ) : null}
 
         {/* Search & Stock List */}
@@ -657,12 +662,12 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   marketBannerOpen: {
-    backgroundColor: "#ECFDF5",
-    borderColor: "#A7F3D0",
+    backgroundColor: "#DDF1E5",
+    borderColor: "#B7E2C9",
   },
   marketBannerClosed: {
-    backgroundColor: "#FFFBEB",
-    borderColor: "#FDE68A",
+    backgroundColor: "#FBF4E2",
+    borderColor: "#E0C27A",
   },
   marketRowTop: { flexDirection: "row", alignItems: "center", gap: 8 },
   marketDot: { width: 9, height: 9, borderRadius: 5 },
@@ -750,10 +755,10 @@ const styles = StyleSheet.create({
     gap: 8,
     padding: 10,
     borderRadius: RADIUS.sm,
-    backgroundColor: "#FFFBEB",
+    backgroundColor: "#FBF4E2",
     borderWidth: 1,
-    borderColor: "#FDE68A",
+    borderColor: "#E0C27A",
     marginBottom: 12,
   },
-  warnText: { flex: 1, fontFamily: FONTS.medium, fontSize: 12, color: "#92400E" },
+  warnText: { flex: 1, fontFamily: FONTS.medium, fontSize: 12, color: "#8A5600" },
 });

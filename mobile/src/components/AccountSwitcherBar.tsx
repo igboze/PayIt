@@ -5,6 +5,7 @@ import { useApp } from "../state/AppContext";
 import { COLORS, RADIUS, SPACING, FONTS } from "../theme";
 import { formatUsdc } from "./UI";
 import { PressableScale } from "./Touch";
+import { toUserError } from "../utils/errors";
 
 export function AccountSwitcherBar({ onOpenAssistant }: { onOpenAssistant?: () => void }) {
   const {
@@ -14,6 +15,7 @@ export function AccountSwitcherBar({ onOpenAssistant }: { onOpenAssistant?: () =
     switchingAccount,
     switchAccount,
     requestApproval,
+    balanceHidden,
   } = useApp();
   const [busySetup, setBusySetup] = useState(false);
 
@@ -37,7 +39,7 @@ export function AccountSwitcherBar({ onOpenAssistant }: { onOpenAssistant?: () =
                 await requestApproval("business.setup", {});
                 await switchAccount("business");
               } catch (err) {
-                const msg = err instanceof Error ? err.message : "Could not set up business account.";
+                const msg = toUserError(err, "Could not set up business account.");
                 if (!/cancel/i.test(msg)) Alert.alert("Business Setup", msg);
               } finally {
                 setBusySetup(false);
@@ -51,7 +53,7 @@ export function AccountSwitcherBar({ onOpenAssistant }: { onOpenAssistant?: () =
     try {
       await switchAccount(target);
     } catch (err) {
-      Alert.alert("Account Switch", err instanceof Error ? err.message : "Could not switch account.");
+      Alert.alert("Account Switch", toUserError(err, "Could not switch account."));
     }
   };
 
@@ -94,7 +96,7 @@ export function AccountSwitcherBar({ onOpenAssistant }: { onOpenAssistant?: () =
             style={styles.otherPill}
           >
             <Text style={styles.otherText}>
-              {isBiz ? "Personal" : "Business"}: {formatUsdc(otherAccountBalanceUsdc)}
+              {isBiz ? "Personal" : "Business"}: {balanceHidden ? "••••" : formatUsdc(otherAccountBalanceUsdc)}
             </Text>
           </PressableScale>
         ) : null}

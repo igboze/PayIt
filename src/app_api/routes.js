@@ -75,8 +75,12 @@ function sendJson(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
-// Only the profile-photo upload needs a larger body (base64 of a phone photo).
-const LARGE_BODY_PATHS = new Map([["/me/avatar", 6 * 1024 * 1024]]);
+// Endpoints that accept base64 photo/document uploads need a larger JSON body limit.
+const LARGE_BODY_PATHS = new Map([
+  ["/me/avatar", 6 * 1024 * 1024],
+  ["/kyc/submit", 12 * 1024 * 1024],
+  ["/kyb/submit", 15 * 1024 * 1024],
+]);
 
 function parseBody(req, maxBytes = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
@@ -172,6 +176,17 @@ async function requireIntegrity(platform, body) {
   return result.verdict;
 }
 
+const _lastActivityTouch = new Map();
+function touchMobileActivity(db, telegramId) {
+  if (!telegramId || typeof db?.updateUserLastActivity !== "function") return;
+  const now = Date.now();
+  const prev = _lastActivityTouch.get(telegramId) || 0;
+  if (now - prev < 5 * 60 * 1000) return;
+  _lastActivityTouch.set(telegramId, now);
+  if (_lastActivityTouch.size > 10_000) _lastActivityTouch.clear();
+  try { db.updateUserLastActivity(telegramId); } catch (_) {}
+}
+
 function authenticate(req) {
   const header = String(req.headers.authorization || "");
   const token = header.startsWith("Bearer ") ? header.slice(7).trim() : null;
@@ -183,9 +198,10 @@ function authenticate(req) {
   if (db.isBlocked(session.telegramId)) {
     throw new HttpError(403, "account_frozen", "Your account is frozen. Please contact support.");
   }
+  touchMobileActivity(db, session.telegramId);
   const rawAcctHeader = String(req.headers["x-proxim-account"] || "").trim().toLowerCase();
   if (rawAcctHeader && rawAcctHeader !== "personal" && rawAcctHeader !== "business") {
-    throw new HttpError(400, "invalid_account", "X-Proxim-Account must be 'personal' or 'business'.");
+    throw new HttpError(400, "invalid_account", "Please choose either your personal or business account.");
   }
   return { ...session, user, accountHeader: rawAcctHeader || null };
 }
@@ -543,7 +559,9 @@ async function transactions(req, url) {
     ? null
     : (rawAccount || auth.accountHeader ? resolveAccountType(auth, rawAccount) : null);
   const db = dep("db");
-  const rows = db.getTransactions(auth.telegramId, limit, accountType);
+  // Fetch extra rows so deduplication of historical paired rows still fills `limit`.
+  const fetchLimit = Math.min(limit * 2, 200);
+  const rows = db.getTransactions(auth.telegramId, fetchLimit, accountType);
   const needsFallbackRate = rows.some(
     (t) => /deposit_naira|onramp/i.test(String(t.type || "")) && !t.source_amount
   );
@@ -625,7 +643,7 @@ async function transactions(req, url) {
             return { depositChannel: "crypto", fiatCurrency: null, fiatAmount: null };
           }
           let payload = {};
-          try { payload = nj.payload_json ? JSON.parse(nj.payload_json) : {}; } catch (_) {}
+          try { payload = nj.payload_json ? JSON.parse(nj.payload_json) : {}; } catch (_) { }
           const major = Number(payload.grossMajor || 0) || (nj.amount_minor != null ? Number(nj.amount_minor) / 100 : null);
           return {
             depositChannel: cur === "NGN" ? "naira" : "international",
@@ -633,7 +651,7 @@ async function transactions(req, url) {
             fiatAmount: major && Number.isFinite(major) && major > 0 ? Number(major.toFixed(2)) : null,
           };
         }
-      } catch (_) {}
+      } catch (_) { }
 
       // 3. Retroactive enrichment for historical Paj Naira onramp deposits (via paj_onramp_orders)
       if (/deposit_naira|onramp/i.test(typeLower)) {
@@ -644,7 +662,7 @@ async function transactions(req, url) {
           if (onr && Number(onr.fiat_amount) > 0) {
             return { depositChannel: "naira", fiatCurrency: "NGN", fiatAmount: Number(onr.fiat_amount) };
           }
-        } catch (_) {}
+        } catch (_) { }
       }
     }
 
@@ -670,24 +688,145 @@ async function transactions(req, url) {
     return null;
   };
 
+  const mapped = rows.map((t) => {
+    const depMeta = depositInfo(t) || {};
+    const payMeta = payoutInfo(t) || {};
+    let offrampOrderId = null;
+    if (/offramp|payout/i.test(String(t.type || "")) && t.tx_hash && typeof db.getOfframpOrderByOrderId === "function") {
+      try {
+        const o = db.getOfframpOrderByOrderId(t.tx_hash);
+        if (o && Number(o.telegram_id) === Number(auth.telegramId) && o.order_id) {
+          offrampOrderId = String(o.order_id);
+        }
+      } catch (_) {}
+    }
+    return {
+      ...depMeta,
+      ...payMeta,
+      id: t.id,
+      type: t.type,
+      status: t.status,
+      amount: String(t.amount_micro ?? t.amount ?? ""),
+      decimals: t.decimals ?? 18,
+      chain: t.chain || "arc",
+      txHash: t.tx_hash || null,
+      narration: t.narration || null,
+      accountType: t.account_type || "personal",
+      createdAt: t.created_at || null,
+      _offrampOrderId: offrampOrderId,
+    };
+  });
+
+  // Deduplicate already-stored duplicate pairs (e.g., an offramp "submitted" row with on-chain txHash
+  // paired with a webhook "confirmed" row with order_id, or duplicate deposit/sweep rows).
+  const statusRank = (s) => {
+    const lower = String(s || "").toLowerCase();
+    if (/confirm|complet|paid|settle|success/.test(lower)) return 3;
+    if (/fail|reject|cancel|error/.test(lower)) return 2;
+    return 1;
+  };
+  const parseTs = (raw) => {
+    if (!raw) return null;
+    const s = String(raw);
+    const ms = Date.parse(s.includes("T") ? s : s.replace(" ", "T") + "Z");
+    return Number.isFinite(ms) ? ms : null;
+  };
+  const mergePair = (primary, secondary) => {
+    const best = statusRank(primary.status) >= statusRank(secondary.status) ? primary : secondary;
+    const other = best === primary ? secondary : primary;
+    return {
+      ...other,
+      ...best,
+      narration: best.narration || other.narration || null,
+      counterparty: best.counterparty || other.counterparty,
+      fiatAmount: best.fiatAmount ?? other.fiatAmount,
+      fiatCurrency: best.fiatCurrency || other.fiatCurrency,
+      payoutStatus: best.payoutStatus || other.payoutStatus,
+      depositChannel: best.depositChannel || other.depositChannel,
+      txHash: best.txHash || other.txHash || null,
+    };
+  };
+
+  const deduped = [];
+  const byHashKey = new Map();
+  const byOfframpOrder = new Map();
+
+  for (const item of mapped) {
+    const typeLower = String(item.type || "").toLowerCase();
+    const acct = item.accountType || "personal";
+
+    // 1. Exact duplicate by (accountType, type, txHash)
+    if (item.txHash) {
+      const hKey = `${acct}|${typeLower}|${String(item.txHash).toLowerCase()}`;
+      const idx = byHashKey.get(hKey);
+      if (idx !== undefined) {
+        deduped[idx] = mergePair(deduped[idx], item);
+        continue;
+      }
+    }
+
+    // 2. Paired offramp rows linked to the same paj_offramp_orders.order_id
+    if (item._offrampOrderId) {
+      const oKey = `${acct}|offramp|${item._offrampOrderId}`;
+      const idx = byOfframpOrder.get(oKey);
+      if (idx !== undefined) {
+        deduped[idx] = mergePair(deduped[idx], item);
+        continue;
+      }
+    }
+
+    // 3. Temporal duplicate for identical (accountType, type, amount) within a short window
+    //    (catches historical offramp submitted+confirmed pairs without an order row, or duplicate sweep rows)
+    const ts = parseTs(item.createdAt);
+    const isDedupeWindowType = /^(offramp|deposit_naira|deposit_crosschain)$/.test(typeLower);
+    let mergedTemporal = false;
+    if (isDedupeWindowType && ts !== null && item.amount) {
+      const windowMs = typeLower === "offramp" ? 15 * 60 * 1000 : 3 * 60 * 1000;
+      for (let i = Math.max(0, deduped.length - 8); i < deduped.length; i++) {
+        const prev = deduped[i];
+        if (prev.accountType !== acct || String(prev.type || "").toLowerCase() !== typeLower) continue;
+        if (prev.amount !== item.amount) continue;
+        if (prev.fiatCurrency && item.fiatCurrency && prev.fiatCurrency !== item.fiatCurrency) continue;
+        const prevTs = parseTs(prev.createdAt);
+        if (prevTs === null || Math.abs(prevTs - ts) > windowMs) continue;
+        if (typeLower === "offramp") {
+          // Only collapse two offramps with different hashes when one is pending/submitted and the other is terminal
+          const r1 = statusRank(prev.status);
+          const r2 = statusRank(item.status);
+          const bothTerminalWithDistinctHashes =
+            r1 >= 3 && r2 >= 3 && prev.txHash && item.txHash && prev.txHash.toLowerCase() !== item.txHash.toLowerCase();
+          if (bothTerminalWithDistinctHashes) continue;
+        } else {
+          // For deposits, never collapse two distinct non-synthetic tx hashes
+          const isSynth = (h) => !h || /^(sweep_|0xrelay_|paj-settle-)/i.test(String(h));
+          if (prev.txHash && item.txHash && prev.txHash.toLowerCase() !== item.txHash.toLowerCase() && !isSynth(prev.txHash) && !isSynth(item.txHash)) {
+            continue;
+          }
+        }
+        deduped[i] = mergePair(prev, item);
+        mergedTemporal = true;
+        break;
+      }
+    }
+    if (mergedTemporal) continue;
+
+    const newIdx = deduped.length;
+    deduped.push(item);
+    if (item.txHash) {
+      byHashKey.set(`${acct}|${typeLower}|${String(item.txHash).toLowerCase()}`, newIdx);
+    }
+    if (item._offrampOrderId) {
+      byOfframpOrder.set(`${acct}|offramp|${item._offrampOrderId}`, newIdx);
+    }
+  }
+
+  const finalTransactions = deduped.slice(0, limit).map(({ _offrampOrderId, ...clean }) => clean);
+
   return {
     status: 200,
     data: {
       accountType: accountType || "all",
-      transactions: rows.map((t) => ({
-        ...(depositInfo(t) || {}),
-        ...(payoutInfo(t) || {}),
-        id: t.id,
-        type: t.type,
-        status: t.status,
-        amount: String(t.amount_micro ?? t.amount ?? ""),
-        decimals: t.decimals ?? 18,
-        chain: t.chain || "arc",
-        txHash: t.tx_hash || null,
-        narration: t.narration || null,
-        accountType: t.account_type || "personal",
-        createdAt: t.created_at || null,
-      })),
+      transactions: finalTransactions,
     },
   };
 }
@@ -1250,8 +1389,15 @@ async function handleAppApiRequest(req, res) {
   } catch (err) {
     const status = Number(err.status || err.statusCode) || 500;
     if (status >= 500) console.error("[app_api] error:", err.message);
-    const rawMsg = status >= 500 ? "Something went wrong. Please try again." : err.message;
-    const message = String(rawMsg || "").replace(/nuvion/gi, "Global Neobank");
+    let rawMsg = status >= 500 ? "Something went wrong. Please try again." : String(err.message || "");
+    if (/^Missing or invalid field:/i.test(rawMsg)) {
+      rawMsg = "Please check the details you entered and try again.";
+    } else if (/SqliteError|SQLITE_|CALL_EXCEPTION|INSUFFICIENT_FUNDS|execution reverted|JsonRpcProvider|could not coalesce|TypeError|ReferenceError|SyntaxError/i.test(rawMsg)) {
+      rawMsg = /INSUFFICIENT_FUNDS|insufficient funds/i.test(rawMsg)
+        ? "Your available balance is too low to complete this transaction."
+        : "Something went wrong. Please try again.";
+    }
+    const message = rawMsg.replace(/nuvion/gi, "Global Neobank");
     return sendJson(res, status, { error: { code: err.code || "server_error", message } });
   }
 }

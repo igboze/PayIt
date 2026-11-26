@@ -244,6 +244,7 @@ export interface GlobalAccountItem {
   accountId: string | null;
   currency: string;
   bankName: string | null;
+  bankCode?: string | null;
   beneficiaryName: string | null;
   accountNumber: string | null;
   routingNumber: string | null;

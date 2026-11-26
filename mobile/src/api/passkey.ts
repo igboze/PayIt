@@ -1,4 +1,5 @@
 import { Passkey } from "react-native-passkey";
+import { toUserError } from "../utils/errors";
 
 /**
  * Wraps native Android Credential Manager / iOS ASAuthorization passkeys
@@ -16,23 +17,23 @@ export function isPasskeySupported(): boolean {
 function assertNativePasskeysAvailable(): void {
   if (!isPasskeySupported()) {
     throw new Error(
-      "Native Passkeys are unavailable in this runtime. Build and install the Proxim Android APK (npx eas build -p android --profile preview) on a device with screen lock enabled."
+      "Passkeys aren't available on this device right now. Make sure you have a screen lock (fingerprint, face, or PIN) enabled in your phone settings."
     );
   }
 }
 
 function formatPasskeyError(err: unknown): Error {
   const raw = err as { error?: string; message?: string };
-  const msg = String(raw?.message || raw?.error || "Passkey prompt failed.");
-  if (/cancel/i.test(msg)) {
-    return new Error("Passkey verification was cancelled.");
+  const msg = String(raw?.message || raw?.error || "");
+  if (/cancel|dismissed|abort/i.test(msg)) {
+    return new Error("Verification was cancelled.");
   }
-  if (/not.?configured|origin|assetlinks|associated/i.test(msg)) {
-    return new Error(
-      "Passkey domain verification failed. Ensure APP_ANDROID_CERT_SHA256 and APP_ORIGINS are set on Railway for this APK."
-    );
-  }
-  return new Error(msg);
+  return new Error(
+    toUserError(
+      msg,
+      "Couldn't verify your passkey right now. Make sure screen lock is enabled and try again."
+    )
+  );
 }
 
 export async function createPasskey(options: Record<string, unknown>): Promise<Record<string, unknown>> {

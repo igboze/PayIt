@@ -63,6 +63,8 @@ function escapeHtml(str) {
 /**
  * Send rich on-ramp deposit notification to Telegram user with optional receipt PNG.
  */
+const ONRAMP_PLATFORM_FEE_RATE = Number(process.env.ONRAMP_PLATFORM_FEE_RATE ?? 0.002); // 0.2% on-ramp fee (reduced from 1%)
+
 async function sendOnrampDepositNotification({
   bot,
   telegramId,
@@ -93,7 +95,7 @@ async function sendOnrampDepositNotification({
       if (bal != null && !isNaN(bal)) {
         currentBalanceStr = `$${Number(bal).toFixed(2)} USDC`;
       }
-    } catch {}
+    } catch { }
   }
 
   const effectiveFiat = Number(fiatAmount || 0);
@@ -111,7 +113,7 @@ async function sendOnrampDepositNotification({
     `💵 <b>Amount Deposited:</b> ${formattedFiat}\n`;
 
   if (feeUsdc && Number(feeUsdc) > 0) {
-    caption += `🏷️ <b>Platform Fee (1%):</b> $${Number(feeUsdc).toFixed(2)}\n`;
+    caption += `🏷️ <b>Platform Fee (0.2%):</b> $${Number(feeUsdc).toFixed(2)}\n`;
   }
 
   caption += `💰 <b>Credited to Account:</b> +$${formattedUsdc}\n`;
@@ -241,7 +243,7 @@ async function processPajEvent(payload, bot) {
         WHERE account_number = ? AND status IN ('pending', 'submitted')
         ORDER BY id DESC LIMIT 1
       `).get(acct) || null;
-    } catch {}
+    } catch { }
   }
   const effectiveOrderId = trackedOfframp?.order_id || fiatOrderId;
   const isOfframp = Boolean(trackedOfframp) ||
@@ -287,7 +289,7 @@ async function processPajEvent(payload, bot) {
         const parsedTgId = parseInt(String(telegramId).replace(/\D/g, ""));
         try {
           db.prepare("UPDATE transactions SET status = 'failed' WHERE id = (SELECT id FROM transactions WHERE telegram_id = ? AND type = 'offramp' AND status IN ('pending', 'submitted') ORDER BY id DESC LIMIT 1)").run(parsedTgId);
-        } catch (_) {}
+        } catch (_) { }
 
         if (botInstance?.telegram && !isNaN(parsedTgId)) {
           const safeBank = escapeHtml(bankName);
@@ -317,7 +319,7 @@ async function processPajEvent(payload, bot) {
                 `Status: No payment receipt generated. Your funds are safe.\n` +
                 `Ref: ${effectiveOrderId || "N/A"}`
               );
-            } catch (_) {}
+            } catch (_) { }
           }
         }
       }
@@ -348,13 +350,18 @@ async function processPajEvent(payload, bot) {
           }
           if (amountUsdc > 0) {
             const amountMicro = walletLib.parseToMicro(amountUsdc.toFixed(6));
+            const effectiveNarration = trackedOfframp?.narration || data.narration || data.description || null;
             db.recordTransaction(
               parsedTgId,
               "offramp",
               amountMicro,
               "confirmed",
-              data.id || effectiveOrderId,
-              accountType
+              trackedOfframp?.tx_hash || data.txHash || data.id || effectiveOrderId,
+              accountType,
+              18,
+              trackedOfframp?.rail || "arc",
+              effectiveNarration,
+              { orderId: effectiveOrderId, onchainTxHash: trackedOfframp?.tx_hash || data.txHash || null }
             );
           }
         } catch (recErr) {
@@ -400,7 +407,7 @@ async function processPajEvent(payload, bot) {
                 txHash: data.txHash || trackedOfframp?.tx_hash || null,
                 narration: effectiveNarration,
               });
-            } catch (_) {}
+            } catch (_) { }
 
             const photoCaption = caption.length > 950 ? caption.slice(0, 940) + "..." : caption;
             if (receiptPath && typeof botInstance.telegram.sendPhoto === "function") {
@@ -640,8 +647,8 @@ async function processPajEvent(payload, bot) {
 
     const isDirectlySettled = isDirectArcDeposit || (bridgeResult && bridgeResult.status === "completed" && bridgeResult.arcTxHash);
 
-    // 1% platform fee inside the trade amount
-    const feeUsdc = Number((effectiveAmountUsdc * 0.01).toFixed(4));
+    // 0.2% platform fee inside the trade amount
+    const feeUsdc = Number((effectiveAmountUsdc * ONRAMP_PLATFORM_FEE_RATE).toFixed(4));
     const netAmountUsdc = Number((effectiveAmountUsdc - feeUsdc).toFixed(4));
     const feeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.PAYIT_DEV_FEE_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
     let feeTxHash = null;
@@ -659,7 +666,7 @@ async function processPajEvent(payload, bot) {
               const feeMicro = walletLib.parseToMicro(feeUsdc.toFixed(6));
               const feeTx = await walletLib.sendSponsoredOrDirectTransaction(userWallet, feeRecipient, feeMicro);
               feeTxHash = feeTx?.txHash || null;
-              console.log(`[webhook_server:onramp] Collected 1% trade fee ($${feeUsdc} USDC) -> ${feeRecipient} (tx: ${feeTxHash})`);
+              console.log(`[webhook_server:onramp] Collected 0.2% trade fee ($${feeUsdc} USDC) -> ${feeRecipient} (tx: ${feeTxHash})`);
             }
           }
         }
@@ -671,7 +678,7 @@ async function processPajEvent(payload, bot) {
       if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
         try {
           solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress;
-        } catch {}
+        } catch { }
       }
       if (solFeeRecipient && multichain.isSolanaAddress(solFeeRecipient)) {
         try {
@@ -689,7 +696,7 @@ async function processPajEvent(payload, bot) {
                   amount: feeUsdc,
                 });
                 feeTxHash = feeSolTx?.txHash || feeSolTx?.signature || null;
-                console.log(`[webhook_server:onramp:solana] Collected 1% trade fee ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
+                console.log(`[webhook_server:onramp:solana] Collected 0.2% trade fee ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
               }
             }
           }
@@ -868,7 +875,7 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
       try {
         const nuvionHealth = require("./nuvion_health");
         nuvionSummary = nuvionHealth.getPublicHealthSummary();
-      } catch (_) {}
+      } catch (_) { }
       res.writeHead(200, { "Content-Type": "application/json" });
       return res.end(
         JSON.stringify({

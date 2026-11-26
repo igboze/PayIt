@@ -72,7 +72,16 @@ export function HomeScreen({
   onOpenBill?: (category: BillCat) => void;
   unread?: number;
 }) {
-  const { user, activeAccount, dataVersion, switchAccount, switchingAccount, requestApproval } = useApp();
+  const {
+    user,
+    activeAccount,
+    dataVersion,
+    switchAccount,
+    switchingAccount,
+    requestApproval,
+    balanceHidden: hidden,
+    toggleBalanceHidden,
+  } = useApp();
   const [balance, setBalance] = useState<UnifiedBalance | null>(null);
   const [transactions, setTransactions] = useState<TransactionItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -80,7 +89,6 @@ export function HomeScreen({
   const [error, setError] = useState<string | null>(null);
   const [copiedMsg, setCopiedMsg] = useState<string | null>(null);
   const [selectedTx, setSelectedTx] = useState<TransactionItem | null>(null);
-  const [hidden, setHidden] = useState(false);
   const [fallbackNgnRate, setFallbackNgnRate] = useState<number | null>(null);
 
   const loadData = useCallback(
@@ -246,7 +254,7 @@ export function HomeScreen({
               {!hidden && cents ? <Text style={styles.totalCents}>{cents}</Text> : null}
             </Text>
             <PressableScale
-              onPress={() => setHidden((h) => !h)}
+              onPress={toggleBalanceHidden}
               haptic="selection"
               style={styles.eyeBtn}
               accessibilityLabel={hidden ? "Show balance" : "Hide balance"}

@@ -182,9 +182,9 @@ function calcAccruedYield(position) {
   const elapsedMs = Math.max(0, (Date.now() - safeOpenedAt) * DEMO_SPEED);
   const elapsedYears = elapsedMs / (1000 * 60 * 60 * 24 * 365);
   const amount = Number(position.amount_usdc) || 0;
-  let grossApy = Number(position.apy) || 0;
-  const userApy = Number(position.user_apy) || 0;
-  const feeApy = Number(position.payit_fee_apy) || 0;
+  let grossApy = Number(position.apy || position.gross_apy || position.grossApy) || 0;
+  const userApy = Number(position.user_apy || position.userApy) || 0;
+  const feeApy = Number(position.payit_fee_apy || position.feeApy) || 0;
   // If an older row stored net APY in `apy` while `payit_fee_apy` is known, reconstruct gross APY.
   if (grossApy > 0 && userApy > 0 && Math.abs(grossApy - userApy) < 0.005 && feeApy > 0) {
     grossApy = userApy + feeApy;
@@ -301,7 +301,7 @@ async function depositIntoVault(privateKey, vaultAddress, amountUsdc) {
     let assetDecimals = 6;
     try {
       assetDecimals = Number(await assetContract.decimals());
-    } catch (_) {}
+    } catch (_) { }
     const amountAssets = parseUnits(Number(amountUsdc).toFixed(Math.min(assetDecimals, 6)), assetDecimals);
 
     const allowance = await assetContract.allowance(userWallet.address, vaultAddress);
@@ -373,7 +373,7 @@ async function withdrawFromVault(privateKey, vaultAddress, amountUsdc, options =
         withdrawAmountStr = formatUnits(maxWithdrawable, assetDecimals);
       }
     }
-  } catch (_) {}
+  } catch (_) { }
 
   const timeoutMs = (process.env.NODE_ENV === "test" || process.env.PAYIT_TEST_MODE === "true") ? 4000 : 30000;
 
@@ -497,14 +497,16 @@ async function withdrawFromVaultWithFee({ userWallet, position, feeRecipientAddr
   const onChainGrossYield = !isSimulated && redeemedUsdc > principal ? redeemedUsdc - principal : 0;
   const { grossYield, devFee, netYield } = calcYieldBreakdown(position, onChainGrossYield);
   const totalUserPayout = parseFloat((principal + netYield).toFixed(6));
+  const grossPayout = parseFloat((principal + grossYield).toFixed(6));
 
   // If vault withdrawal was simulated or fallback, disburse real USDC float to user's wallet on Arc
+  // Disbursing grossPayout ensures deducting devFee leaves user with exactly totalUserPayout
   if (isSimulated && userWallet && userWallet.address) {
     try {
       const cctpBridge = require("./cctp_bridge");
       const disburseHash = await cctpBridge.disburseDirectOnArc({
         recipientArcAddress: userWallet.address,
-        amountUsdc: totalUserPayout,
+        amountUsdc: grossPayout,
       });
       if (disburseHash) {
         withdrawTxHash = disburseHash;
@@ -525,6 +527,13 @@ async function withdrawFromVaultWithFee({ userWallet, position, feeRecipientAddr
       console.log(`[savings:fee] Routed 10% platform fee ($${devFee.toFixed(6)} USDC) -> ${feeTarget} (tx: ${feeTxHash})`);
     } catch (feeErr) {
       console.warn("[savings] Dev fee transfer note:", feeErr.message);
+      try {
+        const cctpBridge = require("./cctp_bridge");
+        feeTxHash = await cctpBridge.disburseDirectOnArc({
+          recipientArcAddress: feeTarget,
+          amountUsdc: devFee,
+        });
+      } catch (_) {}
     }
   }
 
@@ -576,7 +585,7 @@ async function syncOnChainVaultPositions(user, context = "personal") {
   let pools = [];
   try {
     pools = await getYieldPools();
-  } catch {}
+  } catch { }
 
   const candidateVaults = [
     ...pools,

@@ -46,7 +46,7 @@ import { getLegacyFileSystem, getSharing } from "../nativeModules";
 export type AccountsSection = "accounts" | "global" | "business";
 
 export function AccountsScreen({ initialSection = "accounts" }: { initialSection?: AccountsSection }) {
-  const { user, activeAccount, dataVersion, switchAccount, requestApproval } = useApp();
+  const { user, activeAccount, dataVersion, switchAccount, requestApproval, balanceHidden } = useApp();
   const isBiz = activeAccount === "business";
 
   const [section, setSection] = useState<AccountsSection>(initialSection);
@@ -546,14 +546,14 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
                   {ngnBal !== null ? (
                     <View style={styles.balRow}>
                       <CurrencyLogo code="NGN" size={20} />
-                      <Text style={styles.bigVal}>{formatNgn(ngnBal)}</Text>
+                      <Text style={styles.bigVal}>{balanceHidden ? "₦••••" : formatNgn(ngnBal)}</Text>
                       <Text style={styles.balCode}>NGN</Text>
                     </View>
                   ) : null}
                   <View style={styles.balRow}>
                     <CurrencyLogo code="USD" size={16} />
                     <Text style={ngnBal !== null ? styles.ngnVal : styles.bigVal}>
-                      {a.balance ? formatUsdc(a.balance.totalUsdc) : "—"}
+                      {balanceHidden ? "$••••" : a.balance ? formatUsdc(a.balance.totalUsdc) : "—"}
                     </Text>
                     <Text style={styles.ngnCode}>USD</Text>
                   </View>
@@ -619,6 +619,13 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
                 <View key={ga.id || `${ga.currency}-${idx}`} style={styles.subCard}>
                   <SectionHeader currency={ga.currency || false} title={`${ga.currency} · ${ga.status}`} />
                   {ga.bankName ? <KeyValueRow label="Bank" value={ga.bankName} /> : null}
+                  {ga.bankCode ? (
+                    <KeyValueRow
+                      label="Bank Code"
+                      value={ga.bankCode}
+                      onCopy={() => copy("Bank code", ga.bankCode!)}
+                    />
+                  ) : null}
                   {ga.beneficiaryName ? <KeyValueRow label="Beneficiary" value={ga.beneficiaryName} /> : null}
                   {ga.accountNumber ? (
                     <KeyValueRow
@@ -690,12 +697,16 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
           {isBiz && bizHome ? (
             <Card style={{ borderColor: COLORS.businessBorder }}>
               <SectionHeader title={bizHome.profile?.businessName || "Business Overview"} />
-              <KeyValueRow label="Month Income" value={formatUsdc(bizHome.summary.monthIncomeUsd)} />
-              <KeyValueRow label="Month Expenses" value={formatUsdc(bizHome.summary.monthExpensesUsd)} />
-              <KeyValueRow label="Net Cash Flow" value={formatUsdc(bizHome.summary.netCashFlowUsd)} />
+              <KeyValueRow label="Month Income" value={balanceHidden ? "••••" : formatUsdc(bizHome.summary.monthIncomeUsd)} />
+              <KeyValueRow label="Month Expenses" value={balanceHidden ? "••••" : formatUsdc(bizHome.summary.monthExpensesUsd)} />
+              <KeyValueRow label="Net Cash Flow" value={balanceHidden ? "••••" : formatUsdc(bizHome.summary.netCashFlowUsd)} />
               <KeyValueRow
                 label="Pending Invoices"
-                value={`${bizHome.summary.pendingInvoiceCount} (${formatUsdc(bizHome.summary.pendingInvoiceTotalUsd)})`}
+                value={
+                  balanceHidden
+                    ? `${bizHome.summary.pendingInvoiceCount} (••••)`
+                    : `${bizHome.summary.pendingInvoiceCount} (${formatUsdc(bizHome.summary.pendingInvoiceTotalUsd)})`
+                }
               />
             </Card>
           ) : null}

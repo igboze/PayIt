@@ -684,6 +684,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     }
 
     let relayResult;
+    let fallbackToCctp = false;
     if (process.env.NODE_ENV === "test" && !process.env.ROBINHOOD_TEST_LIVE && !process.env.RELAY_TEST_LIVE) {
       const numAmount = parseFloat(rawAmount.toString() || "1.0");
       effectiveAmountUsdc = isNative ? (numAmount * 2600) : numAmount;
@@ -693,15 +694,26 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
         effectiveAmountUsdc,
       };
     } else {
-      relayResult = await bridgeViaRelay({
-        signer,
-        chainId: effectiveChainId,
-        amountWei: bridgeAmountWei,
-        token: isNative ? (dexConfig?.nativeSymbol || "ETH") : (dexConfig?.usdcAddress ? "USDC" : "USDG"),
-        recipientArcAddress: toAddress,
-      });
-      effectiveAmountUsdc = relayResult.effectiveAmountUsdc;
+      try {
+        relayResult = await bridgeViaRelay({
+          signer,
+          chainId: effectiveChainId,
+          amountWei: bridgeAmountWei,
+          token: isNative ? (dexConfig?.nativeSymbol || "ETH") : (dexConfig?.usdcAddress ? "USDC" : "USDG"),
+          recipientArcAddress: toAddress,
+        });
+        effectiveAmountUsdc = relayResult.effectiveAmountUsdc;
+      } catch (relayErr) {
+        const cctpFallbackCfg = !isNative ? cctpBridge.resolveEvmCctpConfig(effectiveChainId) : null;
+        if (cctpFallbackCfg) {
+          console.warn(`[evm_sweeper] Relay bridge failed on ${chainName} (${relayErr.message}); falling back to Circle CCTP V2...`);
+          fallbackToCctp = true;
+        } else {
+          throw relayErr;
+        }
+      }
     }
+    if (!fallbackToCctp) {
     swapTxHash = relayResult.txHash;
 
     // Self-funding gas model & network fee deduction
@@ -822,9 +834,14 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
       accountType,
       swapTxHash,
     };
+    }
   }
 
-  // Standard CCTP Chains
+  // Standard CCTP Chains (also serves as automatic fallback if Relay fails on Base/Arb/Opt/Eth USDC)
+  const effectiveCctpConfig = cctpConfig || cctpBridge.resolveEvmCctpConfig(effectiveChainId);
+  if (!effectiveCctpConfig) {
+    throw new Error(`No CCTP configuration available for ${chainName}`);
+  }
   const isNative = isNativeToken(token, dexConfig);
   let networkFee = 0;
   let protocolDepositFee = 0;
@@ -832,7 +849,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
   // 4. Handle Native Token (Swap to USDC) or direct USDC
   if (isNative) {
     if (!signer) {
-      throw new Error(`Signer wallet required to execute native swap on ${cctpConfig.name}`);
+      throw new Error(`Signer wallet required to execute native swap on ${effectiveCctpConfig.name}`);
     }
 
     // Check balance on-chain and reserve exact gas to self-fund swap + CCTP burn
@@ -852,7 +869,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     });
 
     if (!swapResult.success || swapResult.usdcReceived <= 0) {
-      throw new Error(`Native to USDC swap failed on ${cctpConfig.name}: ${swapResult.error}`);
+      throw new Error(`Native to USDC swap failed on ${effectiveCctpConfig.name}: ${swapResult.error}`);
     }
 
     effectiveAmountUsdc = swapResult.usdcReceived;
@@ -861,7 +878,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     // Direct USDC transfer
     let grossAmountUsdc = parseFloat(rawAmount.toString());
     if (grossAmountUsdc <= 0 && signer) {
-      const usdcContract = new Contract(cctpConfig.usdc, ERC20_ABI, provider);
+      const usdcContract = new Contract(effectiveCctpConfig.usdc, ERC20_ABI, provider);
       const rawBal = await usdcContract.balanceOf(signer.address);
       grossAmountUsdc = parseFloat(formatUnits(rawBal, 6));
     }
@@ -872,11 +889,11 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     }
 
     // Deduct only the flat network bridging fee (covers relayer gas advance).
-    // Protocol monetization happens at the offramp/trade step, not at deposit credit.
+    // Protocol monetization happens at the offramp/trade/payout step, not double-charged on deposit sweep.
     networkFee = CCTP_BRIDGE_FEES_USDC[Number(effectiveChainId)] ?? 0.05;
-    const depositFeeBps = Number(process.env.DEPOSIT_PROTOCOL_FEE_BPS ?? 100);
-    protocolDepositFee = parseFloat(((grossAmountUsdc * depositFeeBps) / 10000).toFixed(4));
-    effectiveAmountUsdc = parseFloat(Math.max(0, grossAmountUsdc - networkFee).toFixed(6));
+    const depositFeeBps = Number(process.env.DEPOSIT_PROTOCOL_FEE_BPS ?? 0);
+    protocolDepositFee = depositFeeBps > 0 ? parseFloat(((grossAmountUsdc * depositFeeBps) / 10000).toFixed(4)) : 0;
+    effectiveAmountUsdc = parseFloat(Math.max(0, grossAmountUsdc - networkFee - protocolDepositFee).toFixed(6));
   }
 
   if (effectiveAmountUsdc < 0.5) {
@@ -884,20 +901,23 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     return { success: false, error: "Amount below minimum threshold ($0.50 USDC)" };
   }
 
-  console.log(`[evm_sweeper] Ready to bridge USDC from ${cctpConfig.name} to Arc for user ${user.telegram_id}... (Net credit: $${effectiveAmountUsdc})`);
+  console.log(`[evm_sweeper] Ready to bridge USDC from ${effectiveCctpConfig.name} to Arc for user ${user.telegram_id}... (Net credit: $${effectiveAmountUsdc})`);
 
   // Reimburse relayer gas fee + protocol deposit fee from deposit address if direct token deposit
   const totalDeductedFee = parseFloat((networkFee + (protocolDepositFee || 0)).toFixed(6));
   if (totalDeductedFee > 0 && signer) {
-    const relayerKey = options?.relayerPrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
-    const feeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.PAYIT_DEV_FEE_ADDRESS || process.env.FEE_RECIPIENT_ADDRESS || (relayerKey ? new Wallet(relayerKey).address : null);
+    const feeRecipient =
+      process.env.APP_FEE_RECIPIENT_ADDRESS ||
+      process.env.PAYIT_DEV_FEE_ADDRESS ||
+      process.env.FEE_RECIPIENT_ADDRESS ||
+      "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
     if (feeRecipient && feeRecipient.toLowerCase() !== signer.address.toLowerCase()) {
       try {
-        const usdcContract = new Contract(cctpConfig.usdc, ERC20_ABI, signer);
+        const usdcContract = new Contract(effectiveCctpConfig.usdc, ERC20_ABI, signer);
         const feeWei = parseUnits(totalDeductedFee.toFixed(6), 6);
         const feeTx = await usdcContract.transfer(feeRecipient, feeWei);
         await feeTx.wait(1);
-        console.log(`[evm_sweeper] Collected fee $${totalDeductedFee} USDC ($${networkFee} relayer + $${protocolDepositFee} protocol) -> ${feeRecipient} on ${cctpConfig.name} ✓ tx=${feeTx.hash}`);
+        console.log(`[evm_sweeper] Collected fee $${totalDeductedFee} USDC ($${networkFee} relayer + $${protocolDepositFee} protocol) -> ${feeRecipient} on ${effectiveCctpConfig.name} ✓ tx=${feeTx.hash}`);
       } catch (feeErr) {
         console.warn(`[evm_sweeper] Relayer fee reimbursement note:`, feeErr.message);
       }
@@ -911,7 +931,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     try {
       burnResult = await cctpBridge.executeEvmCctpBurn({
         userWallet: signer,
-        chain: cctpConfig.name,
+        chain: effectiveCctpConfig.name,
         amountUsdc: burnAmount,
         recipientArcAddress: toAddress,
         autoCompleteOnArc: true,
@@ -928,12 +948,12 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
           success: true,
           instantDisburseHash: arcDisburseHash,
           txHash: arcDisburseHash,
-          sourceChain: cctpConfig.name,
+          sourceChain: effectiveCctpConfig.name,
           recipient: toAddress,
           burnError: burnErr.message,
         };
       } else {
-        throw new Error(`CCTP burn failed on ${cctpConfig.name}: ${burnErr.message}`);
+        throw new Error(`CCTP burn failed on ${effectiveCctpConfig.name}: ${burnErr.message}`);
       }
     }
   } else {
@@ -948,15 +968,16 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
         success: true,
         instantDisburseHash: arcDisburseHash,
         txHash: arcDisburseHash,
-        sourceChain: cctpConfig.name,
+        sourceChain: effectiveCctpConfig.name,
         recipient: toAddress,
       };
     } else {
-      throw new Error(`Signer wallet required for self-sustaining deposit conversion on ${cctpConfig.name}`);
+      throw new Error(`Signer wallet required for self-sustaining deposit conversion on ${effectiveCctpConfig.name}`);
     }
   }
 
   // 6. Record transaction and points with retry to guarantee user is credited
+  if (!isNuvionSettled) {
   let recorded = false;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
@@ -969,7 +990,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
         burnResult.instantDisburseHash || burnResult.txHash || txHash,
         accountType
       );
-      db.awardPoints(targetTelegramId, 5, "deposit", `Cross-chain deposit from ${cctpConfig.name}`);
+      db.awardPoints(targetTelegramId, 5, "deposit", `Cross-chain deposit from ${effectiveCctpConfig.name}`);
       recorded = true;
       break;
     } catch (recErr) {
@@ -980,9 +1001,10 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
   if (!recorded) {
     throw new Error(`CRITICAL: Failed to credit deposit ${effectiveAmountUsdc} USDC to user TG:${targetTelegramId}. Webhook will not be marked processed to allow retry.`);
   }
+  }
 
   // 7. Instant Telegram Notification with clean consumer receipt image
-  if (bot && targetTelegramId) {
+  if (!isNuvionSettled && bot && targetTelegramId) {
     try {
       const displayAmount = isNative ? `${rawAmount} ${token}` : `$${(parseFloat(rawAmount.toString()) || (effectiveAmountUsdc + networkFee)).toFixed(2)} USDC`;
       const swapNote = isNative ? `\n🔄 <b>Swapped:</b> ${displayAmount} → $${effectiveAmountUsdc.toFixed(2)} USDC` : "";
@@ -994,7 +1016,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
       const caption =
         `🎉 <b>Deposit Received & Credited!</b>\n` +
         `──────────────────────────\n` +
-        `🌐 <b>Source Network:</b> ${cctpConfig.name}\n` +
+        `🌐 <b>Source Network:</b> ${effectiveCctpConfig.name}\n` +
         `💵 <b>Received:</b> ${displayAmount}${swapNote}${feeNote}\n` +
         `💰 <b>Credited on Arc:</b> $${effectiveAmountUsdc.toFixed(2)} USDC\n` +
         `💼 <b>Account:</b> ${accountLabel}\n` +
@@ -1005,7 +1027,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
       try {
         receiptPath = await generateReceiptPNG({
           receiptId: `DEP-${(txRefHash || "").slice(0, 10) || Date.now()}`,
-          senderName: `${cctpConfig.name} Transfer`,
+          senderName: `${effectiveCctpConfig.name} Transfer`,
           senderAddress: signer ? signer.address : toAddress,
           recipientName: user ? (user.business_name || user.first_name || "Proxim Account") : "Proxim Account",
           recipientAddress: toAddress,
@@ -1041,7 +1063,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
 
   return {
     success: true,
-    sourceChain: cctpConfig.name,
+    sourceChain: effectiveCctpConfig.name,
     grossAmount: isNative ? parseFloat(rawAmount.toString()) : (parseFloat(rawAmount.toString()) || (effectiveAmountUsdc + networkFee)),
     networkFee,
     amountUsdc: effectiveAmountUsdc,
@@ -1250,8 +1272,17 @@ let _monitorTimer = null;
  * One sweep pass over recently-active users. Extracted from the monitor so the
  * settlement daemon can own the schedule (and tests can call it directly).
  */
-async function runEvmSweepOnce({ bot = null, maxUsers = 20 } = {}) {
-  // Prioritize users with recently bridged NEAR Intents deposits (last 24h) + users active in the last 48h
+let _sweepCursor = 0;
+
+function _parseSqliteUtcMs(raw) {
+  if (!raw) return 0;
+  const s = String(raw).trim();
+  const ms = Date.parse(s.includes("T") ? s : s.replace(" ", "T") + "Z");
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+async function runEvmSweepOnce({ bot = null, maxUsers = 25 } = {}) {
+  // Prioritize users with recently bridged NEAR Intents deposits (last 24h) + users active in the last 7 days
   const recentNearIds = new Set();
   try {
     const rows = db.db
@@ -1264,21 +1295,36 @@ async function runEvmSweepOnce({ bot = null, maxUsers = 20 } = {}) {
   } catch (_) {}
 
   const allUsers = db.getAllUsers();
+  const activeWindowMs = 7 * 24 * 3600 * 1000;
   const activeUsers = allUsers.filter((u) => {
     if (recentNearIds.has(Number(u.telegram_id))) return true;
-    if (!u.last_activity_at) return false;
-    const last = new Date(u.last_activity_at).getTime();
-    return Date.now() - last < 48 * 3600 * 1000;
-  });
-  // Sort recent NEAR Intents users first so they are never truncated by maxUsers
-  activeUsers.sort((a, b) => {
-    const aNear = recentNearIds.has(Number(a.telegram_id)) ? 1 : 0;
-    const bNear = recentNearIds.has(Number(b.telegram_id)) ? 1 : 0;
-    return bNear - aNear;
+    const last = _parseSqliteUtcMs(u.last_activity_at);
+    return last > 0 && Date.now() - last < activeWindowMs;
   });
 
+  // Always sweep recent NEAR Intents users first, then rotate across remaining active users
+  // sorted by most-recent activity so users past index `maxUsers` are NEVER starved.
+  const priorityUsers = activeUsers.filter((u) => recentNearIds.has(Number(u.telegram_id)));
+  const regularUsers = activeUsers
+    .filter((u) => !recentNearIds.has(Number(u.telegram_id)))
+    .sort((a, b) => _parseSqliteUtcMs(b.last_activity_at) - _parseSqliteUtcMs(a.last_activity_at));
+
+  const remainingSlots = Math.max(0, maxUsers - priorityUsers.length);
+  let batch = [...priorityUsers];
+  if (remainingSlots > 0 && regularUsers.length > 0) {
+    if (regularUsers.length <= remainingSlots) {
+      batch = batch.concat(regularUsers);
+    } else {
+      const start = _sweepCursor % regularUsers.length;
+      for (let i = 0; i < remainingSlots; i++) {
+        batch.push(regularUsers[(start + i) % regularUsers.length]);
+      }
+      _sweepCursor = (start + remainingSlots) % regularUsers.length;
+    }
+  }
+
   let swept = 0;
-  for (const user of activeUsers.slice(0, maxUsers)) {
+  for (const user of batch) {
     try {
       await sweepUserDeposits(user.telegram_id, bot);
       swept++;

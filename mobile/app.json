@@ -2,7 +2,7 @@
   "expo": {
     "name": "Proxim",
     "slug": "proxim-mobile",
-    "version": "1.0.5",
+    "version": "1.0.6",
     "runtimeVersion": "1",
     "updates": {
       "enabled": true,
@@ -30,7 +30,7 @@
     },
     "android": {
       "package": "app.proxim.mobile",
-      "versionCode": 6,
+      "versionCode": 7,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#07271A"
@@ -67,7 +67,15 @@
       "expo-updates",
       "./plugins/withReleaseSigning",
       "expo-font",
-      "expo-sharing"
+      "expo-sharing",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Proxim to access your photos to upload your profile picture or verification documents.",
+          "cameraPermission": "Allow Proxim to use your camera to take a profile photo or verification document photo.",
+          "microphonePermission": false
+        }
+      ]
     ],
     "extra": {
       "apiBaseUrl": "https://payit-production.up.railway.app/api/app/v1"

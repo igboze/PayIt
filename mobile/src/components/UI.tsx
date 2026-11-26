@@ -12,9 +12,10 @@ import {
   ViewStyle,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { COLORS, DEPTH, RADIUS, SPACING, FONTS, TYPE } from "../theme";
+import { COLORS, DEPTH, HERO, RADIUS, SPACING, FONTS, TYPE } from "../theme";
 import { PressableScale } from "./Touch";
 import { CurrencyLogo, currencyInText } from "./CurrencyLogo";
+import { toUserError } from "../utils/errors";
 
 /** Explicit code, or false to hide; when omitted the code is read from the label text. */
 type CurrencyProp = { currency?: string | false };
@@ -134,6 +135,7 @@ export function Input({
   const code = pickCurrency(currency, label);
   // Secure fields (PINs) get a show/hide toggle so people can check what they typed.
   const [reveal, setReveal] = React.useState(false);
+  const [focused, setFocused] = React.useState(false);
   const secure = Boolean(props.secureTextEntry);
   return (
     <View style={styles.inputWrap}>
@@ -148,8 +150,22 @@ export function Input({
           placeholderTextColor={COLORS.textMuted}
           selectionColor={COLORS.primary}
           {...props}
+          onFocus={(e) => {
+            setFocused(true);
+            props.onFocus?.(e);
+          }}
+          onBlur={(e) => {
+            setFocused(false);
+            props.onBlur?.(e);
+          }}
           secureTextEntry={secure && !reveal}
-          style={[styles.input, props.multiline && styles.inputMultiline, secure && styles.inputSecure, props.style]}
+          style={[
+            styles.input,
+            focused && styles.inputFocused,
+            props.multiline && styles.inputMultiline,
+            secure && styles.inputSecure,
+            props.style,
+          ]}
         />
         {secure ? (
           <Pressable
@@ -184,25 +200,25 @@ export function Pill({
 }) {
   const bg = active
     ? tone === "business"
-      ? COLORS.businessMuted
+      ? COLORS.gold
       : tone === "danger"
       ? COLORS.dangerMuted
-      : COLORS.deep
-    : "transparent";
+      : COLORS.forest
+    : COLORS.surface;
   const borderColor = active
     ? tone === "business"
-      ? COLORS.businessBorder
+      ? COLORS.gold
       : tone === "danger"
       ? COLORS.dangerBorder
-      : COLORS.primary
+      : COLORS.forest
     : COLORS.border;
   const textColor = active
     ? tone === "business"
-      ? COLORS.business
+      ? COLORS.onGold
       : tone === "danger"
       ? COLORS.danger
-      : COLORS.primary
-    : COLORS.textSecondary;
+      : COLORS.white
+    : COLORS.text;
 
   const inner = (
     <View style={[styles.pill, { backgroundColor: bg, borderColor }, currency ? styles.pillWithLogo : null]}>
@@ -253,8 +269,8 @@ export function ScreenHeader({
     <View style={styles.screenHeader}>
       <View style={styles.screenHeaderLeft}>
         {onBack ? (
-          <Pressable onPress={onBack} hitSlop={10} style={styles.backBtn}>
-            <Ionicons name="chevron-back" size={24} color={COLORS.text} />
+          <Pressable onPress={onBack} hitSlop={10} style={styles.backBtn} accessibilityRole="button" accessibilityLabel="Back">
+            <Ionicons name="chevron-back" size={22} color={COLORS.text} />
           </Pressable>
         ) : null}
         <View style={{ flex: 1 }}>
@@ -275,10 +291,11 @@ export function ScreenHeader({
 
 export function ErrorBanner({ message, onDismiss }: { message: string | null; onDismiss?: () => void }) {
   if (!message) return null;
+  const safeMessage = toUserError(message);
   return (
     <View style={styles.errorBanner}>
       <Ionicons name="alert-circle" size={18} color={COLORS.danger} style={{ marginTop: 1 }} />
-      <Text style={styles.errorText}>{message}</Text>
+      <Text style={styles.errorText}>{safeMessage}</Text>
       {onDismiss ? (
         <Pressable onPress={onDismiss} hitSlop={8}>
           <Ionicons name="close" size={18} color={COLORS.textSecondary} />
@@ -292,7 +309,7 @@ export function SuccessBanner({ message, onDismiss }: { message: string | null; 
   if (!message) return null;
   return (
     <View style={styles.successBanner}>
-      <Ionicons name="checkmark-circle" size={18} color={COLORS.primary} style={{ marginTop: 1 }} />
+      <Ionicons name="checkmark-circle" size={18} color={COLORS.success} style={{ marginTop: 1 }} />
       <Text style={styles.successText}>{message}</Text>
       {onDismiss ? (
         <Pressable onPress={onDismiss} hitSlop={8}>
@@ -314,7 +331,9 @@ export function EmptyState({
 }) {
   return (
     <View style={styles.empty}>
-      <Ionicons name={icon} size={28} color={COLORS.textMuted} />
+      <View style={styles.emptyIcon}>
+        <Ionicons name={icon} size={26} color={COLORS.primary} />
+      </View>
       <Text style={styles.emptyTitle}>{title}</Text>
       {subtitle ? <Text style={styles.emptySub}>{subtitle}</Text> : null}
     </View>
@@ -343,8 +362,8 @@ export function KeyValueRow({
           {value}
         </Text>
         {onCopy ? (
-          <Pressable onPress={onCopy} hitSlop={8} style={{ marginLeft: 8 }}>
-            <Ionicons name="copy-outline" size={16} color={COLORS.primary} />
+          <Pressable onPress={onCopy} hitSlop={8} style={styles.kvCopy} accessibilityRole="button" accessibilityLabel={`Copy ${label}`}>
+            <Ionicons name="copy-outline" size={15} color={COLORS.goldDark} />
           </Pressable>
         ) : null}
       </View>
@@ -352,12 +371,58 @@ export function KeyValueRow({
   );
 }
 
+/**
+ * The Forest summary block used at the top of money screens (Home, Savings, Stocks, Cards):
+ * gold overline, a big two-weight number, a soft subtitle, then any actions.
+ */
+export function ForestHero({
+  overline,
+  amount,
+  sub,
+  children,
+  style,
+}: {
+  overline: string;
+  amount: string;
+  sub?: string | null;
+  children?: React.ReactNode;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const dot = amount.lastIndexOf(".");
+  const whole = dot > 0 ? amount.slice(0, dot) : amount;
+  const cents = dot > 0 ? amount.slice(dot) : "";
+  return (
+    <View style={[styles.hero, style]}>
+      <Text style={styles.heroOver}>{overline}</Text>
+      <Text style={styles.heroAmount} numberOfLines={1} adjustsFontSizeToFit>
+        {whole}
+        {cents ? <Text style={styles.heroCents}>{cents}</Text> : null}
+      </Text>
+      {sub ? <Text style={styles.heroSub}>{sub}</Text> : null}
+      {children ? <View style={{ marginTop: 14, gap: 10 }}>{children}</View> : null}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  hero: {
+    backgroundColor: COLORS.forest,
+    borderRadius: RADIUS.xl,
+    paddingHorizontal: 20,
+    paddingVertical: 20,
+    marginBottom: SPACING.md,
+    ...DEPTH.forest,
+  },
+  heroOver: { ...TYPE.overline, color: HERO.accent },
+  heroAmount: { ...TYPE.xl, fontSize: 38, lineHeight: 46, color: HERO.text, marginTop: 4 },
+  heroCents: { fontSize: 22, color: HERO.textSecondary },
+  heroSub: { ...TYPE.label, color: HERO.textSecondary, marginTop: 2 },
   labelRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   pillWithLogo: { flexDirection: "row", alignItems: "center", gap: 6 },
   card: {
     backgroundColor: COLORS.surface,
     borderRadius: RADIUS.lg,
+    overflow: "hidden",
     padding: SPACING.md,
     marginBottom: SPACING.md,
     ...DEPTH.card,
@@ -376,6 +441,8 @@ const styles = StyleSheet.create({
   btnSecondary: {
     backgroundColor: COLORS.surface,
     ...DEPTH.raised,
+    borderWidth: 1.5,
+    borderColor: COLORS.borderStrong,
   },
   btnDanger: {
     backgroundColor: COLORS.dangerMuted,
@@ -394,6 +461,7 @@ const styles = StyleSheet.create({
   },
   inputLabel: {
     ...TYPE.label,
+    fontFamily: FONTS.bold,
     color: COLORS.textSecondary,
     marginBottom: 8,
   },
@@ -408,6 +476,13 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     fontFamily: FONTS.medium,
     fontSize: 15,
+  },
+  inputFocused: {
+    borderColor: COLORS.forest,
+    shadowColor: COLORS.gold,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.35,
+    shadowRadius: 6,
   },
   inputSecure: {
     paddingRight: 52,
@@ -435,27 +510,30 @@ const styles = StyleSheet.create({
   pill: {
     minHeight: 40,
     justifyContent: "center",
-    paddingHorizontal: 16,
+    paddingHorizontal: 15,
     paddingVertical: 8,
     borderRadius: RADIUS.pill,
     borderWidth: 1,
   },
   pillText: {
     ...TYPE.label,
+    fontFamily: FONTS.bold,
   },
   sectionHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: SPACING.sm,
-    marginTop: SPACING.xs,
+    marginBottom: 10,
+    marginTop: SPACING.sm,
   },
   sectionTitle: {
-    ...TYPE.overline,
-    color: COLORS.textMuted,
+    ...TYPE.headline,
+    fontFamily: FONTS.extrabold,
+    fontSize: 16,
+    color: COLORS.text,
   },
   screenHeader: {
-    height: 56,
+    height: 60,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -470,14 +548,20 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   backBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    marginRight: 6,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
     alignItems: "center",
     justifyContent: "center",
   },
   screenTitle: {
     ...TYPE.headline,
+    fontFamily: FONTS.extrabold,
+    fontSize: 18,
     color: COLORS.text,
   },
   screenSubtitle: {
@@ -504,9 +588,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 10,
-    backgroundColor: COLORS.primaryMuted,
+    backgroundColor: "#DDF1E5",
     borderWidth: 1,
-    borderColor: COLORS.primaryBorder,
+    borderColor: "#B7E2C9",
     borderRadius: RADIUS.md,
     padding: 14,
     marginBottom: SPACING.md,
@@ -522,6 +606,15 @@ const styles = StyleSheet.create({
     paddingVertical: 28,
     paddingHorizontal: 16,
     gap: 8,
+  },
+  emptyIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: COLORS.surfaceElevated,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
   },
   emptyTitle: {
     ...TYPE.bodyStrong,
@@ -539,8 +632,17 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    borderBottomColor: COLORS.surfaceElevated,
     gap: 12,
+  },
+  kvCopy: {
+    marginLeft: 8,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: COLORS.goldSoft,
+    alignItems: "center",
+    justifyContent: "center",
   },
   kvLabel: {
     ...TYPE.label,

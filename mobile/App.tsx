@@ -51,6 +51,7 @@ function MainShell() {
 
   const [tab, setTab] = useState<MainTab>("home");
   const [accountsSection, setAccountsSection] = useState<AccountsSection>("accounts");
+  const [profileSection, setProfileSection] = useState<"general" | "kyc">("general");
   const [overlay, setOverlay] = useState<OverlayScreen>(null);
   const [deepLinkCode, setDeepLinkCode] = useState("");
   const [deepClaimToken, setDeepClaimToken] = useState("");
@@ -165,6 +166,7 @@ function MainShell() {
       setAccountsSection("global");
       setTab("accounts");
     } else if (target === "kyc") {
+      setProfileSection("kyc");
       setTab("profile");
     }
   };
@@ -318,7 +320,7 @@ function MainShell() {
           /> : null}
         {tab === "accounts" ? <AccountsScreen initialSection={accountsSection} /> : null}
         {tab === "cards" ? <CardsScreen /> : null}
-        {tab === "profile" ? <ProfileScreen /> : null}
+        {tab === "profile" ? <ProfileScreen initialTab={profileSection} /> : null}
       </View>
 
       <View style={styles.tabBar}>
@@ -329,6 +331,7 @@ function MainShell() {
               key={t.key}
               onPress={() => {
                 if (t.key === "accounts") setAccountsSection("accounts");
+                if (t.key === "profile") setProfileSection("general");
                 setTab(t.key);
               }}
               style={styles.tabItem}

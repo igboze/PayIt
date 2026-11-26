@@ -1456,17 +1456,53 @@ async function handleApiRequest(req, res, bot = null) {
           });
         }
 
+        const flowsKyc = require("./flows_nuvion_kyc");
+        const cleanPhone = flowsKyc.normalizePhone(phoneNumber, countryCode) || phoneNumber;
+        const fullName = `${firstName} ${lastName}`.trim();
+
         const entityRes = await nuvion.createIndividualEntity({
-          nationality: countryCode,
-          firstName,
-          lastName,
-          middleName: body.middleName || undefined,
-          email,
-          phoneNumber,
-          dateOfBirth,
-          gender: body.gender || "male",
-          address,
-          idDocument,
+          name: fullName,
+          person: {
+            first_name: firstName,
+            last_name: lastName,
+            middle_name: body.middleName || undefined,
+            email,
+            phonenumber: cleanPhone,
+            date_of_birth: dateOfBirth,
+            gender: String(body.gender || "male").toLowerCase().startsWith("f") ? "f" : "m",
+            nationality: countryCode,
+            ...(body.bvn ? { bvn: String(body.bvn).trim() } : {}),
+            ...(body.nin ? { nin: String(body.nin).trim() } : {}),
+            ...(body.ssn ? { ssn: String(body.ssn).trim() } : {}),
+          },
+          address: {
+            line_1: address.line1 || address.line_1 || address.street || "",
+            city: address.city || undefined,
+            state: address.state || undefined,
+            postal_code: address.postalCode || address.postal_code || undefined,
+            country_code: countryCode,
+          },
+          identification: {
+            document: {
+              type: String(idDocument.type || "").toLowerCase().includes("pass") ? "international_passport" : (String(idDocument.type || "").toLowerCase().includes("driv") ? "drivers_license" : "national_id"),
+              number: String(idDocument.number || "").trim(),
+              ...(idDocument.issueDate || idDocument.issue_date ? { issue_date: idDocument.issueDate || idDocument.issue_date } : {}),
+              ...(idDocument.expiryDate || idDocument.expiry_date ? { expiry_date: idDocument.expiryDate || idDocument.expiry_date } : {}),
+              issuing_country: idDocument.country || idDocument.issuing_country || countryCode,
+              issuing_authority: idDocument.issuingAuthority || idDocument.issuing_authority || "Government Authority",
+            },
+            proof_of_address: {
+              type: "utility_bill",
+            },
+          },
+          meta: {
+            funding_source: "salary",
+            monthly_transaction_value: "5000",
+            customer_types: "individual",
+            monthly_payments_count: "20",
+            max_transfer_amount: "5000",
+            sales_channels: "Proxim API",
+          },
         });
 
         db.upsertNuvionEntity({
@@ -1513,22 +1549,76 @@ async function handleApiRequest(req, res, bot = null) {
           });
         }
 
+        const flowsKyc = require("./flows_nuvion_kyc");
+        const cleanPhone = flowsKyc.normalizePhone(phoneNumber, countryCode) || phoneNumber;
+        const bizAddress = {
+          line_1: address.line1 || address.line_1 || address.street || "",
+          city: address.city || undefined,
+          state: address.state || undefined,
+          postal_code: address.postalCode || address.postal_code || undefined,
+          country_code: countryCode,
+        };
+
         const entityRes = await nuvion.createBusinessEntity({
-          legalName,
-          tradeName: body.tradeName || legalName,
-          registrationNumber,
-          taxId: taxId || registrationNumber,
-          incorporationCountry: countryCode,
-          incorporationState: body.incorporationState || address.state || "",
-          incorporationYear: body.incorporationYear || 2022,
-          incorporationMonth: body.incorporationMonth || 1,
-          email,
-          phoneNumber,
-          website: body.website || undefined,
-          industry: body.industry || "Financial Technology",
-          entityType: body.businessType || "llc",
-          address,
-          officer,
+          name: legalName,
+          business: {
+            legal_name: legalName,
+            trade_name: body.tradeName || legalName,
+            registration_number: registrationNumber,
+            tax_id: taxId || registrationNumber,
+            incorporation_country: countryCode,
+            incorporation_state: body.incorporationState || address.state || undefined,
+            incorporation_year: Number(body.incorporationYear),
+            incorporation_month: Number(body.incorporationMonth),
+            email,
+            phone_number: cleanPhone,
+            website: body.website || undefined,
+            industry: body.industry || undefined,
+            type: body.businessType || "llc",
+          },
+          address: bizAddress,
+          operating_address: { ...bizAddress },
+          business_officers: [
+            {
+              relationship: "director",
+              person: {
+                first_name: officer.firstName || officer.first_name || "",
+                last_name: officer.lastName || officer.last_name || "",
+                email: officer.email || email,
+                phone_number: flowsKyc.normalizePhone(officer.phoneNumber || officer.phone || phoneNumber, countryCode) || phoneNumber,
+                date_of_birth: officer.dateOfBirth || officer.dob || undefined,
+                gender: String(officer.gender || "m").toLowerCase().startsWith("f") ? "f" : "m",
+                nationality: officer.nationality || countryCode,
+              },
+              ...(officer.idNumber ? {
+                identification: {
+                  document: {
+                    type: String(officer.idType || "").toLowerCase().includes("driv")
+                      ? "drivers_license"
+                      : String(officer.idType || "").toLowerCase().includes("nat")
+                        ? "national_id"
+                        : "international_passport",
+                    number: String(officer.idNumber).trim(),
+                    ...(officer.issueDate ? { issue_date: officer.issueDate } : {}),
+                    ...(officer.expiryDate ? { expiry_date: officer.expiryDate } : {}),
+                    issuing_country: officer.issuingCountry || countryCode,
+                    issuing_authority: officer.issuingAuthority || "Government Authority",
+                  },
+                },
+              } : {}),
+            },
+          ],
+          meta: {
+            registration_number: registrationNumber,
+            tax_id: taxId || registrationNumber,
+            annual_turnover: "100K",
+            monthly_transaction_value: "25K",
+            monthly_payments_count: "50",
+            max_transfer_amount: "10K",
+            customer_types: "Business",
+            sales_channels: "Direct",
+            funding_source: "Business revenue",
+          },
         });
 
         db.upsertNuvionEntity({

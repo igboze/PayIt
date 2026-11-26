@@ -9,6 +9,7 @@ import { COLORS, DEPTH, RADIUS, SPACING, TYPE } from "../theme";
 import { Button, ErrorBanner, formatRawTxAmount, KeyValueRow, shortAddr } from "./UI";
 import { PressableScale, notifyHaptic } from "./Touch";
 import { getLegacyFileSystem, getSharing } from "../nativeModules";
+import { useApp } from "../state/AppContext";
 
 type IoniconName = keyof typeof Ionicons.glyphMap;
 
@@ -205,6 +206,7 @@ function StatusChip({ status }: { status: Status }) {
 }
 
 export function TxRow({ tx, onPress }: { tx: TransactionItem; onPress: () => void }) {
+  const { balanceHidden } = useApp();
   const credit = isCreditTx(tx);
   const vis = txVisual(tx);
   const [fg, bg] = TONES[vis.tone];
@@ -231,10 +233,10 @@ export function TxRow({ tx, onPress }: { tx: TransactionItem; onPress: () => voi
         </View>
       </View>
       <View style={{ alignItems: "flex-end", gap: 2 }}>
-        <Text style={[styles.amount, credit && { color: COLORS.successText }]}>
-          {display.primary}
+        <Text style={[styles.amount, credit && !balanceHidden && { color: COLORS.successText }]}>
+          {balanceHidden ? "••••" : display.primary}
         </Text>
-        {display.secondary ? <Text style={styles.sub}>{display.secondary}</Text> : null}
+        {!balanceHidden && display.secondary ? <Text style={styles.sub}>{display.secondary}</Text> : null}
       </View>
     </PressableScale>
   );

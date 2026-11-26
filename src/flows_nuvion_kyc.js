@@ -334,7 +334,11 @@ async function showGlobalPortal(ctx, forcedContext = null) {
   const isBiz = accountType === "business";
   const label = isBiz ? "Business Global Banking" : "Personal Global Banking";
 
-  if (!entity) {
+  const status = String(entity?.status || "").toLowerCase();
+  const isApproved = status === "approved";
+  const hasDraft = Boolean(draft && draft.step);
+
+  if (!entity || (!isApproved && hasDraft)) {
     const startAction = isBiz ? "nuvion_kyb_start" : "nuvion_kyc_start";
     const resumeAction = isBiz ? "nuvion_kyb_resume" : "nuvion_kyc_resume";
     const buttons = [];
@@ -370,7 +374,6 @@ async function showGlobalPortal(ctx, forcedContext = null) {
     );
   }
 
-  const status = String(entity.status || "incomplete").toLowerCase();
   if (status === "approved") {
     const bridgeReady = Boolean(entity.usc_base_address && entity.self_base_payment_detail_id);
     const fiatDetails = db.getNuvionAccountDetailsByEntity(entity.entity_id).filter((d) => d.asset_type === "fiat");
@@ -641,7 +644,10 @@ async function promptPersonalKycStep(ctx, userId, step, data = {}) {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
             [Markup.button.callback("🚀 Submit Verification", "nuvion_kyc_submit")],
-            [Markup.button.callback("🗑️ Cancel & Clear", "nuvion_kyc_reset")],
+            [
+              Markup.button.callback("💾 Pause & Save", "nuvion_kyc_pause"),
+              Markup.button.callback("🗑️ Cancel & Clear", "nuvion_kyc_reset"),
+            ],
           ]),
         }
       );
@@ -799,7 +805,10 @@ async function promptBusinessKybStep(ctx, userId, step, data = {}) {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
             [Markup.button.callback("🚀 Submit Business Verification", "nuvion_kyb_submit")],
-            [Markup.button.callback("🗑️ Cancel & Clear", "nuvion_kyb_reset")],
+            [
+              Markup.button.callback("💾 Pause & Save", "nuvion_kyb_pause"),
+              Markup.button.callback("🗑️ Cancel & Clear", "nuvion_kyb_reset"),
+            ],
           ]),
         }
       );
@@ -1769,6 +1778,17 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
   deps = { bot, ...depsIn };
 
   bot.command(["global", "verify", "kyc"], async (ctx) => showGlobalPortal(ctx));
+  bot.command(["resume", "resume_kyc", "proceed", "proceed_kyc"], async (ctx) => {
+    const acctType = deps.getContext ? deps.getContext(ctx.from.id) : "personal";
+    const draft = db.getNuvionKycDraft(ctx.from.id, acctType) || db.getNuvionKycDraft(ctx.from.id, "personal") || db.getNuvionKycDraft(ctx.from.id, "business");
+    if (draft && draft.step) {
+      if (draft.account_type === "business") {
+        return promptBusinessKybStep(ctx, ctx.from.id, draft.step, draft.data || {});
+      }
+      return promptPersonalKycStep(ctx, ctx.from.id, draft.step, draft.data || {});
+    }
+    return showGlobalPortal(ctx, acctType);
+  });
 
   bot.action("action_nuvion_portal", async (ctx) => {
     ctx.answerCbQuery().catch(() => {});
@@ -1829,8 +1849,23 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
 
   bot.action("nuvion_kyc_pause", async (ctx) => {
     ctx.answerCbQuery().catch(() => {});
+    const currentState = convState.getState(ctx.from.id);
+    if (currentState && handlesState(currentState.type)) {
+      db.saveNuvionKycDraft(ctx.from.id, "personal", currentState.type, currentState.data || {});
+    }
     convState.clearState(ctx.from.id);
-    return ctx.reply("💾 Progress saved! Send /global anytime to resume right where you left off.", deps.backToMenu || {});
+    return ctx.reply(
+      "💾 <b>Personal Verification Paused & Saved!</b>\n──────────────────────────\n" +
+      "Your progress has been safely saved. Whenever you're ready to proceed, tap <b>▶️ Resume Verification</b> below or send /global.",
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("▶️ Resume Verification", "nuvion_kyc_resume")],
+          [Markup.button.callback("🔄 Start Fresh", "nuvion_kyc_start")],
+          [Markup.button.callback("🏠 Main Menu", "main_menu")],
+        ]),
+      }
+    );
   });
 
   bot.action("nuvion_kyc_reset", async (ctx) => {
@@ -1931,8 +1966,23 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
 
   bot.action("nuvion_kyb_pause", async (ctx) => {
     ctx.answerCbQuery().catch(() => {});
+    const currentState = convState.getState(ctx.from.id);
+    if (currentState && handlesState(currentState.type)) {
+      db.saveNuvionKycDraft(ctx.from.id, "business", currentState.type, currentState.data || {});
+    }
     convState.clearState(ctx.from.id);
-    return ctx.reply("💾 Business verification progress saved! Send /global anytime to resume.", deps.backToMenu || {});
+    return ctx.reply(
+      "💾 <b>Business Verification Paused & Saved!</b>\n──────────────────────────\n" +
+      "Your progress has been safely saved. Whenever you're ready to proceed, tap <b>▶️ Resume Verification</b> below or send /global.",
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("▶️ Resume Verification", "nuvion_kyb_resume")],
+          [Markup.button.callback("🔄 Start Fresh", "nuvion_kyb_start")],
+          [Markup.button.callback("🏠 Main Menu", "main_menu")],
+        ]),
+      }
+    );
   });
 
   bot.action("nuvion_kyb_reset", async (ctx) => {

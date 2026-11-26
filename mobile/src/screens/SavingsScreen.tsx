@@ -10,6 +10,7 @@ import {
   Card,
   EmptyState,
   ErrorBanner,
+  ForestHero,
   formatUsdc,
   Input,
   KeyValueRow,
@@ -30,7 +31,7 @@ function formatCompactTvl(tvl?: number): string | null {
 }
 
 export function SavingsScreen({ onBack }: { onBack: () => void }) {
-  const { activeAccount, dataVersion, requestApproval } = useApp();
+  const { activeAccount, dataVersion, requestApproval, balanceHidden } = useApp();
   const isBiz = activeAccount === "business";
 
   const [savings, setSavings] = useState<SavingsOverview | null>(null);
@@ -149,26 +150,28 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
         ) : (
           <>
             {/* Active savings position */}
+            {savings?.position ? (
+              <ForestHero
+                overline={`${isBiz ? "Business" : "Personal"} savings`}
+                amount={balanceHidden ? "$••••" : formatUsdc(savings.position.principalUsdc)}
+                sub={balanceHidden ? "Balance hidden" : `+${formatUsdc(savings.position.accruedYieldUsdc, 4)} earned so far`}
+              >
+                <View style={styles.rateChip}>
+                  <Ionicons name="lock-closed" size={13} color={COLORS.onGold} />
+                  <Text style={styles.rateChipText}>
+                    {(savings.position.apyAtDeposit ?? savings.position.apy) > 0
+                      ? `${(savings.position.apyAtDeposit ?? savings.position.apy).toFixed(2)}% APY locked when you saved`
+                      : "Variable rate"}
+                  </Text>
+                </View>
+              </ForestHero>
+            ) : null}
             <Card>
-              <SectionHeader title={`${isBiz ? "Business" : "Personal"} active savings`} />
               {savings?.position ? (
                 <>
-                  <Text style={styles.bigVal}>{formatUsdc(savings.position.principalUsdc)}</Text>
                   {savings.position.vaultName ? (
                     <KeyValueRow label="Savings vault" value={savings.position.vaultName} />
                   ) : null}
-                  <KeyValueRow
-                    label="Net profit earned"
-                    value={`+${formatUsdc(savings.position.accruedYieldUsdc, 4)}`}
-                  />
-                  <KeyValueRow
-                    label="Rate when you saved"
-                    value={
-                      (savings.position.apyAtDeposit ?? savings.position.apy) > 0
-                        ? `${(savings.position.apyAtDeposit ?? savings.position.apy).toFixed(2)}% net APY`
-                        : "Variable"
-                    }
-                  />
                   {savings.position.currentApy != null && savings.position.currentApy > 0 ? (
                     <KeyValueRow label="Current vault rate" value={`${savings.position.currentApy.toFixed(2)}% net APY`} />
                   ) : null}
@@ -298,7 +301,17 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: COLORS.bg },
   content: { padding: SPACING.md, paddingBottom: 40, gap: 12 },
-  bigVal: { color: COLORS.text, fontSize: 34, fontFamily: FONTS.extrabold, marginBottom: 10 },
+  rateChip: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: COLORS.gold,
+    borderRadius: RADIUS.pill,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  rateChipText: { fontFamily: FONTS.bold, fontSize: 12, color: COLORS.onGold },
   autoSaveBanner: {
     flexDirection: "row",
     alignItems: "flex-start",

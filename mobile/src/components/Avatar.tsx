@@ -1,11 +1,14 @@
-import React, { useState } from "react";
-import { ActivityIndicator, Alert, Image, Platform, StyleSheet, Text, View } from "react-native";
+import React, { useEffect, useState } from "react";
+import { ActivityIndicator, Alert, Image, Linking, Platform, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { api, getAccessToken } from "../api/client";
 import { useApp } from "../state/AppContext";
 import { COLORS, TYPE } from "../theme";
 import { PressableScale } from "./Touch";
-import { getImagePicker } from "../nativeModules";
+import { getImagePicker, getLegacyFileSystem } from "../nativeModules";
+import { toUserError } from "../utils/errors";
+
+const LATEST_APK_URL = "https://github.com/igboze/PayIt/releases/download/android-latest/Proxim.apk";
 
 const TONES = [
   ["#002018", "#E0A82E"],
@@ -27,6 +30,9 @@ export function UserAvatar({ size = 44, name }: { size?: number; name?: string |
   const [failed, setFailed] = useState(false);
   const token = getAccessToken();
   const version = user?.avatarVersion || null;
+  useEffect(() => {
+    setFailed(false);
+  }, [version]);
   const label = name || user?.senderName || user?.username || "Proxim";
   const txt = initialsOf(label);
   const [fg, bg] = TONES[[...txt].reduce((a, c) => a + c.charCodeAt(0), 0) % TONES.length];
@@ -56,9 +62,20 @@ export function EditableAvatar({ size = 96 }: { size?: number }) {
   const [busy, setBusy] = useState(false);
 
   const upload = async (fromCamera: boolean) => {
+    if (Platform.OS === "web") {
+      Alert.alert("Use the mobile app", "Profile photos can be uploaded from the Proxim mobile app.");
+      return;
+    }
     const Picker = getImagePicker();
-    if (!Picker || Platform.OS === "web") {
-      Alert.alert("Update the app", "Install the latest Proxim app to add a profile photo.");
+    if (!Picker) {
+      Alert.alert(
+        "Reinstall latest APK",
+        "Your installed Proxim build doesn't include photo upload yet. Download and install the latest APK once (your account stays signed in).",
+        [
+          { text: "Not now", style: "cancel" },
+          { text: "Download APK", onPress: () => Linking.openURL(LATEST_APK_URL).catch(() => {}) },
+        ]
+      );
       return;
     }
     try {
@@ -67,14 +84,32 @@ export function EditableAvatar({ size = 96 }: { size?: number }) {
         Alert.alert("Permission needed", fromCamera ? "Allow camera access to take a photo." : "Allow photo access to choose a picture.");
         return;
       }
-      const opts = { mediaTypes: ["images"] as never, allowsEditing: true, aspect: [1, 1] as [number, number], quality: 0.6, base64: true };
+      const opts = {
+        mediaTypes: ["images"] as never,
+        allowsEditing: true,
+        aspect: [1, 1] as [number, number],
+        quality: 0.65,
+        base64: true,
+      };
       const res = fromCamera ? await Picker.launchCameraAsync(opts) : await Picker.launchImageLibraryAsync(opts);
-      if (res.canceled || !res.assets?.[0]?.base64) return;
+      const asset = res.assets?.[0];
+      if (res.canceled || !asset) return;
+      let base64 = asset.base64 || null;
+      if (!base64 && asset.uri) {
+        const FS = getLegacyFileSystem();
+        if (FS?.readAsStringAsync) {
+          base64 = await FS.readAsStringAsync(asset.uri, { encoding: "base64" as never });
+        }
+      }
+      if (!base64) {
+        Alert.alert("Couldn't read photo", "Please choose another photo and try again.");
+        return;
+      }
       setBusy(true);
-      await api.uploadAvatar(res.assets[0].base64);
+      await api.uploadAvatar(base64);
       await refreshMe();
     } catch (err) {
-      Alert.alert("Couldn't update your photo", err instanceof Error ? err.message : "Please try again.");
+      Alert.alert("Couldn't update your photo", toUserError(err, "Please try again."));
     } finally {
       setBusy(false);
     }
@@ -86,7 +121,7 @@ export function EditableAvatar({ size = 96 }: { size?: number }) {
       await api.deleteAvatar();
       await refreshMe();
     } catch (err) {
-      Alert.alert("Couldn't remove your photo", err instanceof Error ? err.message : "Please try again.");
+      Alert.alert("Couldn't remove your photo", toUserError(err, "Please try again."));
     } finally {
       setBusy(false);
     }

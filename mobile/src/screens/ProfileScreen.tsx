@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
   Alert,
+  Linking,
+  Platform,
   RefreshControl,
   ScrollView,
   Share,
@@ -11,6 +13,8 @@ import {
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { api } from "../api/client";
+import { getImagePicker, getLegacyFileSystem } from "../nativeModules";
+import { toUserError } from "../utils/errors";
 import { assertPasskey } from "../api/passkey";
 import type {
   ContactItem,
@@ -38,10 +42,13 @@ import { EditableAvatar } from "../components/Avatar";
 
 type ProfileTab = "general" | "kyc" | "security" | "contacts" | "schedules" | "rewards";
 
-export function ProfileScreen() {
-  const { user, activeAccount, dataVersion, refreshMe, signOut, requestApproval } = useApp();
+export function ProfileScreen({ initialTab = "general" }: { initialTab?: ProfileTab } = {}) {
+  const { user, activeAccount, dataVersion, refreshMe, signOut, requestApproval, balanceHidden } = useApp();
   const ota = useAutoOtaUpdates();
-  const [tab, setTab] = useState<ProfileTab>("general");
+  const [tab, setTab] = useState<ProfileTab>(initialTab);
+  useEffect(() => {
+    setTab(initialTab);
+  }, [initialTab]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,18 +68,86 @@ export function ProfileScreen() {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [dob, setDob] = useState("");
   const [gender, setGender] = useState<"male" | "female">("male");
-  const [countryCode, setCountryCode] = useState("");
+  const [countryCode, setCountryCode] = useState("NG");
   const [street, setStreet] = useState("");
   const [city, setCity] = useState("");
   const [stateRegion, setStateRegion] = useState("");
   const [postalCode, setPostalCode] = useState("");
-  const [idType, setIdType] = useState("passport");
+  const [idType, setIdType] = useState<"international_passport" | "national_id" | "drivers_license">("international_passport");
   const [idNumber, setIdNumber] = useState("");
+  const [idIssueDate, setIdIssueDate] = useState("");
+  const [idExpiryDate, setIdExpiryDate] = useState("");
+  const [bvn, setBvn] = useState("");
+  const [nin, setNin] = useState("");
+  const [ssn, setSsn] = useState("");
+  const [docIdFront, setDocIdFront] = useState<{ base64: string; mimeType: string; name: string } | null>(null);
+  const [docIdBack, setDocIdBack] = useState<{ base64: string; mimeType: string; name: string } | null>(null);
+  const [docPoa, setDocPoa] = useState<{ base64: string; mimeType: string; name: string } | null>(null);
+
+  const pickKycDocument = async (slot: "front" | "back" | "poa", fromCamera = false) => {
+    if (Platform.OS === "web") {
+      setError("Use the Proxim mobile app to upload verification documents.");
+      return;
+    }
+    const Picker = getImagePicker();
+    if (!Picker) {
+      Alert.alert(
+        "Reinstall latest APK",
+        "Your installed Proxim build doesn't include photo upload yet. Download and install the latest APK once.",
+        [
+          { text: "Not now", style: "cancel" },
+          {
+            text: "Download APK",
+            onPress: () =>
+              Linking.openURL("https://github.com/igboze/PayIt/releases/download/android-latest/Proxim.apk").catch(
+                () => {}
+              ),
+          },
+        ]
+      );
+      return;
+    }
+    try {
+      const perm = fromCamera
+        ? await Picker.requestCameraPermissionsAsync()
+        : await Picker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        setError(fromCamera ? "Allow camera access to take a document photo." : "Allow photo library access to attach a document.");
+        return;
+      }
+      const opts = { mediaTypes: ["images"] as never, allowsEditing: false, quality: 0.65, base64: true };
+      const res = fromCamera ? await Picker.launchCameraAsync(opts) : await Picker.launchImageLibraryAsync(opts);
+      const asset = res.assets?.[0];
+      if (res.canceled || !asset) return;
+      let base64 = asset.base64 || null;
+      if (!base64 && asset.uri) {
+        const FS = getLegacyFileSystem();
+        if (FS?.readAsStringAsync) {
+          base64 = await FS.readAsStringAsync(asset.uri, { encoding: "base64" as never });
+        }
+      }
+      if (!base64) {
+        setError("Couldn't read that photo. Please pick another image.");
+        return;
+      }
+      const picked = {
+        base64,
+        mimeType: asset.mimeType || "image/jpeg",
+        name: asset.fileName || `${slot}.jpg`,
+      };
+      if (slot === "front") setDocIdFront(picked);
+      else if (slot === "back") setDocIdBack(picked);
+      else setDocPoa(picked);
+      setError(null);
+    } catch (err) {
+      setError(toUserError(err, "Could not attach document photo."));
+    }
+  };
 
   // Business KYB fields
   const [bizLegalName, setBizLegalName] = useState("");
   const [bizRegNo, setBizRegNo] = useState("");
-  const [bizCountry, setBizCountry] = useState("");
+  const [bizCountry, setBizCountry] = useState("NG");
   const [bizIncYear, setBizIncYear] = useState("");
   const [bizIncMonth, setBizIncMonth] = useState("");
   const [bizIndustry, setBizIndustry] = useState("");
@@ -190,9 +265,50 @@ export function ProfileScreen() {
 
   const handleSubmitKyc = async () => {
     setError(null);
+    const cc = (countryCode || "NG").trim().toUpperCase();
+    if (!firstName.trim() || !lastName.trim()) {
+      setError("Please enter your legal first and last name.");
+      return;
+    }
+    if (!email.trim() || !email.includes("@")) {
+      setError("Please enter a valid email address.");
+      return;
+    }
+    if (!phoneNumber.trim()) {
+      setError("Please enter your phone number.");
+      return;
+    }
+    if (!dob.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(dob.trim())) {
+      setError("Please enter your date of birth as YYYY-MM-DD (e.g. 1995-05-15).");
+      return;
+    }
+    if (!street.trim() || !city.trim()) {
+      setError("Please enter your residential street address and city.");
+      return;
+    }
+    if (!idNumber.trim()) {
+      setError("Please enter your ID document number.");
+      return;
+    }
+    if (!stateRegion.trim() || !postalCode.trim()) {
+      setError("Please enter your State / Region and Postal Code.");
+      return;
+    }
+    if (cc === "NG" && (bvn.trim().length !== 11 || nin.trim().length !== 11)) {
+      setError("Nigerian verification requires both your 11-digit BVN and 11-digit NIN.");
+      return;
+    }
+    if (cc === "US" && !ssn.trim()) {
+      setError("US verification requires your SSN.");
+      return;
+    }
+    if (!docIdFront || !docPoa) {
+      setError("Please attach photos of both your Government ID (front) and Proof of Address.");
+      return;
+    }
+
     setLoading(true);
     try {
-      const cc = countryCode.trim().toUpperCase();
       const res = await api.submitKyc({
         countryCode: cc,
         firstName: firstName.trim(),
@@ -201,6 +317,8 @@ export function ProfileScreen() {
         phoneNumber: phoneNumber.trim(),
         dateOfBirth: dob.trim(),
         gender,
+        ...(cc === "NG" ? { bvn: bvn.trim(), nin: nin.trim() } : {}),
+        ...(cc === "US" && ssn.trim() ? { ssn: ssn.trim() } : {}),
         address: {
           line1: street.trim(),
           city: city.trim(),
@@ -211,10 +329,19 @@ export function ProfileScreen() {
         idDocument: {
           type: idType,
           number: idNumber.trim(),
+          ...(idIssueDate.trim() ? { issueDate: idIssueDate.trim() } : {}),
+          ...(idExpiryDate.trim() ? { expiryDate: idExpiryDate.trim() } : {}),
           country: cc,
         },
+        documents: {
+          idFrontBase64: docIdFront.base64,
+          idFrontMimeType: docIdFront.mimeType,
+          ...(docIdBack ? { idBackBase64: docIdBack.base64 } : {}),
+          proofOfAddressBase64: docPoa.base64,
+          proofOfAddressMimeType: docPoa.mimeType,
+        },
       });
-      setNotice(`Verification submitted (status: ${res.status}).`);
+      setNotice(`Tier-1 Verification submitted! (Status: ${res.status.toUpperCase()}).`);
       setKycFormOpen(false);
       loadTab(true);
     } catch (err) {
@@ -497,11 +624,19 @@ export function ProfileScreen() {
               <KeyValueRow label="Business Status" value={`${kyc.business.status} (Tier ${kyc.business.tier})`} />
               <KeyValueRow
                 label="Hourly Used / Limit"
-                value={`${formatUsdc(kyc.limits.usedHourlyUsd)} / ${formatUsdc(kyc.limits.hourlyUsd)}`}
+                value={
+                  balanceHidden
+                    ? `•••• / ${formatUsdc(kyc.limits.hourlyUsd)}`
+                    : `${formatUsdc(kyc.limits.usedHourlyUsd)} / ${formatUsdc(kyc.limits.hourlyUsd)}`
+                }
               />
               <KeyValueRow
                 label="Daily Used / Limit"
-                value={`${formatUsdc(kyc.limits.usedDailyUsd)} / ${formatUsdc(kyc.limits.dailyUsd)}`}
+                value={
+                  balanceHidden
+                    ? `•••• / ${formatUsdc(kyc.limits.dailyUsd)}`
+                    : `${formatUsdc(kyc.limits.usedDailyUsd)} / ${formatUsdc(kyc.limits.dailyUsd)}`
+                }
               />
               {kyc.personal.rejectionReason ? (
                 <ErrorBanner message={`Reason: ${kyc.personal.rejectionReason}`} />
@@ -518,23 +653,82 @@ export function ProfileScreen() {
 
           {kycFormOpen ? (
             <View style={{ marginTop: 14 }}>
-              <Input label="First Name" value={firstName} onChangeText={setFirstName} />
-              <Input label="Last Name" value={lastName} onChangeText={setLastName} />
-              <Input label="Email" value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" />
-              <Input label="Phone (+international)" value={phoneNumber} onChangeText={setPhoneNumber} keyboardType="phone-pad" />
+              <Input label="Legal First Name" value={firstName} onChangeText={setFirstName} />
+              <Input label="Legal Last Name" value={lastName} onChangeText={setLastName} />
+              <Input label="Email Address" value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" />
+              <Input label="Phone (+international format)" placeholder="+2348012345678" value={phoneNumber} onChangeText={setPhoneNumber} keyboardType="phone-pad" />
               <Input label="Date of Birth (YYYY-MM-DD)" placeholder="1995-05-15" value={dob} onChangeText={setDob} />
-              <View style={styles.pillRow}>
+              
+              <Text style={[styles.rowSub, { marginTop: 4, marginBottom: 6 }]}>Gender</Text>
+              <View style={[styles.pillRow, { marginBottom: 10 }]}>
                 <Pill label="Male" active={gender === "male"} onPress={() => setGender("male")} />
                 <Pill label="Female" active={gender === "female"} onPress={() => setGender("female")} />
               </View>
-              <Input label="2-Letter Country Code (e.g. NG, GB, US)" value={countryCode} onChangeText={setCountryCode} autoCapitalize="characters" maxLength={2} />
+
+              <Text style={[styles.rowSub, { marginTop: 4, marginBottom: 6 }]}>Verification Country</Text>
+              <View style={[styles.pillRow, { marginBottom: 10 }]}>
+                {[
+                  { code: "NG", label: "🇳🇬 Nigeria" },
+                  { code: "US", label: "🇺🇸 United States" },
+                  { code: "GB", label: "🇬🇧 United Kingdom" },
+                  { code: "CA", label: "🇨🇦 Canada" },
+                  { code: "GH", label: "🇬🇭 Ghana" },
+                  { code: "KE", label: "🇰🇪 Kenya" },
+                ].map((c) => (
+                  <Pill
+                    key={c.code}
+                    label={c.label}
+                    active={countryCode === c.code}
+                    onPress={() => setCountryCode(c.code)}
+                  />
+                ))}
+              </View>
+
               <Input label="Street Address" value={street} onChangeText={setStreet} />
               <Input label="City" value={city} onChangeText={setCity} />
               <Input label="State / Region" value={stateRegion} onChangeText={setStateRegion} />
               <Input label="Postal Code" value={postalCode} onChangeText={setPostalCode} />
-              <Input label="ID Document Type (passport, national_id, drivers_license)" value={idType} onChangeText={setIdType} autoCapitalize="none" />
-              <Input label="ID Document Number" value={idNumber} onChangeText={setIdNumber} />
-              <Button title="Submit Identity Verification" onPress={handleSubmitKyc} loading={loading} />
+
+              <Text style={[styles.rowSub, { marginTop: 4, marginBottom: 6 }]}>Government ID Document</Text>
+              <View style={[styles.pillRow, { marginBottom: 10 }]}>
+                <Pill label="🛂 Passport" active={idType === "international_passport"} onPress={() => setIdType("international_passport")} />
+                <Pill label="🪪 National ID" active={idType === "national_id"} onPress={() => setIdType("national_id")} />
+                <Pill label="🚗 Driver's License" active={idType === "drivers_license"} onPress={() => setIdType("drivers_license")} />
+              </View>
+
+              <Input label="ID Document Number" placeholder="e.g. A12345678" value={idNumber} onChangeText={setIdNumber} />
+              <Input label="Issue Date (optional)" placeholder="YYYY-MM-DD (e.g. 2022-01-01)" value={idIssueDate} onChangeText={setIdIssueDate} />
+              <Input label="Expiry Date (optional)" placeholder="YYYY-MM-DD (e.g. 2032-01-01)" value={idExpiryDate} onChangeText={setIdExpiryDate} />
+              {countryCode === "NG" ? (
+                <>
+                  <Input label="BVN (11 digits)" placeholder="11-digit Bank Verification Number" value={bvn} onChangeText={setBvn} keyboardType="number-pad" maxLength={11} />
+                  <Input label="NIN (11 digits)" placeholder="11-digit National Identity Number" value={nin} onChangeText={setNin} keyboardType="number-pad" maxLength={11} />
+                </>
+              ) : null}
+              {countryCode === "US" ? (
+                <Input label="SSN" placeholder="123-45-6789" value={ssn} onChangeText={setSsn} keyboardType="number-pad" maxLength={11} />
+              ) : null}
+
+              <Text style={[styles.rowSub, { marginTop: 6, marginBottom: 6 }]}>Upload Verification Documents</Text>
+              <View style={[styles.pillRow, { marginBottom: 10 }]}>
+                <Pill
+                  label={docIdFront ? "ID Front ✅" : "📷 Upload ID Front"}
+                  active={Boolean(docIdFront)}
+                  onPress={() => pickKycDocument("front", false)}
+                />
+                <Pill
+                  label={docIdBack ? "ID Back ✅" : "📷 ID Back (optional)"}
+                  active={Boolean(docIdBack)}
+                  onPress={() => pickKycDocument("back", false)}
+                />
+                <Pill
+                  label={docPoa ? "Proof of Address ✅" : "🧾 Proof of Address"}
+                  active={Boolean(docPoa)}
+                  onPress={() => pickKycDocument("poa", false)}
+                />
+              </View>
+
+              <Button title="Submit Identity Verification" onPress={handleSubmitKyc} loading={loading} style={{ marginTop: 8 }} />
             </View>
           ) : null}
 
@@ -731,9 +925,9 @@ export function ProfileScreen() {
           <SectionHeader title="Proxim Rewards & Referrals" />
           {rewards ? (
             <>
-              <Text style={styles.pointsHero}>{rewards.pointsBalance} pts</Text>
+              <Text style={styles.pointsHero}>{balanceHidden ? "•••• pts" : `${rewards.pointsBalance} pts`}</Text>
               <Text style={styles.rowSub}>
-                Value: {formatUsdc(rewards.redeemValueUsd)} ({rewards.pointsPerUsd} pts = $1 · Min {rewards.minRedeemPoints} pts)
+                Value: {balanceHidden ? "$••••" : formatUsdc(rewards.redeemValueUsd)} ({rewards.pointsPerUsd} pts = $1 · Min {rewards.minRedeemPoints} pts)
               </Text>
               <View style={{ marginVertical: 12 }}>
                 <KeyValueRow

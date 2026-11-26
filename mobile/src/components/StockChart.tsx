@@ -74,7 +74,7 @@ export function StockChart({
     const firstPrice = points[0].price;
     const lastPrice = points[points.length - 1].price;
     const isUp = lastPrice >= firstPrice;
-    const lineColor = isUp ? "#059669" : "#DC2626";
+    const lineColor = isUp ? "#007840" : "#DC2626";
     const fillColor = isUp ? "rgba(5, 150, 105, 0.10)" : "rgba(220, 38, 38, 0.10)";
 
     const segments = [];
@@ -354,13 +354,13 @@ const styles = StyleSheet.create({
     height: 0,
     borderTopWidth: 1.5,
     borderStyle: "dashed",
-    borderColor: "#D97706",
+    borderColor: "#8A6410",
   },
   buyTag: {
     position: "absolute",
-    backgroundColor: "#FEF3C7",
+    backgroundColor: "#F6E7BF",
     borderWidth: 1,
-    borderColor: "#F59E0B",
+    borderColor: "#E0A82E",
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 6,
@@ -368,7 +368,7 @@ const styles = StyleSheet.create({
   buyTagText: {
     fontFamily: FONTS.bold,
     fontSize: 10,
-    color: "#92400E",
+    color: "#8A5600",
   },
   entryDotOuter: {
     position: "absolute",
@@ -383,7 +383,7 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: "#D97706",
+    backgroundColor: "#8A6410",
     borderWidth: 1.5,
     borderColor: "#FFFFFF",
   },

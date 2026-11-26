@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import * as Updates from "expo-updates";
+import { toUserError } from "../utils/errors";
 
 export interface OtaUpdateState {
   enabled: boolean;
@@ -57,8 +58,7 @@ export function useAutoOtaUpdates(): OtaUpdateState {
         }
       } catch (err) {
         if (!silent) {
-          const msg = err instanceof Error ? err.message : "Could not check for updates.";
-          setStatusMessage(msg);
+          setStatusMessage(toUserError(err, "Couldn't check for updates right now."));
         }
       } finally {
         busyRef.current = false;

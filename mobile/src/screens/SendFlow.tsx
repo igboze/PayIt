@@ -71,7 +71,7 @@ export function SendFlow({
   onMore: (mode: MoreSendMode) => void;
   initialTab?: Tab;
 }) {
-  const { activeAccount, requestApproval, dataVersion } = useApp();
+  const { activeAccount, requestApproval, dataVersion, balanceHidden } = useApp();
   const [tab, setTab] = useState<Tab>(initialTab);
   const [step, setStep] = useState<"recipient" | "amount">("recipient");
   const [recipient, setRecipient] = useState<Recipient | null>(null);
@@ -314,9 +314,11 @@ export function SendFlow({
             <Text style={[styles.amountHint, overBalance && { color: COLORS.dangerText }]}>
               {usdCost !== null && amountNgn > 0
                 ? `${formatUsdc(usdCost)} from your balance${rate ? ` · $1 = ₦${Math.round(rate).toLocaleString("en-NG")}` : ""}`
-                : balanceUsd !== null
-                  ? `Balance ${formatUsdc(balanceUsd)}${rate ? ` ≈ ${fmtNgn(balanceUsd * rate)}` : ""}`
-                  : " "}
+                : balanceHidden
+                  ? "Balance hidden"
+                  : balanceUsd !== null
+                    ? `Balance ${formatUsdc(balanceUsd)}${rate ? ` ≈ ${fmtNgn(balanceUsd * rate)}` : ""}`
+                    : " "}
             </Text>
           </View>
 
@@ -340,22 +342,77 @@ export function SendFlow({
             })}
           </View>
 
-          {noteOpen ? (
-            <TextInput
-              value={note}
-              onChangeText={setNote}
-              placeholder="What's it for? (optional)"
-              placeholderTextColor={COLORS.textMuted}
-              maxLength={60}
-              style={styles.noteInput}
-              autoFocus
-            />
-          ) : (
-            <PressableScale onPress={() => setNoteOpen(true)} haptic="selection" style={styles.noteBtn}>
-              <Ionicons name="create-outline" size={16} color={COLORS.textSecondary} />
-              <Text style={styles.noteBtnText}>Add a note</Text>
-            </PressableScale>
-          )}
+          <PressableScale
+            onPress={() => setNoteOpen(true)}
+            haptic="selection"
+            depth={0.98}
+            style={[styles.noteCard, note.trim() ? styles.noteCardFilled : null]}
+            accessibilityRole="button"
+            accessibilityLabel={note.trim() ? `Description: ${note.trim()}. Tap to edit` : "Add transfer description"}
+          >
+            <View style={styles.noteIconBadge}>
+              <Ionicons name="document-text-outline" size={18} color={COLORS.primary} />
+            </View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.noteCardLabel}>{note.trim() ? "Description" : "Add description (optional)"}</Text>
+              <Text style={note.trim() ? styles.noteCardValue : styles.noteCardPlaceholder} numberOfLines={1}>
+                {note.trim() || "e.g. Lunch, rent, invoice payment…"}
+              </Text>
+            </View>
+            <Text style={styles.noteActionText}>{note.trim() ? "Edit" : "Add"}</Text>
+            <Ionicons name="chevron-forward" size={16} color={COLORS.primaryDark} />
+          </PressableScale>
+
+          <Modal visible={noteOpen} transparent animationType="slide" onRequestClose={() => setNoteOpen(false)}>
+            <View style={styles.sheetBackdrop}>
+              <View style={styles.noteSheet}>
+                <View style={styles.sheetHandle} />
+                <Text style={styles.sheetTitle}>Transfer description</Text>
+                <Text style={styles.noteSheetSub}>
+                  Shown on your receipt and sent as the payment narration to {titleCase(recipient.name)}.
+                </Text>
+                <TextInput
+                  value={note}
+                  onChangeText={setNote}
+                  placeholder="What is this transfer for?"
+                  placeholderTextColor={COLORS.textMuted}
+                  maxLength={60}
+                  style={styles.noteInput}
+                  autoFocus
+                  returnKeyType="done"
+                  onSubmitEditing={() => setNoteOpen(false)}
+                />
+                <View style={styles.notePresets}>
+                  {["Food & drinks", "Rent", "Transport", "Family", "Invoice"].map((preset) => (
+                    <PressableScale
+                      key={preset}
+                      onPress={() => setNote(preset)}
+                      haptic="selection"
+                      style={[styles.notePresetPill, note.trim() === preset && styles.notePresetPillOn]}
+                    >
+                      <Text style={[styles.notePresetText, note.trim() === preset && styles.notePresetTextOn]}>
+                        {preset}
+                      </Text>
+                    </PressableScale>
+                  ))}
+                </View>
+                <View style={styles.noteSheetActions}>
+                  {note.trim() ? (
+                    <Button
+                      title="Clear"
+                      variant="ghost"
+                      onPress={() => {
+                        setNote("");
+                        setNoteOpen(false);
+                      }}
+                      style={{ flex: 1 }}
+                    />
+                  ) : null}
+                  <Button title="Save description" onPress={() => setNoteOpen(false)} style={{ flex: 2 }} />
+                </View>
+              </View>
+            </View>
+          </Modal>
 
           <ErrorBanner message={error} onDismiss={() => setError(null)} />
 
@@ -715,19 +772,68 @@ const styles = StyleSheet.create({
   },
   quickOn: { borderColor: COLORS.primary, borderWidth: 1.5, backgroundColor: COLORS.deep },
   quickText: { ...TYPE.label, color: COLORS.textSecondary },
-  noteBtn: { alignSelf: "center", flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 4 },
-  noteBtnText: { ...TYPE.label, color: COLORS.textSecondary },
-  noteInput: {
-    height: 44,
-    borderRadius: 12,
+  noteCard: {
+    ...DEPTH.raised,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
     paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 16,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1.5,
+    borderColor: COLORS.primaryBorder,
+  },
+  noteCardFilled: {
+    backgroundColor: COLORS.primaryMuted,
+    borderColor: COLORS.primary,
+  },
+  noteIconBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    backgroundColor: COLORS.primaryMuted,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  noteCardLabel: { fontFamily: FONTS.semibold, fontSize: 13, color: COLORS.text },
+  noteCardValue: { fontFamily: FONTS.medium, fontSize: 13, color: COLORS.primaryDark, marginTop: 1 },
+  noteCardPlaceholder: { fontFamily: FONTS.regular, fontSize: 12, color: COLORS.textSecondary, marginTop: 1 },
+  noteActionText: { fontFamily: FONTS.bold, fontSize: 13, color: COLORS.primaryDark },
+  noteSheet: {
+    backgroundColor: COLORS.page,
+    borderTopLeftRadius: RADIUS.xl,
+    borderTopRightRadius: RADIUS.xl,
+    padding: SPACING.md,
+    paddingTop: 10,
+    paddingBottom: 28,
+    gap: 12,
+  },
+  noteSheetSub: { ...TYPE.label, color: COLORS.textSecondary, marginTop: -4 },
+  noteInput: {
+    height: 50,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1.5,
+    borderColor: COLORS.primary,
+    fontFamily: FONTS.medium,
+    fontSize: 16,
+    color: COLORS.text,
+  },
+  notePresets: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  notePresetPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: RADIUS.pill,
     backgroundColor: COLORS.surface,
     borderWidth: 1,
     borderColor: COLORS.border,
-    fontFamily: FONTS.medium,
-    fontSize: 15,
-    color: COLORS.text,
   },
+  notePresetPillOn: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  notePresetText: { ...TYPE.label, color: COLORS.text },
+  notePresetTextOn: { color: COLORS.onPrimary, fontFamily: FONTS.semibold },
+  noteSheetActions: { flexDirection: "row", gap: 10, marginTop: 4 },
   keypad: { flexDirection: "row", flexWrap: "wrap" },
   key: { width: "33.333%", height: 56, alignItems: "center", justifyContent: "center", borderRadius: 14 },
   keyText: { fontFamily: FONTS.bold, fontSize: 24, color: COLORS.text },

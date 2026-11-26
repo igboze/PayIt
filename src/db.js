@@ -1074,20 +1074,126 @@ function isBlocked(telegramId) {
 }
 // ─── Transactions ─────────────────────────────────────────────────────────────
 
+const TERMINAL_TX_STATUSES = new Set(["confirmed", "completed", "paid", "settled"]);
+
+function _txStatusRank(status) {
+  const s = String(status || "").toLowerCase();
+  if (TERMINAL_TX_STATUSES.has(s)) return 3;
+  if (/fail|reject|cancel|error|refund/.test(s)) return 2;
+  return 1; // pending / submitted / processing
+}
+
 function recordTransaction(telegramId, type, amountMicro, status, txHash, accountType = "personal", decimals = 18, chain = "arc", narration = null, meta = null) {
   const sourceCurrency = meta && meta.sourceCurrency ? String(meta.sourceCurrency).toUpperCase() : null;
   const rawSourceAmt = meta && meta.sourceAmount !== undefined && meta.sourceAmount !== null ? Number(meta.sourceAmount) : null;
   const sourceAmount = rawSourceAmt !== null && Number.isFinite(rawSourceAmt) && rawSourceAmt > 0 ? rawSourceAmt : null;
   const depositChannel = meta && meta.depositChannel ? String(meta.depositChannel).toLowerCase() : null;
+  const cleanHash = txHash ? String(txHash).trim() : null;
+  const cleanAcct = accountType || "personal";
+  const amountStr = amountMicro.toString();
+
+  // Deduplication / upsert guard: prevent webhooks + pollers + action handlers from creating
+  // two ledger rows for the exact same transfer, payout, or deposit.
+  try {
+    let existing = null;
+    if (cleanHash) {
+      existing = db.prepare(
+        "SELECT * FROM transactions WHERE telegram_id = ? AND account_type = ? AND type = ? AND tx_hash = ? ORDER BY id DESC LIMIT 1"
+      ).get(telegramId, cleanAcct, type, cleanHash);
+    }
+
+    // For Paj offramp payouts, the initial action records tx_hash = on-chain txHash while the
+    // webhook/poller later arrives with tx_hash = order_id (or vice-versa). Merge via paj_offramp_orders.
+    if (!existing && type === "offramp") {
+      const refHashes = [];
+      if (cleanHash) refHashes.push(cleanHash);
+      if (meta && meta.orderId) refHashes.push(String(meta.orderId).trim());
+      if (meta && meta.onchainTxHash) refHashes.push(String(meta.onchainTxHash).trim());
+      if (cleanHash) {
+        try {
+          const order = db.prepare(
+            "SELECT order_id, tx_hash FROM paj_offramp_orders WHERE telegram_id = ? AND (order_id = ? OR tx_hash = ?) ORDER BY id DESC LIMIT 1"
+          ).get(telegramId, cleanHash, cleanHash);
+          if (order?.order_id) refHashes.push(String(order.order_id));
+          if (order?.tx_hash) refHashes.push(String(order.tx_hash));
+        } catch (_) {}
+      }
+      const uniqueRefs = [...new Set(refHashes.filter(Boolean))];
+      for (const ref of uniqueRefs) {
+        const hit = db.prepare(
+          "SELECT * FROM transactions WHERE telegram_id = ? AND account_type = ? AND type = 'offramp' AND tx_hash = ? ORDER BY id DESC LIMIT 1"
+        ).get(telegramId, cleanAcct, ref);
+        if (hit) {
+          existing = hit;
+          break;
+        }
+      }
+      // Fallback: upgrade a recent submitted/pending offramp of the exact same amount when order hashes differ
+      if (!existing && _txStatusRank(status) >= 2) {
+        existing = db.prepare(
+          `SELECT * FROM transactions
+           WHERE telegram_id = ? AND account_type = ? AND type = 'offramp'
+             AND status IN ('pending', 'submitted', 'processing')
+             AND amount_micro = ?
+             AND created_at >= datetime('now', '-6 hours')
+           ORDER BY id DESC LIMIT 1`
+        ).get(telegramId, cleanAcct, amountStr);
+      }
+    }
+
+    // For Paj onramp Naira deposits, webhook + poller can both fire with order_id vs settlement txHash.
+    if (!existing && type === "deposit_naira") {
+      const refHashes = [];
+      if (cleanHash) refHashes.push(cleanHash);
+      if (meta && meta.orderId) refHashes.push(String(meta.orderId).trim());
+      if (cleanHash) {
+        try {
+          const order = db.prepare(
+            "SELECT order_id, tx_hash FROM paj_onramp_orders WHERE telegram_id = ? AND (order_id = ? OR tx_hash = ?) ORDER BY id DESC LIMIT 1"
+          ).get(telegramId, cleanHash, cleanHash);
+          if (order?.order_id) refHashes.push(String(order.order_id));
+          if (order?.tx_hash) refHashes.push(String(order.tx_hash));
+        } catch (_) {}
+      }
+      const uniqueRefs = [...new Set(refHashes.filter(Boolean))];
+      for (const ref of uniqueRefs) {
+        const hit = db.prepare(
+          "SELECT * FROM transactions WHERE telegram_id = ? AND account_type = ? AND type = 'deposit_naira' AND tx_hash = ? ORDER BY id DESC LIMIT 1"
+        ).get(telegramId, cleanAcct, ref);
+        if (hit) {
+          existing = hit;
+          break;
+        }
+      }
+    }
+
+    if (existing) {
+      const nextStatus = _txStatusRank(status) >= _txStatusRank(existing.status) ? status : existing.status;
+      const nextHash = existing.tx_hash || cleanHash;
+      const nextNarration = existing.narration || narration || null;
+      const nextSourceCur = existing.source_currency || sourceCurrency;
+      const nextSourceAmt = existing.source_amount ?? sourceAmount;
+      const nextChannel = existing.deposit_channel || depositChannel;
+      db.prepare(
+        `UPDATE transactions
+         SET status = ?, tx_hash = ?, narration = ?, source_currency = ?, source_amount = ?, deposit_channel = ?
+         WHERE id = ?`
+      ).run(nextStatus, nextHash, nextNarration, nextSourceCur, nextSourceAmt, nextChannel, existing.id);
+      return existing.id;
+    }
+  } catch (dedupeErr) {
+    console.warn("[db:recordTransaction] dedupe check note:", dedupeErr.message);
+  }
+
   const result = db.prepare(
     "INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, account_type, decimals, chain, narration, source_currency, source_amount, deposit_channel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
   ).run(
     telegramId,
     type,
-    amountMicro.toString(),
+    amountStr,
     status,
-    txHash || null,
-    accountType,
+    cleanHash,
+    cleanAcct,
     decimals,
     chain,
     narration || null,

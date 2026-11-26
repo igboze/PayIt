@@ -3,6 +3,8 @@
 // Verified directly against https://docs.nuvion.co/supported-currencies,
 // /core-concepts/accounts, and /guides/send-a-payout (X-API-Version: 2026-02-06).
 
+const internationalBanks = require("./international_banks");
+
 const ALL_NUVION_FIAT_CURRENCIES = [
   "USD", "EUR", "GBP", "CAD", "AUD", "NZD", "CHF", "JPY", "CNY",
   "HKD", "SGD", "THB", "PHP", "KRW", "AED", "ILS", "ZAR", "NGN",
@@ -635,7 +637,12 @@ function buildPaymentDetailPayload(entityId, counterpartyId, rail, details) {
   if (details.sort_code) payload.sort_code = String(details.sort_code).trim();
   if (details.routing_number) payload.routing_number = String(details.routing_number).trim();
   if (details.swift_bic) payload.swift_bic = String(details.swift_bic).trim().toUpperCase();
-  if (details.bank_code) payload.bank_code = String(details.bank_code).trim();
+  if (details.bank_code) {
+    payload.bank_code = String(details.bank_code).trim();
+  } else if (details.bank_name) {
+    const resolved = internationalBanks.resolveInternationalBank(currency, details.bank_name);
+    if (resolved.code) payload.bank_code = resolved.code;
+  }
   if (details.branch_code) payload.branch_code = String(details.branch_code).trim();
   if (details.bank_institution_number) payload.bank_institution_number = String(details.bank_institution_number).trim();
   if (details.transit_number) payload.transit_number = String(details.transit_number).trim();

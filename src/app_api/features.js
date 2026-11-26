@@ -41,6 +41,8 @@ const deps = {
   get notify() { return require("../notify"); },
   get solanaAddress() { return require("../solana_address"); },
   get onramp() { return require("../onramp"); },
+  get flowsKyc() { return require("../flows_nuvion_kyc"); },
+  get internationalBanks() { return require("../international_banks"); },
 };
 
 const overrides = {};
@@ -178,11 +180,13 @@ function formatContact(p) {
 }
 
 function formatGlobalAccount(d) {
+  const bankCode = d.bank_code || dep("internationalBanks")?.enrichReceivingBankCode(d.currency, d.bank_name) || null;
   return {
     id: d.detail_id || d.id || null,
     accountId: d.account_id || null,
     currency: d.currency,
     bankName: d.bank_name || null,
+    bankCode,
     beneficiaryName: d.beneficiary_name || null,
     accountNumber: d.account_number || null,
     routingNumber: d.routing_number || null,
@@ -2230,6 +2234,12 @@ async function createGlobalPaymentLink(auth, body) {
   }
 }
 
+function stripBase64DataUrl(val) {
+  const s = String(val || "").trim();
+  const m = s.match(/^data:[^;]+;base64,(.+)$/i);
+  return m ? m[1] : s;
+}
+
 async function submitKyc(auth, body) {
   const compliance = dep("compliance");
   const countryCode = compliance.normalizeCountryCode(body?.countryCode || body?.nationality || body?.country_code);
@@ -2242,37 +2252,144 @@ async function submitKyc(auth, body) {
   const email = reqStr(body, "email", { max: 120 });
   const phoneNumber = reqStr(body, "phoneNumber", { max: 32 });
   const dateOfBirth = reqStr(body, "dateOfBirth", { pattern: /^\d{4}-\d{2}-\d{2}$/, max: 20 });
-  const gender = reqStr(body, "gender", { pattern: /^(male|female)$/i }).toLowerCase();
+  const gender = reqStr(body, "gender", { pattern: /^(male|female|m|f)$/i }).toLowerCase();
   if (!body?.address || typeof body.address !== "object") throw bad("address object is required.");
   if (!body?.idDocument || typeof body.idDocument !== "object") throw bad("idDocument object is required.");
 
-  let entityRes;
-  try {
-    entityRes = await dep("nuvion").createIndividualEntity({
-      nationality: countryCode,
-      firstName,
-      lastName,
-      middleName: optStr(body, "middleName", { max: 80 }) || undefined,
+  const rawDoc = body.idDocument || {};
+  const rawAddr = body.address || {};
+  const idNumberStr = String(rawDoc.number || "").trim();
+  if (!idNumberStr) throw bad("idDocument.number is required.");
+  const addrLine1 = String(rawAddr.line1 || rawAddr.line_1 || rawAddr.street || "").trim();
+  if (!addrLine1) throw bad("address.line1 is required.");
+
+  const fullName = `${firstName} ${lastName}`.trim();
+  const cleanPhone = dep("flowsKyc")?.normalizePhone?.(phoneNumber, countryCode) || phoneNumber;
+  const ninVal = optStr(body, "nin", { max: 11 }) || (countryCode === "NG" ? optStr(body, "bvn", { max: 11 }) : "");
+  const bvnVal = optStr(body, "bvn", { max: 11 });
+  const ssnVal = optStr(body, "ssn", { max: 15 });
+
+  const normalizeDocType = (t) => {
+    const s = String(t || "").toLowerCase();
+    if (s.includes("pass")) return "international_passport";
+    if (s.includes("driv") || s.includes("dl")) return "drivers_license";
+    return "national_id";
+  };
+  const docType = normalizeDocType(rawDoc.type);
+
+  const entityPayload = {
+    name: fullName,
+    person: {
+      first_name: firstName,
+      last_name: lastName,
+      middle_name: optStr(body, "middleName", { max: 80 }) || undefined,
       email,
-      phoneNumber,
-      dateOfBirth,
-      gender,
-      address: body.address,
-      idDocument: body.idDocument,
-    });
+      date_of_birth: dateOfBirth,
+      gender: gender.startsWith("f") ? "f" : "m",
+      phonenumber: cleanPhone,
+      nationality: countryCode,
+      ...(bvnVal ? { bvn: bvnVal } : {}),
+      ...(ninVal ? { nin: ninVal } : {}),
+      ...(ssnVal ? { ssn: ssnVal } : {}),
+    },
+    address: {
+      line_1: addrLine1,
+      city: String(rawAddr.city || "").trim() || undefined,
+      state: String(rawAddr.state || "").trim() || undefined,
+      postal_code: String(rawAddr.postalCode || rawAddr.postal_code || "").trim() || undefined,
+      country_code: countryCode,
+    },
+    identification: {
+      document: {
+        type: docType,
+        number: idNumberStr,
+        ...(rawDoc.issueDate || rawDoc.issue_date ? { issue_date: String(rawDoc.issueDate || rawDoc.issue_date).trim() } : {}),
+        ...(rawDoc.expiryDate || rawDoc.expiry_date ? { expiry_date: String(rawDoc.expiryDate || rawDoc.expiry_date).trim() } : {}),
+        issuing_country: rawDoc.country || rawDoc.issuing_country || countryCode,
+        issuing_authority: rawDoc.issuingAuthority || rawDoc.issuing_authority || "Government Authority",
+      },
+      proof_of_address: {
+        type: "utility_bill",
+      },
+    },
+    meta: {
+      funding_source: "salary",
+      monthly_transaction_value: "5000",
+      customer_types: "individual",
+      monthly_payments_count: "20",
+      max_transfer_amount: "5000",
+      sales_channels: "Proxim Mobile",
+    },
+  };
+
+  const nuvion = dep("nuvion");
+  const db = dep("db");
+  const existingLocal = db.getNuvionEntityByUser(auth.telegramId, "personal");
+  let entityId = existingLocal?.entity_id || null;
+  let personId = existingLocal?.person_id || null;
+  let entityStatus = String(existingLocal?.status || "").toLowerCase();
+
+  try {
+    if (!entityId || entityStatus !== "incomplete") {
+      let created;
+      try {
+        created = await nuvion.createIndividualEntity(entityPayload);
+      } catch (createErr) {
+        if (createErr?.status === 409 && createErr?.type === "error_duplicate_resource" && typeof nuvion.recoverEntityByName === "function") {
+          created = await nuvion.recoverEntityByName({ name: fullName, type: "individual", email });
+          if (!created) throw createErr;
+        } else {
+          throw createErr;
+        }
+      }
+      const entityObj = created?.entity || created;
+      entityId = entityObj?.id || created?.id;
+      personId = created?.person?.id || entityObj?.person_id || personId || null;
+      entityStatus = String(entityObj?.status || created?.status || "pending").toLowerCase();
+    }
+
+    const docs = body.documents && typeof body.documents === "object" ? body.documents : null;
+    if (docs?.idFrontBase64 && typeof nuvion.uploadDocument === "function") {
+      await nuvion.uploadDocument({
+        entityId,
+        key: "identity",
+        description: `${docType} for ${fullName}`,
+        fileBase64: stripBase64DataUrl(docs.idFrontBase64),
+        fileBackBase64: docs.idBackBase64 ? stripBase64DataUrl(docs.idBackBase64) : null,
+        fileType: docs.idFrontMimeType || "image/jpeg",
+        personId,
+      });
+    }
+    if (docs?.proofOfAddressBase64 && typeof nuvion.uploadDocument === "function") {
+      await nuvion.uploadDocument({
+        entityId,
+        key: "proof_of_address",
+        description: `Proof of address for ${fullName}`,
+        fileBase64: stripBase64DataUrl(docs.proofOfAddressBase64),
+        fileType: docs.proofOfAddressMimeType || "image/jpeg",
+        personId,
+      });
+    }
+    if ((docs?.idFrontBase64 || docs?.proofOfAddressBase64) && entityStatus === "incomplete" && typeof nuvion.submitOnboarding === "function") {
+      await nuvion.submitOnboarding(entityId);
+      entityStatus = "pending";
+    }
   } catch (err) {
     throw new FeatureError(Number(err.status || err.statusCode) || 400, "kyc_error", String(err.message || "Could not submit verification.").replace(/nuvion/gi, "Global Neobank"));
   }
-  dep("db").upsertNuvionEntity({
+
+  db.upsertNuvionEntity({
     telegramId: auth.telegramId,
     accountType: "personal",
-    entityId: entityRes.id,
+    entityId,
     entityType: "individual",
-    status: entityRes.status || "pending",
-    legalName: `${firstName} ${lastName}`.trim(),
+    personId,
+    status: entityStatus || "pending",
+    legalName: fullName,
+    email,
     countryCode,
   });
-  return { status: 201, data: { status: entityRes.status || "pending", tier: String(entityRes.status || "").toLowerCase() === "approved" ? 1 : 0 } };
+  return { status: 201, data: { status: entityStatus || "pending", tier: entityStatus === "approved" ? 1 : 0 } };
 }
 
 async function submitKyb(auth, body) {
@@ -2300,38 +2417,113 @@ async function submitKyb(auth, body) {
   if (!body?.address || typeof body.address !== "object") throw bad("address object is required.");
   if (!body?.officer || typeof body.officer !== "object") throw bad("officer object is required.");
 
-  let entityRes;
-  try {
-    entityRes = await dep("nuvion").createBusinessEntity({
-      legalName,
-      tradeName: optStr(body, "tradeName", { max: 120 }) || legalName,
-      registrationNumber,
-      taxId: optStr(body, "taxId", { max: 64 }) || registrationNumber,
-      incorporationCountry: countryCode,
-      incorporationState: optStr(body, "incorporationState", { max: 80 }) || body.address.state || "",
-      incorporationYear,
-      incorporationMonth,
+  const rawAddr = body.address || {};
+  const rawOfficer = body.officer || {};
+  const addrLine1 = String(rawAddr.line1 || rawAddr.line_1 || rawAddr.street || "").trim();
+  if (!addrLine1) throw bad("address.line1 is required.");
+  const officerFirst = String(rawOfficer.firstName || rawOfficer.first_name || "").trim();
+  const officerLast = String(rawOfficer.lastName || rawOfficer.last_name || "").trim();
+  if (!officerFirst || !officerLast) throw bad("officer.firstName and officer.lastName are required.");
+  const officerEmail = String(rawOfficer.email || "").trim() || email;
+  const officerDob = String(rawOfficer.dateOfBirth || rawOfficer.dob || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(officerDob)) throw bad("officer.dateOfBirth (YYYY-MM-DD) is required.");
+  const officerPhone = dep("flowsKyc")?.normalizePhone?.(rawOfficer.phoneNumber || rawOfficer.phone || phoneNumber, countryCode) || phoneNumber;
+
+  const bizAddress = {
+    line_1: addrLine1,
+    city: String(rawAddr.city || "").trim() || undefined,
+    state: String(rawAddr.state || "").trim() || undefined,
+    postal_code: String(rawAddr.postalCode || rawAddr.postal_code || "").trim() || undefined,
+    country_code: countryCode,
+  };
+
+  const entityPayload = {
+    name: legalName,
+    business: {
+      legal_name: legalName,
+      trade_name: optStr(body, "tradeName", { max: 120 }) || legalName,
+      registration_number: registrationNumber,
+      tax_id: optStr(body, "taxId", { max: 64 }) || registrationNumber,
+      incorporation_country: countryCode,
+      incorporation_state: optStr(body, "incorporationState", { max: 80 }) || String(rawAddr.state || "").trim() || undefined,
+      incorporation_year: incorporationYear,
+      incorporation_month: incorporationMonth,
       email,
-      phoneNumber,
+      phone_number: dep("flowsKyc")?.normalizePhone?.(phoneNumber, countryCode) || phoneNumber,
       website: optStr(body, "website", { max: 200 }) || undefined,
       industry,
-      entityType: businessType,
-      address: body.address,
-      officer: body.officer,
-    });
+      type: businessType,
+    },
+    address: bizAddress,
+    operating_address: { ...bizAddress },
+    business_officers: [
+      {
+        relationship: "director",
+        person: {
+          first_name: officerFirst,
+          last_name: officerLast,
+          email: officerEmail,
+          phone_number: officerPhone,
+          date_of_birth: officerDob,
+          gender: String(rawOfficer.gender || "m").toLowerCase().startsWith("f") ? "f" : "m",
+          nationality: rawOfficer.nationality || countryCode,
+          ...(rawOfficer.bvn ? { bvn: String(rawOfficer.bvn).trim() } : {}),
+          ...(rawOfficer.nin ? { nin: String(rawOfficer.nin).trim() } : {}),
+        },
+        ...(rawOfficer.idNumber ? {
+          identification: {
+            document: {
+              type: String(rawOfficer.idType || "").toLowerCase().includes("driv")
+                ? "drivers_license"
+                : String(rawOfficer.idType || "").toLowerCase().includes("nat")
+                  ? "national_id"
+                  : "international_passport",
+              number: String(rawOfficer.idNumber).trim(),
+              ...(rawOfficer.issueDate ? { issue_date: String(rawOfficer.issueDate).trim() } : {}),
+              ...(rawOfficer.expiryDate ? { expiry_date: String(rawOfficer.expiryDate).trim() } : {}),
+              issuing_country: rawOfficer.issuingCountry || countryCode,
+              issuing_authority: rawOfficer.issuingAuthority || "Government Authority",
+            },
+          },
+        } : {}),
+      },
+    ],
+    meta: {
+      registration_number: registrationNumber,
+      tax_id: optStr(body, "taxId", { max: 64 }) || registrationNumber,
+      annual_turnover: "100K",
+      monthly_transaction_value: "25K",
+      monthly_payments_count: "50",
+      max_transfer_amount: "10K",
+      customer_types: "Business",
+      sales_channels: "Direct",
+      funding_source: "Business revenue",
+    },
+  };
+
+  let entityRes;
+  try {
+    entityRes = await dep("nuvion").createBusinessEntity(entityPayload);
   } catch (err) {
     throw new FeatureError(Number(err.status || err.statusCode) || 400, "kyb_error", String(err.message || "Could not submit business verification.").replace(/nuvion/gi, "Global Neobank"));
   }
+  const entityObj = entityRes?.entity || entityRes;
+  const entityId = entityObj?.id || entityRes?.id;
+  const officerPersonId = entityRes?.business_officers?.[0]?.person?.id || entityRes?.business_officers?.[0]?.person_id || null;
+  let entityStatus = String(entityObj?.status || entityRes?.status || "pending").toLowerCase();
+
   dep("db").upsertNuvionEntity({
     telegramId: auth.telegramId,
     accountType: "business",
-    entityId: entityRes.id,
+    entityId,
     entityType: "business",
-    status: entityRes.status || "pending",
+    personId: officerPersonId,
+    status: entityStatus,
     legalName,
+    email,
     countryCode,
   });
-  return { status: 201, data: { status: entityRes.status || "pending", tier: String(entityRes.status || "").toLowerCase() === "approved" ? 1 : 0 } };
+  return { status: 201, data: { status: entityStatus || "pending", tier: entityStatus === "approved" ? 1 : 0 } };
 }
 
 async function refreshKycStatus(auth, body) {

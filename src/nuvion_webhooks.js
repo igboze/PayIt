@@ -12,6 +12,8 @@ const nuvion = require("./nuvion");
 const db = require("./db");
 const idempotency = require("./idempotency");
 const walletLib = require("./wallet");
+const emailModule = require("./email");
+const notifyModule = require("./notify");
 
 const CIRCLE_GATEWAY_WALLET_ADDRESS = "0x0077777d7EBA4688BDeF3E311b846F25870A19B9";
 
@@ -375,30 +377,68 @@ async function processNuvionEvent(payload, headers = {}, bot = null) {
         console.error(`[nuvion_webhooks] Base bridge bootstrap failed for entity ${entityId}:`, bootErr.message);
       }
 
-      if (prevStatus !== "approved" && telegram && updatedRecord.telegram_id) {
-        const acctLabel = updatedRecord.account_type === "business" ? "Business Account" : "Global Account";
+      const acctLabel = updatedRecord.account_type === "business" ? "Business Account" : "Global Account";
+      if (prevStatus !== "approved" && updatedRecord.telegram_id) {
+        // Multi-channel dispatch: Telegram + Push Notification + In-App Inbox
+        await notifyModule.notify(updatedRecord.telegram_id, {
+          title: "Tier-1 Verification Approved",
+          html: `🎉 <b>Tier-1 Verification Approved!</b>\nYour ${acctLabel} is now verified for Proxim Global Banking. Named accounts (USD, GBP, EUR) and USD Cards are now unlocked!`,
+          data: { type: "kyc_approved", entityId },
+        }).catch(() => {});
+
+        if (telegram) {
+          await telegram.sendMessage(
+            updatedRecord.telegram_id,
+            `🎉 <b>Tier-1 Verification Approved!</b>\n` +
+            `──────────────────────────\n` +
+            `Your <b>${escapeHtml(acctLabel)}</b> is now verified for Proxim Global Banking.\n\n` +
+            `You now have access to:\n` +
+            `• 🌍 Named global bank accounts (USD, GBP, EUR, NGN &amp; more)\n` +
+            `• 💳 Virtual &amp; Disposable USD Cards\n` +
+            `• ✈️ International bank &amp; mobile money transfers\n\n` +
+            `<i>Type /global anytime to open Global Banking.</i>`,
+            { parse_mode: "HTML" }
+          ).catch(() => {});
+        }
+
+        // Direct consumer transactional email dispatch to user's personal email
+        const userEmail = liveEntity?.person?.email || liveEntity?.business?.email || localRecord?.email || null;
+        if (userEmail) {
+          emailModule.sendKycStatusEmail({
+            to: userEmail,
+            name: updatedRecord.legal_name,
+            status: "approved",
+            accountType: updatedRecord.account_type,
+          }).catch((e) => console.warn("[nuvion_webhooks:email]", e.message));
+        }
+      }
+    } else if ((latestStatus === "failed" || latestStatus === "blocked" || latestStatus === "action_required") && prevStatus !== latestStatus && updatedRecord.telegram_id) {
+      await notifyModule.notify(updatedRecord.telegram_id, {
+        title: "Verification Update",
+        html: `❌ <b>Verification Update</b>\nYour Tier-1 verification status changed to ${escapeHtml(latestStatus)}. Please check your documents or contact support.`,
+        data: { type: "kyc_status_change", entityId, status: latestStatus },
+      }).catch(() => {});
+
+      if (telegram) {
         await telegram.sendMessage(
           updatedRecord.telegram_id,
-          `🎉 <b>Tier-1 Verification Approved!</b>\n` +
+          `❌ <b>Verification Update</b>\n` +
           `──────────────────────────\n` +
-          `Your <b>${escapeHtml(acctLabel)}</b> is now verified for Proxim Global Banking.\n\n` +
-          `You now have access to:\n` +
-          `• 🌍 Named global bank accounts (USD, GBP, EUR, NGN &amp; more)\n` +
-          `• 💳 Virtual &amp; Disposable USD Cards\n` +
-          `• ✈️ International bank &amp; mobile money transfers\n\n` +
-          `<i>Type /global anytime to open Global Banking.</i>`,
+          `Your Tier-1 verification status changed to <b>${escapeHtml(latestStatus)}</b>.\n` +
+          `Your regular Proxim wallet remains fully active. Contact support if you need help reviewing your documents.`,
           { parse_mode: "HTML" }
         ).catch(() => {});
       }
-    } else if ((latestStatus === "failed" || latestStatus === "blocked") && prevStatus !== latestStatus && telegram && updatedRecord.telegram_id) {
-      await telegram.sendMessage(
-        updatedRecord.telegram_id,
-        `❌ <b>Verification Update</b>\n` +
-        `──────────────────────────\n` +
-        `Your Tier-1 verification status changed to <b>${escapeHtml(latestStatus)}</b>.\n` +
-        `Your regular Proxim wallet remains fully active. Contact support if you need help reviewing your documents.`,
-        { parse_mode: "HTML" }
-      ).catch(() => {});
+
+      const userEmail = liveEntity?.person?.email || liveEntity?.business?.email || localRecord?.email || null;
+      if (userEmail) {
+        emailModule.sendKycStatusEmail({
+          to: userEmail,
+          name: updatedRecord.legal_name,
+          status: latestStatus,
+          accountType: updatedRecord.account_type,
+        }).catch((e) => console.warn("[nuvion_webhooks:email]", e.message));
+      }
     }
 
     await emitNuvionEvent(event, { payload, data, liveEntity: liveWrapper, entityRecord: updatedRecord, bot });

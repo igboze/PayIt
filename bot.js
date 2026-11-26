@@ -4901,8 +4901,9 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
       const effectiveRate = pajOrder?.rate || trackedOrder?.rate;
       const effectiveTx = (bridgeRes && bridgeRes.arcTxHash) || pajOrder?.txHash || trackedOrder?.tx_hash || orderId;
 
-      // 1% platform fee inside trade amount
-      const feeUsdc = Number((effectiveUsdc * 0.01).toFixed(4));
+      // 0.2% platform fee inside trade amount
+      const onrampFeeRate = Number(process.env.ONRAMP_PLATFORM_FEE_RATE ?? 0.002);
+      const feeUsdc = Number((effectiveUsdc * onrampFeeRate).toFixed(4));
       const netAmountUsdc = Number((effectiveUsdc - feeUsdc).toFixed(4));
       const feeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.PAYIT_DEV_FEE_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
       let feeTxHash = null;
@@ -4920,7 +4921,7 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
                 const feeMicro = walletLib.parseToMicro(feeUsdc.toFixed(6));
                 const feeTx = await walletLib.sendSponsoredOrDirectTransaction(userWallet, feeRecipient, feeMicro);
                 feeTxHash = feeTx?.txHash || null;
-                console.log(`[bot:action_check_paj_onramp] Collected 1% fee ($${feeUsdc} USDC) -> ${feeRecipient} (tx: ${feeTxHash})`);
+                console.log(`[bot:action_check_paj_onramp] Collected 0.2% fee ($${feeUsdc} USDC) -> ${feeRecipient} (tx: ${feeTxHash})`);
               }
             }
           }
@@ -4950,7 +4951,7 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
                     amount: feeUsdc,
                   });
                   feeTxHash = feeSolTx?.txHash || feeSolTx?.signature || null;
-                  console.log(`[bot:action_check_paj_onramp:solana] Collected 1% fee on Solana ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
+                  console.log(`[bot:action_check_paj_onramp:solana] Collected 0.2% fee on Solana ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
                 }
               }
             }
@@ -7515,7 +7516,7 @@ bot.on("text", async (ctx) => {
     return showPayTeamMenu(ctx);
   }
 
-  if (/^(?:global(?:\s*&\s*cards|\s*banking|\s*accounts)?|verify(?:\s*(?:id|account|business))?|upgrade(?:\s*(?:account|tier))?|kyc|kyb|usd\s*cards?|virtual\s*cards?)$/i.test(cleanNav)) {
+  if (/^(?:global(?:\s*&\s*cards|\s*banking|\s*accounts)?|verify(?:\s*(?:id|account|business))?|upgrade(?:\s*(?:account|tier))?|kyc|kyb|usd\s*cards?|virtual\s*cards?|(?:resume|continue|proceed)\s*(?:kyc|kyb|verification))$/i.test(cleanNav)) {
     convState.clearState(userId);
     return flowsNuvionKyc.showGlobalPortal(ctx, getContext(userId));
   }
@@ -9272,6 +9273,20 @@ bot.on("text", async (ctx) => {
           };
           const results = await executePlan(plan, text, user, context);
           if (results[0]?.success) {
+            try {
+              const recvMicro = walletLib.parseToMicro(Number(amountUsdc).toFixed(6));
+              db.recordTransaction(
+                targetUser.telegram_id,
+                "p2p_receive",
+                String(recvMicro),
+                "completed",
+                results[0].txHash,
+                "personal",
+                18,
+                "arc",
+                user.username ? `From @${user.username}` : "From Proxim user"
+              );
+            } catch (_) { }
             try {
               db.awardPoints(userId, POINTS.sendout || 10, "p2p_send", `Sent $${amountUsdc.toFixed(2)} to @${targetUsername}`);
             } catch (_) { }

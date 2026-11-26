@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
+import { Ionicons } from "@expo/vector-icons";
+import { PressableScale } from "../components/Touch";
 import {
   ActivityIndicator,
   Modal,
@@ -33,7 +35,7 @@ function cardIdOf(c: CardItem): string {
 }
 
 export function CardsScreen() {
-  const { user, activeAccount, dataVersion, requestApproval } = useApp();
+  const { user, activeAccount, dataVersion, requestApproval, balanceHidden } = useApp();
   const isBiz = activeAccount === "business";
 
   const [cards, setCards] = useState<CardItem[]>([]);
@@ -281,7 +283,7 @@ export function CardsScreen() {
               <View style={styles.cardFooter}>
                 <View>
                   <Text style={styles.cardLabel}>Balance</Text>
-                  <Text style={styles.cardBal}>{bal !== undefined ? formatUsdc(bal) : "—"}</Text>
+                  <Text style={styles.cardBal}>{balanceHidden ? "$••••" : bal !== undefined ? formatUsdc(bal) : "—"}</Text>
                 </View>
                 {c.expiryMonth && c.expiryYear ? (
                   <View>
@@ -293,14 +295,28 @@ export function CardsScreen() {
                 ) : null}
               </View>
 
-              <View style={styles.actionsWrap}>
-                <Pill label="Top Up" active onPress={() => setTopupCardId(id)} />
-                <Pill label="Reveal" onPress={() => handleReveal(id)} />
-                <Pill label={isFrozen ? "Unfreeze" : "Freeze"} onPress={() => handleFreezeToggle(id, isFrozen)} />
-                <Pill label="Activity" onPress={() => handleViewTransactions(id)} />
-                <Pill label="Unload" onPress={() => handleUnload(id)} />
-                <Pill label="Delete" tone="danger" active onPress={() => handleDelete(id)} />
+              <View style={styles.roundRow}>
+                {(
+                  [
+                    ["add", "Top up", () => setTopupCardId(id), true],
+                    ["eye-outline", "Details", () => handleReveal(id), false],
+                    [isFrozen ? "sunny-outline" : "snow-outline", isFrozen ? "Unfreeze" : "Freeze", () => handleFreezeToggle(id, isFrozen), false],
+                    ["receipt-outline", "Activity", () => handleViewTransactions(id), false],
+                    ["arrow-undo-outline", "Unload", () => handleUnload(id), false],
+                  ] as Array<[keyof typeof Ionicons.glyphMap, string, () => void, boolean]>
+                ).map(([icon, label, fn, main]) => (
+                  <PressableScale key={label} onPress={fn} depth={0.92} haptic="light" style={styles.roundItem} accessibilityRole="button" accessibilityLabel={label}>
+                    <View style={[styles.roundBtn, main && styles.roundBtnMain]}>
+                      <Ionicons name={icon} size={20} color={main ? COLORS.gold : COLORS.primary} />
+                    </View>
+                    <Text style={styles.roundLabel}>{label}</Text>
+                  </PressableScale>
+                ))}
               </View>
+              <PressableScale onPress={() => handleDelete(id)} haptic="light" style={styles.deleteLink} accessibilityRole="button">
+                <Ionicons name="trash-outline" size={15} color={COLORS.dangerText} />
+                <Text style={styles.deleteText}>Delete card</Text>
+              </PressableScale>
             </Card>
           );
         })
@@ -400,6 +416,24 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   cardLabel: { color: COLORS.textMuted, fontFamily: FONTS.regular, fontSize: 11 },
+  roundRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 14 },
+  roundItem: { alignItems: "center", gap: 6, flex: 1 },
+  roundBtn: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderBottomWidth: 2,
+    borderBottomColor: COLORS.borderStrong,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  roundBtnMain: { backgroundColor: COLORS.forest, borderColor: COLORS.forest, borderBottomColor: COLORS.primaryDark },
+  roundLabel: { fontFamily: FONTS.semibold, fontSize: 11.5, color: COLORS.text },
+  deleteLink: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 14, minHeight: 40 },
+  deleteText: { fontFamily: FONTS.semibold, fontSize: 13, color: COLORS.dangerText },
   cardBal: { color: COLORS.text, fontSize: 16, fontFamily: FONTS.bold, marginTop: 2 },
   actionsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   modalBackdrop: { flex: 1, backgroundColor: "rgba(0, 20, 15, 0.72)", justifyContent: "flex-end" },

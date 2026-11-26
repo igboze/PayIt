@@ -64,6 +64,8 @@ function escapeHtml(str) {
 const DEFAULT_TICK_MS = 5000;
 const STALE_RUN_MINUTES = 15;
 
+const ONRAMP_PLATFORM_FEE_RATE = Number(process.env.ONRAMP_PLATFORM_FEE_RATE ?? 0.002); // 0.2% on-ramp fee (reduced from 1%)
+
 /**
  * Poll pending Paj on-ramp orders from local DB and query Paj v2 status.
  * If completed/paid, records in ledger and sends rich deposit notification.
@@ -84,9 +86,9 @@ async function pollPendingOnrampOrders(bot) {
       if (status === "completed" || status === "successful" || status === "paid" || status === "settled") {
         const txHash = orderData.txHash || orderData.signature || orderData.hash || `paj-settle-${order.order_id}`;
         
-        // 1% platform fee inside trade amount
+        // 0.2% platform fee inside trade amount
         const amountUsdc = Number(orderData.amount || order.amount_usdc || 0);
-        const feeUsdc = Number((amountUsdc * 0.01).toFixed(4));
+        const feeUsdc = Number((amountUsdc * ONRAMP_PLATFORM_FEE_RATE).toFixed(4));
         const netAmountUsdc = Number((amountUsdc - feeUsdc).toFixed(4));
         const feeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.PAYIT_DEV_FEE_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
         let feeTxHash = null;
@@ -107,7 +109,7 @@ async function pollPendingOnrampOrders(bot) {
                   const feeMicro = walletLib.parseToMicro(feeUsdc.toFixed(6));
                   const feeTx = await walletLib.sendSponsoredOrDirectTransaction(userWallet, feeRecipient, feeMicro);
                   feeTxHash = feeTx?.txHash || null;
-                  console.log(`[settlement_daemon:onramp] Collected 1% fee ($${feeUsdc} USDC) -> ${feeRecipient} (tx: ${feeTxHash})`);
+                  console.log(`[settlement_daemon:onramp] Collected 0.2% fee ($${feeUsdc} USDC) -> ${feeRecipient} (tx: ${feeTxHash})`);
                 }
               }
             }
@@ -137,7 +139,7 @@ async function pollPendingOnrampOrders(bot) {
                       amount: feeUsdc,
                     });
                     feeTxHash = feeSolTx?.txHash || feeSolTx?.signature || null;
-                    console.log(`[settlement_daemon:onramp:solana] Collected 1% fee on Solana ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
+                    console.log(`[settlement_daemon:onramp:solana] Collected 0.2% fee on Solana ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
                   }
                 }
               }
@@ -153,14 +155,23 @@ async function pollPendingOnrampOrders(bot) {
         // Mark completed in DB
         db.completeOnrampOrder(order.order_id, txHash);
 
-        // Record in ledger
+        // Record in ledger (deduplicated against webhook_server if both fire)
         db.recordTransaction(
           order.telegram_id,
           "deposit_naira",
           amountMicro,
           "confirmed",
           txHash,
-          order.account_type || "personal"
+          order.account_type || "personal",
+          18,
+          "arc",
+          orderData.narration || orderData.description || null,
+          {
+            orderId: order.order_id,
+            sourceCurrency: "NGN",
+            sourceAmount: Number(orderData.fiatAmount || order.fiat_amount || 0) || null,
+            depositChannel: "naira",
+          }
         );
 
         // Trigger rich notification with receipt PNG
@@ -248,8 +259,12 @@ async function pollPendingOfframpOrders(bot) {
               "offramp",
               amountMicro,
               "confirmed",
-              txHash,
-              order.account_type || "personal"
+              order.tx_hash || txHash,
+              order.account_type || "personal",
+              18,
+              order.rail || "arc",
+              order.narration || orderData.narration || orderData.description || null,
+              { orderId: order.order_id, onchainTxHash: order.tx_hash || null }
             );
           } catch (recErr) {
             console.warn("[settlement_daemon:offramp] Record tx error:", recErr.message);

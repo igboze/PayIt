@@ -450,7 +450,9 @@ test("money actions: transfer.user, payout.ngn, payout.global, bill.pay, savings
   const savView = await call("GET", "/savings", null, token);
   assert.equal(savView.status, 200);
   assert.equal(savView.body.position.principalUsdc, 50);
-  assert.equal(savView.body.position.accruedYieldUsdc, 0.42);
+  assert.equal(savView.body.position.grossYieldUsdc, 0.42);
+  assert.equal(savView.body.position.accruedYieldUsdc, 0.378);
+  assert.equal(savView.body.position.platformFeeUsdc, 0.042);
 
   const savWd = await approveAction(aliceAuth, token, "savings.withdraw", {});
   assert.equal(savWd.confirm.status, 200, JSON.stringify(savWd.confirm.body));

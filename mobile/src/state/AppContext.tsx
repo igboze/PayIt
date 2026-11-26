@@ -6,7 +6,9 @@ import { assertPasskey } from "../api/passkey";
 // Remembers that someone has signed in on this phone, so sign-in can go straight to
 // fingerprint / face. Cleared only by an explicit sign-out (to add another account).
 export const RETURNING_USER_KEY = "proxim_returning_user";
+export const BALANCE_HIDDEN_KEY = "proxim_balance_hidden_v1";
 const rememberReturningUser = () => SecureStore.setItemAsync(RETURNING_USER_KEY, "1").catch(() => {});
+let _cachedBalanceHidden: boolean | null = null;
 import {
   api,
   clearSessionTokens,
@@ -55,6 +57,10 @@ interface AppContextValue {
   /** True while a returning user must confirm with their passkey before seeing anything. */
   locked: boolean;
   unlock: () => Promise<void>;
+  /** True when the user has chosen to hide balances across the app (persisted on device). */
+  balanceHidden: boolean;
+  toggleBalanceHidden: () => void;
+  setBalanceHidden: (next: boolean) => void;
 }
 
 // Lock again after this long in the background.
@@ -73,7 +79,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
   const pendingRef = useRef<PendingApproval | null>(null);
   const [locked, setLocked] = useState(false);
+  const [balanceHidden, setBalanceHiddenState] = useState<boolean>(_cachedBalanceHidden ?? false);
   const backgroundedAt = useRef<number | null>(null);
+
+  const setBalanceHidden = useCallback((next: boolean) => {
+    _cachedBalanceHidden = next;
+    setBalanceHiddenState(next);
+    SecureStore.setItemAsync(BALANCE_HIDDEN_KEY, next ? "1" : "0").catch(() => {});
+  }, []);
+
+  const toggleBalanceHidden = useCallback(() => {
+    setBalanceHiddenState((prev) => {
+      const next = !prev;
+      _cachedBalanceHidden = next;
+      SecureStore.setItemAsync(BALANCE_HIDDEN_KEY, next ? "1" : "0").catch(() => {});
+      return next;
+    });
+  }, []);
 
   const syncUser = useCallback((nextUser: ProximUser) => {
     const ctx: AccountType =
@@ -102,6 +124,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
     (async () => {
       try {
+        const storedHidden = await SecureStore.getItemAsync(BALANCE_HIDDEN_KEY).catch(() => null);
+        if (storedHidden === "1" || storedHidden === "0") {
+          const isHidden = storedHidden === "1";
+          _cachedBalanceHidden = isHidden;
+          setBalanceHiddenState(isHidden);
+        }
         const { accessToken, refreshToken } = await loadStoredTokens();
         if (accessToken || refreshToken) {
           const res = await api.me();
@@ -251,6 +279,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         completeApproval,
         locked: Boolean(user) && locked,
         unlock,
+        balanceHidden,
+        toggleBalanceHidden,
+        setBalanceHidden,
       }}
     >
       {children}

@@ -36,6 +36,57 @@ import { CryptoSendScreen } from "./CryptoSendScreen";
 
 type SendMode = "user" | "wallet" | "ngn" | "global" | "crypto";
 
+const POPULAR_INTERNATIONAL_BANKS: Record<string, Array<{ code: string; name: string }>> = {
+  GHS: [
+    { code: "030100", name: "GCB Bank" },
+    { code: "130100", name: "Ecobank" },
+    { code: "040100", name: "Stanbic Bank" },
+    { code: "020100", name: "Absa Bank" },
+    { code: "240100", name: "Fidelity Bank" },
+    { code: "120100", name: "Zenith Bank" },
+    { code: "010100", name: "Standard Chartered" },
+    { code: "280100", name: "Access Bank" },
+    { code: "140100", name: "CalBank" },
+  ],
+  TZS: [
+    { code: "015", name: "CRDB Bank" },
+    { code: "012", name: "NMB Bank" },
+    { code: "011", name: "NBC Bank" },
+    { code: "041", name: "Stanbic Tanzania" },
+    { code: "002", name: "Standard Chartered" },
+    { code: "021", name: "DTB Tanzania" },
+    { code: "017", name: "Exim Bank" },
+    { code: "026", name: "KCB Tanzania" },
+    { code: "051", name: "Equity Bank" },
+  ],
+  KES: [
+    { code: "01", name: "KCB Bank" },
+    { code: "68", name: "Equity Bank" },
+    { code: "11", name: "Co-op Bank" },
+    { code: "02", name: "Standard Chartered" },
+    { code: "03", name: "Absa Kenya" },
+    { code: "07", name: "NCBA Bank" },
+    { code: "31", name: "Stanbic Kenya" },
+    { code: "63", name: "DTB Kenya" },
+  ],
+  UGX: [
+    { code: "040147", name: "Stanbic Uganda" },
+    { code: "020100", name: "Centenary Bank" },
+    { code: "010100", name: "Standard Chartered" },
+    { code: "030100", name: "Absa Uganda" },
+    { code: "060100", name: "DFCU Bank" },
+    { code: "140100", name: "Equity Uganda" },
+  ],
+  ZAR: [
+    { code: "250655", name: "FNB" },
+    { code: "051001", name: "Standard Bank" },
+    { code: "632005", name: "ABSA" },
+    { code: "198765", name: "Nedbank" },
+    { code: "470010", name: "Capitec" },
+    { code: "580105", name: "Investec" },
+  ],
+};
+
 // Provider field keys (account_holder_name, swift_bic...) shown as plain labels.
 const FIELD_LABELS: Record<string, string> = {
   account_holder_name: "Recipient full name",
@@ -178,19 +229,19 @@ export function SendScreen({
   } | null>(null);
 
   useEffect(() => {
-    api.getBankRates().then(setRates).catch(() => {});
+    api.getBankRates().then(setRates).catch(() => { });
   }, []);
 
   useEffect(() => {
     setError(null);
     if (mode === "user") {
-      api.getBankRates().then(setRates).catch(() => {});
-      api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => {});
+      api.getBankRates().then(setRates).catch(() => { });
+      api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => { });
     } else if (mode === "wallet") {
-      api.listContacts().then((r) => setContacts(r.contacts || [])).catch(() => {});
+      api.listContacts().then((r) => setContacts(r.contacts || [])).catch(() => { });
     } else if (mode === "ngn") {
-      api.getBankRates().then(setRates).catch(() => {});
-      api.listBanks(bankQuery || undefined).then((r) => setBanks(r.banks || [])).catch(() => {});
+      api.getBankRates().then(setRates).catch(() => { });
+      api.listBanks(bankQuery || undefined).then((r) => setBanks(r.banks || [])).catch(() => { });
     } else if (mode === "global") {
       api
         .listGlobalCorridors()
@@ -225,11 +276,11 @@ export function SendScreen({
             }
           }
         })
-        .catch(() => {});
+        .catch(() => { });
       api
         .listGlobalRecipients(undefined, activeAccount)
         .then((r) => setGlobalRecipients(r.recipients || []))
-        .catch(() => {});
+        .catch(() => { });
     } else if (mode === "crypto") {
       api
         .listWithdrawalChains()
@@ -238,15 +289,15 @@ export function SendScreen({
           setFeeUsd(r.feeUsd);
           if (!selectedChain && r.chains?.length) setSelectedChain(r.chains[0]);
         })
-        .catch(() => {});
-      api.listBridgeMoves().then(setBridgeMoves).catch(() => {});
+        .catch(() => { });
+      api.listBridgeMoves().then(setBridgeMoves).catch(() => { });
     }
   }, [mode, activeAccount]);
 
   useEffect(() => {
     if (mode !== "ngn") return;
     const t = setTimeout(() => {
-      api.listBanks(bankQuery.trim() || undefined).then((r) => setBanks(r.banks || [])).catch(() => {});
+      api.listBanks(bankQuery.trim() || undefined).then((r) => setBanks(r.banks || [])).catch(() => { });
     }, 250);
     return () => clearTimeout(t);
   }, [bankQuery, mode]);
@@ -319,9 +370,9 @@ export function SendScreen({
       setNotice(res.notice || "Gift link created!");
       setUserAmount("");
       if (res.shareText || res.claimUrl) {
-        Share.share({ message: String(res.shareText || res.claimUrl) }).catch(() => {});
+        Share.share({ message: String(res.shareText || res.claimUrl) }).catch(() => { });
       }
-      api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => {});
+      api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => { });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Could not create gift link.";
       if (!/cancel/i.test(msg)) setError(msg);
@@ -645,12 +696,13 @@ export function SendScreen({
               }
             />
             <Input
-              label="Narration (optional)"
-              placeholder="Payment reference"
+              label="Description / Narration (optional)"
+              placeholder="What is this transfer for? (e.g. Rent, groceries)"
               value={ngnNarration}
               onChangeText={setNgnNarration}
+              hint="Shown on your transfer receipt and bank alert"
             />
-            <Button title="Review and approve" onPress={handlePayoutNgn} loading={loading} />
+            <Button title="Review and approve" onPress={handlePayoutNgn} loading={loading} style={{ marginTop: 4 }} />
           </Card>
         ) : null}
 
@@ -758,7 +810,7 @@ export function SendScreen({
                           requestApproval("gift.cancel", { claimToken: g.claimToken })
                             .then(() => {
                               setNotice("Gift cancelled & refunded.");
-                              api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => {});
+                              api.listPendingGifts().then((r) => setPendingGifts(r.gifts || [])).catch(() => { });
                             })
                             .catch((e) => !/cancel/i.test(String(e?.message)) && setError(e.message))
                         }
@@ -839,12 +891,12 @@ export function SendScreen({
               const q = railQuery.trim().toLowerCase();
               const filteredCorridors = q
                 ? corridors.filter(
-                    (c) =>
-                      c.currency.toLowerCase().includes(q) ||
-                      c.name.toLowerCase().includes(q) ||
-                      c.country.toLowerCase().includes(q) ||
-                      c.rails.some((r) => (r.label || "").toLowerCase().includes(q))
-                  )
+                  (c) =>
+                    c.currency.toLowerCase().includes(q) ||
+                    c.name.toLowerCase().includes(q) ||
+                    c.country.toLowerCase().includes(q) ||
+                    c.rails.some((r) => (r.label || "").toLowerCase().includes(q))
+                )
                 : corridors;
               const visibleCorridors = showAllRails || q ? filteredCorridors : filteredCorridors.slice(0, 8);
               const hiddenCount = Math.max(0, filteredCorridors.length - visibleCorridors.length);
@@ -983,6 +1035,36 @@ export function SendScreen({
                 <Text style={styles.fieldHint}>
                   Recipient {selectedRail.currency} bank details ({selectedRail.requiredFields.length} required)
                 </Text>
+
+                {POPULAR_INTERNATIONAL_BANKS[selectedRail.currency] ? (
+                  <View style={{ marginBottom: 14 }}>
+                    <Text style={[styles.fieldHint, { color: COLORS.textSecondary }]}>
+                      Popular {selectedRail.currency} banks (auto-fills bank code):
+                    </Text>
+                    <View style={styles.pillRow}>
+                      {POPULAR_INTERNATIONAL_BANKS[selectedRail.currency].map((b) => {
+                        const isChosen =
+                          (globalFields.bank_name || "").toLowerCase() === b.name.toLowerCase() ||
+                          globalFields.bank_code === b.code;
+                        return (
+                          <Pill
+                            key={b.code}
+                            label={b.name}
+                            active={isChosen}
+                            onPress={() => {
+                              setGlobalFields((prev) => ({
+                                ...prev,
+                                bank_name: b.name,
+                                bank_code: b.code,
+                              }));
+                            }}
+                          />
+                        );
+                      })}
+                    </View>
+                  </View>
+                ) : null}
+
                 {(selectedRail.requiredFields || []).map((f, idx) => {
                   const obj: GlobalRailField = typeof f === "string" ? { key: f } : f;
                   const key = obj.key || obj.name || `field_${idx}`;
