@@ -7,7 +7,9 @@ import type {
   BankRatesResponse,
   ContactItem,
   GiftItem,
+  GlobalCorridor,
   GlobalRail,
+  GlobalRailField,
   GlobalRecipient,
   ResolvedBankAccount,
   WithdrawalChain,
@@ -34,26 +36,34 @@ import { CryptoSendScreen } from "./CryptoSendScreen";
 
 type SendMode = "user" | "wallet" | "ngn" | "global" | "crypto";
 
-// Provider field keys (account_holder_name, swift_code...) shown as plain labels.
+// Provider field keys (account_holder_name, swift_bic...) shown as plain labels.
 const FIELD_LABELS: Record<string, string> = {
-  account_holder_name: "Account holder name",
+  account_holder_name: "Recipient full name",
   bank_code: "Bank code",
   bank_name: "Bank name",
   account_number: "Account number",
-  routing_number: "Routing number",
-  sort_code: "Sort code",
+  routing_number: "Routing number (ABA 9 digits)",
+  sort_code: "Sort code (6 digits)",
   iban: "IBAN",
   swift_code: "SWIFT / BIC code",
+  swift_bic: "SWIFT / BIC code",
   bic: "SWIFT / BIC code",
   branch_code: "Branch code",
+  bank_institution_number: "Institution number (3 digits)",
+  transit_number: "Transit number (5 digits)",
+  scheme: "Mobile money network",
   ifsc: "IFSC code",
-  clabe: "CLABE number",
+  clabe: "CLABE number (18 digits)",
   phone_number: "Phone number",
-  email: "Email",
+  email: "Email address",
   address: "Address",
+  bank_address_line1: "Bank street address",
+  bank_address_city: "Bank city",
+  bank_address_state: "Bank state (2-letter)",
+  bank_address_postal_code: "Bank postal / ZIP code",
   city: "City",
   postal_code: "Postal code",
-  country: "Country",
+  country: "Bank country (2-letter ISO)",
 };
 function humanizeField(raw: string): string {
   const key = String(raw || "").trim();
@@ -116,7 +126,8 @@ export function SendScreen({
   const parseNum = (raw: string) => Number(String(raw || "").replace(/,/g, "").trim());
 
   // Global payout state
-  const [rails, setRails] = useState<GlobalRail[]>([]);
+  const [corridors, setCorridors] = useState<GlobalCorridor[]>([]);
+  const [selectedCurrency, setSelectedCurrency] = useState<string | null>(null);
   const [selectedRail, setSelectedRail] = useState<GlobalRail | null>(null);
   const [railQuery, setRailQuery] = useState("");
   const [showAllRails, setShowAllRails] = useState(false);
@@ -125,6 +136,33 @@ export function SendScreen({
   const [globalAmount, setGlobalAmount] = useState("");
   const [globalFields, setGlobalFields] = useState<Record<string, string>>({});
   const [globalNote, setGlobalNote] = useState("");
+
+  const selectGlobalRail = (rail: GlobalRail, defaultCountry?: string | null) => {
+    setSelectedRail(rail);
+    setSelectedCounterpartyId(null);
+    const defaults: Record<string, string> = {};
+    const fields = rail.requiredFields || [];
+    for (const f of fields) {
+      const key = typeof f === "string" ? f : f.key || f.name || "";
+      if (key === "country" && (rail.country || defaultCountry)) {
+        defaults.country = String(rail.country || defaultCountry).toUpperCase();
+      } else if (key === "scheme") {
+        const opts = (typeof f === "object" && Array.isArray(f.options) ? f.options : rail.schemeOptions) || [];
+        if (opts.length > 0) defaults.scheme = opts[0];
+      }
+    }
+    setGlobalFields(defaults);
+  };
+
+  const selectGlobalCorridor = (cor: GlobalCorridor) => {
+    setSelectedCurrency(cor.currency);
+    if (cor.rails.length > 0) {
+      selectGlobalRail(cor.rails[0], cor.country);
+    } else {
+      setSelectedRail(null);
+      setGlobalFields({});
+    }
+  };
 
   // Crypto withdraw & bridge state
   const [chains, setChains] = useState<WithdrawalChain[]>([]);
@@ -157,8 +195,35 @@ export function SendScreen({
       api
         .listGlobalCorridors()
         .then((r) => {
-          setRails(r.rails || []);
-          if (!selectedRail && r.rails?.length) setSelectedRail(r.rails[0]);
+          let nextCorridors: GlobalCorridor[] = Array.isArray(r.corridors) ? r.corridors : [];
+          // Backward compatibility if server returned flat rails[] only
+          if (!nextCorridors.length && Array.isArray(r.rails)) {
+            const byCur = new Map<string, GlobalCorridor>();
+            for (const rail of r.rails) {
+              if (!rail.currency || rail.currency === "*") continue;
+              const cur = rail.currency.toUpperCase();
+              if (!byCur.has(cur)) {
+                byCur.set(cur, {
+                  currency: cur,
+                  name: rail.currencyName || cur,
+                  symbol: `${cur} `,
+                  country: rail.country || cur.slice(0, 2),
+                  region: "other",
+                  rails: [],
+                });
+              }
+              byCur.get(cur)!.rails.push(rail);
+            }
+            nextCorridors = [...byCur.values()];
+          }
+          setCorridors(nextCorridors);
+          if (nextCorridors.length > 0) {
+            const curMatch = selectedCurrency ? nextCorridors.find((c) => c.currency === selectedCurrency) : null;
+            const initial = curMatch || nextCorridors.find((c) => c.currency === "GBP") || nextCorridors[0];
+            if (!selectedRail || !curMatch) {
+              selectGlobalCorridor(initial);
+            }
+          }
         })
         .catch(() => {});
       api
@@ -369,8 +434,31 @@ export function SendScreen({
 
   const handleGlobalPayout = async () => {
     if (!selectedRail) {
-      setError("Select a destination currency rail.");
+      setError("Select a destination currency and transfer method.");
       return;
+    }
+    const amt = parseNum(globalAmount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      setError(`Enter a valid ${selectedRail.currency} amount.`);
+      return;
+    }
+    if (selectedRail.minAmount && amt < selectedRail.minAmount) {
+      setError(`Minimum for ${selectedRail.label} is ${selectedRail.minAmount.toLocaleString("en-US")} ${selectedRail.currency}.`);
+      return;
+    }
+    if (selectedRail.maxAmount && amt > selectedRail.maxAmount) {
+      setError(`Maximum for ${selectedRail.label} is ${selectedRail.maxAmount.toLocaleString("en-US")} ${selectedRail.currency}.`);
+      return;
+    }
+    if (!selectedCounterpartyId) {
+      for (const f of selectedRail.requiredFields || []) {
+        const key = typeof f === "string" ? f : f.key || f.name || "";
+        const lbl = typeof f === "object" && f.label ? f.label : humanizeField(key);
+        if (key && !String(globalFields[key] || "").trim()) {
+          setError(`Enter ${lbl} for ${selectedRail.label}.`);
+          return;
+        }
+      }
     }
     setError(null);
     setNotice(null);
@@ -379,14 +467,18 @@ export function SendScreen({
       const payload: Record<string, unknown> = {
         accountType: activeAccount,
         targetCurrency: selectedRail.currency,
-        targetAmount: Number(globalAmount),
+        targetAmount: amt,
         railKey: selectedRail.railKey,
         narration: globalNote.trim() || undefined,
       };
       if (selectedCounterpartyId) {
         payload.savedCounterpartyId = selectedCounterpartyId;
       } else {
-        payload.recipientDetails = globalFields;
+        const trimmed: Record<string, string> = {};
+        for (const [k, v] of Object.entries(globalFields)) {
+          if (String(v || "").trim()) trimmed[k] = String(v).trim();
+        }
+        payload.recipientDetails = trimmed;
       }
       const res = await requestApproval("payout.global", payload);
       setNotice(res.notice || "Global payout submitted!");
@@ -731,10 +823,10 @@ export function SendScreen({
 
         {mode === "global" ? (
           <Card>
-            <SectionHeader title="Choose destination currency" currency={false} />
+            <SectionHeader title="1. Choose destination currency" currency={false} />
             <Input
               label="Search country or currency"
-              placeholder="GBP, EUR, USD, Canada, Kenya, Ghana…"
+              placeholder="GBP, EUR, USD, Canada, Kenya, Ghana, UAE…"
               value={railQuery}
               onChangeText={(v) => {
                 setRailQuery(v);
@@ -745,40 +837,39 @@ export function SendScreen({
 
             {(() => {
               const q = railQuery.trim().toLowerCase();
-              const filteredRails = q
-                ? rails.filter(
-                    (r) =>
-                      r.currency.toLowerCase().includes(q) ||
-                      (r.country || "").toLowerCase().includes(q) ||
-                      (r.label || "").toLowerCase().includes(q)
+              const filteredCorridors = q
+                ? corridors.filter(
+                    (c) =>
+                      c.currency.toLowerCase().includes(q) ||
+                      c.name.toLowerCase().includes(q) ||
+                      c.country.toLowerCase().includes(q) ||
+                      c.rails.some((r) => (r.label || "").toLowerCase().includes(q))
                   )
-                : rails;
-              const visibleRails = showAllRails || q ? filteredRails : filteredRails.slice(0, 8);
-              const hiddenCount = Math.max(0, filteredRails.length - visibleRails.length);
+                : corridors;
+              const visibleCorridors = showAllRails || q ? filteredCorridors : filteredCorridors.slice(0, 8);
+              const hiddenCount = Math.max(0, filteredCorridors.length - visibleCorridors.length);
+              const activeCorridor = corridors.find((c) => c.currency === selectedCurrency) || null;
+
               return (
                 <>
                   <View style={styles.currencyGrid}>
-                    {visibleRails.map((r) => {
-                      const active = selectedRail?.railKey === r.railKey;
+                    {visibleCorridors.map((cor) => {
+                      const active = selectedCurrency === cor.currency;
                       return (
                         <PressableScale
-                          key={r.railKey}
+                          key={cor.currency}
                           haptic="selection"
                           depth={0.96}
                           style={[styles.currencyTile, active && styles.currencyTileOn]}
-                          onPress={() => {
-                            setSelectedRail(r);
-                            setSelectedCounterpartyId(null);
-                            setGlobalFields({});
-                          }}
+                          onPress={() => selectGlobalCorridor(cor)}
                         >
-                          <CurrencyLogo code={r.currency} size={28} />
+                          <CurrencyLogo code={cor.currency} size={28} />
                           <View style={{ flex: 1, minWidth: 0 }}>
                             <Text style={[styles.currencyCode, active && { color: COLORS.primaryDark }]}>
-                              {r.currency}
+                              {cor.currency}
                             </Text>
                             <Text style={styles.currencyCountry} numberOfLines={1}>
-                              {r.country || r.label}
+                              {cor.name}
                             </Text>
                           </View>
                           {active ? (
@@ -789,19 +880,45 @@ export function SendScreen({
                     })}
                   </View>
 
-                  {filteredRails.length === 0 ? (
+                  {filteredCorridors.length === 0 ? (
                     <Text style={[styles.fieldHint, { marginBottom: 10 }]}>
-                      No countries match "{railQuery}". Try GBP, EUR, USD, CAD, or KES.
+                      No countries match "{railQuery}". Try GBP, EUR, USD, CAD, AED, or KES.
                     </Text>
                   ) : null}
 
-                  {!q && filteredRails.length > 8 ? (
+                  {!q && filteredCorridors.length > 8 ? (
                     <Button
-                      title={showAllRails ? "Show fewer currencies" : `Show all ${filteredRails.length} currencies (+${hiddenCount} more)`}
+                      title={
+                        showAllRails
+                          ? "Show fewer currencies"
+                          : `Show all ${filteredCorridors.length} currencies (+${hiddenCount} more)`
+                      }
                       variant="ghost"
                       onPress={() => setShowAllRails((prev) => !prev)}
                       style={{ marginBottom: 10 }}
                     />
+                  ) : null}
+
+                  {/* Step 2: Transfer rail / method selector when this currency has multiple rails */}
+                  {activeCorridor && activeCorridor.rails.length > 1 ? (
+                    <View style={{ marginBottom: 12 }}>
+                      <Text style={styles.fieldHint}>2. Choose {activeCorridor.currency} transfer method</Text>
+                      <View style={styles.pillRow}>
+                        {activeCorridor.rails.map((r) => {
+                          const shortLabel = r.label
+                            .replace(new RegExp(`^${activeCorridor.currency}\\s+`, "i"), "")
+                            .replace(/\s*\([^)]*\)$/, (m) => ` ${m.trim()}`);
+                          return (
+                            <Pill
+                              key={r.railKey}
+                              label={`${shortLabel}${r.settlement ? ` · ${r.settlement}` : ""}`}
+                              active={selectedRail?.railKey === r.railKey}
+                              onPress={() => selectGlobalRail(r, activeCorridor.country)}
+                            />
+                          );
+                        })}
+                      </View>
+                    </View>
                   ) : null}
                 </>
               );
@@ -809,19 +926,27 @@ export function SendScreen({
 
             {selectedRail ? (
               <View style={styles.selectedRailBanner}>
-                <CurrencyLogo code={selectedRail.currency} size={26} />
+                <CurrencyLogo code={selectedRail.currency} size={28} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.selectedRailTitle}>
-                    Sending {selectedRail.currency} · {selectedRail.country}
+                    {selectedRail.currency} · {selectedRail.label}
                   </Text>
-                  <Text style={styles.selectedRailSub}>{selectedRail.label}</Text>
+                  <Text style={styles.selectedRailSub}>
+                    {[
+                      selectedRail.settlement ? `Arrival: ${selectedRail.settlement}` : null,
+                      selectedRail.minAmount ? `Min ${selectedRail.minAmount.toLocaleString("en-US")} ${selectedRail.currency}` : null,
+                      selectedRail.maxAmount ? `Max ${selectedRail.maxAmount.toLocaleString("en-US")} ${selectedRail.currency}` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </Text>
                 </View>
               </View>
             ) : null}
 
             {globalRecipients.filter((g) => !selectedRail || g.currency === selectedRail.currency).length > 0 ? (
               <View style={{ marginBottom: 12 }}>
-                <Text style={styles.fieldHint}>Saved recipients</Text>
+                <Text style={styles.fieldHint}>Saved {selectedRail?.currency || ""} recipients</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                   <View style={{ flexDirection: "row", gap: 8 }}>
                     {globalRecipients
@@ -844,36 +969,77 @@ export function SendScreen({
             ) : null}
 
             <Input
+              key={`amt:${selectedRail?.railKey || "none"}`}
               label={`Amount they receive (${selectedRail?.currency || "currency"})`}
-              placeholder="e.g. 100"
+              currency={selectedRail?.currency || false}
+              placeholder={selectedRail?.minAmount ? `Min ${selectedRail.minAmount}` : "e.g. 100"}
               value={globalAmount}
-              onChangeText={setGlobalAmount}
+              onChangeText={(v) => setGlobalAmount(v.replace(/[^\d.]/g, ""))}
               keyboardType="decimal-pad"
             />
 
             {!selectedCounterpartyId && selectedRail ? (
-              (selectedRail.requiredFields || []).map((f, idx) => {
-                const key = typeof f === "string" ? f : f.key || f.name || `field_${idx}`;
-                const label = humanizeField(typeof f === "string" ? f : f.label || key);
-                return (
-                  <Input
-                    key={key}
-                    label={label}
-                    placeholder={typeof f === "object" ? f.placeholder || "" : ""}
-                    value={globalFields[key] || ""}
-                    onChangeText={(v) => setGlobalFields((prev) => ({ ...prev, [key]: v }))}
-                  />
-                );
-              })
+              <>
+                <Text style={styles.fieldHint}>
+                  Recipient {selectedRail.currency} bank details ({selectedRail.requiredFields.length} required)
+                </Text>
+                {(selectedRail.requiredFields || []).map((f, idx) => {
+                  const obj: GlobalRailField = typeof f === "string" ? { key: f } : f;
+                  const key = obj.key || obj.name || `field_${idx}`;
+                  const label = obj.label || humanizeField(key);
+                  const options = obj.options || (key === "scheme" ? selectedRail.schemeOptions || undefined : undefined);
+
+                  if (options && options.length > 0) {
+                    return (
+                      <View key={`${selectedRail.railKey}:${key}`} style={{ marginBottom: 12 }}>
+                        <Text style={styles.fieldHint}>{label}</Text>
+                        <View style={styles.pillRow}>
+                          {options.map((opt) => (
+                            <Pill
+                              key={opt}
+                              label={opt.toUpperCase()}
+                              active={(globalFields[key] || "").toLowerCase() === opt.toLowerCase()}
+                              onPress={() => setGlobalFields((prev) => ({ ...prev, [key]: opt }))}
+                            />
+                          ))}
+                        </View>
+                      </View>
+                    );
+                  }
+
+                  return (
+                    <Input
+                      key={`${selectedRail.railKey}:${key}`}
+                      label={label}
+                      currency={false}
+                      placeholder={obj.placeholder || ""}
+                      value={globalFields[key] || ""}
+                      keyboardType={obj.keyboardType || "default"}
+                      autoCapitalize={obj.autoCapitalize || (key === "account_holder_name" || key === "bank_name" ? "words" : "none")}
+                      onChangeText={(v) => setGlobalFields((prev) => ({ ...prev, [key]: v }))}
+                    />
+                  );
+                })}
+                {selectedRail.example ? (
+                  <Text style={[styles.rowSub, { marginBottom: 12, marginTop: -4 }]}>
+                    Example: {selectedRail.example}
+                  </Text>
+                ) : null}
+              </>
             ) : null}
 
             <Input
               label="Reference (optional)"
+              currency={false}
               placeholder="Invoice or memo"
               value={globalNote}
               onChangeText={setGlobalNote}
             />
-            <Button title="Quote & approve payout" onPress={handleGlobalPayout} loading={loading} />
+            <Button
+              title={selectedRail ? `Quote & send ${selectedRail.currency}` : "Quote & approve payout"}
+              onPress={handleGlobalPayout}
+              loading={loading}
+            />
           </Card>
         ) : null}
 

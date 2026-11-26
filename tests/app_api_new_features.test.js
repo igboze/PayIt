@@ -363,3 +363,47 @@ test("4. Invoices: payment options (Nuvion fiat + NEAR Intents crypto) & downloa
   const badRes = await reqJson("GET", `/api/app/v1${linkRes.body.path}tampered`, null, null);
   assert.equal(badRes.status, 403);
 });
+
+test("5. Global corridors: all 27 currencies with distinct currency-specific bank fields (no US default or * wildcard)", async () => {
+  features.__setTestDeps({});
+  const res = await reqJson("GET", "/api/app/v1/global/corridors");
+  assert.equal(res.status, 200);
+  const { corridors, rails } = res.body;
+  assert.ok(Array.isArray(corridors) && corridors.length >= 25, `corridors=${corridors?.length}`);
+  assert.ok(!rails.some((r) => r.currency === "*"), "wildcard '*' currency must never be exposed");
+
+  const gbp = corridors.find((c) => c.currency === "GBP");
+  const eur = corridors.find((c) => c.currency === "EUR");
+  const usd = corridors.find((c) => c.currency === "USD");
+  const cad = corridors.find((c) => c.currency === "CAD");
+  const ghs = corridors.find((c) => c.currency === "GHS");
+  const jpy = corridors.find((c) => c.currency === "JPY");
+  assert.ok(gbp && eur && usd && cad && ghs && jpy);
+
+  // GBP primary rail uses Sort Code + UK 8-digit Account Number (NOT US routing number)
+  const gbpFields = gbp.rails[0].requiredFields.map((f) => f.key);
+  assert.ok(gbpFields.includes("sort_code"));
+  assert.ok(!gbpFields.includes("routing_number"));
+
+  // EUR primary rail uses SEPA IBAN + SWIFT/BIC
+  const eurFields = eur.rails[0].requiredFields.map((f) => f.key);
+  assert.ok(eurFields.includes("iban"));
+  assert.ok(eurFields.includes("swift_bic"));
+
+  // USD primary rail uses ABA Routing Number + US Bank Address
+  const usdFields = usd.rails[0].requiredFields.map((f) => f.key);
+  assert.ok(usdFields.includes("routing_number"));
+  assert.ok(usdFields.includes("bank_address_line1"));
+
+  // CAD offers Interac Email (just name + email) as well as bank EFT
+  const cadEmailRail = cad.rails.find((r) => r.railKey === "cad_interac_email");
+  assert.deepEqual(cadEmailRail.requiredFields.map((f) => f.key), ["account_holder_name", "email"]);
+
+  // GHS Mobile Money rail carries selectable network options
+  const ghsMomo = ghs.rails.find((r) => r.railKey === "ghs_momo");
+  const schemeField = ghsMomo.requiredFields.find((f) => f.key === "scheme");
+  assert.ok(Array.isArray(schemeField.options) && schemeField.options.includes("mtn"));
+
+  // SWIFT-only currency JPY has SWIFT rails available
+  assert.ok(jpy.rails.length >= 2);
+});

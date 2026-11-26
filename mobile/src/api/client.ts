@@ -21,6 +21,7 @@ import type {
   DeviceItem,
   GiftItem,
   GlobalAccountItem,
+  GlobalCorridor,
   GlobalRail,
   GlobalRecipient,
   InvoiceItem,
@@ -557,7 +558,12 @@ export const api = {
     );
   },
   listGlobalCorridors() {
-    return request<{ currencies: string[]; receivingCurrencies: string[]; rails: GlobalRail[] }>("/global/corridors");
+    return request<{
+      currencies: string[];
+      receivingCurrencies: string[];
+      corridors?: GlobalCorridor[];
+      rails: GlobalRail[];
+    }>("/global/corridors");
   },
   listGlobalRecipients(currency?: string, account?: AccountType) {
     const params = new URLSearchParams();

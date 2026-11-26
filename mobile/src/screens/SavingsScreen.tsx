@@ -18,6 +18,7 @@ import {
   SuccessBanner,
 } from "../components/UI";
 import { CurrencyLogo } from "../components/CurrencyLogo";
+import { SavingsLogoMerger } from "../components/AssetLogoCluster";
 import { PressableScale } from "../components/Touch";
 
 function formatCompactTvl(tvl?: number): string | null {
@@ -194,7 +195,9 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
 
             {/* Auto-Save info banner */}
             <View style={styles.autoSaveBanner}>
-              <Ionicons name="sparkles" size={18} color={COLORS.primary} />
+              <View style={{ paddingTop: 2 }}>
+                <SavingsLogoMerger size={24} showBadge={false} />
+              </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.autoSaveTitle}>
                   Auto-Save {savings?.autoEarnEnabled ? "is ON" : "uses the highest APY"}
@@ -226,7 +229,7 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
                         depth={0.98}
                         style={[styles.poolCard, isSelected && styles.poolCardSelected]}
                       >
-                        <CurrencyLogo code={p.symbol === "EURC" ? "EUR" : "USD"} size={34} />
+                        <CurrencyLogo code={p.symbol || "USDC"} size={36} />
                         <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
                           <View style={styles.poolTitleRow}>
                             <Text style={styles.poolName} numberOfLines={1}>

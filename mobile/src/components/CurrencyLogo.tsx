@@ -13,6 +13,18 @@ const FIAT_COUNTRY: Record<string, string> = {
   ILS: "il",
 };
 
+// Verified official high-res token logos (used for savings assets, swaps, and crypto cards).
+const VERIFIED_TOKEN_LOGOS: Record<string, string> = {
+  USDC: "https://assets.coingecko.com/coins/images/6319/small/usdc.png",
+  EURC: "https://assets.coingecko.com/coins/images/26045/small/euro-coin.png",
+  USDT: "https://assets.coingecko.com/coins/images/325/small/Tether.png",
+  MORPHO: "https://assets.coingecko.com/coins/images/29837/small/Morpho-token-icon.png",
+  SOL: "https://assets.coingecko.com/coins/images/4128/small/solana.png",
+  ETH: "https://assets.coingecko.com/coins/images/279/small/ethereum.png",
+  BTC: "https://assets.coingecko.com/coins/images/1/small/bitcoin.png",
+  NEAR: "https://assets.coingecko.com/coins/images/10365/small/near.jpg",
+};
+
 // Token logos come from the same source the API uses (src/near.js TOKEN_LOGO_OVERRIDES).
 const TOKEN_ALIASES: Record<string, string> = { WNEAR: "near", CBBTC: "btc", XBTC: "btc", POL: "matic" };
 
@@ -31,6 +43,7 @@ function flagEmoji(country: string): string {
 
 export function currencyLogoUrl(code: string): string | null {
   const c = normalize(code);
+  if (VERIFIED_TOKEN_LOGOS[c]) return VERIFIED_TOKEN_LOGOS[c];
   const country = FIAT_COUNTRY[c];
   if (country) return `https://flagcdn.com/w80/${country}.png`;
   if (/^[A-Z0-9]{2,10}$/.test(c)) {

@@ -253,16 +253,39 @@ export interface GlobalAccountItem {
   status: string;
 }
 
+export interface GlobalRailField {
+  key?: string;
+  name?: string;
+  label?: string;
+  placeholder?: string;
+  keyboardType?: "default" | "number-pad" | "decimal-pad" | "email-address" | "phone-pad";
+  autoCapitalize?: "none" | "sentences" | "words" | "characters";
+  options?: string[];
+}
+
 export interface GlobalRail {
   railKey: string;
   currency: string;
-  country: string;
+  currencyName?: string;
+  country: string | null;
   label: string;
   paymentMethod: string;
   settlement: string;
   minAmount: number | null;
   maxAmount: number | null;
-  requiredFields: Array<{ key?: string; name?: string; label?: string; placeholder?: string } | string>;
+  schemeOptions?: string[] | null;
+  promptHint?: string | null;
+  example?: string | null;
+  requiredFields: Array<GlobalRailField | string>;
+}
+
+export interface GlobalCorridor {
+  currency: string;
+  name: string;
+  symbol: string;
+  country: string;
+  region: string;
+  rails: GlobalRail[];
 }
 
 export interface GlobalRecipient {

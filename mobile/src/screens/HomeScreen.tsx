@@ -24,6 +24,7 @@ import {
   SuccessBanner,
 } from "../components/UI";
 import { CurrencyLogo } from "../components/CurrencyLogo";
+import { SavingsLogoMerger, StockLogoMerger } from "../components/AssetLogoCluster";
 import { PressableScale } from "../components/Touch";
 import { UserAvatar } from "../components/Avatar";
 import { BILL_CATEGORIES, BillCat, BillCategoryTile } from "../components/bills";
@@ -358,25 +359,40 @@ export function HomeScreen({
         ))}
       </View>
 
-      {/* Savings */}
-      <PressableScale onPress={() => onNavigate("savings")} depth={0.98} style={styles.rowCard}>
-        <Tile icon="server-outline" tone="teal" />
-        <View style={{ flex: 1, gap: 2 }}>
-          <Text style={styles.rowTitle}>Savings</Text>
-          <Text style={styles.rowSub}>Choose a savings vault · withdraw anytime</Text>
-        </View>
-        <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
-      </PressableScale>
+      {/* Grow your money: Savings & US Stocks with merged asset logos */}
+      <View style={styles.growStack}>
+        <PressableScale onPress={() => onNavigate("savings")} depth={0.98} style={styles.featureCard}>
+          <View style={styles.featureTopRow}>
+            <View style={{ flex: 1, gap: 2 }}>
+              <Text style={styles.rowTitle}>Savings</Text>
+              <Text style={styles.rowSub}>USDC & EURC vaults · withdraw anytime</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
+          </View>
+          <View style={styles.featureLogoRow}>
+            <SavingsLogoMerger size={30} showBadge={false} />
+            <View style={styles.featureTagTeal}>
+              <Text style={styles.featureTagTealText}>Earn daily APY</Text>
+            </View>
+          </View>
+        </PressableScale>
 
-      {/* US Stocks (Pods Finance / Ondo Global Markets) */}
-      <PressableScale onPress={() => onNavigate("stocks")} depth={0.98} style={styles.rowCard}>
-        <Tile icon="trending-up-outline" tone="blue" />
-        <View style={{ flex: 1, gap: 2 }}>
-          <Text style={styles.rowTitle}>US Stocks & ETFs</Text>
-          <Text style={styles.rowSub}>Buy Apple, NVIDIA, Tesla & 470+ stocks · live charts</Text>
-        </View>
-        <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
-      </PressableScale>
+        <PressableScale onPress={() => onNavigate("stocks")} depth={0.98} style={styles.featureCard}>
+          <View style={styles.featureTopRow}>
+            <View style={{ flex: 1, gap: 2 }}>
+              <Text style={styles.rowTitle}>US Stocks & ETFs</Text>
+              <Text style={styles.rowSub}>Apple, NVIDIA, Tesla, Microsoft & more</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
+          </View>
+          <View style={styles.featureLogoRow}>
+            <StockLogoMerger size={30} showCount />
+            <View style={styles.featureTagBlue}>
+              <Text style={styles.featureTagBlueText}>Live charts</Text>
+            </View>
+          </View>
+        </PressableScale>
+      </View>
 
       {/* Pay bills: one tap per bill type */}
       <Text style={styles.activityTitle}>Pay bills</Text>
@@ -674,6 +690,49 @@ const styles = StyleSheet.create({
     borderRadius: RADIUS.lg,
     backgroundColor: COLORS.surface,
     ...DEPTH.card,
+  },
+  growStack: {
+    gap: 10,
+  },
+  featureCard: {
+    gap: 10,
+    padding: 14,
+    borderRadius: RADIUS.lg,
+    backgroundColor: COLORS.surface,
+    ...DEPTH.card,
+  },
+  featureTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  featureLogoRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingTop: 2,
+  },
+  featureTagTeal: {
+    backgroundColor: "rgba(15, 118, 110, 0.12)",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: RADIUS.pill,
+  },
+  featureTagTealText: {
+    ...TYPE.label,
+    fontSize: 11,
+    color: "#0F766E",
+  },
+  featureTagBlue: {
+    backgroundColor: "rgba(29, 78, 216, 0.10)",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: RADIUS.pill,
+  },
+  featureTagBlueText: {
+    ...TYPE.label,
+    fontSize: 11,
+    color: "#1D4ED8",
   },
   rowTitle: {
     ...TYPE.bodyStrong,
