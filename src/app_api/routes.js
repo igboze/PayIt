@@ -858,6 +858,16 @@ const ROUTES = [
   ["GET", "/transactions/statement.csv", (req, url) => features.exportStatementCsv(authenticate(req), url)],
   ["GET", "/devices", devices],
   ["POST", "/push/register", pushRegister],
+  // Crash reports from the app (no auth needed: it may crash before signing in).
+  ["POST", "/client-errors", (req, body) => {
+    rateLimit(`client-error:${clientIp(req)}`, 30, 60 * 1000);
+    const clip = (v, n) => String(v ?? "").replace(/[\r\n]+/g, " | ").slice(0, n);
+    console.error(
+      `[client_error] fatal=${Boolean(body?.fatal)} where=${clip(body?.where, 40)} update=${clip(body?.updateId, 40)} ` +
+      `msg=${clip(body?.message, 400)} stack=${clip(body?.stack, 1200)}`
+    );
+    return { status: 200, data: { ok: true } };
+  }],
   // In-app notification inbox (works with or without push).
   ["GET", "/notifications", (req, url) => {
     const auth = authenticate(req);

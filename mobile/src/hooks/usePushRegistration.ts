@@ -1,26 +1,11 @@
 import { useEffect } from "react";
 import { Platform } from "react-native";
 import { api } from "../api/client";
+import { getNotifications } from "../nativeModules";
 
 // expo-notifications is a native module: an older APK updated over the air won't have it,
 // and Android needs a Firebase config (google-services.json) in the build to issue tokens.
 // Load it defensively so the app keeps working until both are in place.
-type NotificationsModule = typeof import("expo-notifications");
-let Notifications: NotificationsModule | null = null;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  Notifications = require("expo-notifications") as NotificationsModule;
-  Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldShowBanner: true,
-      shouldShowList: true,
-      shouldPlaySound: true,
-      shouldSetBadge: false,
-    }),
-  });
-} catch (_) {
-  Notifications = null;
-}
 
 /**
  * Registers this device for push once the user is signed in, so the server's notify()
@@ -28,7 +13,9 @@ try {
  */
 export function usePushRegistration(signedIn: boolean) {
   useEffect(() => {
-    if (!signedIn || !Notifications || Platform.OS === "web") return;
+    if (!signedIn || Platform.OS === "web") return;
+    const Notifications = getNotifications();
+    if (!Notifications) return;
     let cancelled = false;
     (async () => {
       try {

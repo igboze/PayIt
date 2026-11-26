@@ -4,24 +4,18 @@ import * as SecureStore from "expo-secure-store";
 import { api } from "../api/client";
 import type { AppNotification } from "../api/types";
 import { notifyHaptic } from "../components/Touch";
+import { getNotifications } from "../nativeModules";
 
 const POLL_MS = 30_000;
 const LAST_SHOWN_KEY = "proxim_last_notified_id";
 const MAX_CATCH_UP = 3;
 
-// expo-notifications is native; builds without it still get the in-app banner.
-type NotificationsModule = typeof import("expo-notifications");
-let Notifications: NotificationsModule | null = null;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  Notifications = require("expo-notifications") as NotificationsModule;
-} catch (_) {
-  Notifications = null;
-}
 
 /** Puts a message in the phone's notification tray (works without Firebase). */
 async function showSystemNotification(n: AppNotification) {
-  if (!Notifications || Platform.OS === "web") return;
+  if (Platform.OS === "web") return;
+  const Notifications = getNotifications();
+  if (!Notifications) return;
   try {
     const perm = await Notifications.getPermissionsAsync();
     if (!perm.granted) return;

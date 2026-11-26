@@ -5,6 +5,7 @@ import { api, getAccessToken } from "../api/client";
 import { useApp } from "../state/AppContext";
 import { COLORS, TYPE } from "../theme";
 import { PressableScale } from "./Touch";
+import { getImagePicker } from "../nativeModules";
 
 const TONES = [
   ["#047857", "rgba(16, 185, 129, 0.16)"],
@@ -49,15 +50,6 @@ export function UserAvatar({ size = 44, name }: { size?: number; name?: string |
   );
 }
 
-// expo-image-picker ships with newer app builds; older ones are told to update.
-type PickerModule = typeof import("expo-image-picker");
-let Picker: PickerModule | null = null;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  Picker = require("expo-image-picker") as PickerModule;
-} catch (_) {
-  Picker = null;
-}
 
 /** Large avatar with a camera button: pick a photo, crop it square, upload it. */
 export function EditableAvatar({ size = 96 }: { size?: number }) {
@@ -65,6 +57,7 @@ export function EditableAvatar({ size = 96 }: { size?: number }) {
   const [busy, setBusy] = useState(false);
 
   const upload = async (fromCamera: boolean) => {
+    const Picker = getImagePicker();
     if (!Picker || Platform.OS === "web") {
       Alert.alert("Update the app", "Install the latest Proxim app to add a profile photo.");
       return;

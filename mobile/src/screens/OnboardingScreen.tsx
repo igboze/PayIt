@@ -12,7 +12,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { api, API_BASE_URL } from "../api/client";
 import { assertPasskey, createPasskey, isPasskeySupported } from "../api/passkey";
-import { useApp } from "../state/AppContext";
+import * as SecureStore from "expo-secure-store";
+import { RETURNING_USER_KEY, useApp } from "../state/AppContext";
 import { COLORS, RADIUS, SPACING, FONTS } from "../theme";
 import { Button, Card, ErrorBanner, Input } from "../components/UI";
 import { PressableScale } from "../components/Touch";
@@ -48,6 +49,16 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
   }, [initialLinkCode]);
 
   const passkeyAvailable = isPasskeySupported();
+
+  // Someone has signed in on this phone before: go straight to fingerprint / face.
+  const [returning, setReturning] = useState<boolean | null>(null);
+  const [showAllOptions, setShowAllOptions] = useState(false);
+  const autoPrompted = React.useRef(false);
+  React.useEffect(() => {
+    SecureStore.getItemAsync(RETURNING_USER_KEY)
+      .then((v) => setReturning(v === "1"))
+      .catch(() => setReturning(false));
+  }, []);
 
   const handlePasskeySignIn = async () => {
     setError(null);
@@ -180,6 +191,49 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
       setLoading(false);
     }
   };
+
+  const returningMode = Boolean(returning) && passkeyAvailable && !showAllOptions && step === "welcome" && !initialLinkCode;
+
+  React.useEffect(() => {
+    if (!returningMode || autoPrompted.current) return;
+    autoPrompted.current = true;
+    const t = setTimeout(() => {
+      handlePasskeySignIn();
+    }, 350);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [returningMode]);
+
+  if (returning === null && !initialLinkCode) {
+    // Brief check of whether this phone has been used before; avoids flashing the wrong screen.
+    return <SafeAreaView style={styles.safe} />;
+  }
+
+  if (returningMode) {
+    return (
+      <SafeAreaView style={styles.safe}>
+        <View style={styles.returnWrap}>
+          <View style={{ alignItems: "center", gap: 10 }}>
+            <Image source={require("../../assets/icon.png")} style={styles.logoImg} resizeMode="cover" />
+            <Text style={styles.brandName}>Welcome back</Text>
+            <Text style={styles.brandTag}>Use your fingerprint or face to sign in.</Text>
+          </View>
+          <PressableScale onPress={handlePasskeySignIn} depth={0.94} style={styles.fingerprint} accessibilityLabel="Sign in with fingerprint or face">
+            <Ionicons name="finger-print" size={56} color={COLORS.primary} />
+          </PressableScale>
+          <View style={{ gap: 10, alignSelf: "stretch" }}>
+            <ErrorBanner message={sessionNotice} onDismiss={clearSessionNotice} />
+            <ErrorBanner message={error} onDismiss={() => setError(null)} />
+            <Button title="Sign in with fingerprint or face" onPress={handlePasskeySignIn} loading={loading} />
+            <Text onPress={() => setShowAllOptions(true)} style={styles.troubleLink} accessibilityRole="button">
+              Having trouble signing in?
+            </Text>
+            <PoweredBy />
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -385,6 +439,18 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
 }
 
 const styles = StyleSheet.create({
+  returnWrap: { flex: 1, padding: SPACING.lg, alignItems: "center", justifyContent: "space-between", paddingTop: 48 },
+  fingerprint: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    backgroundColor: COLORS.primaryMuted,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: COLORS.primaryBorder,
+  },
+  troubleLink: { textAlign: "center", color: COLORS.primary, fontFamily: FONTS.semibold, fontSize: 15, paddingVertical: 10 },
   safe: {
     flex: 1,
     backgroundColor: COLORS.bg,

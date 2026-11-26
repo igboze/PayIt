@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { ActivityIndicator, BackHandler, Linking, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, BackHandler, Image, Linking, StyleSheet, Text, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
@@ -21,6 +21,9 @@ import { COLORS, FONTS } from "./src/theme";
 import { PressableScale } from "./src/components/Touch";
 import { KeyboardSafe } from "./src/components/UI";
 import { FloatingBackdrop } from "./src/components/FloatingBackdrop";
+import { AppErrorBoundary } from "./src/crashReporter";
+import { getNotifications } from "./src/nativeModules";
+import { UpdatingScreen } from "./src/components/UpdatingScreen";
 import { useAutoOtaUpdates } from "./src/hooks/useAutoOtaUpdates";
 import { usePushRegistration } from "./src/hooks/usePushRegistration";
 import { useInbox } from "./src/hooks/useInbox";
@@ -51,19 +54,27 @@ function MainShell() {
   const [deepLinkCode, setDeepLinkCode] = useState("");
   const [deepClaimToken, setDeepClaimToken] = useState("");
   const [billCategory, setBillCategory] = useState<BillCat>("airtime");
+  const [applyingUpdate, setApplyingUpdate] = useState(false);
 
   // Tapping a Proxim notification in the phone tray opens the Notifications screen.
+  const signedInAndUnlocked = Boolean(user) && !locked;
   useEffect(() => {
+    if (!signedInAndUnlocked) return;
     let sub: { remove: () => void } | null = null;
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const N = require("expo-notifications") as typeof import("expo-notifications");
-      sub = N.addNotificationResponseReceivedListener(() => setOverlay("notifications"));
+      const N = getNotifications();
+      sub = N ? N.addNotificationResponseReceivedListener(() => setOverlay("notifications")) : null;
     } catch (_) {
       sub = null; // older builds without the native module
     }
-    return () => sub?.remove();
-  }, []);
+    return () => {
+      try {
+        if (sub && typeof sub.remove === "function") sub.remove();
+      } catch (_) {
+        // listener already gone
+      }
+    };
+  }, [signedInAndUnlocked]);
 
   // Android Back: close the open screen, then return to Home; only Home leaves the app.
   // Screens with their own steps (Send) register handlers later, so theirs run first.
@@ -114,6 +125,14 @@ function MainShell() {
 
   if (!user) {
     return <OnboardingScreen initialLinkCode={deepLinkCode} />;
+  }
+
+  if (applyingUpdate) {
+    return (
+      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+        <UpdatingScreen apply={ota.applyNow} onCancel={() => setApplyingUpdate(false)} />
+      </SafeAreaView>
+    );
   }
 
   if (locked) {
@@ -245,7 +264,7 @@ function MainShell() {
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
         <KeyboardSafe>
       {ota.updateReady ? (
-        <PressableScale onPress={ota.applyNow} style={styles.otaBanner}>
+        <PressableScale onPress={() => setApplyingUpdate(true)} style={styles.otaBanner}>
           <Ionicons name="cloud-download-outline" size={16} color={COLORS.onPrimary} />
           <Text style={styles.otaBannerText}>New Proxim update ready · Tap to apply</Text>
           <Ionicons name="refresh" size={15} color={COLORS.onPrimary} />
@@ -325,19 +344,34 @@ export default function App() {
     PlusJakartaSans_700Bold,
     PlusJakartaSans_800ExtraBold,
   });
-  // Wait for the brand font, but never block the app if it fails to load.
-  if (!fontsLoaded && !fontError) {
-    return <View style={styles.splash} />;
+  // Wait for the brand font, but never longer than a few seconds: a font that fails to
+  // load must not leave a blank screen.
+  const [fontWaitOver, setFontWaitOver] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setFontWaitOver(true), 4000);
+    return () => clearTimeout(t);
+  }, []);
+  const [bootKey, setBootKey] = useState(0);
+  if (!fontsLoaded && !fontError && !fontWaitOver) {
+    return (
+      <View style={styles.splash}>
+        <Image source={require("./assets/icon.png")} style={{ width: 72, height: 72, borderRadius: 20 }} />
+        <ActivityIndicator color={COLORS.primary} />
+        <Text style={{ color: COLORS.textSecondary, fontSize: 14 }}>Starting Proxim…</Text>
+      </View>
+    );
   }
   return (
     <SafeAreaProvider>
       <StatusBar style="dark" />
-      <AppProvider>
-        <View style={{ flex: 1 }}>
-          <FloatingBackdrop />
-          <MainShell />
-        </View>
-      </AppProvider>
+      <AppErrorBoundary onReset={() => setBootKey((k) => k + 1)}>
+        <AppProvider key={bootKey}>
+          <View style={{ flex: 1 }}>
+            <FloatingBackdrop />
+            <MainShell />
+          </View>
+        </AppProvider>
+      </AppErrorBoundary>
     </SafeAreaProvider>
   );
 }

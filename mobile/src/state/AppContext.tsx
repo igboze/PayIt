@@ -1,6 +1,12 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
+import * as SecureStore from "expo-secure-store";
 import { assertPasskey } from "../api/passkey";
+
+// Remembers that someone has signed in on this phone, so sign-in can go straight to
+// fingerprint / face. Cleared only by an explicit sign-out (to add another account).
+export const RETURNING_USER_KEY = "proxim_returning_user";
+const rememberReturningUser = () => SecureStore.setItemAsync(RETURNING_USER_KEY, "1").catch(() => {});
 import {
   api,
   clearSessionTokens,
@@ -132,6 +138,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const response = await assertPasskey(start.options);
     const res = await api.loginFinish(start.challengeId, response);
     await saveSessionTokens(res.session);
+    rememberReturningUser();
     syncUser(res.user);
     setLocked(false);
     setDataVersion((v) => v + 1);
@@ -140,6 +147,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const signInWithSession = useCallback(
     async (nextUser: ProximUser, session: AuthSession) => {
       await saveSessionTokens(session);
+      rememberReturningUser();
       setSessionNotice(null);
       setLocked(false); // they just proved it's them
       syncUser(nextUser);
@@ -155,6 +163,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // Clear local tokens even if server call fails
     }
     await clearSessionTokens();
+    await SecureStore.deleteItemAsync(RETURNING_USER_KEY).catch(() => {});
     setUser(null);
     setLocked(false);
     setActiveAccount("personal");

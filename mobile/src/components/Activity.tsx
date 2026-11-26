@@ -8,6 +8,7 @@ import type { AccountType, TransactionItem } from "../api/types";
 import { COLORS, DEPTH, RADIUS, SPACING, TYPE } from "../theme";
 import { Button, ErrorBanner, formatRawTxAmount, KeyValueRow, shortAddr } from "./UI";
 import { PressableScale, notifyHaptic } from "./Touch";
+import { getLegacyFileSystem, getSharing } from "../nativeModules";
 
 type IoniconName = keyof typeof Ionicons.glyphMap;
 
@@ -147,20 +148,6 @@ export function TxRow({ tx, onPress }: { tx: TransactionItem; onPress: () => voi
   );
 }
 
-// expo-sharing ships with newer app builds; older builds open a signed link instead.
-type SharingModule = typeof import("expo-sharing");
-type LegacyFs = typeof import("expo-file-system/legacy");
-let Sharing: SharingModule | null = null;
-let LegacyFS: LegacyFs | null = null;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  Sharing = require("expo-sharing") as SharingModule;
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  LegacyFS = require("expo-file-system/legacy") as LegacyFs;
-} catch (_) {
-  Sharing = null;
-  LegacyFS = null;
-}
 
 export function TxDetailSheet({
   tx,
@@ -185,6 +172,8 @@ export function TxDetailSheet({
     setSaving(true);
     try {
       let shared = false;
+      const Sharing = getSharing();
+      const LegacyFS = getLegacyFileSystem();
       if (Sharing && LegacyFS && token && (await Sharing.isAvailableAsync().catch(() => false))) {
         try {
           const target = `${LegacyFS.cacheDirectory}proxim-receipt-${tx.id}.png`;
