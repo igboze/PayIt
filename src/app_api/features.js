@@ -2448,6 +2448,14 @@ async function submitKyc(auth, body) {
     email,
     countryCode,
   });
+  try {
+    require("../email").sendKycStatusEmail({
+      to: email,
+      name: fullName,
+      status: entityStatus === "approved" ? "approved" : "pending",
+      accountType: "personal",
+    }).catch(() => {});
+  } catch (_) {}
   return { status: 201, data: { status: entityStatus || "pending", tier: entityStatus === "approved" ? 1 : 0 } };
 }
 
@@ -2829,6 +2837,14 @@ async function submitKyb(auth, body) {
     email,
     countryCode,
   });
+  try {
+    require("../email").sendKycStatusEmail({
+      to: email,
+      name: legalName,
+      status: entityStatus === "approved" ? "approved" : "pending",
+      accountType: "business",
+    }).catch(() => {});
+  } catch (_) {}
   return { status: 201, data: { status: entityStatus || "pending", tier: entityStatus === "approved" ? 1 : 0 } };
 }
 

@@ -79,7 +79,8 @@ async function sendTransactionalEmail({ to, subject, html, text }) {
       const secure = process.env.SMTP_SECURE !== undefined
         ? String(process.env.SMTP_SECURE).toLowerCase() === "true"
         : port === 465;
-      const from = (process.env.SMTP_FROM_EMAIL || `Proxim <${smtpUser}>`).trim();
+      const rawFrom = (process.env.SMTP_FROM_EMAIL || `Proxim <${smtpUser}>`).trim();
+      const from = rawFrom.replace(/^["']+|["']+$/g, "").trim();
       const transporter = nodemailer.createTransport({
         host,
         port,
@@ -134,6 +135,29 @@ async function sendKycStatusEmail({ to, name, status, accountType = "personal" }
           </div>
           <p style="font-size: 14px; color: #666; margin-top: 24px;">
             Open your Proxim Mobile App or Telegram bot anytime to view your account coordinates and start transacting.
+          </p>
+          <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 24px 0;" />
+          <p style="font-size: 12px; color: #999;">
+            Proxim Platform · Regulated Global Banking Infrastructure
+          </p>
+        </div>
+      `,
+    });
+  } else if (status === "pending") {
+    return sendTransactionalEmail({
+      to,
+      subject: `Verification Received — Your Proxim ${label} Is Under Review`,
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #111;">
+          <h2 style="color: #002018; margin-bottom: 8px;">We Received Your Tier-1 Verification</h2>
+          <p style="font-size: 16px; line-height: 1.5; color: #333;">
+            Hello ${name || "there"},
+          </p>
+          <p style="font-size: 16px; line-height: 1.5; color: #333;">
+            Thank you for submitting your ${isBiz ? "Business Verification (KYB)" : "Identity Verification (KYC)"} for your <b>${label}</b>. Our compliance team is reviewing your documents now.
+          </p>
+          <p style="font-size: 14px; color: #555; line-height: 1.5;">
+            We'll email you and notify you in the Proxim app and Telegram bot as soon as your Global Accounts (USD, GBP, EUR, NGN, CAD, AED, GHS, KES, TZS) and Virtual USD Cards are unlocked.
           </p>
           <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 24px 0;" />
           <p style="font-size: 12px; color: #999;">

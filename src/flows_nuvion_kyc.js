@@ -12,6 +12,7 @@ const db = require("./db");
 const idempotency = require("./idempotency");
 const convState = require("./conversation_state");
 const compliance = require("./compliance");
+const emailModule = require("./email");
 
 let deps = {};
 
@@ -1025,6 +1026,15 @@ async function executePersonalKycSubmission(ctx, userId) {
     db.deleteNuvionKycDraft(userId, "personal");
     convState.clearState(userId);
 
+    if (personObj.email) {
+      emailModule.sendKycStatusEmail({
+        to: personObj.email,
+        name: fullName,
+        status: "pending",
+        accountType: "personal",
+      }).catch((e) => console.warn("[nuvion_kyc:email]", e.message));
+    }
+
     return ctx.reply(
       `🎉 <b>Verification Submitted!</b>\n──────────────────────────\n` +
       `Your Tier-1 verification is now being reviewed by <b>Nuvion</b>.\n\n` +
@@ -1302,6 +1312,15 @@ async function executeBusinessKybSubmission(ctx, userId) {
 
     db.deleteNuvionKycDraft(userId, "business");
     convState.clearState(userId);
+
+    if (businessObj.email) {
+      emailModule.sendKycStatusEmail({
+        to: businessObj.email,
+        name: d.legal_name,
+        status: "pending",
+        accountType: "business",
+      }).catch((e) => console.warn("[nuvion_kyb:email]", e.message));
+    }
 
     return ctx.reply(
       `🎉 <b>Business Verification Submitted!</b>\n──────────────────────────\n` +
