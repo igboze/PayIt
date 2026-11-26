@@ -33,3 +33,6 @@ scan_results.json
 *.id
 .DS_Store
 Thumbs.db
+
+# Design work stays private (not in the public repo)
+design/

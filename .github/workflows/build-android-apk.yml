@@ -10,14 +10,9 @@ on:
       - "mobile/package-lock.json"
       - "mobile/plugins/**"
       - "mobile/assets/**"
-      - "mobile/src/**"
-      - "mobile/App.tsx"
       - ".github/workflows/build-android-apk.yml"
 
-# contents: write lets the job publish the APK to the "android-latest" release.
-permissions:
-  contents: write
-
+# A newer build cancels one still running.
 concurrency:
   group: build-android-apk
   cancel-in-progress: true
@@ -86,21 +81,3 @@ jobs:
           name: Proxim-Android-APK
           path: mobile/android/app/build/outputs/apk/release/*.apk
           retention-days: 30
-
-      # A fixed, public download link for the newest APK:
-      # https://github.com/<owner>/<repo>/releases/download/android-latest/Proxim.apk
-      - name: Publish APK to the android-latest release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          APK=$(ls android/app/build/outputs/apk/release/*.apk | head -n 1)
-          cp "$APK" Proxim.apk
-          VERSION=$(node -p "require('./app.json').expo.version")
-          CODE=$(node -p "require('./app.json').expo.android.versionCode")
-          NOTES="Proxim ${VERSION} (build ${CODE}) from ${GITHUB_SHA::7}. Install once; later UI updates arrive inside the app automatically."
-          if gh release view android-latest > /dev/null 2>&1; then
-            gh release edit android-latest --title "Proxim Android ${VERSION} (latest)" --notes "$NOTES"
-          else
-            gh release create android-latest --title "Proxim Android ${VERSION} (latest)" --notes "$NOTES" --latest=false
-          fi
-          gh release upload android-latest Proxim.apk --clobber
