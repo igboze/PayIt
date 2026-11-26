@@ -78,6 +78,9 @@ function getHeaders() {
 }
 
 function getSolanaConnection() {
+  // Same connection (with failover) as the rest of the app, so a refused RPC key
+  // can't block bill payments.
+  if (typeof multichain.getSolanaConnection === "function") return multichain.getSolanaConnection();
   const rpcUrl = process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
   return new Connection(rpcUrl, "confirmed");
 }

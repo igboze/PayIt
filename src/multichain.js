@@ -101,15 +101,42 @@ function isSolanaAddress(address) {
  *
  * @returns {Connection}
  */
+// A dedicated RPC that refuses us (e.g. Alchemy "SOLANA_MAINNET is not enabled for this
+// app", 401/403) is skipped for a while and requests go to the fallback node instead, so a
+// provider setting can't silently break bills, payouts or bridging.
+const SOLANA_PUBLIC_RPC = "https://api.mainnet-beta.solana.com";
+const PRIMARY_COOLDOWN_MS = 10 * 60 * 1000;
+let _primarySolanaRpcDownUntil = 0;
+
+function solanaRpcCandidates() {
+  const configured = process.env.SOLANA_RPC_URL && !process.env.SOLANA_RPC_URL.includes("api.mainnet-beta.solana.com")
+    ? process.env.SOLANA_RPC_URL
+    : null;
+  const primary = configured || (process.env.ALCHEMY_API_KEY ? `https://solana-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}` : null);
+  const fallback = process.env.SOLANA_RPC_FALLBACK_URL || SOLANA_PUBLIC_RPC;
+  return { primary, fallback: fallback === primary ? SOLANA_PUBLIC_RPC : fallback };
+}
+
+function isRefusal(status, bodyText) {
+  return status === 401 || status === 403 || /not enabled for this app|must be authenticated|invalid api key/i.test(String(bodyText || ""));
+}
+
 function getSolanaConnection() {
-  if (process.env.SOLANA_RPC_URL && !process.env.SOLANA_RPC_URL.includes("api.mainnet-beta.solana.com")) {
-    return new Connection(process.env.SOLANA_RPC_URL, "confirmed");
+  const { primary, fallback } = solanaRpcCandidates();
+  if (!primary || Date.now() < _primarySolanaRpcDownUntil) {
+    return new Connection(fallback, "confirmed");
   }
-  if (process.env.ALCHEMY_API_KEY) {
-    return new Connection(`https://solana-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}`, "confirmed");
-  }
-  const rpcUrl = process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
-  return new Connection(rpcUrl, "confirmed");
+  // On a refusal from the primary, retry the same JSON-RPC call on the fallback node.
+  const failoverFetch = async (url, init) => {
+    const res = await fetch(url, init);
+    if (res.ok || String(url) !== primary) return res;
+    const text = await res.clone().text().catch(() => "");
+    if (!isRefusal(res.status, text)) return res;
+    _primarySolanaRpcDownUntil = Date.now() + PRIMARY_COOLDOWN_MS;
+    console.warn(`[multichain] Primary Solana RPC refused (${res.status}); using fallback for ${PRIMARY_COOLDOWN_MS / 60000} min.`);
+    return fetch(fallback, init);
+  };
+  return new Connection(primary, { commitment: "confirmed", fetch: failoverFetch });
 }
 
 /**

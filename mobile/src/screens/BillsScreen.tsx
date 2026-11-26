@@ -31,6 +31,31 @@ const NETWORKS: ProviderOpt[] = [
 ];
 const CABLE_BRANDS = ["DStv", "GOtv", "StarTimes", "Showmax"];
 
+// Popular amounts per bill type; any amount can still be typed.
+const PRESET_AMOUNTS: Partial<Record<BillCat, number[]>> = {
+  airtime: [100, 200, 500, 1000, 2000, 5000],
+  electricity: [2000, 5000, 10000, 15000, 20000, 50000],
+  betting: [1000, 2000, 5000, 10000, 20000, 50000],
+};
+
+// Data plans grouped the way networks sell them.
+type PlanGroup = "all" | "daily" | "weekly" | "monthly" | "combo";
+const PLAN_GROUPS: Array<[PlanGroup, string]> = [
+  ["all", "All"],
+  ["daily", "Daily"],
+  ["weekly", "Weekly"],
+  ["monthly", "Monthly"],
+  ["combo", "Night & combo"],
+];
+function planGroup(name: string): PlanGroup {
+  const n = name.toLowerCase();
+  if (/night|combo|social|youtube|tiktok|whatsapp|instagram|\+|bonus|weekend/.test(n)) return "combo";
+  if (/\b(1|2|3)\s*-?\s*days?\b|daily|24\s*h/.test(n)) return "daily";
+  if (/\b(7|14)\s*-?\s*days?\b|week/.test(n)) return "weekly";
+  if (/\b(30|60|90)\s*-?\s*days?\b|month/.test(n)) return "monthly";
+  return "all";
+}
+
 function normalizeProviders(raw: unknown[]): ProviderOpt[] {
   return (raw || [])
     .map((item) => {
@@ -69,6 +94,7 @@ export function BillsScreen({ onBack, initialCategory = "airtime" }: { onBack: (
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [planFilter, setPlanFilter] = useState<PlanGroup>("all");
 
   const needsBrand = category === "data" || category === "cable";
   const fixedPrice = category === "data" || category === "cable" || (category === "transport" && Boolean(selected?.price));
@@ -81,6 +107,7 @@ export function BillsScreen({ onBack, initialCategory = "airtime" }: { onBack: (
     setOptions([]);
     setAmountNgn("");
     setError(null);
+    setPlanFilter("all");
   }, [category]);
 
   // Load what to choose from: providers, or plans once a network / cable brand is picked.
@@ -189,9 +216,26 @@ export function BillsScreen({ onBack, initialCategory = "airtime" }: { onBack: (
               {needsBrand ? (category === "data" ? `${brand} data plans` : `${brand} packages`) : category === "airtime" ? "Choose network" : `Choose ${cat.label.toLowerCase()} provider`}
             </Text>
             {loadingOptions ? <ActivityIndicator color={COLORS.primary} style={{ paddingVertical: 16 }} /> : null}
+            {category === "data" && options.length ? (
+              <View style={styles.filters}>
+                {PLAN_GROUPS.filter(([g]) => g === "all" || options.some((p) => planGroup(p.name) === g)).map(([g, label]) => (
+                  <PressableScale
+                    key={g}
+                    onPress={() => setPlanFilter(g)}
+                    haptic="selection"
+                    depth={0.94}
+                    style={[styles.filterChip, planFilter === g && styles.filterChipOn]}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: planFilter === g }}
+                  >
+                    <Text style={[styles.filterText, planFilter === g && styles.filterTextOn]}>{label}</Text>
+                  </PressableScale>
+                ))}
+              </View>
+            ) : null}
             {needsBrand ? (
               <View style={styles.grid}>
-                {options.map((p) => (
+                {options.filter((p) => category !== "data" || planFilter === "all" || planGroup(p.name) === planFilter).map((p) => (
                   <PlanCard key={p.code} name={p.name} price={p.price} selected={selected?.code === p.code} onPress={() => choose(p)} />
                 ))}
               </View>
@@ -240,8 +284,31 @@ export function BillsScreen({ onBack, initialCategory = "airtime" }: { onBack: (
                 style={{ marginBottom: 14 }}
               />
             ) : null}
+            {PRESET_AMOUNTS[category] && !fixedPrice ? (
+              <>
+                <Text style={styles.amountLabel}>Choose an amount</Text>
+                <View style={styles.amountGrid}>
+                  {PRESET_AMOUNTS[category]!.map((v) => {
+                    const on = Number(amountNgn) === v;
+                    return (
+                      <PressableScale
+                        key={v}
+                        onPress={() => setAmountNgn(String(v))}
+                        haptic="selection"
+                        depth={0.95}
+                        style={[styles.amountTile, on && styles.amountTileOn]}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: on }}
+                      >
+                        <Text style={[styles.amountText, on && { color: COLORS.primaryDark }]}>{formatNgn(v)}</Text>
+                      </PressableScale>
+                    );
+                  })}
+                </View>
+              </>
+            ) : null}
             <Input
-              label="Amount (₦)"
+              label={PRESET_AMOUNTS[category] && !fixedPrice ? "Or enter your own amount (₦)" : "Amount (₦)"}
               placeholder="e.g. 2000"
               value={amountNgn}
               onChangeText={(t) => setAmountNgn(t.replace(/[^0-9]/g, ""))}
@@ -323,5 +390,24 @@ const styles = StyleSheet.create({
   form: { backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, padding: SPACING.md, marginTop: 8, ...DEPTH.card },
   formHead: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 14 },
   formTitle: { ...TYPE.headline, color: COLORS.text, flex: 1 },
+  filters: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 4 },
+  filterChip: { minHeight: 40, paddingHorizontal: 14, justifyContent: "center", borderRadius: RADIUS.pill, backgroundColor: COLORS.surface, ...DEPTH.raised },
+  filterChipOn: { backgroundColor: COLORS.primary, borderColor: COLORS.primary, borderBottomColor: "#044F2D" },
+  filterText: { ...TYPE.label, fontFamily: FONTS.semibold, color: COLORS.text },
+  filterTextOn: { color: COLORS.onPrimary },
+  amountLabel: { ...TYPE.label, color: COLORS.textSecondary, marginBottom: 8 },
+  amountGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 14 },
+  amountTile: {
+    flexBasis: "30%",
+    flexGrow: 1,
+    minHeight: 52,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: RADIUS.md,
+    backgroundColor: COLORS.surface,
+    ...DEPTH.raised,
+  },
+  amountTileOn: { borderColor: COLORS.primary, borderWidth: 2, borderBottomWidth: 4, borderBottomColor: COLORS.primaryDark, backgroundColor: COLORS.deep },
+  amountText: { ...TYPE.bodyStrong, color: COLORS.text },
   historyCard: { backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, padding: SPACING.md, ...DEPTH.card },
 });
