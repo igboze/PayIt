@@ -388,6 +388,99 @@ test("Hosted KYC/KYB Document Upload Bridge: stages file in RAM, returns documen
   assert.equal(after.data.name, "coi.pdf");
 });
 
+test("Username claim, Business Logo Upload, and Account Security Actions (pin.reset, wallet.export, account.freeze, account.delete)", async () => {
+  process.env.INVOICE_FORWARDING_SECRET = process.env.INVOICE_FORWARDING_SECRET || "test-forwarding-secret-32-chars-min";
+  const features = require("../src/app_api/features");
+  const actions = require("../src/app_api/actions");
+  const { ethers } = require("ethers");
+  const sharp = require("sharp");
+
+  // 1. Create two test users in SQLite
+  const w1 = ethers.Wallet.createRandom();
+  const w2 = ethers.Wallet.createRandom();
+  const tg1 = 881001;
+  const tg2 = 881002;
+  db.createUserWithWallet(tg1, null, w1.address, w1.privateKey, "1234", null, null, null);
+  db.createUserWithWallet(tg2, "taken_handle", w2.address, w2.privateKey, "1234", null, null, null);
+
+  features.__setTestDeps({ db });
+  const pubUser = (u) => ({ id: u.telegram_id, username: u.username });
+
+  // Claiming an available @username succeeds
+  const u1 = db.getUser(tg1);
+  const claimOk = await features.updateProfile({ telegramId: tg1, user: u1 }, { username: "@fresh_founder" }, pubUser);
+  assert.equal(claimOk.status, 200);
+  assert.equal(db.getUser(tg1).username, "fresh_founder");
+
+  // Claiming an already taken username (case-insensitive) returns 409
+  await assert.rejects(
+    () => features.updateProfile({ telegramId: tg1, user: db.getUser(tg1) }, { username: "TAKEN_HANDLE" }, pubUser),
+    (err) => err.status === 409 && err.code === "username_taken"
+  );
+
+  // 2. Upload Business Logo persists resized PNG data URI
+  const pngBuf = await sharp({
+    create: { width: 120, height: 120, channels: 4, background: { r: 22, g: 163, b: 74, alpha: 1 } },
+  })
+    .png()
+    .toBuffer();
+  const logoRes = await features.uploadBusinessLogo(
+    { telegramId: tg1, user: db.getUser(tg1) },
+    { imageBase64: pngBuf.toString("base64") }
+  );
+  assert.equal(logoRes.status, 200);
+  assert.ok(logoRes.data.logoDataUri.startsWith("data:image/png;base64,"));
+
+  // 3. Action registry checks: pin.reset & account.freeze are noPin: true
+  assert.equal(actions.ACTIONS["pin.reset"].noPin, true);
+  assert.equal(actions.ACTIONS["account.freeze"].noPin, true);
+  assert.ok(!actions.ACTIONS["wallet.export"].noPin);
+  assert.ok(!actions.ACTIONS["account.delete"].noPin);
+
+  // 4. Execute pin.reset without knowing old PIN, then verify new PIN works for wallet.export
+  const resetRes = await actions.ACTIONS["pin.reset"].execute(
+    { telegramId: tg1, user: db.getUser(tg1) },
+    { resetPin: true },
+    null,
+    null,
+    { newPin: "4927" }
+  );
+  assert.equal(resetRes.reset, true);
+
+  const exportRes = await actions.ACTIONS["wallet.export"].execute(
+    { telegramId: tg1, user: db.getUser(tg1) },
+    { accountType: "personal", exportKey: true },
+    "4927",
+    null,
+    {}
+  );
+  assert.equal(exportRes.depositAddress.toLowerCase(), w1.address.toLowerCase());
+  assert.equal(exportRes.privateKey.toLowerCase(), w1.privateKey.toLowerCase());
+
+  // 5. Execute account.freeze and verify user is blocked
+  const freezeRes = await actions.ACTIONS["account.freeze"].execute(
+    { telegramId: tg1, user: db.getUser(tg1) },
+    { freezeAccount: true },
+    null,
+    null,
+    {}
+  );
+  assert.equal(freezeRes.frozen, true);
+  assert.equal(Boolean(db.getUser(tg1).is_blocked), true);
+
+  // 6. Execute account.delete on tg2 and verify PII cleared + blocked
+  const delRes = await actions.ACTIONS["account.delete"].execute(
+    { telegramId: tg2, user: db.getUser(tg2) },
+    { deleteAccount: true },
+    "1234",
+    null,
+    {}
+  );
+  assert.equal(delRes.deleted, true);
+  assert.equal(Boolean(db.getUser(tg2).is_blocked), true);
+  assert.equal(db.getUser(tg2).username, null);
+});
+
 test.after(() => {
   try {
     if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);

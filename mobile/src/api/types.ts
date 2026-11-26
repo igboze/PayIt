@@ -558,6 +558,7 @@ export interface BusinessHomeResponse {
     address: string | null;
     defaultDueDays: number;
     currencyDisplay: string;
+    logoDataUri?: string | null;
     updatedAt: string | null;
   } | null;
   balance: UnifiedBalance | null;

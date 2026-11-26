@@ -232,14 +232,27 @@ async function updateProfile(auth, body, publicUserFn) {
   const db = dep("db");
   const senderName = optStr(body, "senderName", { max: 64 });
   const bizSenderName = optStr(body, "bizSenderName", { max: 64 });
+  const rawUsername = typeof body?.username === "string" ? body.username.trim().replace(/^@+/, "") : "";
   const accountType = resolveAccountType(auth, body?.accountType);
   const hasAutoEarn = typeof body?.autoEarnEnabled === "boolean";
   const activeContext = optStr(body, "activeContext", { pattern: /^(personal|business)$/ });
 
-  if (!senderName && !bizSenderName && !hasAutoEarn && !activeContext) {
-    throw bad("Provide senderName, bizSenderName, autoEarnEnabled, or activeContext to update.");
+  if (!senderName && !bizSenderName && !rawUsername && !hasAutoEarn && !activeContext) {
+    throw bad("Provide senderName, bizSenderName, username, autoEarnEnabled, or activeContext to update.");
   }
   try {
+    if (rawUsername) {
+      if (!/^[a-zA-Z0-9_]{3,32}$/.test(rawUsername)) {
+        throw bad("Username must be 3–32 letters, numbers, or underscores.");
+      }
+      const existingHolder = db.db
+        .prepare("SELECT telegram_id FROM users WHERE LOWER(username) = LOWER(?) AND telegram_id != ? LIMIT 1")
+        .get(rawUsername, Number(auth.telegramId));
+      if (existingHolder) {
+        throw new FeatureError(409, "username_taken", `Username @${rawUsername} is already taken. Try another one.`);
+      }
+      db.syncUsername(auth.telegramId, rawUsername);
+    }
     if (senderName) db.setUserSenderName(auth.telegramId, senderName, accountType);
     if (bizSenderName) db.setUserSenderName(auth.telegramId, bizSenderName, "business");
     if (hasAutoEarn) db.updateAutoEarnSetting(auth.telegramId, body.autoEarnEnabled);
@@ -1508,6 +1521,7 @@ async function getBusinessHome(auth) {
         address: profile.address || null,
         defaultDueDays: Number(profile.default_due_days || 14),
         currencyDisplay: profile.currency_display || "USDC",
+        logoDataUri: typeof bizProfile.getLogoDataUri === "function" ? bizProfile.getLogoDataUri(auth.telegramId) : null,
         updatedAt: profile.updated_at || null,
       } : null,
       balance,
@@ -1557,10 +1571,29 @@ async function updateBusinessProfile(auth, body) {
         address: saved.address || null,
         defaultDueDays: Number(saved.default_due_days || 14),
         currencyDisplay: saved.currency_display || "USDC",
+        logoDataUri: typeof bizProfile.getLogoDataUri === "function" ? bizProfile.getLogoDataUri(auth.telegramId) : null,
         updatedAt: saved.updated_at || null,
       },
     },
   };
+}
+
+async function uploadBusinessLogo(auth, body) {
+  const bizProfile = dep("bizProfile");
+  if (typeof bizProfile.initBizProfileTable === "function") bizProfile.initBizProfileTable();
+  const raw = stripBase64DataUrl(body?.imageBase64 || body?.base64);
+  if (!raw || raw.length < 32) throw bad("Please select a valid image for your business logo.");
+  if (raw.length > Math.ceil(5 * 1024 * 1024 * 1.37)) throw bad("Logo image is too large (max 5 MB).");
+  const existing = bizProfile.getBizProfile(auth.telegramId);
+  if (!existing) {
+    bizProfile.upsertBizProfile(auth.telegramId, {
+      businessName: auth.user?.biz_sender_name || "Proxim Business",
+    });
+  }
+  const buf = Buffer.from(raw, "base64");
+  await bizProfile.saveLogo(auth.telegramId, buf);
+  const logoDataUri = typeof bizProfile.getLogoDataUri === "function" ? bizProfile.getLogoDataUri(auth.telegramId) : null;
+  return { status: 200, data: { ok: true, logoDataUri } };
 }
 
 async function listBusinessInvoices(auth, url) {
@@ -2866,8 +2899,8 @@ async function submitKyc(auth, body) {
       name: fullName,
       status: entityStatus === "approved" ? "approved" : "pending",
       accountType: "personal",
-    }).catch(() => {});
-  } catch (_) {}
+    }).catch(() => { });
+  } catch (_) { }
   return { status: 201, data: { status: entityStatus || "pending", tier: entityStatus === "approved" ? 1 : 0 } };
 }
 
@@ -3264,8 +3297,8 @@ async function submitKyb(auth, body) {
       name: legalName,
       status: entityStatus === "approved" ? "approved" : "pending",
       accountType: "business",
-    }).catch(() => {});
-  } catch (_) {}
+    }).catch(() => { });
+  } catch (_) { }
   return { status: 201, data: { status: entityStatus || "pending", tier: entityStatus === "approved" ? 1 : 0 } };
 }
 
@@ -3823,6 +3856,7 @@ module.exports = {
   getSavingsOverview,
   getBusinessHome,
   updateBusinessProfile,
+  uploadBusinessLogo,
   listBusinessInvoices,
   getBusinessInvoice,
   createBusinessInvoice,

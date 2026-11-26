@@ -112,7 +112,7 @@ export function ApprovalSheet() {
 
   const { intent, extraConfirmFields } = pendingApproval;
   const requiresPin = intent.requiresPin;
-  const isPinChange = intent.actionType === "pin.change";
+  const isPinChange = intent.actionType === "pin.change" || intent.actionType === "pin.reset";
 
   const handleApprove = async () => {
     setError(null);

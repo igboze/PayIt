@@ -78,6 +78,7 @@ function sendJson(res, status, data) {
 // Endpoints that accept base64 photo/document uploads need a larger JSON body limit.
 const LARGE_BODY_PATHS = new Map([
   ["/me/avatar", 6 * 1024 * 1024],
+  ["/business/profile/logo", 6 * 1024 * 1024],
   ["/kyc/upload-page", 10 * 1024 * 1024],
   ["/kyc/submit", 15 * 1024 * 1024],
   ["/kyb/submit", 25 * 1024 * 1024],
@@ -185,7 +186,7 @@ function touchMobileActivity(db, telegramId) {
   if (now - prev < 5 * 60 * 1000) return;
   _lastActivityTouch.set(telegramId, now);
   if (_lastActivityTouch.size > 10_000) _lastActivityTouch.clear();
-  try { db.updateUserLastActivity(telegramId); } catch (_) {}
+  try { db.updateUserLastActivity(telegramId); } catch (_) { }
 }
 
 function authenticate(req) {
@@ -758,7 +759,7 @@ async function transactions(req, url) {
         if (o && Number(o.telegram_id) === Number(auth.telegramId) && o.order_id) {
           offrampOrderId = String(o.order_id);
         }
-      } catch (_) {}
+      } catch (_) { }
     }
     return {
       ...depMeta,
@@ -1325,6 +1326,7 @@ const ROUTES = [
   ["GET", "/business/overview", (req) => features.getBusinessHome(authenticate(req))],
   ["PATCH", "/business/profile", (req, body) => features.updateBusinessProfile(authenticate(req), body)],
   ["PUT", "/business/profile", (req, body) => features.updateBusinessProfile(authenticate(req), body)],
+  ["POST", "/business/profile/logo", (req, body) => features.uploadBusinessLogo(authenticate(req), body)],
   ["GET", "/business/invoices", (req, url) => features.listBusinessInvoices(authenticate(req), url)],
   ["POST", "/business/invoices", (req, body) => {
     const auth = authenticate(req);

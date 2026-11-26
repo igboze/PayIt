@@ -121,13 +121,13 @@ async function buildBillRequest(ctx, { category, providerId, recipient, networkI
   } else if (category === "data" || category === "internet") {
     let net = networkId;
     if (!net && typeof airbills.listDataPlans === "function") {
-      try { net = (await airbills.listDataPlans(null)).find((p) => p.prodId === providerId)?.networkId || null; } catch (_) {}
+      try { net = (await airbills.listDataPlans(null)).find((p) => p.prodId === providerId)?.networkId || null; } catch (_) { }
     }
     billData = { phoneNumber: digits(recipient), networkId: net || undefined, prodId: providerId };
   } else if (category === "electricity") {
     let prodId = null;
     if (typeof airbills.listElectricityProviders === "function") {
-      try { prodId = (await airbills.listElectricityProviders()).find((d) => d.electId === providerId)?.prodId || null; } catch (_) {}
+      try { prodId = (await airbills.listElectricityProviders()).find((d) => d.electId === providerId)?.prodId || null; } catch (_) { }
     }
     billData = { meterNo: digits(recipient), electId: providerId, prodId: prodId || undefined, phoneNumber: phone || undefined };
   } else if (category === "cable") {
@@ -271,7 +271,7 @@ async function sendOnchain(ctx, pin, toAddress, amountUsdc, narration, type = "t
             arcBal = await walletLib.getNativeBalanceMicro(signer.address).catch(() => arcBal);
           }
         }
-      } catch (_) {}
+      } catch (_) { }
     }
 
     // If Arc still doesn't have enough funds, allow P2P fallback via Solana SPL USDC when enabled
@@ -401,20 +401,20 @@ const ACTIONS = {
       };
       const summary = amountNgn
         ? {
-            title: `Send ₦${amountNgn.toLocaleString("en-NG")} to ${label}`,
-            lines: [
-              ...accountTagLines(ctx, accountType),
-              ["To", label],
-              ["Amount", `₦${amountNgn.toLocaleString("en-NG")}`],
-              ["From your balance", `≈ $${fmt(amountUsdc)}`],
-              ["Rate", `$1 = ₦${rate.toLocaleString("en-NG")}`],
-              ["Fee", "Free"],
-            ],
-          }
+          title: `Send ₦${amountNgn.toLocaleString("en-NG")} to ${label}`,
+          lines: [
+            ...accountTagLines(ctx, accountType),
+            ["To", label],
+            ["Amount", `₦${amountNgn.toLocaleString("en-NG")}`],
+            ["From your balance", `≈ $${fmt(amountUsdc)}`],
+            ["Rate", `$1 = ₦${rate.toLocaleString("en-NG")}`],
+            ["Fee", "Free"],
+          ],
+        }
         : {
-            title: `Send $${fmt(amountUsdc)} to ${label}`,
-            lines: [...accountTagLines(ctx, accountType), ["To", label], ["Amount", `$${fmt(amountUsdc)}`], ["Fee", "Free"]],
-          };
+          title: `Send $${fmt(amountUsdc)} to ${label}`,
+          lines: [...accountTagLines(ctx, accountType), ["To", label], ["Amount", `$${fmt(amountUsdc)}`], ["Fee", "Free"]],
+        };
       return { amountUsd: amountUsdc, action, summary };
     },
     async execute(ctx, a, pin) {
@@ -477,20 +477,20 @@ const ACTIONS = {
       };
       const summary = amountNgn
         ? {
-            title: `Send ₦${amountNgn.toLocaleString("en-NG")} gift link to @${targetHandle}`,
-            lines: [
-              ...accountTagLines(ctx, accountType),
-              ["Recipient", `@${targetHandle}`],
-              ["Amount", `₦${amountNgn.toLocaleString("en-NG")}`],
-              ["From your balance", `≈ $${fmt(amountUsdc)}`],
-              ["Rate", `$1 = ₦${rate.toLocaleString("en-NG")}`],
-              ["Expires in", `${expiresHours} hours`],
-            ],
-          }
+          title: `Send ₦${amountNgn.toLocaleString("en-NG")} gift link to @${targetHandle}`,
+          lines: [
+            ...accountTagLines(ctx, accountType),
+            ["Recipient", `@${targetHandle}`],
+            ["Amount", `₦${amountNgn.toLocaleString("en-NG")}`],
+            ["From your balance", `≈ $${fmt(amountUsdc)}`],
+            ["Rate", `$1 = ₦${rate.toLocaleString("en-NG")}`],
+            ["Expires in", `${expiresHours} hours`],
+          ],
+        }
         : {
-            title: `Send $${fmt(amountUsdc)} gift link to @${targetHandle}`,
-            lines: [...accountTagLines(ctx, accountType), ["Recipient", `@${targetHandle}`], ["Amount", `$${fmt(amountUsdc)}`], ["Expires in", `${expiresHours} hours`]],
-          };
+          title: `Send $${fmt(amountUsdc)} gift link to @${targetHandle}`,
+          lines: [...accountTagLines(ctx, accountType), ["Recipient", `@${targetHandle}`], ["Amount", `$${fmt(amountUsdc)}`], ["Expires in", `${expiresHours} hours`]],
+        };
       return { amountUsd: amountUsdc, action, summary };
     },
     async execute(ctx, a, pin) {
@@ -702,26 +702,26 @@ const ACTIONS = {
       };
       const summary = amountNgn
         ? {
-            title: `Send ₦${amountNgn.toLocaleString("en-NG")} to ${accountName || accountNumber}`,
-            lines: [
-              ...accountTagLines(ctx, accountType),
-              ["To", `${accountName || "Account"} · ••${accountNumber.slice(-2)}`],
-              ["They get", `₦${amountNgn.toLocaleString("en-NG")}`],
-              ["From your balance", `≈ $${fmt(estTotalUsd)}`],
-              ["Fee (1%)", `≈ $${fmt(estFeeUsdc)}`],
-              ["Rate", `$1 = ₦${rate.toLocaleString("en-NG")}`],
-            ],
-          }
+          title: `Send ₦${amountNgn.toLocaleString("en-NG")} to ${accountName || accountNumber}`,
+          lines: [
+            ...accountTagLines(ctx, accountType),
+            ["To", `${accountName || "Account"} · ••${accountNumber.slice(-2)}`],
+            ["They get", `₦${amountNgn.toLocaleString("en-NG")}`],
+            ["From your balance", `≈ $${fmt(estTotalUsd)}`],
+            ["Fee (1%)", `≈ $${fmt(estFeeUsdc)}`],
+            ["Rate", `$1 = ₦${rate.toLocaleString("en-NG")}`],
+          ],
+        }
         : {
-            title: `Send $${fmt(amountUsdc)} to ${accountName || accountNumber}`,
-            lines: [
-              ...accountTagLines(ctx, accountType),
-              ["To", `${accountName || "Account"} · ••${accountNumber.slice(-2)}`],
-              ["They get", estNgn ? `≈ ₦${estNgn.toLocaleString("en-NG")}` : "Shown by the bank partner"],
-              ["Fee (1%)", `$${fmt(estFeeUsdc)}`],
-              ["Rate", rate ? `$1 = ₦${rate.toLocaleString("en-NG")}` : "Live rate"],
-            ],
-          };
+          title: `Send $${fmt(amountUsdc)} to ${accountName || accountNumber}`,
+          lines: [
+            ...accountTagLines(ctx, accountType),
+            ["To", `${accountName || "Account"} · ••${accountNumber.slice(-2)}`],
+            ["They get", estNgn ? `≈ ₦${estNgn.toLocaleString("en-NG")}` : "Shown by the bank partner"],
+            ["Fee (1%)", `$${fmt(estFeeUsdc)}`],
+            ["Rate", rate ? `$1 = ₦${rate.toLocaleString("en-NG")}` : "Live rate"],
+          ],
+        };
       return { amountUsd: estTotalUsd, action, summary };
     },
     async execute(ctx, a, pin) {
@@ -771,7 +771,7 @@ const ACTIONS = {
         if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
           try {
             solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress;
-          } catch (_) {}
+          } catch (_) { }
         }
         if (feeUsdc > 0 && solFeeRecipient && multichain.isSolanaAddress(solFeeRecipient) && sol.solanaAddress !== solFeeRecipient) {
           try {
@@ -793,7 +793,7 @@ const ACTIONS = {
         let baseNonce = null;
         try {
           if (typeof signer.getNonce === "function") baseNonce = await signer.getNonce("pending");
-        } catch (_) {}
+        } catch (_) { }
         const tx = await walletLib.sendSponsoredOrDirectTransaction(
           signer,
           fundingAddress,
@@ -819,7 +819,7 @@ const ACTIONS = {
                 if (currentBalMicro < feeMicro + minGasBufferMicro) {
                   feeMicro = currentBalMicro > minGasBufferMicro ? currentBalMicro - minGasBufferMicro : 0n;
                 }
-              } catch (_) {}
+              } catch (_) { }
             }
             if (feeMicro > 0n) {
               const feeTx = await walletLib.sendSponsoredOrDirectTransaction(
@@ -1025,7 +1025,7 @@ const ACTIONS = {
       try {
         const amtMicro = dep("walletLib").parseToMicro(Number(a.amountUsdc).toFixed(6));
         db.recordTransaction(ctx.telegramId, "savings_deposit", amtMicro, "confirmed", txHash, accountType, 18, "arc", `Saved in ${pool.project}`);
-      } catch (_) {}
+      } catch (_) { }
       return { txHash, vaultName: pool.project, notice: `Saved $${fmt(a.amountUsdc)} in ${pool.project}` };
     },
   },
@@ -1066,7 +1066,7 @@ const ACTIONS = {
       try {
         const amtMicro = dep("walletLib").parseToMicro(Number(r.totalUserPayout || 0).toFixed(6));
         db.recordTransaction(ctx.telegramId, "yield_withdraw", amtMicro, "confirmed", r.withdrawTxHash || null, accountType, 18, "arc", `Withdrew from ${open.project || "Savings"}`);
-      } catch (_) {}
+      } catch (_) { }
       return { withdrawnUsdc: r.totalUserPayout, netYieldUsdc: r.netYieldUsdc, feeUsdc: r.devFeeUsdc, feeTxHash: r.feeTxHash || null, txHash: r.withdrawTxHash, notice: `Withdrew $${fmt(r.totalUserPayout || 0)}` };
     },
   },
@@ -1090,9 +1090,9 @@ const ACTIONS = {
         try {
           const r = await dep("paj").getRates("NGN");
           rate = Number(r?.offRampRate?.rate || r?.onRampRate?.rate || 0) || null;
-        } catch (_) {}
+        } catch (_) { }
         if (!rate) {
-          try { rate = Number(await dep("fx").getUsdToNgnRate()) || null; } catch (_) {}
+          try { rate = Number(await dep("fx").getUsdToNgnRate()) || null; } catch (_) { }
         }
         if (!rate || !Number.isFinite(rate) || rate <= 0) {
           throw new ActionError(503, "rate_unavailable", "Live Naira exchange rate is temporarily unavailable.");
@@ -1190,7 +1190,7 @@ const ACTIONS = {
       try {
         const amtMicro = dep("walletLib").parseToMicro(amountUsd.toFixed(6));
         db.recordTransaction(ctx.telegramId, "stock_buy", amtMicro, "pending", execRes.txHash || null, accountType, 18, "base", `Buy ${a.ticker} stock`);
-      } catch (_) {}
+      } catch (_) { }
 
       return {
         txHash: execRes.txHash || null,
@@ -1293,7 +1293,7 @@ const ACTIONS = {
       try {
         const amtMicro = dep("walletLib").parseToMicro(Math.max(estUsd, 0).toFixed(6));
         db.recordTransaction(ctx.telegramId, "stock_sell", amtMicro, "pending", execRes.txHash || null, accountType, 18, "base", `Sell ${a.ticker} stock`);
-      } catch (_) {}
+      } catch (_) { }
 
       return {
         txHash: execRes.txHash || null,
@@ -1539,6 +1539,136 @@ const ACTIONS = {
       const bizKey = user.business_deposit_address ? db.decryptBusinessPrivateKey(pin, user) : null;
       db.updatePin(ctx.telegramId, newPin, personalKey, bizKey);
       return { updated: true, notice: "Your PIN was changed" };
+    },
+  },
+
+  "pin.reset": {
+    noPin: true,
+    async prepare() {
+      return {
+        amountUsd: 0,
+        action: { resetPin: true },
+        summary: {
+          title: "Reset your 4-digit PIN",
+          lines: [["Verification", "Passkey biometric confirmation"], ["Action", "Re-encrypt wallets with your new PIN"]],
+        },
+      };
+    },
+    async execute(ctx, _a, _pin, _context, body) {
+      const newPin = str(body, "newPin", { pattern: /^\d{4}$/ });
+      if (WEAK_PINS.has(newPin)) throw bad("Choose a PIN that is harder to guess.", "weak_pin");
+      const db = dep("db");
+      const user = db.getUser(ctx.telegramId);
+      if (!user) throw new ActionError(404, "not_found", "Account not found.");
+      const personalKey = typeof db.getSystemDecryptedPrivateKey === "function"
+        ? db.getSystemDecryptedPrivateKey(user, "personal")
+        : null;
+      if (!personalKey) {
+        throw new ActionError(400, "reset_unavailable", "Automatic PIN reset isn't available for this legacy wallet. Use Change PIN or contact support.");
+      }
+      const bizKey = user.business_deposit_address && typeof db.getSystemDecryptedPrivateKey === "function"
+        ? db.getSystemDecryptedPrivateKey(user, "business")
+        : null;
+      db.updatePin(ctx.telegramId, newPin, personalKey, bizKey);
+      return { reset: true, notice: "Your 4-digit PIN has been reset" };
+    },
+  },
+
+  "wallet.export": {
+    async prepare(ctx, body) {
+      const acct = str(body, "accountType", { optional: true, pattern: /^(personal|business)$/i })?.toLowerCase() || ctx.accountType || "personal";
+      if (acct === "business" && !ctx.user?.business_deposit_address) {
+        throw new ActionError(404, "no_business_account", "No business wallet on this account.");
+      }
+      return {
+        amountUsd: 0,
+        action: { accountType: acct, exportKey: true },
+        summary: {
+          title: `Backup ${acct === "business" ? "Business" : "Personal"} Recovery Key`,
+          lines: [
+            ["Account", acct === "business" ? "Business" : "Personal"],
+            ["Warning", "Never share your private key with anyone"],
+          ],
+        },
+      };
+    },
+    async execute(ctx, a, pin) {
+      const db = dep("db");
+      const user = db.getUser(ctx.telegramId);
+      const isBiz = a.accountType === "business";
+      const privateKey = isBiz ? db.decryptBusinessPrivateKey(pin, user) : db.decryptPrivateKey(pin, user);
+      if (!privateKey) throw new ActionError(401, "pin_invalid", "Wrong PIN.");
+      return {
+        accountType: a.accountType,
+        depositAddress: isBiz ? user.business_deposit_address : user.deposit_address,
+        privateKey,
+        notice: "Keep this private key offline and strictly confidential",
+      };
+    },
+  },
+
+  "account.freeze": {
+    noPin: true,
+    async prepare() {
+      return {
+        amountUsd: 0,
+        action: { freeze: true },
+        summary: {
+          title: "Freeze your Proxim account",
+          lines: [
+            ["Effect", "Blocks all logins and outgoing transfers"],
+            ["Unlock", "Contact support or send /unlock in Telegram"],
+          ],
+        },
+      };
+    },
+    async execute(ctx) {
+      const db = dep("db");
+      db.blockUser(ctx.telegramId, "Self-frozen via mobile app");
+      try {
+        const storeMod = require("./store");
+        const devs = storeMod.listDevices(ctx.telegramId) || [];
+        for (const d of devs) storeMod.revokeDevice(ctx.telegramId, d.device_id);
+      } catch (_) {}
+      return { frozen: true, notice: "Your account has been frozen for security" };
+    },
+  },
+
+  "account.delete": {
+    async prepare() {
+      return {
+        amountUsd: 0,
+        action: { deleteAccount: true },
+        summary: {
+          title: "Permanently Delete Account",
+          lines: [
+            ["Data wiped", "Profile, passkeys, devices & personal details"],
+            ["Important", "Withdraw all funds before deleting"],
+          ],
+        },
+      };
+    },
+    async execute(ctx, _a, pin) {
+      const db = dep("db");
+      const user = db.getUser(ctx.telegramId);
+      if (!user) throw new ActionError(404, "not_found", "Account not found.");
+      const ok = db.decryptPrivateKey(pin, user);
+      if (!ok) throw new ActionError(401, "pin_invalid", "Wrong PIN.");
+      try {
+        db.db.prepare(
+          "UPDATE users SET username = NULL, sender_name = NULL, biz_sender_name = NULL, phone_number = NULL, phone_verified = 0, is_blocked = 1, blocked_at = datetime('now'), blocked_reason = 'Account deleted by user' WHERE telegram_id = ?"
+        ).run(Number(ctx.telegramId));
+      } catch (_) {
+        db.blockUser(ctx.telegramId, "Account deleted by user");
+      }
+      try { require("./avatars").deleteAvatar(ctx.telegramId); } catch (_) {}
+      try {
+        const storeMod = require("./store");
+        const devs = storeMod.listDevices(ctx.telegramId) || [];
+        for (const d of devs) storeMod.revokeDevice(ctx.telegramId, d.device_id);
+        db.db.prepare("DELETE FROM app_passkeys WHERE telegram_id = ?").run(Number(ctx.telegramId));
+      } catch (_) {}
+      return { deleted: true, notice: "Your Proxim account has been permanently deleted" };
     },
   },
 

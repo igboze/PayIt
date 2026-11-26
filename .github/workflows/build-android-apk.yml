@@ -60,7 +60,7 @@ jobs:
       - name: Prebuild native Android project
         run: npx expo prebuild --platform android --clean --no-install
 
-      - name: Build Android Release APK
+      - name: Build Android Release APK & Play Store AAB
         env:
           EXPO_PUBLIC_API_BASE_URL: https://payit-production.up.railway.app/api/app/v1
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -75,16 +75,32 @@ jobs:
           fi
           cd android
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            ./gradlew assembleRelease bundleRelease --no-daemon
+          else
+            ./gradlew assembleRelease --no-daemon
+          fi
 
-      - name: List built APK outputs
-        run: ls -lh android/app/build/outputs/apk/release/
+      - name: List built APK & AAB outputs
+        run: |
+          ls -lh android/app/build/outputs/apk/release/
+          if [ -d android/app/build/outputs/bundle/release ]; then
+            ls -lh android/app/build/outputs/bundle/release/
+          fi
 
       - name: Upload Proxim Android APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: Proxim-Android-APK
           path: mobile/android/app/build/outputs/apk/release/*.apk
+          retention-days: 30
+
+      - name: Upload Proxim Play Store AAB artifact
+        if: hashFiles('mobile/android/app/build/outputs/bundle/release/*.aab') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: Proxim-PlayStore-AAB
+          path: mobile/android/app/build/outputs/bundle/release/*.aab
           retention-days: 30
 
       # A fixed, public download link for the newest SIGNED APK:

@@ -41,15 +41,24 @@ import {
 } from "../components/UI";
 import { CurrencyLogo } from "../components/CurrencyLogo";
 import { PressableScale, notifyHaptic } from "../components/Touch";
-import { getLegacyFileSystem, getSharing } from "../nativeModules";
+import { getImagePicker, getLegacyFileSystem, getSharing } from "../nativeModules";
 
 export type AccountsSection = "accounts" | "global" | "business";
+export type BizSubTab = "invoices" | "payroll" | "expenses" | "links" | "profile";
 
-export function AccountsScreen({ initialSection = "accounts" }: { initialSection?: AccountsSection }) {
-  const { user, activeAccount, dataVersion, switchAccount, requestApproval, balanceHidden } = useApp();
+export function AccountsScreen({
+  initialSection = "accounts",
+  initialBizSubTab = "invoices",
+}: {
+  initialSection?: AccountsSection;
+  initialBizSubTab?: BizSubTab;
+}) {
+  const { user, activeAccount, dataVersion, switchAccount, requestApproval, balanceHidden, suspendAutoLock } = useApp();
   const isBiz = activeAccount === "business";
 
   const [section, setSection] = useState<AccountsSection>(initialSection);
+  const [bizSubTab, setBizSubTab] = useState<BizSubTab>(initialBizSubTab);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -110,6 +119,10 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
   useEffect(() => {
     setSection(initialSection);
   }, [initialSection]);
+
+  useEffect(() => {
+    setBizSubTab(initialBizSubTab);
+  }, [initialBizSubTab]);
 
   // When switching into Business mode on the Accounts tab, jump straight into Business Tools
   // if the user was on the generic Balances list so the Business UI appears immediately.
@@ -472,6 +485,51 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
     }
   };
 
+  const handleUploadBizLogo = async () => {
+    setError(null);
+    const Picker = getImagePicker();
+    if (!Picker) {
+      setError("Install the latest Proxim APK (v1.0.7+) to upload a company logo.");
+      return;
+    }
+    suspendAutoLock(5 * 60 * 1000);
+    setUploadingLogo(true);
+    try {
+      const perm = await Picker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        setError("Allow photo library access to pick your business logo.");
+        return;
+      }
+      const res = await Picker.launchImageLibraryAsync({
+        mediaTypes: ["images"] as never,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.75,
+        base64: true,
+      });
+      const asset = res.assets?.[0];
+      if (res.canceled || !asset) return;
+      let base64 = asset.base64 || null;
+      if (!base64 && asset.uri) {
+        const FS = getLegacyFileSystem();
+        if (FS?.readAsStringAsync) {
+          base64 = await FS.readAsStringAsync(asset.uri, { encoding: "base64" as never });
+        }
+      }
+      if (!base64) {
+        setError("Couldn't read that logo image.");
+        return;
+      }
+      await api.uploadBusinessLogo(base64);
+      setNotice("Company logo saved! It will appear on all new invoices.");
+      loadSection(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not upload business logo.");
+    } finally {
+      setUploadingLogo(false);
+    }
+  };
+
   const handleSaveGoal = async () => {
     setError(null);
     setLoading(true);
@@ -709,6 +767,18 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
       {/* 3. BUSINESS TOOLS & INVOICES */}
       {section === "business" ? (
         <>
+          {isBiz ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                <Pill label="Invoices" active={bizSubTab === "invoices"} tone="business" onPress={() => setBizSubTab("invoices")} />
+                <Pill label="Pay Team" active={bizSubTab === "payroll"} tone="business" onPress={() => setBizSubTab("payroll")} />
+                <Pill label="Expenses" active={bizSubTab === "expenses"} tone="business" onPress={() => setBizSubTab("expenses")} />
+                <Pill label="Payment Links" active={bizSubTab === "links"} tone="business" onPress={() => setBizSubTab("links")} />
+                <Pill label="Profile & Logo" active={bizSubTab === "profile"} tone="business" onPress={() => setBizSubTab("profile")} />
+              </View>
+            </ScrollView>
+          ) : null}
+
           {isBiz && bizHome ? (
             <Card style={{ borderColor: COLORS.businessBorder }}>
               <SectionHeader title={bizHome.profile?.businessName || "Business Overview"} />
@@ -726,6 +796,7 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
             </Card>
           ) : null}
 
+          {!isBiz || bizSubTab === "invoices" ? (
           <Card>
             <SectionHeader title={isBiz ? "Create Business Invoice" : "Create Personal Invoice"} />
             <Input label="Client Name" placeholder="Client or Company" value={invClient} onChangeText={setInvClient} />
@@ -989,9 +1060,9 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
               })
             )}
           </Card>
+          ) : null}
 
-          {isBiz ? (
-            <>
+          {isBiz && bizSubTab === "links" ? (
               <Card>
                 <SectionHeader title="Payment Links" />
                 <Input label="Title" placeholder="Consulting Retainer" value={linkTitle} onChangeText={setLinkTitle} />
@@ -1015,9 +1086,44 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
                   </View>
                 ))}
               </Card>
+          ) : null}
 
+          {isBiz && bizSubTab === "profile" ? (
               <Card>
-                <SectionHeader title="Business Profile & Savings Goal" />
+                <SectionHeader title="Company Logo, Profile & Reserve" />
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 14 }}>
+                  {bizHome?.profile?.logoDataUri ? (
+                    <Image
+                      source={{ uri: bizHome.profile.logoDataUri }}
+                      style={{ width: 56, height: 56, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
+                      resizeMode="contain"
+                    />
+                  ) : (
+                    <View
+                      style={{
+                        width: 56,
+                        height: 56,
+                        borderRadius: 12,
+                        backgroundColor: COLORS.businessMuted,
+                        borderWidth: 1,
+                        borderColor: COLORS.businessBorder,
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      <Ionicons name="business-outline" size={24} color={COLORS.business} />
+                    </View>
+                  )}
+                  <View style={{ flex: 1 }}>
+                    <Button
+                      title={bizHome?.profile?.logoDataUri ? "Change Company Logo" : "Upload Company Logo"}
+                      variant="secondary"
+                      onPress={handleUploadBizLogo}
+                      loading={uploadingLogo}
+                      style={{ height: 40 }}
+                    />
+                  </View>
+                </View>
                 <Input label="Business Name" value={bizProfName} onChangeText={setBizProfName} />
                 <Input label="Business Email" value={bizProfEmail} onChangeText={setBizProfEmail} keyboardType="email-address" autoCapitalize="none" />
                 <Input label="Phone" value={bizProfPhone} onChangeText={setBizProfPhone} keyboardType="phone-pad" />
@@ -1027,7 +1133,9 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
                 <Input label="Goal Label" value={goalLabel} onChangeText={setGoalLabel} />
                 <Button title="Save Savings Goal" variant="secondary" onPress={handleSaveGoal} loading={loading} />
               </Card>
+          ) : null}
 
+          {isBiz && bizSubTab === "expenses" ? (
               <Card>
                 <SectionHeader title="Expenses" />
                 <Input label="Description" placeholder="Server hosting" value={expDesc} onChangeText={setExpDesc} />
@@ -1037,9 +1145,14 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
                   <KeyValueRow key={e.id} currency={e.currency || false} label={`${e.description} (${e.category})`} value={`${e.amount} ${e.currency}`} />
                 ))}
               </Card>
+          ) : null}
 
+          {isBiz && bizSubTab === "payroll" ? (
               <Card>
                 <SectionHeader title="Global Payroll (CSV)" />
+                <Text style={styles.muted}>
+                  Pay staff and contractors across 27+ currencies in one batch. Format: name,currency,amount,bank_name,account_number
+                </Text>
                 <Input
                   label="Paste Payroll CSV"
                   placeholder="name,currency,amount,..."
@@ -1049,7 +1162,6 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
                 />
                 <Button title="Quote & Approve Payroll Batch" onPress={handleRunPayroll} />
               </Card>
-            </>
           ) : null}
         </>
       ) : null}

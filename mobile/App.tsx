@@ -12,7 +12,7 @@ import { AddMoneyScreen } from "./src/screens/AddMoneyScreen";
 import { SendScreen } from "./src/screens/SendScreen";
 import { BillsScreen, type BillCat } from "./src/screens/BillsScreen";
 import { CardsScreen } from "./src/screens/CardsScreen";
-import { AccountsScreen, type AccountsSection } from "./src/screens/AccountsScreen";
+import { AccountsScreen, type AccountsSection, type BizSubTab } from "./src/screens/AccountsScreen";
 import { ProfileScreen } from "./src/screens/ProfileScreen";
 import { AssistantScreen } from "./src/screens/AssistantScreen";
 import { SavingsScreen } from "./src/screens/SavingsScreen";
@@ -52,6 +52,7 @@ function MainShell() {
 
   const [tab, setTab] = useState<MainTab>("home");
   const [accountsSection, setAccountsSection] = useState<AccountsSection>("accounts");
+  const [bizSubTab, setBizSubTab] = useState<BizSubTab>("invoices");
   const [profileSection, setProfileSection] = useState<"general" | "kyc">("general");
   const [profileVerifyMode, setProfileVerifyMode] = useState<"kyc" | "kyb" | null>(null);
   const [overlay, setOverlay] = useState<OverlayScreen>(null);
@@ -187,6 +188,27 @@ function MainShell() {
       setAccountsSection("global");
       setTab("accounts");
     } else if (target === "business") {
+      setBizSubTab("invoices");
+      setAccountsSection("business");
+      setTab("accounts");
+    } else if (target === "business_invoices") {
+      setBizSubTab("invoices");
+      setAccountsSection("business");
+      setTab("accounts");
+    } else if (target === "business_payroll") {
+      setBizSubTab("payroll");
+      setAccountsSection("business");
+      setTab("accounts");
+    } else if (target === "business_expenses") {
+      setBizSubTab("expenses");
+      setAccountsSection("business");
+      setTab("accounts");
+    } else if (target === "business_links") {
+      setBizSubTab("links");
+      setAccountsSection("business");
+      setTab("accounts");
+    } else if (target === "business_profile") {
+      setBizSubTab("profile");
       setAccountsSection("business");
       setTab("accounts");
     } else if (target === "kyc") {
@@ -348,7 +370,7 @@ function MainShell() {
             }}
             unread={inbox.unread}
           /> : null}
-        {tab === "accounts" ? <AccountsScreen initialSection={accountsSection} /> : null}
+        {tab === "accounts" ? <AccountsScreen initialSection={accountsSection} initialBizSubTab={bizSubTab} /> : null}
         {tab === "cards" ? <CardsScreen /> : null}
         {tab === "profile" ? <ProfileScreen initialTab={profileSection} initialVerifyMode={profileVerifyMode} /> : null}
       </View>

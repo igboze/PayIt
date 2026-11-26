@@ -3,6 +3,7 @@ import {
   Alert,
   AppState,
   Linking,
+  Modal,
   Platform,
   RefreshControl,
   ScrollView,
@@ -88,8 +89,18 @@ export function ProfileScreen({
   const [notice, setNotice] = useState<string | null>(null);
 
   // General
+  const [usernameInput, setUsernameInput] = useState(user?.username || "");
   const [senderName, setSenderName] = useState(user?.savedSenderName || user?.senderName || "");
   const [bizSenderName, setBizSenderName] = useState(user?.bizSenderName || "");
+  const [exportedKey, setExportedKey] = useState<{
+    accountType: string;
+    depositAddress: string;
+    privateKey: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (user?.username && !usernameInput) setUsernameInput(user.username);
+  }, [user?.username]);
 
   // KYC/KYB
   const [kyc, setKyc] = useState<KycStatusResponse | null>(null);
@@ -536,7 +547,12 @@ export function ProfileScreen({
     setError(null);
     setLoading(true);
     try {
+      const cleanUsername = usernameInput.trim().replace(/^@+/, "");
+      const usernameChanged =
+        cleanUsername.length > 0 &&
+        cleanUsername.toLowerCase() !== String(user?.username || "").toLowerCase();
       await api.updateProfile({
+        ...(usernameChanged ? { username: cleanUsername } : {}),
         ...(senderName.trim() ? { senderName: senderName.trim() } : {}),
         ...(bizSenderName.trim() && user?.hasBusinessAccount ? { bizSenderName: bizSenderName.trim() } : {}),
       });
@@ -874,6 +890,101 @@ export function ProfileScreen({
     }
   };
 
+  const handleResetPin = async () => {
+    setError(null);
+    try {
+      const res = await requestApproval("pin.reset", {});
+      setNotice(res.notice || "Transaction PIN reset successfully.");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "PIN reset failed.";
+      if (!/cancel/i.test(msg)) setError(msg);
+    }
+  };
+
+  const handleExportKey = (accountType: "personal" | "business") => {
+    const label = accountType === "business" ? "Business" : "Personal";
+    Alert.alert(
+      `Export ${label} Recovery Key`,
+      "Your private key grants full control over funds in this wallet. Never share it with anyone or paste it on unknown websites.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Continue with Passkey & PIN",
+          onPress: async () => {
+            setError(null);
+            try {
+              const res = (await requestApproval("wallet.export", { accountType })) as {
+                accountType?: string;
+                depositAddress?: string;
+                privateKey?: string;
+              };
+              if (res?.privateKey) {
+                setExportedKey({
+                  accountType: res.accountType || accountType,
+                  depositAddress: res.depositAddress || "",
+                  privateKey: res.privateKey,
+                });
+              } else {
+                setError("Could not retrieve recovery key.");
+              }
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : "Export failed.";
+              if (!/cancel/i.test(msg)) setError(msg);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleFreezeAccount = () => {
+    Alert.alert(
+      "Emergency Freeze Account",
+      "This immediately locks your Proxim account and signs out all devices. You will need to contact igboze@proximfi.xyz to unfreeze it. Continue?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Freeze Account",
+          style: "destructive",
+          onPress: async () => {
+            setError(null);
+            try {
+              await requestApproval("account.freeze", {});
+              await signOut();
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : "Could not freeze account.";
+              if (!/cancel/i.test(msg)) setError(msg);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      "Delete Proxim Account",
+      "Please withdraw any remaining balances first. Deleting your account removes your personal profile, linked devices, and passkeys, and permanently disables sign-in. Continue?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete Account",
+          style: "destructive",
+          onPress: async () => {
+            setError(null);
+            try {
+              await requestApproval("account.delete", {});
+              await signOut();
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : "Could not delete account.";
+              if (!/cancel/i.test(msg)) setError(msg);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const handleAddContact = async () => {
     setError(null);
     setLoading(true);
@@ -1014,7 +1125,15 @@ export function ProfileScreen({
           </Card>
 
           <Card>
-            <SectionHeader title="Bank Payout Sender Name" />
+            <SectionHeader title="Username & Bank Payout Name" />
+            <Input
+              label="Proxim @username"
+              placeholder="e.g. chinedu (letters, numbers, underscore)"
+              value={usernameInput}
+              onChangeText={(t) => setUsernameInput(t.replace(/^@+/, ""))}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
             <Input
               label="Personal Sender Name"
               placeholder="Your full name on bank receipts"
@@ -1056,6 +1175,39 @@ export function ProfileScreen({
           </Card>
 
           <Card>
+            <SectionHeader title="Help, Support & Legal" />
+            <Text style={[styles.rowSub, { marginBottom: 10 }]}>
+              Need help with a transfer, card, or verification? Reach our team anytime.
+            </Text>
+            <View style={{ gap: 8 }}>
+              <Button
+                title="Email Support (igboze@proximfi.xyz)"
+                variant="secondary"
+                onPress={() => Linking.openURL("mailto:igboze@proximfi.xyz?subject=Proxim%20Support")}
+              />
+              <Button
+                title="Telegram Support (@payeetbot)"
+                variant="secondary"
+                onPress={() => Linking.openURL("https://t.me/payeetbot")}
+              />
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                <Button
+                  title="Terms of Service"
+                  variant="ghost"
+                  onPress={() => Linking.openURL("https://www.proximfi.xyz/terms")}
+                  style={{ flex: 1 }}
+                />
+                <Button
+                  title="Privacy Policy"
+                  variant="ghost"
+                  onPress={() => Linking.openURL("https://www.proximfi.xyz/privacy")}
+                  style={{ flex: 1 }}
+                />
+              </View>
+            </View>
+          </Card>
+
+          <Card>
             <SectionHeader title="Statements & Session" />
             <Button
               title={`Export ${activeAccount === "business" ? "Business" : "Personal"} Statement (CSV)`}
@@ -1066,13 +1218,19 @@ export function ProfileScreen({
             />
             <Button
               title="Sign Out"
-              variant="danger"
+              variant="secondary"
               onPress={() =>
                 Alert.alert("Sign Out", "Sign out of Proxim on this device?", [
                   { text: "Cancel", style: "cancel" },
                   { text: "Sign Out", style: "destructive", onPress: () => signOut() },
                 ])
               }
+              style={{ marginBottom: 10 }}
+            />
+            <Button
+              title="Delete Account"
+              variant="danger"
+              onPress={handleDeleteAccount}
             />
           </Card>
         </>
@@ -1549,9 +1707,51 @@ export function ProfileScreen({
           <Card>
             <SectionHeader title="Transaction PIN" />
             <Text style={styles.rowSub}>
-              Re-encrypt your Personal and Business keys with a new 4-digit PIN (Passkey required).
+              Re-encrypt your Personal and Business keys with a new 4-digit PIN, or reset a forgotten PIN using your Passkey.
             </Text>
             <Button title="Change 4-digit PIN" variant="secondary" onPress={handleChangePin} style={{ marginTop: 12 }} />
+            <Button
+              title="Forgot PIN? Reset with Passkey"
+              variant="ghost"
+              onPress={handleResetPin}
+              style={{ marginTop: 8 }}
+            />
+          </Card>
+
+          <Card>
+            <SectionHeader title="Backup Recovery Key" />
+            <Text style={styles.rowSub}>
+              Export your self-custodial wallet private key for offline backup. Requires both your Passkey and 4-digit PIN.
+            </Text>
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+              <Button
+                title="Personal Key"
+                variant="secondary"
+                onPress={() => handleExportKey("personal")}
+                style={{ flex: 1 }}
+              />
+              {user?.hasBusinessAccount ? (
+                <Button
+                  title="Business Key"
+                  variant="secondary"
+                  onPress={() => handleExportKey("business")}
+                  style={{ flex: 1 }}
+                />
+              ) : null}
+            </View>
+          </Card>
+
+          <Card>
+            <SectionHeader title="Emergency Account Freeze" />
+            <Text style={styles.rowSub}>
+              Lost a device or suspect unauthorized access? Immediately lock your account and revoke all active sessions.
+            </Text>
+            <Button
+              title="Freeze Account"
+              variant="danger"
+              onPress={handleFreezeAccount}
+              style={{ marginTop: 12 }}
+            />
           </Card>
 
           <Card>
@@ -1732,6 +1932,41 @@ export function ProfileScreen({
           ) : null}
         </Card>
       ) : null}
+      <Modal visible={Boolean(exportedKey)} transparent animationType="fade" onRequestClose={() => setExportedKey(null)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalSheet}>
+            <Text style={styles.modalTitle}>
+              {exportedKey?.accountType === "business" ? "Business" : "Personal"} Recovery Key
+            </Text>
+            <Text style={styles.modalWarn}>
+              Store this private key offline in a password manager or on paper. Anyone with this key controls your wallet funds. Proxim support will NEVER ask for it.
+            </Text>
+            {exportedKey?.depositAddress ? (
+              <View style={styles.keyBox}>
+                <Text style={styles.keyLabel}>WALLET ADDRESS</Text>
+                <Text style={styles.keyValue} selectable>{exportedKey.depositAddress}</Text>
+              </View>
+            ) : null}
+            <View style={styles.keyBox}>
+              <Text style={styles.keyLabel}>PRIVATE KEY</Text>
+              <Text style={styles.keyValue} selectable>{exportedKey?.privateKey || ""}</Text>
+            </View>
+            <View style={{ gap: 8, marginTop: 12 }}>
+              <Button
+                title="Copy Private Key"
+                variant="secondary"
+                onPress={async () => {
+                  if (exportedKey?.privateKey) {
+                    await Clipboard.setStringAsync(exportedKey.privateKey);
+                    setNotice("Private key copied. Clear your clipboard after saving it safely.");
+                  }
+                }}
+              />
+              <Button title="I've Saved It (Close)" onPress={() => setExportedKey(null)} />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -1760,4 +1995,29 @@ const styles = StyleSheet.create({
   rowSub: { color: COLORS.textSecondary, fontFamily: FONTS.regular, fontSize: 12, marginTop: 2 },
   sectionSubHead: { color: COLORS.text, fontSize: 13, fontFamily: FONTS.bold, marginTop: 12, marginBottom: 8 },
   pointsHero: { color: COLORS.primary, fontSize: 32, fontFamily: FONTS.extrabold },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.72)",
+    justifyContent: "center",
+    padding: SPACING.md,
+  },
+  modalSheet: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 18,
+    padding: SPACING.lg,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  modalTitle: { color: COLORS.text, fontSize: 18, fontFamily: FONTS.bold, marginBottom: 8 },
+  modalWarn: { color: COLORS.danger, fontSize: 12.5, fontFamily: FONTS.medium, lineHeight: 18, marginBottom: 12 },
+  keyBox: {
+    backgroundColor: COLORS.surfaceElevated,
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: 8,
+  },
+  keyLabel: { color: COLORS.textMuted, fontSize: 10, fontFamily: FONTS.bold, letterSpacing: 0.6, marginBottom: 4 },
+  keyValue: { color: COLORS.text, fontSize: 12, fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace" },
 });

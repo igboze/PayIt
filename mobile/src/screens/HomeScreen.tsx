@@ -41,6 +41,11 @@ export type HomeModalTarget =
   | "assistant"
   | "global"
   | "business"
+  | "business_invoices"
+  | "business_payroll"
+  | "business_expenses"
+  | "business_links"
+  | "business_profile"
   | "kyc"
   | "kyb"
   | "notifications"
@@ -410,25 +415,25 @@ export function HomeScreen({
               </View>
             </View>
 
-            {/* Dedicated Business Operations Grid (mirrors Telegram Bot Business Menu) */}
+            {/* Dedicated Business Operations Grid (mirrors Telegram Bot Business Menu — each tile jumps straight to its tool) */}
             <Text style={styles.activityTitle}>Business tools</Text>
             <View style={styles.bizGrid}>
-              <PressableScale onPress={() => onNavigate("business")} depth={0.97} style={styles.bizTile}>
+              <PressableScale onPress={() => onNavigate("business_invoices")} depth={0.97} style={styles.bizTile}>
                 <Ionicons name="document-text-outline" size={22} color={COLORS.business} />
                 <Text style={styles.rowTitle}>Invoices</Text>
                 <Text style={styles.rowSub}>Create &amp; bill clients</Text>
               </PressableScale>
-              <PressableScale onPress={() => onNavigate("business")} depth={0.97} style={styles.bizTile}>
+              <PressableScale onPress={() => onNavigate("business_payroll")} depth={0.97} style={styles.bizTile}>
                 <Ionicons name="people-outline" size={22} color={COLORS.business} />
                 <Text style={styles.rowTitle}>Pay Team</Text>
                 <Text style={styles.rowSub}>27-currency CSV payroll</Text>
               </PressableScale>
-              <PressableScale onPress={() => onNavigate("business")} depth={0.97} style={styles.bizTile}>
+              <PressableScale onPress={() => onNavigate("business_expenses")} depth={0.97} style={styles.bizTile}>
                 <Ionicons name="receipt-outline" size={22} color={COLORS.business} />
                 <Text style={styles.rowTitle}>Expenses</Text>
                 <Text style={styles.rowSub}>Track monthly spend</Text>
               </PressableScale>
-              <PressableScale onPress={() => onNavigate("business")} depth={0.97} style={styles.bizTile}>
+              <PressableScale onPress={() => onNavigate("business_links")} depth={0.97} style={styles.bizTile}>
                 <Ionicons name="link-outline" size={22} color={COLORS.business} />
                 <Text style={styles.rowTitle}>Payment Links</Text>
                 <Text style={styles.rowSub}>Share checkout URLs</Text>
@@ -442,6 +447,16 @@ export function HomeScreen({
                 <Ionicons name="card-outline" size={22} color={COLORS.business} />
                 <Text style={styles.rowTitle}>Team USD Cards</Text>
                 <Text style={styles.rowSub}>Virtual company cards</Text>
+              </PressableScale>
+              <PressableScale onPress={() => onNavigate("business_profile")} depth={0.97} style={styles.bizTile}>
+                <Ionicons name="storefront-outline" size={22} color={COLORS.business} />
+                <Text style={styles.rowTitle}>Company Profile</Text>
+                <Text style={styles.rowSub}>Logo, address &amp; reserve</Text>
+              </PressableScale>
+              <PressableScale onPress={() => onNavigate("swap")} depth={0.97} style={styles.bizTile}>
+                <Ionicons name="swap-horizontal-outline" size={22} color={COLORS.primary} />
+                <Text style={styles.rowTitle}>Swap USD ↔ EUR</Text>
+                <Text style={styles.rowSub}>Instant FX conversion</Text>
               </PressableScale>
               <PressableScale onPress={() => onNavigate("savings")} depth={0.97} style={styles.bizTile}>
                 <Ionicons name="trending-up-outline" size={22} color={COLORS.success} />
@@ -475,6 +490,18 @@ export function HomeScreen({
                 </View>
               </PressableScale>
             </View>
+
+            {/* Instant Currency Swap */}
+            <PressableScale onPress={() => onNavigate("swap")} depth={0.98} style={styles.swapRowCard}>
+              <View style={styles.swapIconTile}>
+                <Ionicons name="swap-horizontal" size={20} color={COLORS.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowTitle}>Swap USD ↔ EUR</Text>
+                <Text style={styles.rowSub}>Convert between USDC and EURC instantly</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+            </PressableScale>
 
             {/* Pay bills: one tap per bill type */}
             <Text style={styles.activityTitle}>Pay bills</Text>
@@ -688,6 +715,23 @@ const styles = StyleSheet.create({
     padding: 13,
     gap: 4,
     ...DEPTH.card,
+  },
+  swapRowCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 13,
+    borderRadius: RADIUS.lg,
+    backgroundColor: COLORS.surface,
+    ...DEPTH.card,
+  },
+  swapIconTile: {
+    width: 38,
+    height: 38,
+    borderRadius: RADIUS.md,
+    backgroundColor: COLORS.primaryMuted,
+    alignItems: "center",
+    justifyContent: "center",
   },
   below: {
     gap: 14,

@@ -374,6 +374,7 @@ export const api = {
   updateProfile(body: {
     senderName?: string;
     bizSenderName?: string;
+    username?: string;
     autoEarnEnabled?: boolean;
     accountType?: AccountType;
   }) {
@@ -754,6 +755,12 @@ export const api = {
     return request<{ profile: BusinessHomeResponse["profile"] }>("/business/profile", {
       method: "PATCH",
       body,
+    });
+  },
+  uploadBusinessLogo(imageBase64: string) {
+    return request<{ ok: boolean; logoDataUri: string | null }>("/business/profile/logo", {
+      method: "POST",
+      body: { imageBase64 },
     });
   },
   listBusinessInvoices(limit = 20) {
