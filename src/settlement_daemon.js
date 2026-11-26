@@ -96,27 +96,32 @@ async function pollPendingOnrampOrders(bot) {
         const user = db.getUser(order.telegram_id);
         const isBiz = order.account_type === "business";
         const isArcOrder = (order.settlement_rail === "arc") || (order.recipient_address && order.recipient_address.startsWith("0x"));
-        if (isArcOrder && user && feeUsdc > 0.0001 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
-          try {
-            const encryptedKey = isBiz
-              ? (user.biz_system_encrypted_key || user.system_encrypted_key)
-              : user.system_encrypted_key;
-            if (encryptedKey) {
-              const rawKey = walletLib.decryptSensitiveValue(encryptedKey);
-              if (rawKey) {
-                const userWallet = walletLib.walletFromPrivateKey(rawKey);
-                if (userWallet.address.toLowerCase() !== feeRecipient.toLowerCase()) {
-                  const feeMicro = walletLib.parseToMicro(feeUsdc.toFixed(6));
-                  const feeTx = await walletLib.sendSponsoredOrDirectTransaction(userWallet, feeRecipient, feeMicro);
-                  feeTxHash = feeTx?.txHash || null;
-                  console.log(`[settlement_daemon:onramp] Collected 0.2% fee ($${feeUsdc} USDC) -> ${feeRecipient} (tx: ${feeTxHash})`);
+        if (isArcOrder && user && feeUsdc >= 0.0001 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
+          const encryptedKey = isBiz
+            ? (user.biz_system_encrypted_key || user.system_encrypted_key)
+            : user.system_encrypted_key;
+          if (encryptedKey) {
+            const rawKey = walletLib.decryptSensitiveValue(encryptedKey);
+            if (rawKey) {
+              const userWallet = walletLib.walletFromPrivateKey(rawKey);
+              if (userWallet.address.toLowerCase() !== feeRecipient.toLowerCase()) {
+                const feeMicro = walletLib.parseToMicro(feeUsdc.toFixed(6));
+                const maxAttempts = process.env.NODE_ENV === "test" ? 1 : 3;
+                for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                  try {
+                    const feeTx = await walletLib.sendSponsoredOrDirectTransaction(userWallet, feeRecipient, feeMicro);
+                    feeTxHash = feeTx?.txHash || null;
+                    console.log(`[settlement_daemon:onramp] Collected 0.2% fee ($${feeUsdc} USDC) -> ${feeRecipient} (tx: ${feeTxHash})`);
+                    break;
+                  } catch (feeErr) {
+                    console.warn(`[settlement_daemon:onramp_fee_note] attempt ${attempt}/${maxAttempts}:`, feeErr.message);
+                    if (attempt < maxAttempts) await new Promise((r) => setTimeout(r, attempt * 2000));
+                  }
                 }
               }
             }
-          } catch (feeErr) {
-            console.warn("[settlement_daemon:onramp_fee_note]", feeErr.message);
           }
-        } else if (!isArcOrder && user && feeUsdc > 0.0001) {
+        } else if (!isArcOrder && user && feeUsdc >= 0.0001) {
           let solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
           if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
             try {
@@ -124,27 +129,35 @@ async function pollPendingOnrampOrders(bot) {
             } catch {}
           }
           if (solFeeRecipient && multichain.isSolanaAddress(solFeeRecipient)) {
-            try {
-              const encryptedKey = isBiz
-                ? (user.biz_system_encrypted_key || user.system_encrypted_key)
-                : user.system_encrypted_key;
-              if (encryptedKey) {
-                const rawKey = walletLib.decryptSensitiveValue(encryptedKey);
-                if (rawKey) {
-                  const solData = multichain.deriveSolanaFromEvmKey(rawKey);
-                  if (solData.solanaAddress !== solFeeRecipient) {
-                    const feeSolTx = await multichain.sendSolanaTransfer({
-                      keypair: solData.keypair,
-                      recipientAddress: solFeeRecipient,
-                      amount: feeUsdc,
-                    });
-                    feeTxHash = feeSolTx?.txHash || feeSolTx?.signature || null;
-                    console.log(`[settlement_daemon:onramp:solana] Collected 0.2% fee on Solana ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
+            const encryptedKey = isBiz
+              ? (user.biz_system_encrypted_key || user.system_encrypted_key)
+              : user.system_encrypted_key;
+            if (encryptedKey) {
+              const rawKey = walletLib.decryptSensitiveValue(encryptedKey);
+              if (rawKey) {
+                const solData = multichain.deriveSolanaFromEvmKey(rawKey);
+                if (solData.solanaAddress !== solFeeRecipient) {
+                  const maxAttempts = process.env.NODE_ENV === "test" ? 1 : 3;
+                  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                    try {
+                      const feeSolTx = await multichain.sendSolanaTransfer({
+                        keypair: solData.keypair,
+                        recipientAddress: solFeeRecipient,
+                        amount: feeUsdc,
+                      });
+                      if (feeSolTx && feeSolTx.success !== false && (feeSolTx.txHash || feeSolTx.signature)) {
+                        feeTxHash = feeSolTx.txHash || feeSolTx.signature;
+                        console.log(`[settlement_daemon:onramp:solana] Collected 0.2% fee on Solana ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
+                        break;
+                      }
+                      throw new Error(feeSolTx?.error || "Solana fee transfer failed");
+                    } catch (feeErr) {
+                      console.warn(`[settlement_daemon:onramp:solana_fee_note] attempt ${attempt}/${maxAttempts}:`, feeErr.message);
+                      if (attempt < maxAttempts) await new Promise((r) => setTimeout(r, attempt * 2000));
+                    }
                   }
                 }
               }
-            } catch (feeErr) {
-              console.warn("[settlement_daemon:onramp:solana_fee_note]", feeErr.message);
             }
           }
         }

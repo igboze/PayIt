@@ -187,11 +187,12 @@ export function SendFlow({
 
   const chooseUser = () => {
     if (!userFound || userFound.isSelf) return;
+    const handle = userFound.username ? `@${userFound.username}` : userQuery.trim();
     setRecipient({
       kind: "user",
-      name: userFound.displayName || (userFound.username ? `@${userFound.username}` : userQuery.trim()),
-      handle: userFound.username ? `@${userFound.username}` : userQuery.trim(),
-      query: userQuery.trim(),
+      name: userFound.displayName || handle,
+      handle,
+      query: handle,
     });
     setStep("amount");
   };

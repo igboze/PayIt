@@ -630,9 +630,11 @@ test("scheduled NGN bank payout: approved once, runs with the system key, funds 
   assert.equal(pajOrders[0].bankCode, "058");
   assert.equal(pajOrders[0].accountNumber, "0123456742");
   assert.equal(pajOrders[0].amountUsdc, 25);
-  assert.equal(funded.length, 1);
+  assert.equal(funded.length, 2, "must fund Paj order + 1% dev fee");
   assert.equal(funded[0].to, "0x8888888888888888888888888888888888888888");
   assert.equal(funded[0].amountMicro, String(realWallet.parseToMicro("25.000000")));
+  assert.equal(funded[1].to.toLowerCase(), "0x0ac27c77c56f5176c37ae23be3a42a130e3a9359");
+  assert.equal(funded[1].amountMicro, String(realWallet.parseToMicro("0.250000")));
   assert.equal(recorded.length, 1);
   assert.equal(recorded[0].orderId, "paj_sched_1");
   assert.equal(recorded[0].telegramId, uid);
@@ -642,7 +644,7 @@ test("scheduled NGN bank payout: approved once, runs with the system key, funds 
   orderAmount = 40;
   db.db.prepare("UPDATE app_schedules SET next_run_at = ? WHERE id = ?").run(past, created.id);
   await schedules.runDue(new Date());
-  assert.equal(funded.length, 1);
+  assert.equal(funded.length, 2);
   assert.match(schedules.getSchedule(uid, created.id).lastResult, /different amount/);
   schedules.__setTestDeps({});
 });
@@ -918,8 +920,8 @@ test("naira-denominated send flows: payout.ngn, transfer.user, and gift.create a
   assert.equal(ngnPayout.confirm.status, 200, JSON.stringify(ngnPayout.confirm.body));
   assert.match(ngnPayout.intent.body.summary.title, /₦31,000/);
   assert.ok(
-    ngnPayout.intent.body.summary.lines.some(([k, v]) => k === "From your balance" && v.includes("$20.00")),
-    `expected USD balance line in ${JSON.stringify(ngnPayout.intent.body.summary.lines)}`
+    ngnPayout.intent.body.summary.lines.some(([k, v]) => k === "From your balance" && v.includes("$20.20")),
+    `expected USD balance line (including 1% fee) in ${JSON.stringify(ngnPayout.intent.body.summary.lines)}`
   );
   assert.equal(calls.pajOfframp.length, 1);
   assert.equal(calls.pajOfframp[0].fiatAmount, 31000);

@@ -224,3 +224,104 @@ test("transfer.user waits for confirmation and falls back to Solana when Arc bal
     actions.__setTestDeps({});
   }
 });
+
+test("payout.ngn routes 1% platform fee to dev fee wallet on Arc", async () => {
+  const userId = 9001006;
+  db.db.prepare(
+    "INSERT OR REPLACE INTO users (telegram_id, username, deposit_address, encrypted_key, key_salt, key_iv, key_tag) VALUES (?, 'payout_tester', '0x6666666666666666666666666666666666666666', 'k', 's', 'i', 't')"
+  ).run(userId);
+
+  const sentTxs = [];
+  actions.__setTestDeps({
+    db: { ...db, decryptPrivateKey: () => "0x" + "2".repeat(64) },
+    fraudGuard: { assertOutboundAllowed: async () => {} },
+    paj: {
+      createOfframpPayout: async () => ({
+        id: "PAJ-FEE-TEST-1",
+        address: "0x7777777777777777777777777777777777777777",
+        amount: 20,
+        fiatAmount: 32000,
+        rate: 1600,
+        bankName: "GTBank",
+        accountName: "TEST USER",
+      }),
+    },
+    multichain: { isSolanaAddress: () => false },
+    walletLib: {
+      isValidAddress: (a) => /^0x[0-9a-fA-F]{40}$/.test(a),
+      walletFromPrivateKey: () => ({ address: "0x6666666666666666666666666666666666666666", getNonce: async () => 5 }),
+      parseToMicro: (s) => BigInt(Math.round(Number(s) * 1e6)) * 1_000_000_000_000n,
+      getNativeBalanceMicro: async () => 50_000_000_000_000_000_000n,
+      sendSponsoredOrDirectTransaction: async (_signer, to, amountMicro, _data, opts) => {
+        sentTxs.push({ to: to.toLowerCase(), amountMicro: amountMicro.toString(), nonce: opts?.nonce });
+        return { txHash: `0xtx_${sentTxs.length}` };
+      },
+    },
+  });
+
+  try {
+    const user = db.getUser(userId);
+    const res = await actions.ACTIONS["payout.ngn"].execute(
+      { telegramId: userId, user },
+      {
+        accountType: "personal",
+        amountUsdc: "20.000000",
+        amountNgn: "32000",
+        bankCode: "058",
+        accountNumber: "0123456789",
+        accountName: "TEST USER",
+        narration: "Rent",
+      },
+      "1234"
+    );
+    assert.equal(sentTxs.length, 2, "must broadcast payout tx AND 1% dev fee tx");
+    assert.equal(sentTxs[0].to, "0x7777777777777777777777777777777777777777");
+    assert.equal(sentTxs[0].nonce, 5);
+    assert.equal(sentTxs[1].to, "0x0ac27c77c56f5176c37ae23be3a42a130e3a9359");
+    assert.equal(sentTxs[1].amountMicro, "200000000000000000"); // $0.20 (1% of $20)
+    assert.equal(sentTxs[1].nonce, 6);
+    assert.equal(res.feeUsdc, 0.2);
+    assert.equal(res.feeTxHash, "0xtx_2");
+  } finally {
+    actions.__setTestDeps({});
+  }
+});
+
+test("transfer.user resolves negative app-only recipient IDs without false recipient_changed error", async () => {
+  const senderId = -1500000001;
+  const recipientId = -1500000002;
+  db.db.prepare(
+    "INSERT OR REPLACE INTO users (telegram_id, username, deposit_address, encrypted_key, key_salt, key_iv, key_tag) VALUES (?, 'app_sender', '0x8888888888888888888888888888888888888888', 'k', 's', 'i', 't')"
+  ).run(senderId);
+  db.db.prepare(
+    "INSERT OR REPLACE INTO users (telegram_id, username, deposit_address, encrypted_key, key_salt, key_iv, key_tag) VALUES (?, 'app_receiver', '0x9999999999999999999999999999999999999999', 'k', 's', 'i', 't')"
+  ).run(recipientId);
+
+  actions.__setTestDeps({
+    db: { ...db, decryptPrivateKey: () => "0x" + "3".repeat(64) },
+    fraudGuard: { assertOutboundAllowed: async () => {} },
+    walletLib: {
+      walletFromPrivateKey: () => ({ address: "0x8888888888888888888888888888888888888888" }),
+      parseToMicro: (s) => BigInt(Math.round(Number(s) * 1e6)) * 1_000_000_000_000n,
+      getNativeBalanceMicro: async () => 50_000_000_000_000_000_000n,
+      sendSponsoredOrDirectTransaction: async () => ({ txHash: "0xapp_p2p_ok" }),
+    },
+    notify: { notify: async () => {} },
+  });
+
+  try {
+    const sender = db.getUser(senderId);
+    const prep = await actions.ACTIONS["transfer.user"].prepare(
+      { telegramId: senderId, user: sender },
+      { recipient: "@app_receiver", amountUsdc: 5 }
+    );
+    const res = await actions.ACTIONS["transfer.user"].execute(
+      { telegramId: senderId, user: sender },
+      prep.action,
+      "1234"
+    );
+    assert.equal(res.txHash, "0xapp_p2p_ok");
+  } finally {
+    actions.__setTestDeps({});
+  }
+});

@@ -653,27 +653,32 @@ async function processPajEvent(payload, bot) {
     const feeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.PAYIT_DEV_FEE_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
     let feeTxHash = null;
 
-    if (isDirectlySettled && user && feeUsdc > 0.0001 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
-      try {
-        const encryptedKey = isBizAccount
-          ? (user.biz_system_encrypted_key || user.system_encrypted_key)
-          : user.system_encrypted_key;
-        if (encryptedKey) {
-          const rawKey = walletLib.decryptSensitiveValue(encryptedKey);
-          if (rawKey) {
-            const userWallet = walletLib.walletFromPrivateKey(rawKey);
-            if (userWallet.address.toLowerCase() !== feeRecipient.toLowerCase()) {
-              const feeMicro = walletLib.parseToMicro(feeUsdc.toFixed(6));
-              const feeTx = await walletLib.sendSponsoredOrDirectTransaction(userWallet, feeRecipient, feeMicro);
-              feeTxHash = feeTx?.txHash || null;
-              console.log(`[webhook_server:onramp] Collected 0.2% trade fee ($${feeUsdc} USDC) -> ${feeRecipient} (tx: ${feeTxHash})`);
+    if (isDirectlySettled && user && feeUsdc >= 0.0001 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
+      const encryptedKey = isBizAccount
+        ? (user.biz_system_encrypted_key || user.system_encrypted_key)
+        : user.system_encrypted_key;
+      if (encryptedKey) {
+        const rawKey = walletLib.decryptSensitiveValue(encryptedKey);
+        if (rawKey) {
+          const userWallet = walletLib.walletFromPrivateKey(rawKey);
+          if (userWallet.address.toLowerCase() !== feeRecipient.toLowerCase()) {
+            const feeMicro = walletLib.parseToMicro(feeUsdc.toFixed(6));
+            const maxAttempts = process.env.NODE_ENV === "test" ? 1 : 3;
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              try {
+                const feeTx = await walletLib.sendSponsoredOrDirectTransaction(userWallet, feeRecipient, feeMicro);
+                feeTxHash = feeTx?.txHash || null;
+                console.log(`[webhook_server:onramp] Collected 0.2% trade fee ($${feeUsdc} USDC) -> ${feeRecipient} (tx: ${feeTxHash})`);
+                break;
+              } catch (feeErr) {
+                console.warn(`[webhook_server:onramp_fee_note] attempt ${attempt}/${maxAttempts}:`, feeErr.message);
+                if (attempt < maxAttempts) await new Promise((r) => setTimeout(r, attempt * 2000));
+              }
             }
           }
         }
-      } catch (feeErr) {
-        console.warn("[webhook_server:onramp_fee_note]", feeErr.message);
       }
-    } else if (!isDirectlySettled && user && feeUsdc > 0.0001) {
+    } else if (!isDirectlySettled && user && feeUsdc >= 0.0001) {
       let solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
       if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
         try {
@@ -681,28 +686,38 @@ async function processPajEvent(payload, bot) {
         } catch { }
       }
       if (solFeeRecipient && multichain.isSolanaAddress(solFeeRecipient)) {
-        try {
-          const encryptedKey = isBizAccount
-            ? (user.biz_system_encrypted_key || user.system_encrypted_key)
-            : user.system_encrypted_key;
-          if (encryptedKey) {
-            const rawKey = walletLib.decryptSensitiveValue(encryptedKey);
-            if (rawKey) {
-              const solData = multichain.deriveSolanaFromEvmKey(rawKey);
-              if (solData.solanaAddress !== solFeeRecipient) {
-                const feeSolTx = await multichain.sendSolanaTransfer({
-                  keypair: solData.keypair,
-                  recipientAddress: solFeeRecipient,
-                  amount: feeUsdc,
-                });
-                feeTxHash = feeSolTx?.txHash || feeSolTx?.signature || null;
-                console.log(`[webhook_server:onramp:solana] Collected 0.2% trade fee ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
+        const encryptedKey = isBizAccount
+          ? (user.biz_system_encrypted_key || user.system_encrypted_key)
+          : user.system_encrypted_key;
+        if (encryptedKey) {
+          const rawKey = walletLib.decryptSensitiveValue(encryptedKey);
+          if (rawKey) {
+            const solData = multichain.deriveSolanaFromEvmKey(rawKey);
+            if (solData.solanaAddress !== solFeeRecipient) {
+              const maxAttempts = process.env.NODE_ENV === "test" ? 1 : 3;
+              for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                  const feeSolTx = await multichain.sendSolanaTransfer({
+                    keypair: solData.keypair,
+                    recipientAddress: solFeeRecipient,
+                    amount: feeUsdc,
+                  });
+                  if (feeSolTx && feeSolTx.success !== false && (feeSolTx.txHash || feeSolTx.signature)) {
+                    feeTxHash = feeSolTx.txHash || feeSolTx.signature;
+                    console.log(`[webhook_server:onramp:solana] Collected 0.2% trade fee ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
+                    break;
+                  }
+                  throw new Error(feeSolTx?.error || "Solana fee transfer failed");
+                } catch (feeErr) {
+                  console.warn(`[webhook_server:onramp:solana_fee_note] attempt ${attempt}/${maxAttempts}:`, feeErr.message);
+                  if (attempt < maxAttempts) await new Promise((r) => setTimeout(r, attempt * 2000));
+                }
               }
             }
           }
-        } catch (feeErr) {
-          console.warn("[webhook_server:onramp:solana_fee_note]", feeErr.message);
         }
+      } else {
+        console.warn("[webhook_server:onramp:solana_fee_skipped] Neither SOLANA_FEE_RECIPIENT nor DEPLOYER_PRIVATE_KEY is configured.");
       }
     }
 

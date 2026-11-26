@@ -136,8 +136,8 @@ async function runOne(r, now) {
   if (!user) throw new Error("account not found");
   if (accountType === "business" && !user.business_deposit_address) throw new Error("business account not found");
   if (r.kind === "transfer.user") {
-    const recipient = db.getUser(Number(payment.recipientId));
-    if (!recipient || String(recipient.deposit_address).toLowerCase() !== payment.toAddress) throw new Error("recipient account changed");
+    const recipient = db.getUser(payment.recipientId) || db.getUser(Number(payment.recipientId));
+    if (!recipient || String(recipient.deposit_address || "").trim().toLowerCase() !== String(payment.toAddress || "").trim().toLowerCase()) throw new Error("recipient account changed");
   }
   await dep("fraudGuard").assertOutboundAllowed({ telegramId, accountType, action: "app_schedule", amountUsd: amount, reference });
   const key = db.getSystemDecryptedPrivateKey(user, accountType);
@@ -166,17 +166,47 @@ async function runBankPayout({ telegramId, accountType, amount, payment, key }) 
   if (!fundingAddress) throw new Error("bank partner didn't return a funding address; nothing was sent");
   // Never fund more than the user approved for this schedule.
   if (!(fundingAmount > 0) || fundingAmount > amount * 1.01) throw new Error("bank partner asked for a different amount; nothing was sent");
+  const offrampFeeRate = Number(process.env.OFFRAMP_PLATFORM_FEE_RATE ?? 0.01);
+  const feeUsdc = Number((fundingAmount * offrampFeeRate).toFixed(4));
+  const feeRecipient =
+    process.env.APP_FEE_RECIPIENT_ADDRESS ||
+    process.env.PAYIT_DEV_FEE_ADDRESS ||
+    process.env.FEE_RECIPIENT_ADDRESS ||
+    "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
   let txHash = null;
+  let feeTxHash = null;
   let rail = "arc";
   if (multichain.isSolanaAddress(fundingAddress)) {
     rail = "solana";
     const sol = multichain.deriveSolanaFromEvmKey(key);
     const tx = await multichain.sendSolanaTransfer({ keypair: sol.keypair, recipientAddress: fundingAddress, amount: fundingAmount });
     txHash = (tx && (tx.txHash || tx.signature)) || null;
+    let solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
+    if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
+      try { solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress; } catch (_) {}
+    }
+    if (feeUsdc > 0 && solFeeRecipient && multichain.isSolanaAddress(solFeeRecipient) && sol.solanaAddress !== solFeeRecipient) {
+      try {
+        const feeSolTx = await multichain.sendSolanaTransfer({ keypair: sol.keypair, recipientAddress: solFeeRecipient, amount: feeUsdc });
+        if (feeSolTx && feeSolTx.success !== false) feeTxHash = feeSolTx.txHash || feeSolTx.signature || null;
+      } catch (feeErr) {
+        console.warn("[app_api:schedules:solana_fee_note]", feeErr.message);
+      }
+    }
   } else if (walletLib.isValidAddress(fundingAddress)) {
     const signer = walletLib.walletFromPrivateKey(key);
-    const tx = await walletLib.sendSponsoredOrDirectTransaction(signer, fundingAddress, walletLib.parseToMicro(fundingAmount.toFixed(6)), "0x", { waitForConfirmation: false });
+    let baseNonce = null;
+    try { if (typeof signer.getNonce === "function") baseNonce = await signer.getNonce("pending"); } catch (_) {}
+    const tx = await walletLib.sendSponsoredOrDirectTransaction(signer, fundingAddress, walletLib.parseToMicro(fundingAmount.toFixed(6)), "0x", { waitForConfirmation: false, nonce: baseNonce != null ? baseNonce : undefined });
     txHash = (tx && (tx.txHash || tx.hash)) || null;
+    if (feeUsdc > 0 && feeRecipient && walletLib.isValidAddress(feeRecipient) && String(signer.address || "").toLowerCase() !== feeRecipient.toLowerCase()) {
+      try {
+        const feeTx = await walletLib.sendSponsoredOrDirectTransaction(signer, feeRecipient, walletLib.parseToMicro(feeUsdc.toFixed(6)), "0x", { waitForConfirmation: false, nonce: baseNonce != null ? baseNonce + 1 : undefined });
+        feeTxHash = (feeTx && (feeTx.txHash || feeTx.hash)) || null;
+      } catch (feeErr) {
+        console.warn("[app_api:schedules:arc_fee_note]", feeErr.message);
+      }
+    }
   } else {
     throw new Error("unsupported funding address from the bank partner; nothing was sent");
   }
@@ -184,7 +214,7 @@ async function runBankPayout({ telegramId, accountType, amount, payment, key }) 
   db.recordOfframpOrder({
     orderId, telegramId, accountType, accountNumber: String(payment.accountNumber), bankCode: String(payment.bankCode),
     bankName: order.bankName || (order.bank && order.bank.name) || null, accountName: order.accountName || payment.accountName || null,
-    amountUsdc: fundingAmount, fiatAmount: order.fiatAmount || null, rate: order.rate || null, rail, txHash,
+    amountUsdc: fundingAmount, feeUsdc, netAmountUsdc: fundingAmount, fiatAmount: order.fiatAmount || null, rate: order.rate || null, rail, txHash, feeTxHash,
     narration: payment.narration || null, senderName: senderName || null, status: "submitted",
   });
   db.recordTransaction(telegramId, "offramp", String(walletLib.parseToMicro(fundingAmount.toFixed(6))), "submitted", txHash || orderId, accountType, 18, rail, payment.narration || null);

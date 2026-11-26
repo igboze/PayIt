@@ -575,7 +575,19 @@ function syncUsername(telegramId, username) {
 }
 
 function getUser(telegramId) {
-  return db.prepare("SELECT * FROM users WHERE telegram_id = ?").get(telegramId) || null;
+  if (telegramId === null || telegramId === undefined || telegramId === "" || telegramId === "undefined" || telegramId === "null") {
+    return null;
+  }
+  const direct = db.prepare("SELECT * FROM users WHERE telegram_id = ?").get(telegramId);
+  if (direct) return direct;
+  const numId = Number(telegramId);
+  if (Number.isSafeInteger(numId)) {
+    const byNum = db.prepare("SELECT * FROM users WHERE telegram_id = ?").get(numId);
+    if (byNum) return byNum;
+  }
+  const strId = String(telegramId).trim();
+  const byStr = db.prepare("SELECT * FROM users WHERE CAST(telegram_id AS TEXT) = ? OR telegram_id = ?").get(strId, `${strId}.0`);
+  return byStr || null;
 }
 
 function recordTermsAcceptance(telegramId, version = "2026-11") {
