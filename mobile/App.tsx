@@ -134,7 +134,20 @@ function MainShell() {
   }
 
   if (!user) {
-    return <OnboardingScreen initialLinkCode={deepLinkCode} />;
+    return (
+      <View style={{ flex: 1, backgroundColor: COLORS.bg }}>
+        {ota.updateReady ? (
+          <SafeAreaView edges={["top"]} style={{ backgroundColor: COLORS.primary }}>
+            <PressableScale onPress={() => setApplyingUpdate(true)} style={styles.otaBanner}>
+              <Ionicons name="cloud-download-outline" size={16} color={COLORS.onPrimary} />
+              <Text style={styles.otaBannerText}>New Proxim update ready · Tap to apply</Text>
+              <Ionicons name="refresh" size={15} color={COLORS.onPrimary} />
+            </PressableScale>
+          </SafeAreaView>
+        ) : null}
+        <OnboardingScreen initialLinkCode={deepLinkCode} />
+      </View>
+    );
   }
 
   if (applyingUpdate) {
