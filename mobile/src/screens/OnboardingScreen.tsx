@@ -143,7 +143,29 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
     setLoading(true);
     try {
       const start = await api.linkStart(cleanedCode);
-      const response = await createPasskey(start.options);
+      let response: Record<string, unknown>;
+      try {
+        response = await createPasskey(start.options);
+      } catch (pkErr) {
+        const pkMsg = pkErr instanceof Error ? pkErr.message : String(pkErr || "");
+        // Android Credential Manager throws InvalidStateError ("One of the excluded credentials
+        // exists on the local device") when this account's passkey is already saved on this phone.
+        // Seamlessly sign in using that existing passkey instead of failing.
+        if (/excluded credential|already exists|InvalidState/i.test(pkMsg)) {
+          try {
+            const login = await api.loginStart();
+            const assertion = await assertPasskey(login.options);
+            const finished = await api.loginFinish(login.challengeId, assertion);
+            await signInWithSession(finished.user, finished.session);
+            return;
+          } catch {
+            throw new Error(
+              "Your Proxim passkey is already saved on this phone. Go back and tap 'Sign in with passkey'."
+            );
+          }
+        }
+        throw pkErr;
+      }
       const finished = await api.linkFinish({
         code: cleanedCode,
         challengeId: start.challengeId,
@@ -341,6 +363,13 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
                 maxLength={4}
               />
               <Button title="Link account & create passkey" onPress={handleLinkTelegram} loading={loading} />
+              <Button
+                title="Already linked? Sign in with passkey"
+                variant="secondary"
+                onPress={handlePasskeySignIn}
+                loading={loading}
+                style={{ marginTop: 8 }}
+              />
               <Button
                 title="Back"
                 variant="ghost"
