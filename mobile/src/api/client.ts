@@ -247,6 +247,24 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
 // ─── Typed Endpoint Methods ───────────────────────────────────────────────────
 
 export const api = {
+  // Every chain and token NEAR Intents can deliver to.
+  listWithdrawalTokens() {
+    return request<{
+      feeUsd: number;
+      chains: Array<{ key: string; name: string; short: string; isEvm: boolean; priority: number; logoUrl: string | null; tokenCount: number }>;
+      tokensByChain: Record<string, Array<{ symbol: string; name: string; assetId: string; decimals: number; blockchain: string; priceUsd: number | null; logoUrl: string | null }>>;
+    }>("/withdrawals/tokens");
+  },
+  // Profile photo.
+  uploadAvatar(imageBase64: string) {
+    return request<{ success: boolean; avatarVersion: string | null }>("/me/avatar", { method: "POST", body: { imageBase64 } });
+  },
+  deleteAvatar() {
+    return request<{ success: boolean }>("/me/avatar", { method: "DELETE" });
+  },
+  getAvatarUrl(version: string) {
+    return `${API_BASE_URL}/me/avatar?v=${encodeURIComponent(version)}`;
+  },
   // In-app notification inbox.
   listNotifications(afterId?: number) {
     const qs = afterId ? `?after=${afterId}` : "";

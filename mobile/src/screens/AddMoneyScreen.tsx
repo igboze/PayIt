@@ -32,8 +32,9 @@ import {
 } from "../components/UI";
 import { CurrencyLogo } from "../components/CurrencyLogo";
 import { PressableScale } from "../components/Touch";
+import { GlobalAccountsDeposit } from "../components/GlobalAccountsDeposit";
 
-type Method = "ngn" | "crypto" | "card";
+type Method = "ngn" | "global" | "crypto" | "card";
 
 export function AddMoneyScreen({ onBack }: { onBack: () => void }) {
   const { activeAccount, bumpDataVersion } = useApp();
@@ -267,25 +268,15 @@ export function AddMoneyScreen({ onBack }: { onBack: () => void }) {
       />
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Card
-          style={{
-            borderColor: isBiz ? COLORS.businessBorder : COLORS.primaryBorder,
-            backgroundColor: isBiz ? COLORS.businessMuted : COLORS.primaryMuted,
-            paddingVertical: 10,
-          }}
-        >
-          <Text style={{ color: isBiz ? COLORS.business : COLORS.primary, fontSize: 12, fontFamily: FONTS.bold }}>
-            DEPOSITING INTO: {isBiz ? "BUSINESS ACCOUNT" : "PERSONAL ACCOUNT"}
-          </Text>
-          <Text style={{ color: COLORS.textSecondary, fontFamily: FONTS.regular, fontSize: 12, marginTop: 2 }}>
-            Funds deposited here credit your {isBiz ? "Business" : "Personal"} balance only.
-          </Text>
-        </Card>
+        <Text style={{ color: COLORS.text, fontFamily: FONTS.semibold, fontSize: 15, marginBottom: 12 }}>
+          Money you add goes to your {isBiz ? "business" : "personal"} balance.
+        </Text>
 
         <View style={styles.methodRow}>
-          <Pill label="Naira Bank" active={method === "ngn"} onPress={() => setMethod("ngn")} />
+          <Pill label="Naira bank" currency="NGN" active={method === "ngn"} onPress={() => setMethod("ngn")} />
+          <Pill label="Bank abroad" currency="USD" active={method === "global"} onPress={() => setMethod("global")} />
           <Pill label="Crypto" active={method === "crypto"} onPress={() => setMethod("crypto")} />
-          <Pill label="Card / Apple Pay" active={method === "card"} onPress={() => setMethod("card")} />
+          <Pill label="Card" active={method === "card"} onPress={() => setMethod("card")} />
         </View>
 
         <ErrorBanner message={error} onDismiss={() => setError(null)} />
@@ -519,6 +510,8 @@ export function AddMoneyScreen({ onBack }: { onBack: () => void }) {
             </Card>
           </>
         ) : null}
+
+        {method === "global" ? <GlobalAccountsDeposit accountType={activeAccount} /> : null}
 
         {method === "card" ? (
           <Card>

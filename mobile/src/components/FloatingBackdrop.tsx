@@ -8,11 +8,10 @@ import { COLORS } from "../theme";
 type Orb = { color: string; size: number; top: number | string; left: number | string; strength: number; drift: number; ms: number };
 
 const ORBS: Orb[] = [
-  { color: "#34D399", size: 420, top: -140, left: -150, strength: 0.07, drift: 26, ms: 14000 },
-  { color: "#0A9F5A", size: 300, top: "32%", left: "58%", strength: 0.06, drift: 32, ms: 17000 },
-  { color: "#5EEAD4", size: 340, top: "62%", left: -120, strength: 0.06, drift: 24, ms: 15500 },
-  { color: "#FFFFFF", size: 360, top: "14%", left: "20%", strength: 0.55, drift: 18, ms: 19000 },
-  { color: "#A7F3D0", size: 260, top: "82%", left: "55%", strength: 0.09, drift: 28, ms: 16500 },
+  { color: "#34D399", size: 420, top: -160, left: -170, strength: 0.045, drift: 22, ms: 14000 },
+  { color: "#0A9F5A", size: 280, top: "38%", left: "66%", strength: 0.03, drift: 26, ms: 17000 },
+  { color: "#5EEAD4", size: 320, top: "70%", left: -140, strength: 0.03, drift: 20, ms: 15500 },
+  { color: "#FFFFFF", size: 360, top: "12%", left: "18%", strength: 0.35, drift: 16, ms: 19000 },
 ];
 
 const RINGS = [1, 0.8, 0.62, 0.45, 0.3];

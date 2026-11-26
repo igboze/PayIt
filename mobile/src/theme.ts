@@ -6,12 +6,12 @@ export const COLORS = {
   // Screens are transparent so the floating backdrop (FloatingBackdrop) shows through;
   // use page for solid fills such as sheets and inset boxes.
   bg: "transparent",
-  page: "#F6F7F6",
+  page: "#ECF0EE", // a step darker than the white cards so they stand apart
   surface: "#FFFFFF",
-  surfaceElevated: "#EFF2F0",
+  surfaceElevated: "#E8EDEA",
   surfaceSoft: "#F3F5F4",
-  border: "#E3E7E5",
-  borderStrong: "#D3D9D6",
+  border: "#D5DDD9", // visible card and field edges (low-vision friendly)
+  borderStrong: "#B9C4BF", // bottom "lip" that makes cards and buttons look raised
 
   primary: "#067F48", // ~5:1 on white, readable at small sizes
   primaryDark: "#05693C",
@@ -37,8 +37,8 @@ export const COLORS = {
   warningText: "#92400E",
 
   text: "#0E1512",
-  textSecondary: "#55615B",
-  textMuted: "#8A9590",
+  textSecondary: "#3F4A45", // ~9:1 on white
+  textMuted: "#5F6A65", // ~5.6:1 on white, still AA for small text
   white: "#FFFFFF",
   black: "#000000",
 } as const;
@@ -100,27 +100,40 @@ export const RADIUS = {
   pill: 999,
 } as const;
 
-// Soft, low shadows that lift white cards off the off-white page.
+// Depth: every raised surface gets a visible edge, a thicker darker bottom "lip" and a real
+// shadow, so it reads as something you can press, even for people with low vision.
 export const DEPTH = {
   card: {
+    borderWidth: 1,
+    borderColor: "#D5DDD9",
+    borderBottomWidth: 3,
+    borderBottomColor: "#B9C4BF",
     shadowColor: "#0E1512",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.07,
-    shadowRadius: 16,
-    elevation: 3,
-  },
-  raised: {
-    shadowColor: "#0E1512",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  glow: {
-    shadowColor: "#067F48",
     shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.12,
     shadowRadius: 14,
     elevation: 6,
+  },
+  raised: {
+    borderWidth: 1,
+    borderColor: "#D5DDD9",
+    borderBottomWidth: 3,
+    borderBottomColor: "#B9C4BF",
+    shadowColor: "#0E1512",
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.14,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  glow: {
+    borderWidth: 1,
+    borderColor: "#067F48",
+    borderBottomWidth: 4,
+    borderBottomColor: "#044F2D",
+    shadowColor: "#067F48",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 8,
   },
 } as const;

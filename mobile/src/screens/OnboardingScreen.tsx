@@ -16,6 +16,7 @@ import { useApp } from "../state/AppContext";
 import { COLORS, RADIUS, SPACING, FONTS } from "../theme";
 import { Button, Card, ErrorBanner, Input } from "../components/UI";
 import { PressableScale } from "../components/Touch";
+import { PoweredBy } from "../components/PoweredBy";
 
 type Step = "welcome" | "signup_phone" | "signup_otp" | "signup_passkey" | "link_telegram";
 
@@ -204,8 +205,7 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
               <View style={styles.warnRow}>
                 <Ionicons name="warning" size={18} color={COLORS.business} />
                 <Text style={styles.warnText}>
-                  Passkeys require the native Android APK build (not Expo Go). Build with{" "}
-                  <Text style={{ fontFamily: FONTS.bold }}>eas build -p android --profile preview</Text>.
+                  Passkeys aren&apos;t available on this device. Install the latest Proxim app to sign in securely.
                 </Text>
               </View>
             </Card>
@@ -246,7 +246,7 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
                   }}
                 />
               </Card>
-              <Text style={styles.endpointFoot}>Connected to {API_BASE_URL}</Text>
+              <PoweredBy />
             </View>
           ) : null}
 

@@ -9,10 +9,56 @@ const axios = require("axios");
 const { getGoogleAccessToken, getServiceAccount } = require("./app_api/google_auth");
 const appStore = require("./app_api/store");
 
+const { AsyncLocalStorage } = require("node:async_hooks");
+
 let _bot = null;
+
+// Marks code running while the bot handles a user's own message/button (a reply, not news)
+// and sends made by notify() itself (already mirrored). Anything else the bot sends to a
+// user — deposit credited, payout paid, card charged, reminders — is a background alert.
+const _sendContext = new AsyncLocalStorage();
 
 function setNotifyBot(bot) {
   _bot = bot;
+  if (!bot || bot.__proximMirrorInstalled) return;
+  bot.__proximMirrorInstalled = true;
+  // First middleware: everything inside an update is a reply to the user, not an alert.
+  if (typeof bot.use === "function") {
+    bot.use((ctx, next) => _sendContext.run({ inUpdate: true }, next));
+  }
+  const tg = bot.telegram;
+  if (!tg) return;
+  for (const method of ["sendMessage", "sendPhoto", "sendDocument"]) {
+    const original = typeof tg[method] === "function" ? tg[method].bind(tg) : null;
+    if (!original) continue;
+    tg[method] = (chatId, content, extra) => {
+      if (!_sendContext.getStore()) {
+        const text = method === "sendMessage" ? content : extra?.caption;
+        mirrorBackgroundAlert(chatId, text);
+      }
+      return original(chatId, content, extra);
+    };
+  }
+}
+
+/** Copies a background Telegram alert to the app: inbox (always) and push (when set up). */
+function mirrorBackgroundAlert(chatId, text) {
+  const id = Number(chatId);
+  const plain = stripHtml(text).trim();
+  if (!Number.isFinite(id) || !plain) return;
+  setImmediate(async () => {
+    try {
+      // Only real Proxim users (not groups or channels) get app alerts.
+      if (!require("./db").getUser(id)) return;
+      const lines = plain.split("\n").map((l) => l.trim()).filter(Boolean);
+      const title = (lines[0] || "Proxim").replace(/^[^\p{L}\p{N}$₦£€]+/u, "").slice(0, 80) || "Proxim";
+      const body = (lines.slice(1).join(" ") || lines[0] || "").slice(0, 600);
+      require("./app_api/inbox").addNotification(id, { title, body, data: { type: "alert" } });
+      await sendPush(id, { title, body: body.slice(0, 240), data: { type: "alert" } });
+    } catch (err) {
+      console.warn(`[notify] mirror alert for ${chatId} failed:`, err.message);
+    }
+  });
 }
 
 function stripHtml(html) {
@@ -60,7 +106,10 @@ async function notify(telegramId, { title = "Proxim", html, data = {}, telegramE
   }
   if (Number(telegramId) > 0 && _bot?.telegram) {
     try {
-      await _bot.telegram.sendMessage(telegramId, html, { parse_mode: "HTML", ...telegramExtra });
+      // Already written to the inbox and pushed below, so don't mirror this send again.
+      await _sendContext.run({ fromNotify: true }, () =>
+        _bot.telegram.sendMessage(telegramId, html, { parse_mode: "HTML", ...telegramExtra })
+      );
       result.telegram = true;
     } catch (err) {
       console.warn(`[notify] Telegram message to ${telegramId} failed:`, err.message);

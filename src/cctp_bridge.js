@@ -2184,6 +2184,16 @@ async function completeCctpWithdrawalOnEvm({
  * 4. 1Click solvers deliver tokens to user's destination address
  * 5. Notifies user via Telegram bot
  */
+/** NEAR Intents asset to deliver: the token chosen for the withdrawal, or the chain default. */
+function intentTargetAsset(nearLib, chainKey, chosenAsset) {
+  if (chosenAsset && /^nep(141|245):/i.test(String(chosenAsset))) return String(chosenAsset);
+  if (chainKey === "near") return nearLib.ASSETS.NEAR_WNEAR;
+  if (chainKey === "bitcoin" || chainKey === "btc") return nearLib.ASSETS.WBTC;
+  if (chainKey === "tron") return nearLib.ASSETS.NEAR_USDT;
+  if (chainKey === "starknet") return nearLib.ASSETS.STARKNET_STRK;
+  return nearLib.ASSETS.NEAR_WNEAR;
+}
+
 async function completeIntentWithdrawal({
   arcTxHash,
   messageHex,
@@ -2191,6 +2201,7 @@ async function completeIntentWithdrawal({
   amountUsdc,
   destinationChain,
   destinationAddress,
+  destinationAsset = null,
   userWallet,
   userPrivateKey,
   telegramId,
@@ -2233,18 +2244,7 @@ async function completeIntentWithdrawal({
 
   // Step 2: Route through NEAR Intents (1Click)
   const nearLib = require("./near");
-  let targetAsset;
-  if (chainKey === "near") {
-    targetAsset = nearLib.ASSETS.NEAR_WNEAR;
-  } else if (chainKey === "bitcoin" || chainKey === "btc") {
-    targetAsset = nearLib.ASSETS.WBTC;
-  } else if (chainKey === "tron") {
-    targetAsset = nearLib.ASSETS.NEAR_USDT;
-  } else if (chainKey === "starknet") {
-    targetAsset = nearLib.ASSETS.STARKNET_STRK;
-  } else {
-    targetAsset = nearLib.ASSETS.NEAR_WNEAR;
-  }
+  const targetAsset = intentTargetAsset(nearLib, chainKey, destinationAsset);
 
   const baseProvider = new JsonRpcProvider(EVM_CCTP_CONTRACTS.BASE.rpcUrl);
   const signerKey = effectivePrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
@@ -2523,12 +2523,8 @@ async function processPendingCrosschainWithdrawals(bot = null) {
         }
 
         const nearLib = require("./near");
-        let targetAsset;
-        if (chainKey === "near") targetAsset = nearLib.ASSETS.NEAR_WNEAR;
-        else if (chainKey === "bitcoin" || chainKey === "btc") targetAsset = nearLib.ASSETS.WBTC;
-        else if (chainKey === "tron") targetAsset = nearLib.ASSETS.NEAR_USDT;
-        else if (chainKey === "starknet") targetAsset = nearLib.ASSETS.STARKNET_STRK;
-        else targetAsset = nearLib.ASSETS.NEAR_WNEAR;
+        // Use the token chosen for this withdrawal (stored on its record), else the chain default.
+        const targetAsset = intentTargetAsset(nearLib, chainKey, w.destination_asset);
 
         const baseProvider = new JsonRpcProvider(EVM_CCTP_CONTRACTS.BASE.rpcUrl);
         const baseSigner = new Wallet(userPrivateKey, baseProvider);

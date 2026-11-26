@@ -5,7 +5,7 @@ import { ActivityIndicator, Image, Linking, Modal, ScrollView, StyleSheet, Text,
 import { Ionicons } from "@expo/vector-icons";
 import { api, getAccessToken } from "../api/client";
 import type { AccountType, TransactionItem } from "../api/types";
-import { COLORS, RADIUS, SPACING, TYPE } from "../theme";
+import { COLORS, DEPTH, RADIUS, SPACING, TYPE } from "../theme";
 import { Button, ErrorBanner, formatRawTxAmount, KeyValueRow, shortAddr } from "./UI";
 import { PressableScale, notifyHaptic } from "./Touch";
 
@@ -288,6 +288,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: RADIUS.md,
     backgroundColor: COLORS.surface,
+    ...DEPTH.card,
   },
   tile: { width: 44, height: 44, borderRadius: 15, alignItems: "center", justifyContent: "center" },
   title: { ...TYPE.bodyStrong, color: COLORS.text },

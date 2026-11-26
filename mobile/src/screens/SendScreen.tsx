@@ -27,8 +27,38 @@ import {
   SuccessBanner,
 } from "../components/UI";
 import { SendFlow } from "./SendFlow";
+import { CryptoSendScreen } from "./CryptoSendScreen";
 
 type SendMode = "user" | "wallet" | "ngn" | "global" | "crypto";
+
+// Provider field keys (account_holder_name, swift_code...) shown as plain labels.
+const FIELD_LABELS: Record<string, string> = {
+  account_holder_name: "Account holder name",
+  bank_code: "Bank code",
+  bank_name: "Bank name",
+  account_number: "Account number",
+  routing_number: "Routing number",
+  sort_code: "Sort code",
+  iban: "IBAN",
+  swift_code: "SWIFT / BIC code",
+  bic: "SWIFT / BIC code",
+  branch_code: "Branch code",
+  ifsc: "IFSC code",
+  clabe: "CLABE number",
+  phone_number: "Phone number",
+  email: "Email",
+  address: "Address",
+  city: "City",
+  postal_code: "Postal code",
+  country: "Country",
+};
+function humanizeField(raw: string): string {
+  const key = String(raw || "").trim();
+  if (FIELD_LABELS[key.toLowerCase()]) return FIELD_LABELS[key.toLowerCase()];
+  if (!/[_]|^[a-z]+[A-Z]/.test(key)) return key;
+  const words = key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ").toLowerCase().trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
 
 export function SendScreen({
   onBack,
@@ -419,6 +449,11 @@ export function SendScreen({
     return () => sub.remove();
   }, [inFlow, initialClaimToken]);
 
+  // Wallet and other-network sends use the token-picker crypto screen.
+  if (!inFlow && (mode === "wallet" || mode === "crypto")) {
+    return <CryptoSendScreen onBack={() => setInFlow(true)} />;
+  }
+
   if (inFlow) {
     return (
       <SendFlow
@@ -443,7 +478,6 @@ export function SendScreen({
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <View style={styles.pillRow}>
           <Pill label="Abroad" active={mode === "global"} onPress={() => setMode("global")} />
-          <Pill label="Wallet address" active={mode === "wallet" || mode === "crypto"} onPress={() => setMode("wallet")} />
           <Pill label="Gift link" active={mode === "user"} onPress={() => setMode("user")} />
         </View>
 
@@ -692,13 +726,19 @@ export function SendScreen({
 
         {mode === "global" ? (
           <Card>
-            <SectionHeader title="Global Payout (27+ Currencies)" />
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+            <SectionHeader title="Where are you sending?" currency={false} />
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={{ marginBottom: 6, marginHorizontal: -SPACING.md }}
+              contentContainerStyle={{ paddingHorizontal: SPACING.md, paddingVertical: 4 }}
+            >
               <View style={{ flexDirection: "row", gap: 8 }}>
                 {rails.map((r) => (
                   <Pill
                     key={r.railKey}
-                    label={`${r.currency} · ${r.label}`}
+                    currency={r.currency}
+                    label={`${r.currency} · ${r.country || r.label}`}
                     active={selectedRail?.railKey === r.railKey}
                     onPress={() => {
                       setSelectedRail(r);
@@ -709,6 +749,8 @@ export function SendScreen({
                 ))}
               </View>
             </ScrollView>
+
+            {selectedRail ? <Text style={[styles.fieldHint, { marginBottom: 12 }]}>{selectedRail.label}</Text> : null}
 
             {globalRecipients.filter((g) => !selectedRail || g.currency === selectedRail.currency).length > 0 ? (
               <View style={{ marginBottom: 12 }}>
@@ -735,7 +777,7 @@ export function SendScreen({
             ) : null}
 
             <Input
-              label={`Target Amount (${selectedRail?.currency || "Currency"})`}
+              label={`Amount they receive (${selectedRail?.currency || "currency"})`}
               placeholder="e.g. 100"
               value={globalAmount}
               onChangeText={setGlobalAmount}
@@ -745,7 +787,7 @@ export function SendScreen({
             {!selectedCounterpartyId && selectedRail ? (
               (selectedRail.requiredFields || []).map((f, idx) => {
                 const key = typeof f === "string" ? f : f.key || f.name || `field_${idx}`;
-                const label = typeof f === "string" ? f : f.label || key;
+                const label = humanizeField(typeof f === "string" ? f : f.label || key);
                 return (
                   <Input
                     key={key}

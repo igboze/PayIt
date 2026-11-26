@@ -10,7 +10,7 @@ import { OnboardingScreen } from "./src/screens/OnboardingScreen";
 import { HomeScreen, type HomeModalTarget } from "./src/screens/HomeScreen";
 import { AddMoneyScreen } from "./src/screens/AddMoneyScreen";
 import { SendScreen } from "./src/screens/SendScreen";
-import { BillsScreen } from "./src/screens/BillsScreen";
+import { BillsScreen, type BillCat } from "./src/screens/BillsScreen";
 import { CardsScreen } from "./src/screens/CardsScreen";
 import { AccountsScreen, type AccountsSection } from "./src/screens/AccountsScreen";
 import { ProfileScreen } from "./src/screens/ProfileScreen";
@@ -26,6 +26,7 @@ import { usePushRegistration } from "./src/hooks/usePushRegistration";
 import { useInbox } from "./src/hooks/useInbox";
 import { NotificationsScreen } from "./src/screens/NotificationsScreen";
 import { LockScreen } from "./src/screens/LockScreen";
+import { ActivityScreen } from "./src/screens/ActivityScreen";
 import {
   useFonts,
   PlusJakartaSans_400Regular,
@@ -36,7 +37,7 @@ import {
 } from "@expo-google-fonts/plus-jakarta-sans";
 
 type MainTab = "home" | "accounts" | "cards" | "profile";
-type OverlayScreen = "add" | "send" | "bills" | "savings" | "swap" | "assistant" | "notifications" | null;
+type OverlayScreen = "add" | "send" | "bills" | "savings" | "swap" | "assistant" | "notifications" | "activity" | null;
 
 function MainShell() {
   const { user, bootstrapping, bumpDataVersion, locked } = useApp();
@@ -49,6 +50,20 @@ function MainShell() {
   const [overlay, setOverlay] = useState<OverlayScreen>(null);
   const [deepLinkCode, setDeepLinkCode] = useState("");
   const [deepClaimToken, setDeepClaimToken] = useState("");
+  const [billCategory, setBillCategory] = useState<BillCat>("airtime");
+
+  // Tapping a Proxim notification in the phone tray opens the Notifications screen.
+  useEffect(() => {
+    let sub: { remove: () => void } | null = null;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const N = require("expo-notifications") as typeof import("expo-notifications");
+      sub = N.addNotificationResponseReceivedListener(() => setOverlay("notifications"));
+    } catch (_) {
+      sub = null; // older builds without the native module
+    }
+    return () => sub?.remove();
+  }, []);
 
   // Android Back: close the open screen, then return to Home; only Home leaves the app.
   // Screens with their own steps (Send) register handlers later, so theirs run first.
@@ -119,7 +134,8 @@ function MainShell() {
       target === "savings" ||
       target === "swap" ||
       target === "assistant" ||
-      target === "notifications"
+      target === "notifications" ||
+      target === "activity"
     ) {
       setOverlay(target);
     } else if (target === "cards") {
@@ -163,7 +179,7 @@ function MainShell() {
     return (
       <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
         <KeyboardSafe>
-        <BillsScreen onBack={() => setOverlay(null)} />
+        <BillsScreen onBack={() => setOverlay(null)} initialCategory={billCategory} />
         <ApprovalSheet />
         </KeyboardSafe>
       </SafeAreaView>
@@ -185,6 +201,15 @@ function MainShell() {
         <KeyboardSafe>
         <SwapScreen onBack={() => setOverlay(null)} />
         <ApprovalSheet />
+        </KeyboardSafe>
+      </SafeAreaView>
+    );
+  }
+  if (overlay === "activity") {
+    return (
+      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+        <KeyboardSafe>
+          <ActivityScreen onBack={() => setOverlay(null)} />
         </KeyboardSafe>
       </SafeAreaView>
     );
@@ -247,7 +272,15 @@ function MainShell() {
         </PressableScale>
       ) : null}
       <View style={styles.body}>
-        {tab === "home" ? <HomeScreen onNavigate={handleHomeNav} onOpenProfile={() => setTab("profile")} unread={inbox.unread} /> : null}
+        {tab === "home" ? <HomeScreen
+            onNavigate={handleHomeNav}
+            onOpenProfile={() => setTab("profile")}
+            onOpenBill={(c) => {
+              setBillCategory(c);
+              setOverlay("bills");
+            }}
+            unread={inbox.unread}
+          /> : null}
         {tab === "accounts" ? <AccountsScreen initialSection={accountsSection} /> : null}
         {tab === "cards" ? <CardsScreen /> : null}
         {tab === "profile" ? <ProfileScreen /> : null}

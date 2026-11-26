@@ -5,6 +5,7 @@ import { useApp } from "../state/AppContext";
 import { COLORS, SPACING, TYPE } from "../theme";
 import { Button, ErrorBanner } from "../components/UI";
 import { notifyHaptic } from "../components/Touch";
+import { PoweredBy } from "../components/PoweredBy";
 
 const LOGO = require("../../assets/icon.png");
 
@@ -57,6 +58,7 @@ export function LockScreen() {
         <ErrorBanner message={error} onDismiss={() => setError(null)} />
         <Button title="Unlock with passkey" onPress={doUnlock} loading={busy} />
         <Button title="Sign out" variant="ghost" onPress={() => signOut()} disabled={busy} />
+        <PoweredBy />
       </View>
     </View>
   );

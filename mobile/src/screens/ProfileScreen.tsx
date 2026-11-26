@@ -34,6 +34,7 @@ import {
   SectionHeader,
   SuccessBanner,
 } from "../components/UI";
+import { EditableAvatar } from "../components/Avatar";
 
 type ProfileTab = "general" | "kyc" | "security" | "contacts" | "schedules" | "rewards";
 
@@ -361,6 +362,13 @@ export function ProfileScreen() {
       }
       keyboardShouldPersistTaps="handled"
     >
+      <View style={{ alignItems: "center", gap: 6, marginBottom: 16 }}>
+        <EditableAvatar size={96} />
+        <Text style={{ fontFamily: FONTS.bold, fontSize: 20, color: COLORS.text, marginTop: 6 }}>
+          {user?.senderName || (user?.username ? `@${user.username}` : "Your profile")}
+        </Text>
+        <Text style={{ fontFamily: FONTS.medium, fontSize: 13, color: COLORS.textSecondary }}>Tap your photo to change it</Text>
+      </View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 14 }}>
         <View style={{ flexDirection: "row", gap: 8 }}>
           <Pill label="Profile" active={tab === "general"} onPress={() => setTab("general")} />

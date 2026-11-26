@@ -74,16 +74,19 @@ function sendJson(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
-function parseBody(req) {
+// Only the profile-photo upload needs a larger body (base64 of a phone photo).
+const LARGE_BODY_PATHS = new Map([["/me/avatar", 6 * 1024 * 1024]]);
+
+function parseBody(req, maxBytes = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
     req.on("data", (c) => {
       size += c.length;
-      if (size <= MAX_BODY_BYTES) chunks.push(c);
+      if (size <= maxBytes) chunks.push(c);
     });
     req.on("end", () => {
-      if (size > MAX_BODY_BYTES) return reject(new HttpError(413, "payload_too_large", "Request body too large."));
+      if (size > maxBytes) return reject(new HttpError(413, "payload_too_large", "Request body too large."));
       if (!chunks.length) return resolve({});
       try {
         const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -258,6 +261,7 @@ function publicUser(user, device) {
     activeContext,
     autoEarnEnabled: Boolean(user.auto_earn_enabled),
     referralCode: user.referral_code || `ref${user.telegram_id}`,
+    avatarVersion: require("./avatars").getAvatarVersion(user.telegram_id),
     deviceRestrictedUntil: store.isDeviceRestricted(device) ? device.restricted_until : null,
   };
 }
@@ -821,6 +825,30 @@ const ROUTES = [
   // Profile, accounts, balances, transactions & statement CSV
   ["GET", "/me", me],
   ["PATCH", "/me", (req, body) => features.updateProfile(authenticate(req), body, publicUser)],
+  // Profile photo: upload (base64), fetch (owner only), remove.
+  ["POST", "/me/avatar", async (req, body) => {
+    const auth = authenticate(req);
+    rateLimit(`avatar:${auth.telegramId}`, 10, 60 * 60 * 1000);
+    const avatars = require("./avatars");
+    try {
+      const avatarVersion = await avatars.saveAvatar(auth.telegramId, body?.imageBase64);
+      return { status: 200, data: { success: true, avatarVersion } };
+    } catch (err) {
+      if (err instanceof avatars.AvatarError) throw new HttpError(err.status, err.code, err.message);
+      throw err;
+    }
+  }],
+  ["GET", "/me/avatar", (req) => {
+    const auth = authenticate(req);
+    const row = require("./avatars").getAvatar(auth.telegramId);
+    if (!row) throw new HttpError(404, "not_found", "No profile photo.");
+    return { status: 200, raw: Buffer.from(row.data), contentType: row.mime, headers: { "Cache-Control": "private, max-age=86400" } };
+  }],
+  ["DELETE", "/me/avatar", (req) => {
+    const auth = authenticate(req);
+    require("./avatars").deleteAvatar(auth.telegramId);
+    return { status: 200, data: { success: true, avatarVersion: null } };
+  }],
   ["PATCH", "/profile", (req, body) => features.updateProfile(authenticate(req), body, publicUser)],
   ["POST", "/me/sender-name", (req, body) => features.updateProfile(authenticate(req), body, publicUser)],
   ["GET", "/accounts", (req) => features.listAccounts(authenticate(req))],
@@ -889,6 +917,19 @@ const ROUTES = [
 
   // Cross-chain withdrawals, bridge moves & FX swap
   ["GET", "/withdrawals/chains", (req) => { authenticate(req); return features.listWithdrawalChains(); }],
+  // Every chain and token NEAR Intents can deliver to, for "send as any token".
+  ["GET", "/withdrawals/tokens", async (req) => {
+    authenticate(req);
+    const catalog = await require("../near").getAllSupportedIntentTokens();
+    return {
+      status: 200,
+      data: {
+        chains: catalog.chains,
+        tokensByChain: catalog.tokensByChain,
+        feeUsd: Number(process.env.CROSSCHAIN_WITHDRAWAL_FEE_USDC ?? 0.30),
+      },
+    };
+  }],
   ["GET", "/bridge/moves", (req) => features.listBridgeMoves(authenticate(req))],
   ["GET", "/swap/rates", (req) => { authenticate(req); return features.getSwapRates(); }],
   ["POST", "/swap/quote", (req, body) => features.quoteSwap(authenticate(req), body)],
@@ -1054,7 +1095,7 @@ async function handleAppApiRequest(req, res) {
     if (!handler) return sendJson(res, 404, { error: { code: "not_found", message: "Unknown endpoint." } });
 
     const hasJsonBody = req.method === "POST" || req.method === "PATCH" || req.method === "PUT";
-    const arg = hasJsonBody ? await parseBody(req) : url;
+    const arg = hasJsonBody ? await parseBody(req, LARGE_BODY_PATHS.get(path) || MAX_BODY_BYTES) : url;
     const result = await handler(req, arg, match);
     if (result.raw !== undefined) {
       const headers = {

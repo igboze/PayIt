@@ -2107,6 +2107,16 @@ function completeOfframpOrder(orderId, txHashOrOpts = {}, maybeStatus = "complet
 /**
  * Record a newly initiated cross-chain withdrawal (CCTP or Intent routing).
  */
+// The NEAR Intents asset a withdrawal delivers (e.g. "nep141:..."), so the background
+// sweeper sends the same token the user picked. Null means the chain's default token.
+let _ccAssetColumnReady = false;
+function ensureCrosschainAssetColumn() {
+  if (_ccAssetColumnReady) return;
+  const cols = db.prepare("PRAGMA table_info(crosschain_pending_withdrawals)").all().map((c) => c.name);
+  if (!cols.includes("destination_asset")) db.exec("ALTER TABLE crosschain_pending_withdrawals ADD COLUMN destination_asset TEXT");
+  _ccAssetColumnReady = true;
+}
+
 function recordCrosschainWithdrawal({
   telegramId,
   arcTxHash,
@@ -2119,12 +2129,14 @@ function recordCrosschainWithdrawal({
   accountType = "personal",
   messageHex = null,
   messageHash = null,
+  destinationAsset = null,
 }) {
   try {
+    ensureCrosschainAssetColumn();
     db.prepare(`
       INSERT OR REPLACE INTO crosschain_pending_withdrawals
-        (telegram_id, arc_tx_hash, destination_chain, destination_address, amount_usdc, status, engine, encrypted_private_key, account_type, message_hex, message_hash, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        (telegram_id, arc_tx_hash, destination_chain, destination_address, amount_usdc, status, engine, encrypted_private_key, account_type, message_hex, message_hash, destination_asset, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `).run(
       telegramId,
       arcTxHash,
@@ -2136,7 +2148,8 @@ function recordCrosschainWithdrawal({
       encryptedPrivateKey,
       accountType,
       messageHex,
-      messageHash
+      messageHash,
+      destinationAsset || null
     );
     return db.prepare("SELECT * FROM crosschain_pending_withdrawals WHERE arc_tx_hash = ?").get(arcTxHash);
   } catch (err) {

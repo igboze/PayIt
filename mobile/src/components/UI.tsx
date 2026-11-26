@@ -358,8 +358,6 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: COLORS.surface,
     borderRadius: RADIUS.lg,
-    borderWidth: 1,
-    borderColor: "transparent",
     padding: SPACING.md,
     marginBottom: SPACING.md,
     ...DEPTH.card,
@@ -373,15 +371,11 @@ const styles = StyleSheet.create({
   },
   btnPrimary: {
     backgroundColor: COLORS.primary,
-    borderWidth: 1,
-    borderColor: COLORS.primary,
-    borderTopColor: "rgba(255, 255, 255, 0.35)",
     ...DEPTH.glow,
+    borderTopColor: "rgba(255, 255, 255, 0.35)",
   },
   btnSecondary: {
-    backgroundColor: COLORS.surfaceElevated,
-    borderWidth: 1,
-    borderColor: COLORS.surfaceElevated,
+    backgroundColor: COLORS.surface,
     ...DEPTH.raised,
   },
   btnDanger: {
@@ -407,8 +401,8 @@ const styles = StyleSheet.create({
   input: {
     minHeight: 56,
     backgroundColor: COLORS.surface,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    borderWidth: 1.5,
+    borderColor: "#8E9A94", // ~3:1 against white so field edges are visible
     borderRadius: RADIUS.md,
     paddingHorizontal: 16,
     paddingVertical: 14,

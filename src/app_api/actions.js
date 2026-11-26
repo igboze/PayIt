@@ -23,6 +23,7 @@ const deps = {
   get store() { return require("./store"); },
   get executor() { return require("../../agent/executor"); },
   get flowsMultichain() { return require("../flows_multichain"); },
+  get near() { return require("../near"); },
   get socialTransfers() { return require("../social_transfers"); },
   get swap() { return require("../swap"); },
   get bizProfile() { return require("../biz_profile"); },
@@ -134,6 +135,70 @@ async function buildBillRequest(ctx, { category, providerId, recipient, networkI
   // Fields the app sent explicitly win, but never the wallet/amount fields the server sets.
   const { pubKey, token, amount, ...extra } = clientBillData || {};
   return { productCode: product.code, billData: { ...billData, ...extra } };
+}
+
+/**
+ * Send dollars out as any token NEAR Intents supports (e.g. ETH on Base, SOL, TON, XRP).
+ * The token must be in the live catalog; a dry 1Click quote checks the address and gives
+ * the estimate the user approves. Delivery runs through executor's intent route.
+ */
+async function prepareIntentTokenWithdrawal(ctx, body, accountType, assetId) {
+  const near = dep("near");
+  const token = await near.resolveIntentToken({ assetId });
+  if (!token) throw bad("That token can't be sent right now. Pick another.", "unsupported_token");
+  const destinationAddress = str(body, "destinationAddress", { max: 128 }).trim();
+  const amountUsdc = money(body, "amountUsdc", { min: 1 });
+  const feeUsd = Number(process.env.CROSSCHAIN_WITHDRAWAL_FEE_USDC ?? 0.30);
+  if (amountUsdc <= feeUsd) throw bad(`Send more than the $${fmt(feeUsd)} network fee.`, "invalid_amount");
+  const fm = dep("flowsMultichain");
+  const chainKey = String(token.blockchain || "").toLowerCase();
+  // Known chains get a local format check; every address is also checked by the quote below.
+  if (fm.CCW_CHAINS?.[chainKey] && !fm.validateAddressForChain(chainKey, destinationAddress)) {
+    throw bad(`That isn't a valid ${fm.CCW_CHAINS[chainKey].name} address.`, "invalid_address");
+  }
+  await precheck(ctx, amountUsdc, `ccw:${chainKey}:${destinationAddress}`, "app_crosschain_withdraw", accountType);
+
+  const user = dep("db").getUser(ctx.telegramId) || {};
+  const refundTo = (accountType === "business" ? user.business_deposit_address : user.deposit_address) || user.deposit_address;
+  const net = Number((amountUsdc - feeUsd).toFixed(6));
+  let estimate = null;
+  try {
+    const q = await near.getQuote({
+      originAsset: near.ASSETS.BASE_USDC,
+      destinationAsset: token.assetId,
+      amount: String(Math.round(net * 1e6)),
+      recipient: destinationAddress,
+      refundTo,
+      dry: true,
+    });
+    const out = q?.quote?.amountOutFormatted ?? q?.quote?.amountOut;
+    if (out !== undefined && out !== null) estimate = String(out);
+  } catch (err) {
+    const msg = String(err?.message || "");
+    if (/recipient|address/i.test(msg)) throw bad(`That isn't a valid ${token.name || chainKey} address.`, "invalid_address");
+    throw new ActionError(502, "quote_unavailable", "We couldn't get a price for that token right now. Try again shortly.");
+  }
+  const networkName = fm.CCW_CHAINS?.[chainKey]?.label || chainKey.charAt(0).toUpperCase() + chainKey.slice(1);
+  return {
+    amountUsd: amountUsdc,
+    action: {
+      accountType,
+      destinationChain: chainKey,
+      destinationAddress,
+      assetId: token.assetId,
+      tokenSymbol: token.symbol,
+      amountUsdc: amountUsdc.toFixed(6),
+    },
+    summary: {
+      title: `Send $${fmt(amountUsdc)} as ${token.symbol}`,
+      lines: [
+        ["Token", `${token.symbol} on ${networkName}`],
+        ["To", destinationAddress],
+        ["Network fee", `$${fmt(feeUsd)}`],
+        ["They get", estimate ? `≈ ${estimate} ${token.symbol}` : `${token.symbol} at the live rate`],
+      ],
+    },
+  };
 }
 
 async function precheck(ctx, amountUsd, reference, action, accountType = "personal") {
@@ -398,6 +463,9 @@ const ACTIONS = {
     async prepare(ctx, body) {
       const accountType = resolveAccountType(ctx, body);
       const fm = dep("flowsMultichain");
+      // Any token NEAR Intents can deliver: the app sends its assetId from the token catalog.
+      const assetId = str(body, "assetId", { optional: true, max: 200 }) || null;
+      if (assetId) return prepareIntentTokenWithdrawal(ctx, body, accountType, assetId);
       const destinationChain = str(body, "destinationChain", { max: 32 }).toLowerCase();
       const chainInfo = fm.CCW_CHAINS?.[destinationChain];
       if (!chainInfo) throw bad(`Unsupported destination chain: ${destinationChain}`);
@@ -425,6 +493,7 @@ const ACTIONS = {
       const res = await dep("executor").executeCrossChainWithdrawal(userWallet, {
         destinationChain: a.destinationChain,
         destinationAddress: a.destinationAddress,
+        ...(a.assetId ? { destinationAsset: a.assetId } : {}),
         amountUsdc: Number(a.amountUsdc),
         telegramId: ctx.telegramId,
         accountType,
@@ -433,7 +502,12 @@ const ACTIONS = {
       if (!res || !res.success) {
         throw new ActionError(502, "withdrawal_failed", res?.error || "Cross-chain withdrawal could not be completed.");
       }
-      return { ...res, notice: `Withdrawing $${fmt(a.amountUsdc)} to ${a.destinationChain}` };
+      return {
+        ...res,
+        notice: a.tokenSymbol
+          ? `Sending $${fmt(a.amountUsdc)} as ${a.tokenSymbol} on ${a.destinationChain}`
+          : `Withdrawing $${fmt(a.amountUsdc)} to ${a.destinationChain}`,
+      };
     },
   },
 

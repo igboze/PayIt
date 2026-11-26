@@ -28,6 +28,8 @@ export interface ProximUser {
   activeContext: AccountType;
   autoEarnEnabled: boolean;
   referralCode: string;
+  /** Changes when the profile photo changes; null when there is none. */
+  avatarVersion?: string | null;
   deviceRestrictedUntil: string | null;
 }
 

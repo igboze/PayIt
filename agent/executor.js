@@ -920,9 +920,12 @@ async function executeCrossChainWithdrawal(userWallet, {
   };
 
   const CCTP_CHAINS = new Set(["solana", "base", "arbitrum", "optimism", "polygon", "avalanche", "ethereum"]);
+  // A specific NEAR Intents asset (e.g. "nep141:...") means "deliver this token", which
+  // always goes through the intent route, even on chains CCTP could reach with USDC.
+  const intentAsset = /^nep(141|245):/i.test(String(destinationAsset || "")) ? String(destinationAsset) : null;
 
   // ── Tier 1: Direct CCTP Withdrawal ──────────────────────────────────────────
-  if (CCTP_CHAINS.has(chainKey)) {
+  if (CCTP_CHAINS.has(chainKey) && !intentAsset) {
     const txId = db.recordTransaction(telegramId, "crosschain_withdraw", amountMicro, "pending", null, accountType, 18, "arc");
     try {
       const result = await cctpBridge.executeArcCrossChainWithdrawal({
@@ -971,7 +974,9 @@ async function executeCrossChainWithdrawal(userWallet, {
           messageHex: result.rawCctpMessage,
           messageHash: result.messageHash,
           destinationDomain: cctpBridge.CCTP_DOMAINS[chainKey.toUpperCase()],
-          destinationRecipientAddress,
+          // Was a bare `destinationRecipientAddress` (never defined), which threw right after
+          // the Arc burn and reported a funded withdrawal as failed.
+          destinationRecipientAddress: destinationAddress,
           userWallet,
           userPrivateKey: userWallet.privateKey,
           telegramId,
@@ -1011,7 +1016,7 @@ async function executeCrossChainWithdrawal(userWallet, {
   // Step 1: Arc burns USDC to Base relayer address via CCTP
   // Step 2: Proxim triggers 1Click Intent from Base USDC to destination chain
   const INTENT_CHAINS = new Set(["bitcoin", "btc", "tron", "near", "starknet"]);
-  if (INTENT_CHAINS.has(chainKey)) {
+  if (INTENT_CHAINS.has(chainKey) || intentAsset) {
     const txId = db.recordTransaction(telegramId, "intent_withdraw", amountMicro, "pending", null, accountType, 18, "arc");
     try {
       // Burn to Base relayer / destination
@@ -1051,6 +1056,7 @@ async function executeCrossChainWithdrawal(userWallet, {
           accountType,
           messageHex: baseBurn.rawCctpMessage || null,
           messageHash: baseBurn.messageHash || null,
+          destinationAsset: intentAsset,
         });
       }
 
@@ -1062,6 +1068,7 @@ async function executeCrossChainWithdrawal(userWallet, {
         amountUsdc: netAmountUsdc,
         destinationChain: chainKey,
         destinationAddress,
+        destinationAsset: intentAsset,
         userWallet,
         userPrivateKey: userWallet.privateKey,
         telegramId,

@@ -15,6 +15,7 @@ import type { TransactionItem, UnifiedBalance } from "../api/types";
 import { useApp } from "../state/AppContext";
 import { BALANCE_GRADIENT, COLORS, DEPTH, HERO, RADIUS, SPACING, TYPE } from "../theme";
 import {
+  Button,
   EmptyState,
   ErrorBanner,
   formatNgn,
@@ -24,6 +25,8 @@ import {
 } from "../components/UI";
 import { CurrencyLogo } from "../components/CurrencyLogo";
 import { PressableScale } from "../components/Touch";
+import { UserAvatar } from "../components/Avatar";
+import { BILL_CATEGORIES, BillCat, BillCategoryTile } from "../components/bills";
 import { groupByDay, SkeletonRows, TxDetailSheet, TxRow } from "../components/Activity";
 
 export type HomeModalTarget =
@@ -36,9 +39,13 @@ export type HomeModalTarget =
   | "assistant"
   | "global"
   | "kyc"
-  | "notifications";
+  | "notifications"
+  | "activity";
 
 type IoniconName = keyof typeof Ionicons.glyphMap;
+
+// Home shows only the newest few; "See all" opens the full Activity screen.
+const HOME_ACTIVITY_COUNT = 5;
 
 // Canvas tile tones: [icon colour, tile background].
 const TONES = {
@@ -111,10 +118,12 @@ function GradientFill() {
 export function HomeScreen({
   onNavigate,
   onOpenProfile,
+  onOpenBill,
   unread = 0,
 }: {
   onNavigate: (target: HomeModalTarget) => void;
   onOpenProfile?: () => void;
+  onOpenBill?: (category: BillCat) => void;
   unread?: number;
 }) {
   const { user, activeAccount, dataVersion, switchAccount, switchingAccount, requestApproval } = useApp();
@@ -173,8 +182,6 @@ export function HomeScreen({
   const displayName = isBiz
     ? user?.bizSenderName || "Business"
     : (user?.senderName || "").split(/\s+/)[0] || (user?.username ? `@${user.username}` : "there");
-  const avatarText = initialsOf(isBiz ? user?.bizSenderName || "Business" : user?.senderName || user?.username || "Proxim");
-  const [avFg, avBg] = AVATAR_TONES[[...avatarText].reduce((a, ch) => a + ch.charCodeAt(0), 0) % AVATAR_TONES.length];
 
   const copyText = async (label: string, val: string) => {
     await Clipboard.setStringAsync(val);
@@ -208,8 +215,6 @@ export function HomeScreen({
   const quickActions: Array<{ key: HomeModalTarget; label: string; icon: IoniconName; primary?: boolean; rotate?: boolean }> = [
     { key: "add", label: "Add money", icon: "add", primary: true },
     { key: "send", label: "Send", icon: "arrow-up", rotate: true },
-    { key: "bills", label: "Bills", icon: "receipt-outline" },
-    { key: "cards", label: "Cards", icon: "card-outline" },
   ];
 
 
@@ -220,8 +225,8 @@ export function HomeScreen({
 
       {/* Greeting row */}
       <View style={styles.greetRow}>
-        <PressableScale onPress={onOpenProfile} depth={0.94} style={[styles.avatar, { backgroundColor: avBg }]}>
-          <Text style={[styles.avatarText, { color: avFg }]}>{avatarText}</Text>
+        <PressableScale onPress={onOpenProfile} depth={0.94} accessibilityLabel="Open profile">
+          <UserAvatar size={44} name={isBiz ? user?.bizSenderName || "Business" : null} />
         </PressableScale>
         <View style={{ flex: 1 }}>
           <Text style={styles.greetSub}>{greeting()}</Text>
@@ -329,19 +334,19 @@ export function HomeScreen({
           <PressableScale
             key={qa.key}
             onPress={() => onNavigate(qa.key)}
-            depth={0.92}
+            depth={0.95}
             haptic={qa.primary ? "medium" : "light"}
-            style={styles.qaItem}
+            style={[styles.qaWide, qa.primary ? styles.qaWidePrimary : null]}
+            accessibilityRole="button"
+            accessibilityLabel={qa.label}
           >
-            <View style={[styles.qaTile, qa.primary ? styles.qaTilePrimary : null]}>
-              <Ionicons
-                name={qa.icon}
-                size={24}
-                color={qa.primary ? COLORS.onPrimary : COLORS.primary}
-                style={qa.rotate ? { transform: [{ rotate: "45deg" }] } : undefined}
-              />
-            </View>
-            <Text style={styles.qaLabel}>{qa.label}</Text>
+            <Ionicons
+              name={qa.icon}
+              size={24}
+              color={qa.primary ? COLORS.onPrimary : COLORS.primary}
+              style={qa.rotate ? { transform: [{ rotate: "45deg" }] } : undefined}
+            />
+            <Text style={[styles.qaWideLabel, qa.primary ? { color: COLORS.onPrimary } : null]}>{qa.label}</Text>
           </PressableScale>
         ))}
       </View>
@@ -356,12 +361,21 @@ export function HomeScreen({
         <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
       </PressableScale>
 
+      {/* Pay bills: one tap per bill type */}
+      <Text style={styles.activityTitle}>Pay bills</Text>
+      <View style={styles.billGrid}>
+        {BILL_CATEGORIES.map((c) => (
+          <BillCategoryTile key={c.key} cat={c} onPress={() => onOpenBill?.(c.key)} />
+        ))}
+      </View>
+
       <View style={styles.activityHead}>
         <Text style={styles.activityTitle}>Recent activity</Text>
-        {transactions.length ? (
-          <Text style={styles.activityCount}>
-            {transactions.length} {transactions.length === 1 ? "item" : "items"}
-          </Text>
+        {transactions.length > 0 ? (
+          <PressableScale onPress={() => onNavigate("activity")} haptic="selection" style={styles.seeAll} accessibilityRole="button">
+            <Text style={styles.seeAllText}>See all</Text>
+            <Ionicons name="chevron-forward" size={16} color={COLORS.primary} />
+          </PressableScale>
         ) : null}
       </View>
     </View>
@@ -370,11 +384,21 @@ export function HomeScreen({
   return (
     <View style={styles.container}>
       <SectionList
-        sections={loading && transactions.length === 0 ? [] : groupByDay(transactions)}
+        sections={loading && transactions.length === 0 ? [] : groupByDay(transactions.slice(0, HOME_ACTIVITY_COUNT))}
         keyExtractor={(item) => String(item.id)}
         renderItem={({ item }) => <TxRow tx={item} onPress={() => setSelectedTx(item)} />}
         renderSectionHeader={({ section }) => <Text style={styles.dayHeader}>{section.title}</Text>}
         stickySectionHeadersEnabled={false}
+        ListFooterComponent={
+          transactions.length > HOME_ACTIVITY_COUNT ? (
+            <Button
+              title={`View all activity (${transactions.length})`}
+              variant="secondary"
+              onPress={() => onNavigate("activity")}
+              style={{ marginTop: 14 }}
+            />
+          ) : undefined
+        }
         ListHeaderComponent={header}
         ItemSeparatorComponent={() => <View style={styles.txGap} />}
         contentContainerStyle={styles.listContent}
@@ -574,9 +598,34 @@ const styles = StyleSheet.create({
     ...TYPE.label,
     color: HERO.accent,
   },
+  qaWide: {
+    flex: 1,
+    minHeight: 60,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    borderRadius: RADIUS.md,
+    backgroundColor: COLORS.surface,
+    ...DEPTH.raised,
+  },
+  qaWidePrimary: {
+    backgroundColor: COLORS.primary,
+    ...DEPTH.glow,
+  },
+  qaWideLabel: {
+    ...TYPE.bodyStrong,
+    fontSize: 16,
+    color: COLORS.text,
+  },
+  billGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
   qaRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
+    gap: 12,
   },
   qaItem: {
     width: 76,
@@ -663,6 +712,18 @@ const styles = StyleSheet.create({
   emptyCard: {
     backgroundColor: COLORS.surface,
     borderRadius: RADIUS.lg,
+    ...DEPTH.card,
+  },
+  seeAll: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    minHeight: 44,
+    paddingHorizontal: 8,
+  },
+  seeAllText: {
+    ...TYPE.bodyStrong,
+    color: COLORS.primary,
   },
   modalBackdrop: {
     flex: 1,

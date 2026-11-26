@@ -128,3 +128,60 @@ test("savings overview shows the user's rate at the time of saving, and today's 
   res = await features.getSavingsOverview(auth, null);
   assert.equal(res.data.position.apyAtDeposit, 4.68);
 });
+
+test("profile photo: re-encoded to a 320px JPEG, non-images rejected, delete works", async () => {
+  const avatars = require("../src/app_api/avatars");
+  const sharp = require("sharp");
+  const png = await sharp({ create: { width: 900, height: 600, channels: 3, background: { r: 10, g: 160, b: 90 } } }).png().toBuffer();
+  const version = await avatars.saveAvatar(TG, `data:image/png;base64,${png.toString("base64")}`);
+  assert.ok(version, "returns a version");
+  const row = avatars.getAvatar(TG);
+  assert.equal(row.mime, "image/jpeg");
+  const meta = await sharp(Buffer.from(row.data)).metadata();
+  assert.equal(meta.format, "jpeg");
+  assert.equal(meta.width, 320);
+  assert.equal(meta.height, 320);
+  await assert.rejects(avatars.saveAvatar(TG, Buffer.from("not an image at all").toString("base64")), (e) => e.code === "invalid_image");
+  await assert.rejects(avatars.saveAvatar(TG, ""), (e) => e.code === "invalid_image");
+  assert.equal(avatars.deleteAvatar(TG), true);
+  assert.equal(avatars.getAvatar(TG), null);
+});
+
+test("background bot alerts reach the app inbox; replies and notify() sends are not duplicated", async () => {
+  const notifyMod = require("../src/notify");
+  const sent = [];
+  const middlewares = [];
+  const fakeBot = {
+    use: (fn) => middlewares.push(fn),
+    telegram: {
+      sendMessage: async (chatId, text) => { sent.push({ chatId, text }); return { message_id: sent.length }; },
+    },
+  };
+  notifyMod.setNotifyBot(fakeBot);
+  const before = inbox.listNotifications(TG).notifications.length;
+  const settle = () => new Promise((r) => setImmediate(() => setImmediate(r)));
+
+  // 1) Background alert (no update in progress) -> mirrored.
+  await fakeBot.telegram.sendMessage(TG, "✅ <b>Deposit received</b>\n₦50,000 is now in your balance.");
+  await settle();
+  let list = inbox.listNotifications(TG).notifications;
+  assert.equal(list.length, before + 1);
+  assert.equal(list[0].title, "Deposit received");
+  assert.equal(list[0].body, "₦50,000 is now in your balance.");
+
+  // 2) Reply while handling the user's own update -> not mirrored.
+  await middlewares[0]({}, async () => { await fakeBot.telegram.sendMessage(TG, "Here is your menu"); });
+  await settle();
+  assert.equal(inbox.listNotifications(TG).notifications.length, before + 1);
+
+  // 3) notify() -> exactly one inbox entry, and the Telegram copy is still sent.
+  await notifyMod.notify(TG, { title: "Card charged", html: "💳 <b>Card charged</b> $4.00" });
+  await settle();
+  assert.equal(inbox.listNotifications(TG).notifications.length, before + 2);
+  assert.ok(sent.some((m) => /Card charged/.test(m.text)));
+
+  // 4) Group chats / unknown ids are ignored.
+  await fakeBot.telegram.sendMessage(-100123, "Group announcement");
+  await settle();
+  assert.equal(inbox.listNotifications(-100123).notifications.length, 0);
+});

@@ -52,7 +52,7 @@ export function PressableScale({
     Animated.spring(press, { toValue: v, useNativeDriver: true, speed: 40, bounciness: v ? 0 : 8 }).start();
 
   const scale = press.interpolate({ inputRange: [0, 1], outputRange: [1, depth] });
-  const translateY = press.interpolate({ inputRange: [0, 1], outputRange: [0, 1.5] });
+  const translateY = press.interpolate({ inputRange: [0, 1], outputRange: [0, 3] });
 
   return (
     <AnimatedPressable
