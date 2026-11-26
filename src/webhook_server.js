@@ -716,7 +716,12 @@ async function processPajEvent(payload, bot) {
         isBizAccount ? "business" : "personal",
         18,
         "arc",
-        onrampNarration
+        onrampNarration,
+        {
+          sourceCurrency: "NGN",
+          sourceAmount: effectiveFiatAmount > 0 ? effectiveFiatAmount : null,
+          depositChannel: "naira",
+        }
       );
       if (fiatOrderId) {
         db.completeOnrampOrder(fiatOrderId, { txHash: settlementTxHash, narration: onrampNarration });

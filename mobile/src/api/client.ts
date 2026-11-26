@@ -24,6 +24,7 @@ import type {
   GlobalRail,
   GlobalRecipient,
   InvoiceItem,
+  InvoicePaymentOptionsResponse,
   KycStatusResponse,
   NgnDepositOrder,
   PaymentLinkItem,
@@ -32,6 +33,8 @@ import type {
   RewardsOverview,
   SavingsOverview,
   ScheduleItem,
+  StockDetailResponse,
+  StocksOverviewResponse,
   SwapPairRate,
   SwitchAccountResponse,
   TransactionItem,
@@ -640,6 +643,35 @@ export const api = {
   getSavings(account?: AccountType) {
     const qs = account ? `?account=${encodeURIComponent(account)}` : "";
     return request<SavingsOverview>(`/savings${qs}`);
+  },
+
+  // Tokenized US Stocks (Pods Finance / Ondo Global Markets)
+  getStocks(q?: string, account?: AccountType) {
+    const params = new URLSearchParams();
+    if (q) params.set("q", q);
+    if (account) params.set("account", account);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return request<StocksOverviewResponse>(`/stocks${qs}`);
+  },
+  getStockChart(ticker: string, range: "1D" | "1W" | "1M" | "3M" | "1Y" = "1M", account?: AccountType) {
+    const params = new URLSearchParams({ range });
+    if (account) params.set("account", account);
+    return request<StockDetailResponse>(`/stocks/${encodeURIComponent(ticker)}/chart?${params.toString()}`);
+  },
+
+  // Invoice payment options & PNG downloads
+  getInvoicePaymentOptions(account?: AccountType) {
+    const qs = account ? `?account=${encodeURIComponent(account)}` : "";
+    return request<InvoicePaymentOptionsResponse>(`/invoices/options${qs}`);
+  },
+  getInvoiceDownloadUrl(id: number, scope: "personal" | "business" = "personal") {
+    const base = scope === "business" ? `/business/invoices/${id}/download` : `/invoices/${id}/download`;
+    return `${API_BASE_URL}${base}`;
+  },
+  async getInvoiceDownloadLink(id: number, scope: "personal" | "business" = "personal") {
+    const path = scope === "business" ? `/business/invoices/${id}/download-link` : `/invoices/${id}/download-link`;
+    const r = await request<{ path: string; expiresInSec: number }>(path, { method: "POST", body: {} });
+    return `${API_BASE_URL}${r.path}`;
   },
 
   // Personal & Business Invoices, Expenses, Payment Links

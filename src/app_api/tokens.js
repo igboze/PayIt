@@ -90,4 +90,32 @@ function verifyReceiptLink(u, txId, e, s) {
   return want.length === got.length && crypto.timingSafeEqual(want, got);
 }
 
-module.exports = { issueAccessToken, verifyAccessToken, issueSession, getSecret, signReceiptLink, verifyReceiptLink };
+// Short-lived signed invoice PNG links for one-tap download/share in browser or native share sheet.
+function invoiceSig(telegramId, scope, invoiceId, exp) {
+  return sign(`invoice:${Number(telegramId)}:${String(scope)}:${Number(invoiceId)}:${Number(exp)}`);
+}
+
+function signInvoiceLink(telegramId, scope, invoiceId, ttlSec = 10 * 60) {
+  const exp = Math.floor(Date.now() / 1000) + ttlSec;
+  return { u: String(Number(telegramId)), e: String(exp), s: invoiceSig(telegramId, scope, invoiceId, exp) };
+}
+
+function verifyInvoiceLink(u, scope, invoiceId, e, s) {
+  const exp = Number(e);
+  if (!Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000) || !/^-?\d+$/.test(String(u || ""))) return false;
+  if (scope !== "personal" && scope !== "business") return false;
+  const want = Buffer.from(invoiceSig(u, scope, invoiceId, exp));
+  const got = Buffer.from(String(s || ""));
+  return want.length === got.length && crypto.timingSafeEqual(want, got);
+}
+
+module.exports = {
+  issueAccessToken,
+  verifyAccessToken,
+  issueSession,
+  getSecret,
+  signReceiptLink,
+  verifyReceiptLink,
+  signInvoiceLink,
+  verifyInvoiceLink,
+};

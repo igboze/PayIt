@@ -16,6 +16,7 @@ import { AccountsScreen, type AccountsSection } from "./src/screens/AccountsScre
 import { ProfileScreen } from "./src/screens/ProfileScreen";
 import { AssistantScreen } from "./src/screens/AssistantScreen";
 import { SavingsScreen } from "./src/screens/SavingsScreen";
+import { StocksScreen } from "./src/screens/StocksScreen";
 import { SwapScreen } from "./src/screens/SwapScreen";
 import { COLORS, FONTS } from "./src/theme";
 import { PressableScale } from "./src/components/Touch";
@@ -40,7 +41,7 @@ import {
 } from "@expo-google-fonts/plus-jakarta-sans";
 
 type MainTab = "home" | "accounts" | "cards" | "profile";
-type OverlayScreen = "add" | "send" | "bills" | "savings" | "swap" | "assistant" | "notifications" | "activity" | null;
+type OverlayScreen = "add" | "send" | "bills" | "savings" | "stocks" | "swap" | "assistant" | "notifications" | "activity" | null;
 
 function MainShell() {
   const { user, bootstrapping, bumpDataVersion, locked } = useApp();
@@ -151,6 +152,7 @@ function MainShell() {
       target === "send" ||
       target === "bills" ||
       target === "savings" ||
+      target === "stocks" ||
       target === "swap" ||
       target === "assistant" ||
       target === "notifications" ||
@@ -209,6 +211,16 @@ function MainShell() {
       <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
         <KeyboardSafe>
         <SavingsScreen onBack={() => setOverlay(null)} />
+        <ApprovalSheet />
+        </KeyboardSafe>
+      </SafeAreaView>
+    );
+  }
+  if (overlay === "stocks") {
+    return (
+      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+        <KeyboardSafe>
+        <StocksScreen onBack={() => setOverlay(null)} />
         <ApprovalSheet />
         </KeyboardSafe>
       </SafeAreaView>

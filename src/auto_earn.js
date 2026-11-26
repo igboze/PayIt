@@ -32,6 +32,21 @@ function autoEarnMessage(amountUsdc, pool, accountType) {
 }
 
 /**
+ * Select the highest-APY eligible savings pool (USDC preferred since user balances are USDC).
+ */
+function selectHighestApyPool(pools) {
+  if (!Array.isArray(pools) || pools.length === 0) return null;
+  const usdcPools = pools.filter((p) => p && String(p.symbol || "USDC").toUpperCase() === "USDC");
+  const candidates = usdcPools.length > 0 ? usdcPools : pools.filter(Boolean);
+  if (candidates.length === 0) return null;
+  return [...candidates].sort((a, b) => {
+    const apyA = Number(a.userApy ?? a.rawApy ?? a.apy ?? 0);
+    const apyB = Number(b.userApy ?? b.rawApy ?? b.apy ?? 0);
+    return apyB - apyA;
+  })[0];
+}
+
+/**
  * Scan for users whose funds have sat idle for >= 2 hours and allocate to Auto-Earn.
  *
  * @param {object} [options]
@@ -53,7 +68,8 @@ async function checkAndRunAutoEarn(options = {}) {
     return 0;
   }
 
-  const bestPool = pools[0];
+  const bestPool = selectHighestApyPool(pools);
+  if (!bestPool) return 0;
   let allocatedCount = 0;
 
   for (const user of idleUsers) {
@@ -261,6 +277,7 @@ function stopAutoEarnWorker() {
 }
 
 module.exports = {
+  selectHighestApyPool,
   checkAndRunAutoEarn,
   ensureLiquidBalance,
   startAutoEarnWorker,

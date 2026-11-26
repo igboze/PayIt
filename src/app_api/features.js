@@ -31,6 +31,8 @@ const deps = {
   get nuvion() { return require("../nuvion"); },
   get compliance() { return require("../compliance"); },
   get invoiceDb() { return require("../invoice_db"); },
+  get invoiceGenerator() { return require("../invoice_generator"); },
+  get tokens() { return require("./tokens"); },
   get receiptGenerator() { return require("../receipt_generator"); },
   get socialTransfers() { return require("../social_transfers"); },
   get swap() { return require("../swap"); },
@@ -1257,24 +1259,43 @@ async function getSavingsOverview(auth, url = null) {
   const open = db.getOpenYieldPosition(auth.telegramId, accountType);
   let pools = [];
   try { pools = await savings.getYieldPools(); } catch (_) {}
-  const accruedYieldUsdc = open && typeof savings.calcAccruedYield === "function" ? Number(savings.calcAccruedYield(open) || 0) : 0;
+  const sortedPools = [...(Array.isArray(pools) ? pools : [])].sort(
+    (a, b) => Number(b.userApy ?? b.rawApy ?? b.apy ?? 0) - Number(a.userApy ?? a.rawApy ?? a.apy ?? 0)
+  );
+  const topUsdcPool = sortedPools.find((p) => String(p.symbol || "USDC").toUpperCase() === "USDC") || sortedPools[0] || null;
+  const topVaultAddr = topUsdcPool?.vaultAddress ? String(topUsdcPool.vaultAddress).toLowerCase() : null;
+
+  const feeFraction = Number(savings.PAYIT_FEE_FRACTION ?? 0.1);
+  const feePct = Math.round(feeFraction * 100);
+  const breakdown = open && typeof savings.calcYieldBreakdown === "function"
+    ? savings.calcYieldBreakdown(open)
+    : (() => {
+      const accrued = open && typeof savings.calcAccruedYield === "function" ? Number(savings.calcAccruedYield(open) || 0) : 0;
+      return { grossYield: accrued, devFee: Number((accrued * feeFraction).toFixed(6)), netYield: accrued, feePct };
+    })();
+
   // The user's own rate (after Proxim's fee) at the time they saved. Older positions only
   // stored the vault's gross rate, so derive the user's share for those.
-  const feeFraction = Number(savings.PAYIT_FEE_FRACTION ?? 0.1);
   const apyAtDeposit = open
     ? (open.user_apy != null && Number(open.user_apy) > 0 ? Number(open.user_apy) : Number(open.apy || 0) * (1 - feeFraction))
     : 0;
-  const livePool = open && Array.isArray(pools)
-    ? pools.find((p) => String(p.vaultAddress || "").toLowerCase() === String(open.vault_address || "").toLowerCase()) || null
+  const livePool = open && sortedPools.length > 0
+    ? sortedPools.find((p) => String(p.vaultAddress || "").toLowerCase() === String(open.vault_address || "").toLowerCase()) || null
     : null;
+
   return {
     status: 200,
     data: {
       accountType,
+      autoEarnEnabled: Boolean(auth.user?.auto_earn_enabled),
+      platformFeePct: feePct,
       position: open ? {
         id: open.id,
+        vaultName: open.project || livePool?.project || livePool?.name || "Dollar Savings",
         principalUsdc: Number(open.amount_usdc || 0),
-        accruedYieldUsdc,
+        accruedYieldUsdc: breakdown.netYield,
+        grossYieldUsdc: breakdown.grossYield,
+        platformFeeUsdc: breakdown.devFee,
         apy: Number(apyAtDeposit.toFixed(2)),
         apyAtDeposit: Number(apyAtDeposit.toFixed(2)),
         currentApy: livePool ? Number(Number(livePool.userApy ?? livePool.apy ?? 0).toFixed(2)) : null,
@@ -1283,13 +1304,21 @@ async function getSavingsOverview(auth, url = null) {
         vaultAddress: open.vault_address || null,
         openedAt: open.opened_at || open.created_at || null,
       } : null,
-      pools: (Array.isArray(pools) ? pools : []).map((p) => ({
-        name: p.name || p.project || "Dollar lending vault",
-        symbol: p.symbol || "USDC",
-        apy: Number(p.userApy ?? p.rawApy ?? p.apy ?? 0),
-        tvlUsd: Number(p.totalDeposits ?? p.tvlUsd ?? 0),
-        vaultAddress: p.vaultAddress || null,
-      })),
+      pools: sortedPools.map((p) => {
+        const userApy = Number(p.userApy ?? p.rawApy ?? p.apy ?? 0);
+        const rawApy = Number(p.rawApy ?? p.apy ?? userApy);
+        const vAddr = p.vaultAddress || null;
+        return {
+          name: p.name || p.project || "Dollar lending vault",
+          symbol: p.symbol || "USDC",
+          apy: userApy,
+          rawApy,
+          platformFeePct: feePct,
+          isHighestApy: Boolean(vAddr && topVaultAddr && String(vAddr).toLowerCase() === topVaultAddr),
+          tvlUsd: Number(p.totalDeposits ?? p.tvlUsd ?? 0),
+          vaultAddress: vAddr,
+        };
+      }),
     },
   };
 }
@@ -1422,8 +1451,11 @@ async function createBusinessInvoice(auth, body) {
   const dueDate = optStr(body, "dueDate", { max: 32 });
   const paymentChannel = optStr(body, "paymentChannel", { pattern: /^(ngn_bank|nuvion_bank|crypto_intent|both|both_nuvion)$/ }) || "both";
   const invoiceCurrency = (optStr(body, "currency", { pattern: /^[A-Za-z]{3}$/ }) || "USD").toUpperCase();
-  const nuvionBankCurrency = (optStr(body, "globalBankCurrency", { pattern: /^[A-Za-z]{3}$/ }) || "USD").toUpperCase();
-  const cryptoChain = optStr(body, "cryptoChain", { max: 32 }) || "arc";
+  const nuvionBankCurrency = (optStr(body, "globalBankCurrency", { pattern: /^[A-Za-z]{3}$/ }) || optStr(body, "nuvionBankCurrency", { pattern: /^[A-Za-z]{3}$/ }) || (paymentChannel === "nuvion_bank" || paymentChannel === "both_nuvion" ? invoiceCurrency : "USD")).toUpperCase();
+  const cryptoChain = optStr(body, "cryptoChain", { max: 48 }) || "arc";
+  const cryptoAssetId = optStr(body, "cryptoAssetId", { max: 180 }) || null;
+  const cryptoSymbol = optStr(body, "cryptoSymbol", { max: 24 }) || null;
+  const cryptoBlockchain = optStr(body, "cryptoBlockchain", { max: 32 }) || null;
 
   let items = [];
   if (Array.isArray(body?.items) && body.items.length > 0) {
@@ -1474,6 +1506,9 @@ async function createBusinessInvoice(auth, body) {
           paymentChannel,
           nuvionBankCurrency,
           cryptoChain,
+          cryptoAssetId,
+          cryptoSymbol,
+          cryptoBlockchain,
           dueDate,
           notes,
         },
@@ -1482,7 +1517,7 @@ async function createBusinessInvoice(auth, body) {
       return {
         status: 201,
         data: {
-          invoice: row ? formatBizInvoice(row) : {
+          invoice: row ? { ...formatBizInvoice(row), hasImage: true, paymentChannel, fiatCurrency: created?.fiatDetails?.currency || (paymentChannel === "ngn_bank" || paymentChannel === "both" ? "NGN" : nuvionBankCurrency), cryptoChain: created?.cryptoPaymentDetails?.chainLabel || cryptoChain } : {
             id: created?.invoiceId || null,
             invoiceNumber,
             clientName,
@@ -1494,12 +1529,16 @@ async function createBusinessInvoice(auth, body) {
             status: "unpaid",
             paymentAddress: created?.paymentAddress || walletAddress,
             fiatDetails: created?.fiatDetails || null,
-            cryptoIntent: created?.cryptoIntent || null,
+            cryptoIntent: created?.cryptoPaymentDetails || created?.cryptoIntent || null,
+            hasImage: Boolean(created?.pngPath),
           },
           paymentDetails: {
-            paymentAddress: created?.paymentAddress || walletAddress,
+            paymentAddress: created?.cryptoPaymentDetails?.depositAddress || created?.paymentAddress || walletAddress,
             fiat: created?.fiatDetails || null,
-            crypto: created?.cryptoIntent || null,
+            crypto: created?.cryptoPaymentDetails || created?.cryptoIntent || null,
+            fiatPendingCurrency: created?.fiatPendingCurrency || null,
+            clientCopyText: created?.clientCopyText || null,
+            pngAvailable: Boolean(created?.pngPath),
           },
         },
       };
@@ -2271,8 +2310,11 @@ async function createPersonalInvoice(auth, body) {
   const dueDate = optStr(body, "dueDate", { max: 32 });
   const paymentChannel = optStr(body, "paymentChannel", { pattern: /^(ngn_bank|nuvion_bank|crypto_intent|both|both_nuvion)$/ }) || "both";
   const invoiceCurrency = (optStr(body, "currency", { pattern: /^[A-Za-z]{3}$/ }) || "USD").toUpperCase();
-  const nuvionBankCurrency = (optStr(body, "globalBankCurrency", { pattern: /^[A-Za-z]{3}$/ }) || "USD").toUpperCase();
-  const cryptoChain = optStr(body, "cryptoChain", { max: 32 }) || "arc";
+  const nuvionBankCurrency = (optStr(body, "globalBankCurrency", { pattern: /^[A-Za-z]{3}$/ }) || optStr(body, "nuvionBankCurrency", { pattern: /^[A-Za-z]{3}$/ }) || (paymentChannel === "nuvion_bank" || paymentChannel === "both_nuvion" ? invoiceCurrency : "USD")).toUpperCase();
+  const cryptoChain = optStr(body, "cryptoChain", { max: 48 }) || "arc";
+  const cryptoAssetId = optStr(body, "cryptoAssetId", { max: 180 }) || null;
+  const cryptoSymbol = optStr(body, "cryptoSymbol", { max: 24 }) || null;
+  const cryptoBlockchain = optStr(body, "cryptoBlockchain", { max: 32 }) || null;
 
   let items = [];
   if (Array.isArray(body?.items) && body.items.length > 0) {
@@ -2315,6 +2357,9 @@ async function createPersonalInvoice(auth, body) {
           paymentChannel,
           nuvionBankCurrency,
           cryptoChain,
+          cryptoAssetId,
+          cryptoSymbol,
+          cryptoBlockchain,
           dueDate,
           notes,
         },
@@ -2323,8 +2368,15 @@ async function createPersonalInvoice(auth, body) {
       return {
         status: 201,
         data: {
-          invoice: row ? formatPersonalInvoice(row) : { id: created?.invoiceId || null, invoiceNumber, clientName, items, totalUsdc: created?.totalUsdc ?? totalAmount, status: "unpaid" },
-          paymentDetails: { paymentAddress: created?.paymentAddress || walletAddress, fiat: created?.fiatDetails || null, crypto: created?.cryptoIntent || null },
+          invoice: row ? { ...formatPersonalInvoice(row), hasImage: true, paymentChannel, fiatCurrency: created?.fiatDetails?.currency || (paymentChannel === "ngn_bank" || paymentChannel === "both" ? "NGN" : nuvionBankCurrency), cryptoChain: created?.cryptoPaymentDetails?.chainLabel || cryptoChain } : { id: created?.invoiceId || null, invoiceNumber, clientName, items, totalUsdc: created?.totalUsdc ?? totalAmount, status: "unpaid", hasImage: Boolean(created?.pngPath) },
+          paymentDetails: {
+            paymentAddress: created?.cryptoPaymentDetails?.depositAddress || created?.paymentAddress || walletAddress,
+            fiat: created?.fiatDetails || null,
+            crypto: created?.cryptoPaymentDetails || created?.cryptoIntent || null,
+            fiatPendingCurrency: created?.fiatPendingCurrency || null,
+            clientCopyText: created?.clientCopyText || null,
+            pngAvailable: Boolean(created?.pngPath),
+          },
         },
       };
     } catch (err) {
@@ -2354,6 +2406,208 @@ async function markBusinessInvoicePaid(auth, rawId) {
   if (!row || Number(row.telegram_id) !== auth.telegramId) throw new FeatureError(404, "invoice_not_found", "Invoice not found.");
   bizDb.markBizInvoicePaid(id);
   return { status: 200, data: { success: true, invoice: formatBizInvoice(bizDb.getBizInvoice(id)) } };
+}
+
+/**
+ * Available payment methods when creating an invoice on mobile (identical to the Telegram bot):
+ * - All Global Neobank (Nuvion) fiat receiving currencies + instant Naira bank account
+ * - All live NEAR Intents chains & tokens + direct Arc USDC
+ */
+async function getInvoicePaymentOptions(auth, url) {
+  const accountType = resolveAccountType(auth, url?.searchParams?.get("account"));
+  const db = dep("db");
+  const corridors = dep("nuvionCorridors");
+  const near = dep("near");
+  const entity = db.getNuvionEntityByUser(auth.telegramId, accountType);
+  const globalBankEnabled = Boolean(entity && String(entity.status || "").toLowerCase() === "approved");
+  const existingDetails = entity
+    ? (db.getNuvionAccountDetailsByEntity(entity.entity_id) || []).filter((d) => d.asset_type === "fiat")
+    : [];
+  const provisionedSet = new Set(existingDetails.map((d) => String(d.currency || "").toUpperCase()));
+
+  const labels = {
+    NGN: "Nigerian Naira",
+    USD: "US Dollar",
+    GBP: "British Pound",
+    EUR: "Euro",
+    CAD: "Canadian Dollar",
+    AUD: "Australian Dollar",
+    AED: "UAE Dirham",
+    KES: "Kenyan Shilling",
+    GHS: "Ghanaian Cedi",
+    TZS: "Tanzanian Shilling",
+    ZAR: "South African Rand",
+    MXN: "Mexican Peso",
+  };
+  const allFiat = corridors?.ALL_NUVION_RECEIVING_CURRENCIES || ["USD", "GBP", "EUR", "NGN", "AED", "KES", "GHS", "TZS", "MXN", "CAD"];
+  const orderedFiat = ["NGN", ...allFiat.filter((c) => c !== "NGN")];
+  const fiatCurrencies = orderedFiat.map((cur) => {
+    const code = String(cur).toUpperCase();
+    const isNgn = code === "NGN";
+    return {
+      currency: code,
+      label: labels[code] || code,
+      provider: isNgn && !globalBankEnabled ? "naira_instant" : "global_bank",
+      provisioned: isNgn ? true : provisionedSet.has(code),
+    };
+  });
+
+  let cryptoCatalog = { chains: [], tokensByChain: {} };
+  if (typeof near.getAllSupportedIntentTokens === "function") {
+    try {
+      cryptoCatalog = await near.getAllSupportedIntentTokens();
+    } catch (_) {}
+  }
+
+  const arcChain = {
+    key: "arc",
+    name: "Direct USDC",
+    short: "USDC",
+    isEvm: true,
+    priority: 0,
+    logoUrl: typeof near.getTokenLogoUrl === "function" ? near.getTokenLogoUrl("USDC") : null,
+    tokenCount: 1,
+  };
+  const arcTokens = [
+    {
+      symbol: "USDC",
+      name: "USD Coin (Direct)",
+      assetId: "arc:usdc",
+      decimals: 6,
+      blockchain: "arc",
+      priceUsd: 1,
+      logoUrl: typeof near.getTokenLogoUrl === "function" ? near.getTokenLogoUrl("USDC") : null,
+    },
+  ];
+  const cryptoChains = [arcChain, ...(Array.isArray(cryptoCatalog?.chains) ? cryptoCatalog.chains : [])];
+  const cryptoTokensByChain = {
+    arc: arcTokens,
+    ...(cryptoCatalog?.tokensByChain || {}),
+  };
+
+  return {
+    status: 200,
+    data: {
+      accountType,
+      globalBankEnabled,
+      fiatCurrencies,
+      cryptoChains,
+      cryptoTokensByChain,
+    },
+  };
+}
+
+function loadOwnedInvoice(auth, rawId, scope) {
+  const id = Number(rawId);
+  if (!Number.isInteger(id) || id <= 0) throw bad("Invalid invoice ID.");
+  if (scope === "business") {
+    const bizDb = dep("bizDb");
+    if (typeof bizDb.initBizTables === "function") bizDb.initBizTables();
+    const row = bizDb.getBizInvoice(id);
+    if (!row || Number(row.telegram_id) !== Number(auth.telegramId)) {
+      throw new FeatureError(404, "invoice_not_found", "Invoice not found.");
+    }
+    return row;
+  }
+  const idb = dep("invoiceDb");
+  if (typeof idb.initInvoiceTables === "function") idb.initInvoiceTables();
+  const row = idb.getInvoice(id);
+  const ownerId = row ? Number(row.owner_telegram_id ?? row.telegram_id) : null;
+  if (!row || ownerId !== Number(auth.telegramId)) {
+    throw new FeatureError(404, "invoice_not_found", "Invoice not found.");
+  }
+  return row;
+}
+
+async function createInvoiceDownloadLink(auth, rawId, scope = "personal") {
+  const row = loadOwnedInvoice(auth, rawId, scope);
+  const { u, e, s } = dep("tokens").signInvoiceLink(auth.telegramId, scope, row.id);
+  return {
+    status: 200,
+    data: {
+      path: `/invoice-files/${scope}/${row.id}?u=${u}&e=${e}&s=${encodeURIComponent(s)}`,
+      expiresInSec: 600,
+    },
+  };
+}
+
+async function downloadInvoiceImage(auth, rawId, scope = "personal", opts = {}) {
+  const fs = require("fs");
+  const row = loadOwnedInvoice(auth, rawId, scope);
+  const filename = `proxim-invoice-${String(row.invoice_number || row.id).replace(/[^A-Za-z0-9._-]/g, "_")}.png`;
+  const disposition = `${opts.download ? "attachment" : "inline"}; filename="${filename}"`;
+
+  // 1. Serve cached PNG from disk if present
+  if (row.png_path && fs.existsSync(row.png_path)) {
+    try {
+      const png = fs.readFileSync(row.png_path);
+      if (png && png.length > 100) {
+        return {
+          status: 200,
+          raw: png,
+          contentType: "image/png",
+          headers: { "Content-Disposition": disposition },
+        };
+      }
+    } catch (_) {}
+  }
+
+  // 2. Otherwise regenerate the crisp branded PNG on demand from the saved invoice record
+  let items = [];
+  try { items = JSON.parse(row.items_json || "[]"); } catch (_) { items = []; }
+  if (!Array.isArray(items) || !items.length) {
+    items = [{ description: row.notes || `Invoice for ${row.client_name}`, quantity: 1, unitPrice: Number(row.total_usdc || 0) }];
+  }
+  const db = dep("db");
+  const bizProfile = dep("bizProfile");
+  let profile = null;
+  try {
+    if (scope === "business" && typeof bizProfile.getBizProfile === "function") {
+      profile = bizProfile.getBizProfile(auth.telegramId);
+    }
+  } catch (_) {}
+  const senderDisplayName = scope === "business"
+    ? (profile?.business_name || db.resolveSenderName(auth.telegramId, "business"))
+    : db.resolveSenderName(auth.telegramId, "personal");
+  const fiatDetails = row.fiat_account_number
+    ? {
+      bankName: row.fiat_bank_name || "Partner Bank",
+      accountNumber: row.fiat_account_number,
+      accountName: row.fiat_account_name || senderDisplayName,
+      fiatAmount: Number(row.fiat_amount || 0) || null,
+      currency: Number(row.fiat_rate || 0) > 10 ? "NGN" : "USD",
+    }
+    : null;
+  let logoDataUri = null;
+  try { logoDataUri = typeof bizProfile.getLogoDataUri === "function" ? bizProfile.getLogoDataUri(auth.telegramId) : null; } catch (_) {}
+
+  const outPath = await dep("invoiceGenerator").generateInvoicePNG({
+    invoiceNumber: row.invoice_number,
+    clientName: row.client_name,
+    clientEmail: row.client_email || null,
+    items,
+    dueDate: row.due_date || null,
+    notes: row.notes || null,
+    businessName: senderDisplayName,
+    businessEmail: profile?.business_email || null,
+    businessPhone: profile?.phone || null,
+    businessAddress: profile?.address || null,
+    logoDataUri,
+    walletAddress: row.payment_address || row.wallet_address || null,
+    nearAddress: row.near_address || null,
+    issueDate: row.created_at ? String(row.created_at).slice(0, 10) : new Date().toISOString().slice(0, 10),
+    currency: "USD",
+    fiatDetails,
+  });
+
+  const png = fs.readFileSync(outPath);
+  try { fs.unlinkSync(outPath); } catch (_) {}
+  return {
+    status: 200,
+    raw: png,
+    contentType: "image/png",
+    headers: { "Content-Disposition": disposition },
+  };
 }
 
 async function listBusinessExpenses(auth, url) {
@@ -2521,6 +2775,9 @@ module.exports = {
   getPersonalInvoice,
   createPersonalInvoice,
   markPersonalInvoicePaid,
+  getInvoicePaymentOptions,
+  createInvoiceDownloadLink,
+  downloadInvoiceImage,
   listWithdrawalChains,
   listBridgeMoves,
   sweepCryptoDeposits,

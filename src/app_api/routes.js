@@ -15,6 +15,7 @@ const integrity = require("./integrity");
 const actions = require("./actions");
 const features = require("./features");
 const ota = require("./ota");
+const stocks = require("./stocks");
 
 // Dependencies are resolved lazily and can be replaced in tests.
 const deps = {
@@ -543,6 +544,25 @@ async function transactions(req, url) {
     : (rawAccount || auth.accountHeader ? resolveAccountType(auth, rawAccount) : null);
   const db = dep("db");
   const rows = db.getTransactions(auth.telegramId, limit, accountType);
+  const needsFallbackRate = rows.some(
+    (t) => /deposit_naira|onramp/i.test(String(t.type || "")) && !t.source_amount
+  );
+  const liveNgnRate = needsFallbackRate ? await features.getLiveUsdNgnRate().catch(() => null) : null;
+
+  const parseTxUsd = (t) => {
+    try {
+      const raw = String(t.amount_micro ?? t.amount ?? "0");
+      if (!raw) return 0;
+      if (/^\d+$/.test(raw)) {
+        const dec = Number(t.decimals ?? 18);
+        return Number(raw) / 10 ** dec;
+      }
+      return Number(raw) || 0;
+    } catch (_) {
+      return 0;
+    }
+  };
+
   // Bank payouts: show who was paid, the naira amount and where the payout stands.
   const payoutInfo = (t) => {
     if (!/offramp|payout|withdraw/i.test(String(t.type || "")) || !t.tx_hash || typeof db.getOfframpOrderByOrderId !== "function") return null;
@@ -566,11 +586,96 @@ async function transactions(req, url) {
       return null;
     }
   };
+
+  // Inbound deposits: resolve whether deposit was Naira (Paj / Nuvion NGN), International Fiat (Nuvion GBP/EUR/USD/etc.), or Crypto.
+  const depositInfo = (t) => {
+    const typeLower = String(t.type || "").toLowerCase();
+    const isDeposit = /deposit|onramp|near_deposit|evm_sweep|receive|credit/i.test(typeLower) && !/auto_earn_deposit|savings_deposit/i.test(typeLower);
+    if (!isDeposit) return null;
+
+    // 1. Direct metadata stored on the transaction row (authoritative for all new Paj & Nuvion deposits)
+    if (t.deposit_channel || t.source_currency) {
+      const cur = t.source_currency ? String(t.source_currency).toUpperCase() : null;
+      const amt = t.source_amount != null && Number(t.source_amount) > 0 ? Number(t.source_amount) : null;
+      let channel = t.deposit_channel ? String(t.deposit_channel).toLowerCase() : null;
+      if (!channel) {
+        if (cur === "NGN") channel = "naira";
+        else if (cur && !/^(USDC|USDT|EURC|USDG|ETH|SOL|BTC|NEAR|MATIC|AVAX|BNB)$/.test(cur)) channel = "international";
+        else channel = "crypto";
+      }
+      if (channel === "naira") {
+        const fallbackNgn = !amt && liveNgnRate ? Math.round(parseTxUsd(t) * liveNgnRate) : null;
+        return { depositChannel: "naira", fiatCurrency: "NGN", fiatAmount: amt || fallbackNgn };
+      }
+      if (channel === "international") {
+        return { depositChannel: "international", fiatCurrency: cur || "USD", fiatAmount: amt || Number(parseTxUsd(t).toFixed(2)) };
+      }
+      return { depositChannel: "crypto", fiatCurrency: null, fiatAmount: null };
+    }
+
+    // 2. Retroactive enrichment for historical Nuvion fiat/international deposits (via nuvion_jobs)
+    if (t.tx_hash && db.db && typeof db.db.prepare === "function") {
+      try {
+        const nj = db.db.prepare(
+          "SELECT currency, amount_minor, payload_json FROM nuvion_jobs WHERE telegram_id = ? AND (nuvion_transfer_id = ? OR source_tx_hash = ?) ORDER BY id DESC LIMIT 1"
+        ).get(Number(auth.telegramId), String(t.tx_hash), String(t.tx_hash));
+        if (nj && nj.currency) {
+          const cur = String(nj.currency).toUpperCase();
+          if (cur === "USC" || cur === "USDC") {
+            return { depositChannel: "crypto", fiatCurrency: null, fiatAmount: null };
+          }
+          let payload = {};
+          try { payload = nj.payload_json ? JSON.parse(nj.payload_json) : {}; } catch (_) {}
+          const major = Number(payload.grossMajor || 0) || (nj.amount_minor != null ? Number(nj.amount_minor) / 100 : null);
+          return {
+            depositChannel: cur === "NGN" ? "naira" : "international",
+            fiatCurrency: cur,
+            fiatAmount: major && Number.isFinite(major) && major > 0 ? Number(major.toFixed(2)) : null,
+          };
+        }
+      } catch (_) {}
+
+      // 3. Retroactive enrichment for historical Paj Naira onramp deposits (via paj_onramp_orders)
+      if (/deposit_naira|onramp/i.test(typeLower)) {
+        try {
+          const onr = db.db.prepare(
+            "SELECT fiat_amount, bank_name FROM paj_onramp_orders WHERE telegram_id = ? AND (tx_hash = ? OR order_id = ?) ORDER BY id DESC LIMIT 1"
+          ).get(Number(auth.telegramId), String(t.tx_hash), String(t.tx_hash));
+          if (onr && Number(onr.fiat_amount) > 0) {
+            return { depositChannel: "naira", fiatCurrency: "NGN", fiatAmount: Number(onr.fiat_amount) };
+          }
+        } catch (_) {}
+      }
+    }
+
+    // 4. Heuristic fallback for historical rows without order join
+    if (/deposit_naira|onramp/i.test(typeLower)) {
+      const usd = parseTxUsd(t);
+      const ngn = liveNgnRate && usd > 0 ? Math.round(usd * liveNgnRate) : null;
+      return { depositChannel: "naira", fiatCurrency: "NGN", fiatAmount: ngn };
+    }
+    if (typeLower === "deposit_fiat") {
+      const m = String(t.narration || "").match(/\b(GBP|EUR|USD|CAD|AUD|KES|GHS|ZAR|TZS|UGX|AED|MXN|INR|XOF|XAF)\b/i);
+      const cur = m ? m[1].toUpperCase() : "USD";
+      const usd = parseTxUsd(t);
+      return {
+        depositChannel: "international",
+        fiatCurrency: cur,
+        fiatAmount: cur === "USD" && usd > 0 ? Number(usd.toFixed(2)) : null,
+      };
+    }
+    if (/deposit_crypto|near_deposit|evm_sweep|cctp|p2p_receive|^deposit$/i.test(typeLower)) {
+      return { depositChannel: "crypto", fiatCurrency: null, fiatAmount: null };
+    }
+    return null;
+  };
+
   return {
     status: 200,
     data: {
       accountType: accountType || "all",
       transactions: rows.map((t) => ({
+        ...(depositInfo(t) || {}),
         ...(payoutInfo(t) || {}),
         id: t.id,
         type: t.type,
@@ -993,6 +1098,8 @@ const ROUTES = [
   }],
   ["GET", "/savings", (req, url) => features.getSavingsOverview(authenticate(req), url)],
   ["GET", "/investments/hub", (req) => features.getInvestmentsHub(authenticate(req))],
+  ["GET", "/stocks", (req, url) => stocks.listStocks(authenticate(req), url)],
+  ["GET", "/invoices/options", (req, url) => features.getInvoicePaymentOptions(authenticate(req), url)],
 
   // Personal invoices
   ["GET", "/invoices", (req, url) => features.listPersonalInvoices(authenticate(req), url)],
@@ -1078,10 +1185,33 @@ const PARAM_ROUTES = [
   ["POST", /^\/schedules\/([^/]+)\/cancel$/, (req, _arg, m) => features.updateScheduleStatus(authenticate(req), m[1], "cancelled")],
   ["POST", /^\/schedules\/([^/]+)\/pause$/, (req, _arg, m) => features.updateScheduleStatus(authenticate(req), m[1], "paused")],
   ["POST", /^\/schedules\/([^/]+)\/resume$/, (req, _arg, m) => features.updateScheduleStatus(authenticate(req), m[1], "active")],
+  ["GET", /^\/stocks\/([A-Za-z0-9.-]+)\/chart$/, (req, url, m) => stocks.getStockDetailAndChart(authenticate(req), url, m[1])],
   ["GET", /^\/invoices\/(\d+)$/, (req, _arg, m) => features.getPersonalInvoice(authenticate(req), m[1])],
+  ["GET", /^\/invoices\/(\d+)\/download$/, (req, url, m) => features.downloadInvoiceImage(authenticate(req), m[1], "personal", { download: url.searchParams.get("download") === "1" })],
+  ["POST", /^\/invoices\/(\d+)\/download-link$/, (req, _body, m) => {
+    const auth = authenticate(req);
+    rateLimit(`inv-dl-link:${auth.telegramId}`, 30, 60 * 1000);
+    return features.createInvoiceDownloadLink(auth, m[1], "personal");
+  }],
   ["POST", /^\/invoices\/(\d+)\/mark-paid$/, (req, _arg, m) => features.markPersonalInvoicePaid(authenticate(req), m[1])],
   ["GET", /^\/business\/invoices\/(\d+)$/, (req, _arg, m) => features.getBusinessInvoice(authenticate(req), m[1])],
+  ["GET", /^\/business\/invoices\/(\d+)\/download$/, (req, url, m) => features.downloadInvoiceImage(authenticate(req), m[1], "business", { download: url.searchParams.get("download") === "1" })],
+  ["POST", /^\/business\/invoices\/(\d+)\/download-link$/, (req, _body, m) => {
+    const auth = authenticate(req);
+    rateLimit(`inv-dl-link:${auth.telegramId}`, 30, 60 * 1000);
+    return features.createInvoiceDownloadLink(auth, m[1], "business");
+  }],
   ["POST", /^\/business\/invoices\/(\d+)\/mark-paid$/, (req, _arg, m) => features.markBusinessInvoicePaid(authenticate(req), m[1])],
+  ["GET", /^\/invoice-files\/(personal|business)\/(\d+)$/, (req, url, m) => {
+    rateLimit(`inv-open:${clientIp(req)}`, 60, 60 * 1000);
+    const u = url.searchParams.get("u");
+    if (!tokens.verifyInvoiceLink(u, m[1], m[2], url.searchParams.get("e"), url.searchParams.get("s"))) {
+      throw new HttpError(403, "link_expired", "This invoice link has expired. Open the invoice again from the app.");
+    }
+    const user = dep("db").getUser(Number(u));
+    if (!user) throw new HttpError(404, "not_found", "Invoice not found.");
+    return features.downloadInvoiceImage({ telegramId: Number(u), user }, m[2], m[1], { download: true });
+  }],
   ["DELETE", /^\/business\/payment-links\/([^/]+)$/, (req, _arg, m) => features.deactivateBusinessPaymentLink(authenticate(req), m[1])],
 ];
 

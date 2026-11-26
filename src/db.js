@@ -438,6 +438,9 @@ function ensureTransactionsSchema() {
   if (!cols.includes("decimals")) db.exec("ALTER TABLE transactions ADD COLUMN decimals INTEGER NOT NULL DEFAULT 18");
   if (!cols.includes("chain")) db.exec("ALTER TABLE transactions ADD COLUMN chain TEXT NOT NULL DEFAULT 'arc'");
   if (!cols.includes("narration")) db.exec("ALTER TABLE transactions ADD COLUMN narration TEXT");
+  if (!cols.includes("source_currency")) db.exec("ALTER TABLE transactions ADD COLUMN source_currency TEXT");
+  if (!cols.includes("source_amount")) db.exec("ALTER TABLE transactions ADD COLUMN source_amount REAL");
+  if (!cols.includes("deposit_channel")) db.exec("ALTER TABLE transactions ADD COLUMN deposit_channel TEXT");
 }
 
 function ensurePajOrdersSchema() {
@@ -1071,10 +1074,27 @@ function isBlocked(telegramId) {
 }
 // ─── Transactions ─────────────────────────────────────────────────────────────
 
-function recordTransaction(telegramId, type, amountMicro, status, txHash, accountType = "personal", decimals = 18, chain = "arc", narration = null) {
+function recordTransaction(telegramId, type, amountMicro, status, txHash, accountType = "personal", decimals = 18, chain = "arc", narration = null, meta = null) {
+  const sourceCurrency = meta && meta.sourceCurrency ? String(meta.sourceCurrency).toUpperCase() : null;
+  const rawSourceAmt = meta && meta.sourceAmount !== undefined && meta.sourceAmount !== null ? Number(meta.sourceAmount) : null;
+  const sourceAmount = rawSourceAmt !== null && Number.isFinite(rawSourceAmt) && rawSourceAmt > 0 ? rawSourceAmt : null;
+  const depositChannel = meta && meta.depositChannel ? String(meta.depositChannel).toLowerCase() : null;
   const result = db.prepare(
-    "INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, account_type, decimals, chain, narration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-  ).run(telegramId, type, amountMicro.toString(), status, txHash || null, accountType, decimals, chain, narration || null);
+    "INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, account_type, decimals, chain, narration, source_currency, source_amount, deposit_channel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(
+    telegramId,
+    type,
+    amountMicro.toString(),
+    status,
+    txHash || null,
+    accountType,
+    decimals,
+    chain,
+    narration || null,
+    sourceCurrency,
+    sourceAmount,
+    depositChannel
+  );
   return result.lastInsertRowid;
 }
 

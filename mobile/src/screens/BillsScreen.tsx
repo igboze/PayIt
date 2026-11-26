@@ -15,8 +15,18 @@ import { PressableScale } from "../components/Touch";
 export type { BillCat };
 
 interface ProviderOpt {
+  /** Guaranteed-unique selection key (fixes electricity collision where all prepaid share prodId="01"). */
+  uid: string;
   /** The id Airbills knows: network id (airtime), plan/package prodId, or disco electId. */
   code: string;
+  /** Electricity disco ID (e.g. "01" Eko, "02" Ikeja). */
+  electId?: string;
+  /** Electricity meter product type ID ("01" prepaid, "02" postpaid) or plan prodId. */
+  prodId?: string;
+  /** Parsed meter type for electricity providers. */
+  meterType?: "prepaid" | "postpaid";
+  /** Clean short label without redundant "(prepaid)"/"(postpaid)" suffix. */
+  displayName?: string;
   name: string;
   price?: number;
   networkId?: string;
@@ -24,10 +34,10 @@ interface ProviderOpt {
 
 // Same ids as the server's Airbills networks.
 const NETWORKS: ProviderOpt[] = [
-  { code: "01", name: "MTN" },
-  { code: "04", name: "Airtel" },
-  { code: "02", name: "Glo" },
-  { code: "03", name: "9mobile" },
+  { uid: "net:01", code: "01", name: "MTN" },
+  { uid: "net:04", code: "04", name: "Airtel" },
+  { uid: "net:02", code: "02", name: "Glo" },
+  { uid: "net:03", code: "03", name: "9mobile" },
 ];
 const CABLE_BRANDS = ["DStv", "GOtv", "StarTimes", "Showmax"];
 
@@ -56,17 +66,46 @@ function planGroup(name: string): PlanGroup {
   return "all";
 }
 
-function normalizeProviders(raw: unknown[]): ProviderOpt[] {
+function normalizeProviders(raw: unknown[], category: BillCat): ProviderOpt[] {
   return (raw || [])
-    .map((item) => {
-      if (typeof item === "string") return { code: item, name: item };
+    .map((item, idx) => {
+      if (typeof item === "string") return { uid: `${category}:${item}:${idx}`, code: item, name: item };
       const o = item as Record<string, unknown>;
-      const code = String(o.prodId || o.electId || o.id || o.code || o.networkId || "");
+      const electId = o.electId ? String(o.electId) : undefined;
+      const prodId = o.prodId ? String(o.prodId) : undefined;
+      // Electricity providers share prodId ("01"=prepaid, "02"=postpaid) across ALL discos, so electId is the primary provider code
+      // and uid MUST combine electId + prodId + index so selecting one never highlights multiple discos.
+      const code =
+        category === "electricity"
+          ? String(electId || o.id || o.code || prodId || "")
+          : String(prodId || electId || o.id || o.code || o.networkId || "");
       const name = String(o.description || o.name || o.label || o.title || code);
       const rawPrice = o.prodAmount ?? o.price ?? o.amount;
       const price = rawPrice !== undefined && rawPrice !== null ? Number(rawPrice) : undefined;
       const networkId = o.networkId ? String(o.networkId) : undefined;
-      return { code, name, price: Number.isFinite(price) && (price as number) > 0 ? price : undefined, networkId };
+
+      let meterType: "prepaid" | "postpaid" | undefined;
+      let displayName: string | undefined;
+      if (category === "electricity") {
+        if (/post\s*-?\s*paid/i.test(name) || prodId === "02") meterType = "postpaid";
+        else if (/pre\s*-?\s*paid/i.test(name) || prodId === "01") meterType = "prepaid";
+        displayName = name
+          .replace(/\s*\((?:pre|post)\s*-?\s*paid\)\s*/gi, "")
+          .replace(/\s*-\s*(?:pre|post)\s*-?\s*paid\s*/gi, "")
+          .trim();
+      }
+      const uid = `${category}:${electId || ""}:${prodId || ""}:${code}:${idx}`;
+      return {
+        uid,
+        code,
+        electId,
+        prodId,
+        meterType,
+        displayName,
+        name,
+        price: Number.isFinite(price) && (price as number) > 0 ? price : undefined,
+        networkId,
+      };
     })
     .filter((p) => p.code);
 }
@@ -95,6 +134,7 @@ export function BillsScreen({ onBack, initialCategory = "airtime" }: { onBack: (
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [planFilter, setPlanFilter] = useState<PlanGroup>("all");
+  const [meterFilter, setMeterFilter] = useState<"all" | "prepaid" | "postpaid">("all");
 
   const needsBrand = category === "data" || category === "cable";
   const fixedPrice = category === "data" || category === "cable" || (category === "transport" && Boolean(selected?.price));
@@ -108,6 +148,7 @@ export function BillsScreen({ onBack, initialCategory = "airtime" }: { onBack: (
     setAmountNgn("");
     setError(null);
     setPlanFilter("all");
+    setMeterFilter("all");
   }, [category]);
 
   // Load what to choose from: providers, or plans once a network / cable brand is picked.
@@ -120,7 +161,7 @@ export function BillsScreen({ onBack, initialCategory = "airtime" }: { onBack: (
     api
       .listBillProviders(category, extra)
       .then((res) => {
-        if (!cancelled) setOptions(normalizeProviders(res.providers || []));
+        if (!cancelled) setOptions(normalizeProviders(res.providers || [], category));
       })
       .catch((err) => !cancelled && setError(err instanceof Error ? err.message : "Couldn't load options."))
       .finally(() => !cancelled && setLoadingOptions(false));
@@ -144,7 +185,7 @@ export function BillsScreen({ onBack, initialCategory = "airtime" }: { onBack: (
     setLoading(true);
     setError(null);
     try {
-      const res = await api.validateBillMeter(recipient.trim(), selected.code);
+      const res = await api.validateBillMeter(recipient.trim(), selected.electId || selected.code);
       const d = (res.details || {}) as Record<string, unknown>;
       setMeterInfo(String(d.customerName || d.name || d.Customer_Name || "Meter verified"));
     } catch (err) {
@@ -162,11 +203,13 @@ export function BillsScreen({ onBack, initialCategory = "airtime" }: { onBack: (
     setNotice(null);
     setLoading(true);
     try {
+      const providerId = category === "electricity" ? (selected.electId || selected.code) : selected.code;
       const res = await requestApproval("bill.pay", {
         accountType: activeAccount,
         category,
-        providerId: selected.code,
-        productCode: selected.code, // older servers read this
+        providerId,
+        productCode: providerId, // older servers read this
+        billData: category === "electricity" && selected.prodId ? { prodId: selected.prodId } : undefined,
         networkId: category === "data" ? NETWORKS.find((n) => n.name === brand)?.code || selected.networkId : selected.networkId,
         providerName: category === "data" || category === "cable" ? `${brand} ${selected.name}` : selected.name,
         recipient: recipient.trim(),
@@ -233,23 +276,51 @@ export function BillsScreen({ onBack, initialCategory = "airtime" }: { onBack: (
                 ))}
               </View>
             ) : null}
+            {category === "electricity" && options.length ? (
+              <View style={styles.filters}>
+                {(
+                  [
+                    ["all", "All meters"],
+                    ["prepaid", "Prepaid"],
+                    ["postpaid", "Postpaid"],
+                  ] as const
+                ).map(([g, label]) => (
+                  <PressableScale
+                    key={g}
+                    onPress={() => setMeterFilter(g)}
+                    haptic="selection"
+                    depth={0.94}
+                    style={[styles.filterChip, meterFilter === g && styles.filterChipOn]}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: meterFilter === g }}
+                  >
+                    <Text style={[styles.filterText, meterFilter === g && styles.filterTextOn]}>{label}</Text>
+                  </PressableScale>
+                ))}
+              </View>
+            ) : null}
             {needsBrand ? (
               <View style={styles.grid}>
                 {options.filter((p) => category !== "data" || planFilter === "all" || planGroup(p.name) === planFilter).map((p) => (
-                  <PlanCard key={p.code} name={p.name} price={p.price} selected={selected?.code === p.code} onPress={() => choose(p)} />
+                  <PlanCard key={p.uid} name={p.name} price={p.price} selected={selected?.uid === p.uid} onPress={() => choose(p)} />
                 ))}
               </View>
             ) : (
               <View style={styles.grid}>
-                {options.map((p) => (
-                  <ProviderTile
-                    key={p.code}
-                    name={p.name}
-                    sub={p.price ? formatNgn(p.price) : undefined}
-                    selected={selected?.code === p.code}
-                    onPress={() => choose(p)}
-                  />
-                ))}
+                {options
+                  .filter((p) => category !== "electricity" || meterFilter === "all" || p.meterType === meterFilter)
+                  .map((p) => (
+                    <ProviderTile
+                      key={p.uid}
+                      name={p.displayName || p.name}
+                      badge={p.meterType === "prepaid" ? "Prepaid" : p.meterType === "postpaid" ? "Postpaid" : undefined}
+                      badgeTone={p.meterType || "neutral"}
+                      wide={category === "electricity"}
+                      sub={p.price ? formatNgn(p.price) : undefined}
+                      selected={selected?.uid === p.uid}
+                      onPress={() => choose(p)}
+                    />
+                  ))}
               </View>
             )}
             {!loadingOptions && !options.length ? <Text style={styles.muted}>Nothing available right now. Try again shortly.</Text> : null}

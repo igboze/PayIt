@@ -189,13 +189,86 @@ async function provisionInvoiceCryptoIntent({
   telegramId,
   accountType = "personal",
   cryptoChain = "arc",
+  cryptoAssetId = null,
+  cryptoSymbol = null,
+  cryptoBlockchain = null,
   totalUsdc,
   mainWalletAddress,
   decryptedPrivateKey,
   fallbackArcAddress,
 }) {
-  const cfg = INVOICE_CRYPTO_CHAINS[cryptoChain] || INVOICE_CRYPTO_CHAINS.arc;
   const exactAmount = Number(Number(totalUsdc || 0).toFixed(2));
+  const rawChainKey = String(cryptoChain || "arc").trim().toLowerCase();
+
+  // Support ANY live NEAR Intents token/chain (e.g. Base ETH/USDC, Arbitrum USDC, Polygon USDT, BTC, TON, SOL, NEAR, etc.)
+  if (cryptoAssetId || (rawChainKey && rawChainKey !== "arc" && !INVOICE_CRYPTO_CHAINS[rawChainKey])) {
+    try {
+      const normalizedChain = typeof nearLib.normalizeIntentChainKey === "function"
+        ? nearLib.normalizeIntentChainKey(cryptoBlockchain || rawChainKey)
+        : (cryptoBlockchain || rawChainKey);
+      let token = null;
+      if (typeof nearLib.resolveIntentToken === "function") {
+        token = await nearLib.resolveIntentToken({
+          chain: normalizedChain,
+          symbol: cryptoSymbol || undefined,
+          assetId: cryptoAssetId || undefined,
+        });
+      }
+      if (token && typeof nearLib.createUniversalCryptoDeposit === "function") {
+        const meta = typeof nearLib.getChainMeta === "function"
+          ? nearLib.getChainMeta(token.blockchain || normalizedChain)
+          : { isEvm: false, name: token.blockchain || normalizedChain };
+        // Compute token amount for non-stablecoins using live token price if available
+        const tokenPriceUsd = Number(token.priceUsd || 0);
+        const isStable = /^(USDC|USDT|USDG|DAI|USDC\.E|USDT0)$/i.test(String(token.symbol || ""));
+        const tokenAmount = !isStable && tokenPriceUsd > 0
+          ? Number((exactAmount / tokenPriceUsd).toFixed(Math.min(Number(token.decimals || 6), 6)))
+          : exactAmount;
+        let refundTo = mainWalletAddress;
+        let refundType = "ORIGIN_CHAIN";
+        if (!meta.isEvm) {
+          if ((token.blockchain === "sol" || normalizedChain === "sol") && decryptedPrivateKey) {
+            refundTo = multichain.deriveSolanaFromEvmKey(decryptedPrivateKey).solanaAddress;
+          } else if ((token.blockchain === "near" || normalizedChain === "near") && decryptedPrivateKey) {
+            refundTo = nearLib.deriveNearAddress(decryptedPrivateKey).nearAddress;
+          } else if (decryptedPrivateKey) {
+            refundTo = nearLib.deriveNearAddress(decryptedPrivateKey).nearAddress;
+            refundType = "INTENTS";
+          }
+        }
+        const dep = await nearLib.createUniversalCryptoDeposit({
+          telegramId,
+          accountType,
+          originAsset: token.assetId,
+          originSymbol: token.symbol,
+          originDecimals: token.decimals,
+          amount: tokenAmount,
+          recipientAddress: mainWalletAddress,
+          refundTo,
+          refundType,
+        });
+        if (dep && dep.deposit_address) {
+          return {
+            chainId: `${token.blockchain || normalizedChain}_${String(token.symbol || "").toLowerCase()}`,
+            chainLabel: meta.name || String(token.blockchain || normalizedChain).toUpperCase(),
+            tokenSymbol: token.symbol,
+            assetId: token.assetId,
+            exactAmount: tokenAmount,
+            exactAmountUsd: exactAmount,
+            depositAddress: dep.deposit_address,
+            depositMemo: dep.deposit_memo || null,
+            viaNearIntents: true,
+            intentId: dep.id || null,
+            deadline: dep.deadline || null,
+          };
+        }
+      }
+    } catch (err) {
+      console.warn(`[invoice_hd] Universal NEAR Intents (${cryptoAssetId || rawChainKey}) quote failed:`, err.message);
+    }
+  }
+
+  const cfg = INVOICE_CRYPTO_CHAINS[rawChainKey] || INVOICE_CRYPTO_CHAINS.arc;
 
   if (!cfg.viaNearIntents) {
     return {
@@ -354,7 +427,10 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
     invoiceCurrency: rawCurrency = "USD",
     paymentChannel = "both", // "ngn_bank" | "nuvion_bank" | "crypto_intent" | "both" | "both_nuvion"
     nuvionBankCurrency = "USD",
-    cryptoChain = "arc",     // "arc" | "near_usdc" | "near_usdt" | "sol_usdc" | "sol_usdt" | "hood_usdg"
+    cryptoChain = "arc",     // "arc" | "near_usdc" | "sol_usdc" | or any NEAR Intent chain/token
+    cryptoAssetId = null,
+    cryptoSymbol = null,
+    cryptoBlockchain = null,
     dueDate,
     notes,
     issueDate = new Date().toISOString().split("T")[0],
@@ -463,6 +539,9 @@ async function createCompleteInvoice({ telegramId, decryptedPrivateKey, user, in
       telegramId,
       accountType: "personal",
       cryptoChain,
+      cryptoAssetId,
+      cryptoSymbol,
+      cryptoBlockchain,
       totalUsdc,
       mainWalletAddress,
       decryptedPrivateKey,
@@ -572,6 +651,9 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
     paymentChannel = "both", // "ngn_bank" | "nuvion_bank" | "crypto_intent" | "both" | "both_nuvion"
     nuvionBankCurrency = "USD",
     cryptoChain = "arc",
+    cryptoAssetId = null,
+    cryptoSymbol = null,
+    cryptoBlockchain = null,
     dueDate,
     notes,
     issueDate = new Date().toISOString().split("T")[0],
@@ -677,6 +759,9 @@ async function createCompleteBizInvoice({ telegramId, decryptedBizKey, user, inv
       telegramId,
       accountType: "business",
       cryptoChain,
+      cryptoAssetId,
+      cryptoSymbol,
+      cryptoBlockchain,
       totalUsdc,
       mainWalletAddress,
       decryptedPrivateKey: decryptedBizKey,

@@ -91,7 +91,9 @@ export interface TransactionItem {
   narration: string | null;
   accountType: AccountType;
   createdAt: string | null;
-  /** Bank payouts only. */
+  /** Deposit source channel: "naira" | "international" | "crypto" */
+  depositChannel?: "naira" | "international" | "crypto" | null;
+  /** Bank payouts & deposits. */
   counterparty?: { name: string | null; detail: string } | null;
   fiatAmount?: number | null;
   fiatCurrency?: string | null;
@@ -364,10 +366,15 @@ export interface KycStatusResponse {
 
 export interface SavingsOverview {
   accountType: AccountType;
+  autoEarnEnabled?: boolean;
+  platformFeePct?: number;
   position: {
     id: number;
+    vaultName?: string;
     principalUsdc: number;
     accruedYieldUsdc: number;
+    grossYieldUsdc?: number;
+    platformFeeUsdc?: number;
     apy: number;
     /** The user's rate (after fees) when they saved. */
     apyAtDeposit?: number;
@@ -382,9 +389,139 @@ export interface SavingsOverview {
     name: string;
     symbol: string;
     apy: number;
+    rawApy?: number;
+    platformFeePct?: number;
+    isHighestApy?: boolean;
     tvlUsd: number;
     vaultAddress: string | null;
   }>;
+}
+
+export interface StockMarketStatus {
+  isOpen: boolean;
+  session: "open" | "closed" | "pre_market" | "after_hours";
+  label: string;
+  nextChangeLabel: string;
+  nextOpen: string | null;
+  nextClose: string | null;
+  hoursLabel: string;
+  etTimeLabel: string;
+  tradable: boolean;
+  paused: boolean;
+  blockingReason: string | null;
+}
+
+export interface StockCatalogItem {
+  ticker: string;
+  strategyId: string;
+  name: string;
+  sector: string;
+  logoUrl: string;
+  fallbackLogoUrl: string | null;
+  price: number | null;
+  priceNgn: number | null;
+  changePct24h: number | null;
+  paused: boolean;
+  ownedShares: number;
+  ownedValueUsd: number;
+}
+
+export interface StockPurchaseRecord {
+  id: number;
+  timestamp: string | null;
+  amountUsd: number;
+  priceAtBuy: number | null;
+  estimatedShares: number | null;
+  status: string;
+  txHash: string | null;
+}
+
+export interface StockHolding {
+  ticker: string;
+  name?: string;
+  logoUrl?: string;
+  fallbackLogoUrl?: string | null;
+  shares: number;
+  avgBuyPrice: number | null;
+  currentPrice: number | null;
+  costBasisUsd: number;
+  currentValueUsd: number;
+  currentValueNgn: number | null;
+  pnlUsd: number;
+  pnlNgn: number | null;
+  pnlPct: number;
+  pendingBuyUsd: number;
+  firstBoughtAt: string | null;
+  lastBoughtAt: string | null;
+  purchases: StockPurchaseRecord[];
+  sellCount: number;
+}
+
+export interface StocksOverviewResponse {
+  accountType: AccountType;
+  configured: boolean;
+  tradingEnabled: boolean;
+  minBuyUsd: number;
+  usdToNgnRate: number | null;
+  market: StockMarketStatus;
+  portfolio: {
+    totalValueUsd: number;
+    totalValueNgn: number | null;
+    totalPnlUsd: number;
+    totalPnlNgn: number | null;
+    totalPnlPct: number;
+    holdings: StockHolding[];
+  };
+  stocks: StockCatalogItem[];
+}
+
+export interface StockChartPoint {
+  t: number;
+  price: number;
+}
+
+export interface StockDetailResponse {
+  accountType: AccountType;
+  configured: boolean;
+  tradingEnabled: boolean;
+  minBuyUsd: number;
+  usdToNgnRate: number | null;
+  stock: {
+    ticker: string;
+    strategyId: string;
+    name: string;
+    sector: string;
+    exchange: string;
+    logoUrl: string;
+    fallbackLogoUrl: string | null;
+    price: number | null;
+    priceNgn: number | null;
+    changePct24h: number | null;
+  };
+  market: StockMarketStatus;
+  chart: {
+    range: "1D" | "1W" | "1M" | "3M" | "1Y";
+    ranges: Array<"1D" | "1W" | "1M" | "3M" | "1Y">;
+    high: number | null;
+    low: number | null;
+    changeAbs: number | null;
+    changePct: number | null;
+    points: StockChartPoint[];
+  };
+  position: StockHolding | null;
+}
+
+export interface InvoicePaymentOptionsResponse {
+  accountType: AccountType;
+  globalBankEnabled: boolean;
+  fiatCurrencies: Array<{
+    currency: string;
+    label: string;
+    provider: "global_bank" | "naira_instant";
+    provisioned: boolean;
+  }>;
+  cryptoChains: IntentChainInfo[];
+  cryptoTokensByChain: Record<string, IntentTokenInfo[]>;
 }
 
 export interface BusinessHomeResponse {
@@ -426,6 +563,10 @@ export interface InvoiceItem {
   fiatAccountNumber: string | null;
   fiatAccountName: string | null;
   fiatAmount: number | null;
+  fiatCurrency?: string | null;
+  paymentChannel?: string | null;
+  cryptoChain?: string | null;
+  hasImage?: boolean;
   createdAt: string | null;
 }
 

@@ -90,21 +90,48 @@ export function ProviderLogo({ name, size = 44 }: { name: string; size?: number 
 }
 
 /** Big tappable tile with a provider logo and name, for grids. */
-export function ProviderTile({ name, sub, selected, onPress }: { name: string; sub?: string; selected?: boolean; onPress: () => void }) {
+export function ProviderTile({
+  name,
+  sub,
+  badge,
+  badgeTone = "neutral",
+  wide = false,
+  selected,
+  onPress,
+}: {
+  name: string;
+  sub?: string;
+  badge?: string;
+  badgeTone?: "prepaid" | "postpaid" | "neutral";
+  wide?: boolean;
+  selected?: boolean;
+  onPress: () => void;
+}) {
+  const badgeColors =
+    badgeTone === "prepaid"
+      ? { bg: "#D1FAE5", fg: "#065F46" }
+      : badgeTone === "postpaid"
+        ? { bg: "#FEF3C7", fg: "#92400E" }
+        : { bg: COLORS.surfaceElevated, fg: COLORS.textSecondary };
   return (
     <PressableScale
       onPress={onPress}
       depth={0.95}
       haptic="selection"
-      style={[styles.tile, selected && styles.tileOn]}
+      style={[styles.tile, wide && styles.tileWide, selected && styles.tileOn]}
       accessibilityRole="button"
       accessibilityState={{ selected: Boolean(selected) }}
-      accessibilityLabel={sub ? `${name}, ${sub}` : name}
+      accessibilityLabel={[name, badge, sub].filter(Boolean).join(", ")}
     >
-      <ProviderLogo name={name} size={44} />
-      <Text style={styles.tileName} numberOfLines={2}>
+      <ProviderLogo name={name} size={wide ? 38 : 42} />
+      <Text style={[styles.tileName, wide && styles.tileNameCompact]} numberOfLines={3}>
         {name}
       </Text>
+      {badge ? (
+        <View style={[styles.badgePill, { backgroundColor: badgeColors.bg }]}>
+          <Text style={[styles.badgeText, { color: badgeColors.fg }]}>{badge}</Text>
+        </View>
+      ) : null}
       {sub ? (
         <Text style={styles.tileSub} numberOfLines={1}>
           {sub}
@@ -143,7 +170,7 @@ const styles = StyleSheet.create({
   tile: {
     flexBasis: "30%",
     flexGrow: 1,
-    minHeight: 112,
+    minHeight: 108,
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
@@ -152,8 +179,17 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     ...DEPTH.raised,
   },
+  tileWide: {
+    flexBasis: "46%",
+    minHeight: 118,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+  },
   tileOn: { borderColor: COLORS.primary, borderWidth: 2, borderBottomWidth: 4, borderBottomColor: COLORS.primaryDark, backgroundColor: COLORS.deep },
-  tileName: { ...TYPE.label, fontFamily: FONTS.semibold, color: COLORS.text, textAlign: "center" },
+  tileName: { fontSize: 13, lineHeight: 17, fontFamily: FONTS.semibold, color: COLORS.text, textAlign: "center" },
+  tileNameCompact: { fontSize: 12, lineHeight: 16, fontFamily: FONTS.semibold, color: COLORS.text, textAlign: "center" },
+  badgePill: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: RADIUS.pill },
+  badgeText: { fontSize: 11, lineHeight: 14, fontFamily: FONTS.bold, letterSpacing: 0.2 },
   tileSub: { ...TYPE.label, fontSize: 12, color: COLORS.textSecondary, textAlign: "center" },
   check: {
     position: "absolute",

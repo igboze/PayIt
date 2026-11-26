@@ -28,6 +28,9 @@ const deps = {
   get swap() { return require("../swap"); },
   get bizProfile() { return require("../biz_profile"); },
   get solanaAddress() { return require("../solana_address"); },
+  get pods() { return require("../pods"); },
+  get podsExecutor() { return require("../pods_executor"); },
+  get podsStore() { return require("../pods_store"); },
 };
 const overrides = {};
 const dep = (name) => (name in overrides ? overrides[name] : deps[name]);
@@ -790,22 +793,46 @@ const ACTIONS = {
     async prepare(ctx, body) {
       const accountType = resolveAccountType(ctx, body);
       const amountUsdc = money(body, "amountUsdc", { min: 1 });
+      const requestedVault = str(body, "vaultAddress", { optional: true, max: 128 });
       const pools = await dep("savings").getYieldPools();
-      const pool = pools.find((p) => p.symbol === "USDC") || pools[0];
+      const sortedPools = [...(Array.isArray(pools) ? pools : [])].sort(
+        (a, b) => Number(b.userApy ?? b.rawApy ?? b.apy ?? 0) - Number(a.userApy ?? a.rawApy ?? a.apy ?? 0)
+      );
+      let pool = null;
+      if (requestedVault) {
+        pool = sortedPools.find(
+          (p) => String(p.vaultAddress || p.address || "").toLowerCase() === requestedVault.toLowerCase()
+        );
+        if (!pool) {
+          throw new ActionError(400, "invalid_vault", "Selected savings vault is unavailable. Pick a savings option from the list.");
+        }
+      } else {
+        pool = sortedPools.find((p) => String(p.symbol || "USDC").toUpperCase() === "USDC") || sortedPools[0];
+      }
       if (!pool || !pool.vaultAddress) throw new ActionError(503, "unavailable", "Savings are unavailable right now.");
       // The rate shown here is the one recorded on the position, so the user sees what they signed up for.
       const userApy = Number(pool.userApy ?? pool.apy ?? 0);
       const rawApy = Number(pool.rawApy ?? pool.apy ?? userApy);
       const payitApy = Number(pool.payitApy ?? Math.max(0, rawApy - userApy));
+      const feePct = Math.round(Number(dep("savings").PAYIT_FEE_FRACTION ?? 0.1) * 100);
       return {
         amountUsd: amountUsdc,
-        action: { accountType, amountUsdc: amountUsdc.toFixed(6), vaultAddress: String(pool.vaultAddress).toLowerCase(), userApy, rawApy, payitApy },
+        action: {
+          accountType,
+          amountUsdc: amountUsdc.toFixed(6),
+          vaultAddress: String(pool.vaultAddress).toLowerCase(),
+          vaultName: String(pool.name || pool.project || "Dollar lending vault").slice(0, 80),
+          userApy,
+          rawApy,
+          payitApy,
+        },
         summary: {
           title: `Save $${fmt(amountUsdc)}`,
           lines: [
-            ["Into", pool.name || pool.project || "Dollar lending vault"],
+            ["Savings vault", pool.name || pool.project || "Dollar lending vault"],
             ["Amount", `$${fmt(amountUsdc)}`],
-            ["You earn", userApy > 0 ? `${userApy.toFixed(2)}% a year (variable)` : "Variable rate"],
+            ["Net APY (you earn)", userApy > 0 ? `${userApy.toFixed(2)}% a year (variable)` : "Variable rate"],
+            ["Platform fee", `${feePct}% of earned yield on withdrawal`],
             ["Withdraw", "Anytime"],
           ],
         },
@@ -814,17 +841,24 @@ const ACTIONS = {
     },
     async execute(ctx, a, pin, context) {
       const savings = dep("savings");
+      const db = dep("db");
       const accountType = a.accountType || "personal";
       // Record the rate the user approved, even if the approval context wasn't kept.
       const pool = {
         ...(context?.pool || {}),
+        project: context?.pool?.project || context?.pool?.name || a.vaultName || "Arc Morpho Vault",
         vaultAddress: a.vaultAddress,
         ...(a.userApy !== undefined ? { userApy: Number(a.userApy), rawApy: Number(a.rawApy), payitApy: Number(a.payitApy) } : {}),
       };
       const res = await savings.depositIntoVault(unlockKey(ctx, pin, accountType), a.vaultAddress, Number(a.amountUsdc));
       if (!res || !res.success) throw new ActionError(502, "provider_error", res?.error || "The savings deposit didn't go through. Nothing was moved.");
-      savings.openYieldPosition(ctx.telegramId, Number(a.amountUsdc), pool, { vaultAddress: a.vaultAddress, depositTxHash: res.txHash || res.hash || null, accountType });
-      return { txHash: res.txHash || res.hash || null, notice: `Saved $${fmt(a.amountUsdc)}` };
+      const txHash = res.txHash || res.hash || null;
+      savings.openYieldPosition(ctx.telegramId, Number(a.amountUsdc), pool, { vaultAddress: a.vaultAddress, depositTxHash: txHash, accountType });
+      try {
+        const amtMicro = dep("walletLib").parseToMicro(Number(a.amountUsdc).toFixed(6));
+        db.recordTransaction(ctx.telegramId, "savings_deposit", amtMicro, "confirmed", txHash, accountType, 18, "arc", `Saved in ${pool.project}`);
+      } catch (_) {}
+      return { txHash, vaultName: pool.project, notice: `Saved $${fmt(a.amountUsdc)} in ${pool.project}` };
     },
   },
 
@@ -833,7 +867,25 @@ const ACTIONS = {
       const accountType = resolveAccountType(ctx, body);
       const open = dep("db").getOpenYieldPosition(ctx.telegramId, accountType);
       if (!open) throw new ActionError(404, "no_position", "You have no savings to withdraw.");
-      return { amountUsd: 0, action: { accountType, positionId: String(open.id) }, summary: { title: "Withdraw all savings", lines: [["Back to", "Your balance"]] } };
+      const savings = dep("savings");
+      const breakdown = typeof savings.calcYieldBreakdown === "function"
+        ? savings.calcYieldBreakdown(open)
+        : { netYield: Number(savings.calcAccruedYield?.(open) || 0), devFee: 0, feePct: 10 };
+      const principal = Number(open.amount_usdc || 0);
+      return {
+        amountUsd: 0,
+        action: { accountType, positionId: String(open.id) },
+        summary: {
+          title: "Withdraw all savings",
+          lines: [
+            ["Vault", open.project || "Dollar Savings"],
+            ["Principal", `$${fmt(principal)}`],
+            ["Est. profit (after fee)", `+$${Number(breakdown.netYield || 0).toFixed(4)}`],
+            ["Platform fee", `${breakdown.feePct || 10}% of profit ($${Number(breakdown.devFee || 0).toFixed(4)})`],
+            ["Back to", "Your balance"],
+          ],
+        },
+      };
     },
     async execute(ctx, a, pin) {
       const db = dep("db");
@@ -843,7 +895,245 @@ const ACTIONS = {
       const userWallet = dep("walletLib").walletFromPrivateKey(unlockKey(ctx, pin, accountType));
       userWallet.telegramId = ctx.telegramId;
       const r = await dep("savings").withdrawFromVaultWithFee({ userWallet, position: open });
-      return { withdrawnUsdc: r.totalUserPayout, netYieldUsdc: r.netYieldUsdc, feeUsdc: r.devFeeUsdc, txHash: r.withdrawTxHash, notice: `Withdrew $${fmt(r.totalUserPayout || 0)}` };
+      try {
+        const amtMicro = dep("walletLib").parseToMicro(Number(r.totalUserPayout || 0).toFixed(6));
+        db.recordTransaction(ctx.telegramId, "yield_withdraw", amtMicro, "confirmed", r.withdrawTxHash || null, accountType, 18, "arc", `Withdrew from ${open.project || "Savings"}`);
+      } catch (_) {}
+      return { withdrawnUsdc: r.totalUserPayout, netYieldUsdc: r.netYieldUsdc, feeUsdc: r.devFeeUsdc, feeTxHash: r.feeTxHash || null, txHash: r.withdrawTxHash, notice: `Withdrew $${fmt(r.totalUserPayout || 0)}` };
+    },
+  },
+
+  "stock.buy": {
+    async prepare(ctx, body) {
+      const pods = dep("pods");
+      if (!pods.isConfigured || !pods.isConfigured()) {
+        throw new ActionError(503, "stocks_unavailable", "Stock trading is currently being enabled. Check back shortly.");
+      }
+      const accountType = resolveAccountType(ctx, body);
+      const rawTicker = str(body, "ticker", { pattern: /^[A-Za-z0-9.-]{1,12}$/, max: 12 });
+      const ticker = typeof pods.normalizeTicker === "function" ? pods.normalizeTicker(rawTicker) : rawTicker.toUpperCase();
+      const minUsd = Number(pods.MIN_STOCK_BUY_USD || 10);
+
+      let amountUsd;
+      let amountNgn = null;
+      let rate = null;
+      if (body?.amountNgn !== undefined && body?.amountNgn !== null && body?.amountNgn !== "") {
+        amountNgn = money(body, "amountNgn", { min: 1000, max: 100_000_000 });
+        try {
+          const r = await dep("paj").getRates("NGN");
+          rate = Number(r?.offRampRate?.rate || r?.onRampRate?.rate || 0) || null;
+        } catch (_) {}
+        if (!rate) {
+          try { rate = Number(await dep("fx").getUsdToNgnRate()) || null; } catch (_) {}
+        }
+        if (!rate || !Number.isFinite(rate) || rate <= 0) {
+          throw new ActionError(503, "rate_unavailable", "Live Naira exchange rate is temporarily unavailable.");
+        }
+        amountUsd = Number((amountNgn / rate).toFixed(2));
+      } else {
+        amountUsd = money(body, "amountUsdc", { min: minUsd, max: 100_000 });
+      }
+      if (!Number.isFinite(amountUsd) || amountUsd < minUsd) {
+        throw bad(`Minimum stock purchase is $${minUsd.toFixed(2)} USD.`, "invalid_amount");
+      }
+
+      const status = await pods.getStockMarketStatus(ticker);
+      if (status && status.tradable === false) {
+        throw new ActionError(
+          409,
+          "market_not_tradable",
+          `${ticker} is currently not tradable (${status.blockingReason || status.marketStatus || "market closed"}).`
+        );
+      }
+
+      await precheck(ctx, amountUsd, `stock_buy:${ticker}`, "app_stock_buy", accountType);
+      const estShares = status?.price && status.price > 0 ? (amountUsd / status.price) : null;
+      const lines = [
+        ["Stock", ticker],
+        ["Amount", amountNgn ? `₦${Math.round(amountNgn).toLocaleString("en-NG")} (≈ $${fmt(amountUsd)})` : `$${fmt(amountUsd)}`],
+        ...(status?.price ? [["Est. price", `$${Number(status.price).toFixed(2)}`]] : []),
+        ...(estShares ? [["Est. shares", `${estShares.toFixed(4)} ${ticker}`]] : []),
+        ["Settlement", "~2–5 min (Ondo Global Markets)"],
+        ...accountTagLines(ctx, accountType),
+      ];
+      return {
+        amountUsd,
+        action: {
+          accountType,
+          ticker,
+          amountUsd: amountUsd.toFixed(2),
+          priceAtOrder: status?.price ? Number(status.price).toFixed(4) : null,
+        },
+        summary: { title: `Buy ${ticker}`, lines },
+      };
+    },
+    async execute(ctx, a, pin) {
+      const pods = dep("pods");
+      const podsExecutor = dep("podsExecutor");
+      const podsStore = dep("podsStore");
+      const db = dep("db");
+      const accountType = a.accountType || "personal";
+      const amountUsd = Number(a.amountUsd);
+      const wallet = getWalletAddress(ctx.user, accountType);
+      if (!wallet) throw new ActionError(404, "wallet_missing", "Account wallet not found.");
+
+      await recordOutbound(ctx, amountUsd, `stock_buy:${a.ticker}`, "app_stock_buy", accountType);
+      const privateKey = unlockKey(ctx, pin, accountType);
+
+      await podsExecutor.ensureBaseUsdcForInvestment({
+        privateKey,
+        userAddress: wallet,
+        amountUsdc: amountUsd,
+        telegramId: ctx.telegramId,
+      });
+
+      const strategyId = pods.toOndoStrategyId(a.ticker);
+      const baseWebhook = process.env.PODS_WEBHOOK_URL || (process.env.WEBHOOK_URL ? `${process.env.WEBHOOK_URL.replace(/\/+$/, "")}/webhooks/pods` : null);
+      const res = await pods.getStrategyBytecode({
+        strategyId,
+        action: "buy",
+        amount: podsExecutor.toBaseUsdcUnits(amountUsd),
+        wallet,
+        fromChainId: pods.BASE_CHAIN_ID,
+        fromTokenAddress: pods.BASE_USDC_ADDRESS,
+        webhookURL: baseWebhook,
+      });
+
+      const execRes = await podsExecutor.executePodsBytecodeAtomic({
+        privateKey,
+        chainId: pods.BASE_CHAIN_ID,
+        bytecodeLegs: res.bytecode || res.transactionData,
+      });
+
+      podsStore.recordPodsAction({
+        telegramId: ctx.telegramId,
+        accountType,
+        walletAddress: wallet,
+        kind: "stock_buy",
+        strategyId,
+        ticker: a.ticker,
+        amountUsd,
+        txHash: execRes.txHash,
+        podsActionId: res.id || null,
+        status: "PENDING",
+        meta: { priceAtOrder: a.priceAtOrder ? Number(a.priceAtOrder) : null, quote: res.quote || null },
+      });
+
+      try {
+        const amtMicro = dep("walletLib").parseToMicro(amountUsd.toFixed(6));
+        db.recordTransaction(ctx.telegramId, "stock_buy", amtMicro, "pending", execRes.txHash || null, accountType, 18, "base", `Buy ${a.ticker} stock`);
+      } catch (_) {}
+
+      return {
+        txHash: execRes.txHash || null,
+        podsActionId: res.id || null,
+        ticker: a.ticker,
+        amountUsd,
+        notice: `Submitted $${fmt(amountUsd)} ${a.ticker} buy order`,
+      };
+    },
+  },
+
+  "stock.sell": {
+    async prepare(ctx, body) {
+      const pods = dep("pods");
+      if (!pods.isConfigured || !pods.isConfigured()) {
+        throw new ActionError(503, "stocks_unavailable", "Stock trading is currently being enabled. Check back shortly.");
+      }
+      const accountType = resolveAccountType(ctx, body);
+      const rawTicker = str(body, "ticker", { pattern: /^[A-Za-z0-9.-]{1,12}$/, max: 12 });
+      const ticker = typeof pods.normalizeTicker === "function" ? pods.normalizeTicker(rawTicker) : rawTicker.toUpperCase();
+      const pct = body?.percent != null ? Math.min(Math.max(Number(body.percent), 1), 100) : 100;
+      const wallet = getWalletAddress(ctx.user, accountType);
+      if (!wallet) throw new ActionError(404, "wallet_missing", "Account wallet not found.");
+
+      const strategyId = pods.toOndoStrategyId(ticker);
+      const pos = await pods.getStrategyPosition(strategyId, wallet);
+      if (!pos || !pos.currentPosition || pos.currentPosition <= 0) {
+        throw new ActionError(404, "no_position", `You don't hold any ${ticker} shares to sell.`);
+      }
+      const sharesToSell = Number((pos.currentPosition * (pct / 100)).toFixed(8));
+      const estUsd = pos.currentPositionUsd ? Number((pos.currentPositionUsd * (pct / 100)).toFixed(2)) : 0;
+
+      return {
+        amountUsd: 0,
+        action: { accountType, ticker, sharesToSell: sharesToSell.toFixed(8), percent: String(pct), estUsd: estUsd.toFixed(2) },
+        summary: {
+          title: `Sell ${ticker}${pct < 100 ? ` (${pct}%)` : ""}`,
+          lines: [
+            ["Stock", ticker],
+            ["Shares", `${sharesToSell.toFixed(4)} ${ticker}`],
+            ...(estUsd > 0 ? [["Est. proceeds", `$${fmt(estUsd)}`]] : []),
+            ["Back to", "Your Proxim balance (~2–5 min)"],
+            ...accountTagLines(ctx, accountType),
+          ],
+        },
+      };
+    },
+    async execute(ctx, a, pin) {
+      const { parseUnits } = require("ethers");
+      const pods = dep("pods");
+      const podsExecutor = dep("podsExecutor");
+      const podsStore = dep("podsStore");
+      const db = dep("db");
+      const accountType = a.accountType || "personal";
+      const wallet = getWalletAddress(ctx.user, accountType);
+      if (!wallet) throw new ActionError(404, "wallet_missing", "Account wallet not found.");
+
+      const strategyId = pods.toOndoStrategyId(a.ticker);
+      const pos = await pods.getStrategyPosition(strategyId, wallet);
+      if (!pos || !pos.currentPosition || pos.currentPosition <= 0) {
+        throw new ActionError(409, "no_position", `No ${a.ticker} shares available to sell.`);
+      }
+      const pct = Math.min(Math.max(Number(a.percent || 100), 1), 100);
+      const shares = pct >= 100 ? pos.currentPosition : Math.min(pos.currentPosition, Number(a.sharesToSell || pos.currentPosition));
+      const shareBaseUnits = parseUnits(Number(shares).toFixed(18), 18).toString();
+
+      const privateKey = unlockKey(ctx, pin, accountType);
+      const baseWebhook = process.env.PODS_WEBHOOK_URL || (process.env.WEBHOOK_URL ? `${process.env.WEBHOOK_URL.replace(/\/+$/, "")}/webhooks/pods` : null);
+      const res = await pods.getStrategyBytecode({
+        strategyId,
+        action: "sell",
+        amount: shareBaseUnits,
+        wallet,
+        toChainId: pods.BASE_CHAIN_ID,
+        toTokenAddress: pods.BASE_USDC_ADDRESS,
+        webhookURL: baseWebhook,
+      });
+
+      const execRes = await podsExecutor.executePodsBytecodeAtomic({
+        privateKey,
+        chainId: pods.BSC_CHAIN_ID,
+        bytecodeLegs: res.bytecode || res.transactionData,
+      });
+
+      const estUsd = Number(a.estUsd || pos.currentPositionUsd || 0);
+      podsStore.recordPodsAction({
+        telegramId: ctx.telegramId,
+        accountType,
+        walletAddress: wallet,
+        kind: "stock_sell",
+        strategyId,
+        ticker: a.ticker,
+        amountUsd: estUsd,
+        txHash: execRes.txHash,
+        podsActionId: res.id || null,
+        status: "PENDING",
+        meta: { sharesSold: shares },
+      });
+
+      try {
+        const amtMicro = dep("walletLib").parseToMicro(Math.max(estUsd, 0).toFixed(6));
+        db.recordTransaction(ctx.telegramId, "stock_sell", amtMicro, "pending", execRes.txHash || null, accountType, 18, "base", `Sell ${a.ticker} stock`);
+      } catch (_) {}
+
+      return {
+        txHash: execRes.txHash || null,
+        podsActionId: res.id || null,
+        ticker: a.ticker,
+        sharesSold: shares,
+        notice: `Submitted ${a.ticker} sell order`,
+      };
     },
   },
 

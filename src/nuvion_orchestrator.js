@@ -826,9 +826,10 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null }) {
       });
     } catch (_) {}
 
-    // Step 3: Record ledger transaction
+    // Step 3: Record ledger transaction with exact fiat source currency & channel
     try {
       const txType = currency === "NGN" ? "deposit_naira" : "deposit_fiat";
+      const depositChannel = currency === "NGN" ? "naira" : "international";
       const amountMicro = walletLib.parseToMicro(creditedUsd.toFixed(6));
       db.recordTransaction(
         entity.telegram_id,
@@ -839,7 +840,12 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null }) {
         entity.account_type || "personal",
         18,
         "base",
-        confirmed.narration || `${currency} deposit`
+        confirmed.narration || `${currency} deposit`,
+        {
+          sourceCurrency: currency,
+          sourceAmount: Number.isFinite(grossMajor) && grossMajor > 0 ? grossMajor : null,
+          depositChannel,
+        }
       );
     } catch (txErr) {
       console.warn("[nuvion_orchestrator] recordTransaction note:", txErr.message);
@@ -1040,7 +1046,12 @@ async function handleUnallocatedUscInflowSweep({ confirmed, entityRecord, bot = 
       entity.account_type || "personal",
       18,
       "base",
-      "Base USDC deposit via Nuvion bridge"
+      "Base USDC deposit",
+      {
+        sourceCurrency: "USDC",
+        sourceAmount: Number.isFinite(creditedUsd) && creditedUsd > 0 ? creditedUsd : null,
+        depositChannel: "crypto",
+      }
     );
   } catch (_) {}
 

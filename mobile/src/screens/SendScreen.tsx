@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { BackHandler, Pressable, ScrollView, Share, StyleSheet, Text, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { api } from "../api/client";
 import type {
   BankItem,
@@ -12,7 +13,7 @@ import type {
   WithdrawalChain,
 } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING, FONTS } from "../theme";
+import { COLORS, DEPTH, RADIUS, SPACING, FONTS } from "../theme";
 import {
   Button,
   Card,
@@ -26,6 +27,8 @@ import {
   shortAddr,
   SuccessBanner,
 } from "../components/UI";
+import { CurrencyLogo } from "../components/CurrencyLogo";
+import { PressableScale } from "../components/Touch";
 import { SendFlow } from "./SendFlow";
 import { CryptoSendScreen } from "./CryptoSendScreen";
 
@@ -115,6 +118,8 @@ export function SendScreen({
   // Global payout state
   const [rails, setRails] = useState<GlobalRail[]>([]);
   const [selectedRail, setSelectedRail] = useState<GlobalRail | null>(null);
+  const [railQuery, setRailQuery] = useState("");
+  const [showAllRails, setShowAllRails] = useState(false);
   const [globalRecipients, setGlobalRecipients] = useState<GlobalRecipient[]>([]);
   const [selectedCounterpartyId, setSelectedCounterpartyId] = useState<string | null>(null);
   const [globalAmount, setGlobalAmount] = useState("");
@@ -726,31 +731,93 @@ export function SendScreen({
 
         {mode === "global" ? (
           <Card>
-            <SectionHeader title="Where are you sending?" currency={false} />
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={{ marginBottom: 6, marginHorizontal: -SPACING.md }}
-              contentContainerStyle={{ paddingHorizontal: SPACING.md, paddingVertical: 4 }}
-            >
-              <View style={{ flexDirection: "row", gap: 8 }}>
-                {rails.map((r) => (
-                  <Pill
-                    key={r.railKey}
-                    currency={r.currency}
-                    label={`${r.currency} · ${r.country || r.label}`}
-                    active={selectedRail?.railKey === r.railKey}
-                    onPress={() => {
-                      setSelectedRail(r);
-                      setSelectedCounterpartyId(null);
-                      setGlobalFields({});
-                    }}
-                  />
-                ))}
-              </View>
-            </ScrollView>
+            <SectionHeader title="Choose destination currency" currency={false} />
+            <Input
+              label="Search country or currency"
+              placeholder="GBP, EUR, USD, Canada, Kenya, Ghana…"
+              value={railQuery}
+              onChangeText={(v) => {
+                setRailQuery(v);
+                if (v.trim()) setShowAllRails(true);
+              }}
+              currency={false}
+            />
 
-            {selectedRail ? <Text style={[styles.fieldHint, { marginBottom: 12 }]}>{selectedRail.label}</Text> : null}
+            {(() => {
+              const q = railQuery.trim().toLowerCase();
+              const filteredRails = q
+                ? rails.filter(
+                    (r) =>
+                      r.currency.toLowerCase().includes(q) ||
+                      (r.country || "").toLowerCase().includes(q) ||
+                      (r.label || "").toLowerCase().includes(q)
+                  )
+                : rails;
+              const visibleRails = showAllRails || q ? filteredRails : filteredRails.slice(0, 8);
+              const hiddenCount = Math.max(0, filteredRails.length - visibleRails.length);
+              return (
+                <>
+                  <View style={styles.currencyGrid}>
+                    {visibleRails.map((r) => {
+                      const active = selectedRail?.railKey === r.railKey;
+                      return (
+                        <PressableScale
+                          key={r.railKey}
+                          haptic="selection"
+                          depth={0.96}
+                          style={[styles.currencyTile, active && styles.currencyTileOn]}
+                          onPress={() => {
+                            setSelectedRail(r);
+                            setSelectedCounterpartyId(null);
+                            setGlobalFields({});
+                          }}
+                        >
+                          <CurrencyLogo code={r.currency} size={28} />
+                          <View style={{ flex: 1, minWidth: 0 }}>
+                            <Text style={[styles.currencyCode, active && { color: COLORS.primaryDark }]}>
+                              {r.currency}
+                            </Text>
+                            <Text style={styles.currencyCountry} numberOfLines={1}>
+                              {r.country || r.label}
+                            </Text>
+                          </View>
+                          {active ? (
+                            <Ionicons name="checkmark-circle" size={18} color={COLORS.primary} />
+                          ) : null}
+                        </PressableScale>
+                      );
+                    })}
+                  </View>
+
+                  {filteredRails.length === 0 ? (
+                    <Text style={[styles.fieldHint, { marginBottom: 10 }]}>
+                      No countries match "{railQuery}". Try GBP, EUR, USD, CAD, or KES.
+                    </Text>
+                  ) : null}
+
+                  {!q && filteredRails.length > 8 ? (
+                    <Button
+                      title={showAllRails ? "Show fewer currencies" : `Show all ${filteredRails.length} currencies (+${hiddenCount} more)`}
+                      variant="ghost"
+                      onPress={() => setShowAllRails((prev) => !prev)}
+                      style={{ marginBottom: 10 }}
+                    />
+                  ) : null}
+                </>
+              );
+            })()}
+
+            {selectedRail ? (
+              <View style={styles.selectedRailBanner}>
+                <CurrencyLogo code={selectedRail.currency} size={26} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.selectedRailTitle}>
+                    Sending {selectedRail.currency} · {selectedRail.country}
+                  </Text>
+                  <Text style={styles.selectedRailSub}>{selectedRail.label}</Text>
+                </View>
+              </View>
+            ) : null}
 
             {globalRecipients.filter((g) => !selectedRail || g.currency === selectedRail.currency).length > 0 ? (
               <View style={{ marginBottom: 12 }}>
@@ -887,4 +954,37 @@ const styles = StyleSheet.create({
   rowTitle: { color: COLORS.text, fontSize: 14, fontFamily: FONTS.semibold },
   rowSub: { color: COLORS.textSecondary, fontFamily: FONTS.regular, fontSize: 12 },
   fieldHint: { color: COLORS.textSecondary, fontSize: 12, fontFamily: FONTS.semibold, marginBottom: 6 },
+  currencyGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 10 },
+  currencyTile: {
+    ...DEPTH.raised,
+    flexBasis: "47%",
+    flexGrow: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: RADIUS.md,
+    backgroundColor: COLORS.page,
+  },
+  currencyTileOn: {
+    borderColor: COLORS.primary,
+    borderWidth: 2,
+    backgroundColor: COLORS.deep,
+  },
+  currencyCode: { color: COLORS.text, fontSize: 14, fontFamily: FONTS.extrabold },
+  currencyCountry: { color: COLORS.textSecondary, fontSize: 11, fontFamily: FONTS.medium, marginTop: 1 },
+  selectedRailBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: COLORS.primaryMuted,
+    borderWidth: 1,
+    borderColor: COLORS.primaryBorder,
+    borderRadius: RADIUS.md,
+    padding: 10,
+    marginBottom: 12,
+  },
+  selectedRailTitle: { color: COLORS.primaryDark, fontSize: 13, fontFamily: FONTS.bold },
+  selectedRailSub: { color: COLORS.textSecondary, fontSize: 11, fontFamily: FONTS.medium, marginTop: 1 },
 });

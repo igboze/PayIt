@@ -22,17 +22,107 @@ const TONES = {
 } as const;
 
 export function isCreditTx(tx: TransactionItem): boolean {
-  return /receive|deposit|onramp|claim|refund|credit|liquidate|unload/i.test(tx.type) && !/auto_earn_deposit/i.test(tx.type);
+  return /receive|deposit|onramp|claim|refund|credit|liquidate|unload|yield_withdraw|stock_sell/i.test(tx.type) && !/auto_earn_deposit|savings_deposit/i.test(tx.type);
 }
 
-export function txKindLabel(rawType: string): string {
+const FIAT_SYMBOLS: Record<string, string> = {
+  NGN: "₦",
+  GBP: "£",
+  EUR: "€",
+  USD: "$",
+  CAD: "CA$",
+  AUD: "A$",
+  KES: "KSh ",
+  GHS: "GH₵",
+  ZAR: "R",
+  TZS: "TSh ",
+  AED: "AED ",
+  MXN: "MX$",
+  UGX: "USh ",
+};
+
+export function formatCurrencyAmount(amount: number, currency?: string | null): string {
+  const cur = String(currency || "NGN").toUpperCase();
+  const n = Number(amount || 0);
+  if (!Number.isFinite(n)) return "—";
+  if (cur === "NGN") return `₦${Math.round(n).toLocaleString("en-NG")}`;
+  const sym = FIAT_SYMBOLS[cur];
+  const formatted = n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return sym ? `${sym}${formatted}` : `${formatted} ${cur}`;
+}
+
+/**
+ * Primary + secondary display amount for a transaction row / detail sheet:
+ * - Naira deposits (Paj / Global Neobank NGN): Primary in Naira (+₦...), secondary USD equivalent.
+ * - International deposits (Global Neobank GBP/EUR/USD/CAD/KES/etc.): Primary in source currency (+£... / +€...).
+ * - Crypto deposits: Primary in crypto (+$... USDC).
+ * - Everything else: USD primary with optional Naira secondary for NGN bank payouts.
+ */
+export function getTxDisplayAmounts(tx: TransactionItem): { primary: string; secondary: string | null } {
+  const credit = isCreditTx(tx);
+  const sign = credit ? "+" : "−";
+  const usdStr = formatRawTxAmount(tx.amount, tx.decimals);
+  const typeLower = String(tx.type || "").toLowerCase();
+  const channel = tx.depositChannel || null;
+
+  if (credit) {
+    const isNairaDeposit =
+      channel === "naira" ||
+      (/deposit_naira|onramp/.test(typeLower) && (tx.fiatCurrency === "NGN" || tx.fiatAmount != null));
+    if (isNairaDeposit && tx.fiatAmount != null && tx.fiatAmount > 0) {
+      return {
+        primary: `${sign}${formatCurrencyAmount(tx.fiatAmount, "NGN")}`,
+        secondary: `≈ ${usdStr}`,
+      };
+    }
+
+    const isIntlDeposit =
+      channel === "international" ||
+      (typeLower === "deposit_fiat" && tx.fiatCurrency && tx.fiatCurrency !== "NGN");
+    if (isIntlDeposit && tx.fiatCurrency) {
+      const cur = tx.fiatCurrency.toUpperCase();
+      if (tx.fiatAmount != null && tx.fiatAmount > 0) {
+        return {
+          primary: `${sign}${formatCurrencyAmount(tx.fiatAmount, cur)}`,
+          secondary: cur === "USD" ? null : `≈ ${usdStr}`,
+        };
+      }
+      return { primary: `${sign}${usdStr} ${cur}`, secondary: null };
+    }
+
+    const isCryptoDeposit =
+      channel === "crypto" ||
+      /deposit_crypto|near_deposit|evm_sweep|cctp|^deposit$/.test(typeLower);
+    if (isCryptoDeposit) {
+      return {
+        primary: `${sign}${usdStr} USDC`,
+        secondary: null,
+      };
+    }
+  }
+
+  return {
+    primary: `${sign}${usdStr}`,
+    secondary: tx.fiatAmount ? formatCurrencyAmount(tx.fiatAmount, tx.fiatCurrency || "NGN") : null,
+  };
+}
+
+export function txKindLabel(rawType: string, tx?: TransactionItem): string {
   const t = String(rawType || "").toLowerCase();
   if (t === "auto_earn_deposit") return "Moved to savings";
-  if (t === "auto_earn_liquidate") return "From savings";
+  if (t === "auto_earn_liquidate" || t === "yield_withdraw") return "From savings";
+  if (t === "savings_deposit") return "Savings deposit";
+  if (t === "stock_buy") return "Stock purchase";
+  if (t === "stock_sell") return "Stock sale";
   if (t === "scheduled_transfer") return "Scheduled payment";
   if (/offramp|payout|cashout/.test(t)) return "Bank transfer";
   if (/withdraw/.test(t)) return "Sent to wallet";
-  if (/deposit|onramp|receive|credit|claim/.test(t)) return "Money in";
+  if (tx?.depositChannel === "naira" || /deposit_naira|onramp/.test(t)) return "Naira deposit";
+  if (tx?.depositChannel === "international" || t === "deposit_fiat") {
+    return tx?.fiatCurrency ? `International deposit · ${tx.fiatCurrency.toUpperCase()}` : "International deposit";
+  }
+  if (tx?.depositChannel === "crypto" || /deposit_crypto|near_deposit|evm_sweep/.test(t)) return "Crypto deposit";
+  if (/deposit|receive|credit|claim/.test(t)) return "Money in";
   if (/refund/.test(t)) return "Refund";
   if (/bill/.test(t)) return "Bill payment";
   if (/card/.test(t)) return "Card";
@@ -44,6 +134,7 @@ export function txKindLabel(rawType: string): string {
 
 function txVisual(tx: TransactionItem): { icon: IoniconName; tone: keyof typeof TONES } {
   const t = String(tx.type || "").toLowerCase();
+  if (/stock_buy|stock_sell/.test(t)) return { icon: "trending-up-outline", tone: "blue" };
   if (/saving|yield|auto_earn/.test(t)) return { icon: "server-outline", tone: "teal" };
   if (isCreditTx(tx)) return { icon: "arrow-down", tone: "green" };
   if (/bill/.test(t)) return { icon: "receipt-outline", tone: "amber" };
@@ -59,7 +150,7 @@ function titleCase(s: string): string {
 
 export function txTitle(tx: TransactionItem): string {
   if (tx.counterparty?.name) return titleCase(tx.counterparty.name);
-  return tx.narration || txKindLabel(tx.type);
+  return tx.narration || txKindLabel(tx.type, tx);
 }
 
 function parseDate(raw?: string | null): Date | null {
@@ -118,7 +209,9 @@ export function TxRow({ tx, onPress }: { tx: TransactionItem; onPress: () => voi
   const vis = txVisual(tx);
   const [fg, bg] = TONES[vis.tone];
   const status = txStatus(tx);
-  const sub = [timeOf(tx.createdAt), tx.counterparty?.detail || (tx.counterparty?.name || tx.narration ? txKindLabel(tx.type) : null)]
+  const display = getTxDisplayAmounts(tx);
+  const kind = txKindLabel(tx.type, tx);
+  const sub = [timeOf(tx.createdAt), tx.counterparty?.detail || (tx.counterparty?.name || tx.narration ? kind : null)]
     .filter(Boolean)
     .join(" · ");
   return (
@@ -139,10 +232,9 @@ export function TxRow({ tx, onPress }: { tx: TransactionItem; onPress: () => voi
       </View>
       <View style={{ alignItems: "flex-end", gap: 2 }}>
         <Text style={[styles.amount, credit && { color: COLORS.successText }]}>
-          {credit ? "+" : "−"}
-          {formatRawTxAmount(tx.amount, tx.decimals)}
+          {display.primary}
         </Text>
-        {tx.fiatAmount ? <Text style={styles.sub}>₦{Math.round(tx.fiatAmount).toLocaleString("en-NG")}</Text> : null}
+        {display.secondary ? <Text style={styles.sub}>{display.secondary}</Text> : null}
       </View>
     </PressableScale>
   );
@@ -165,7 +257,7 @@ export function TxDetailSheet({
 
   if (!tx) return null;
   const status = txStatus(tx);
-  const credit = isCreditTx(tx);
+  const display = getTxDisplayAmounts(tx);
 
   const saveReceipt = async () => {
     setError(null);
@@ -206,16 +298,13 @@ export function TxDetailSheet({
         <View style={styles.sheet}>
           <View style={styles.handle} />
           <View style={styles.head}>
-            <Text style={styles.headAmount}>
-              {credit ? "+" : "−"}
-              {formatRawTxAmount(tx.amount, tx.decimals)}
-            </Text>
-            {tx.fiatAmount ? <Text style={styles.headSub}>₦{Math.round(tx.fiatAmount).toLocaleString("en-NG")}</Text> : null}
+            <Text style={styles.headAmount}>{display.primary}</Text>
+            {display.secondary ? <Text style={styles.headSub}>{display.secondary}</Text> : null}
             <Text style={styles.headTitle}>{txTitle(tx)}</Text>
             {status ? <StatusChip status={status} /> : null}
           </View>
           <ScrollView showsVerticalScrollIndicator={false}>
-            <KeyValueRow label="Type" value={txKindLabel(tx.type)} />
+            <KeyValueRow label="Type" value={txKindLabel(tx.type, tx)} />
             {tx.counterparty?.detail ? <KeyValueRow currency={false} label="To" value={tx.counterparty.detail} /> : null}
             {tx.payoutStatus ? (
               <KeyValueRow

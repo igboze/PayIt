@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { api } from "../api/client";
 import type { SavingsOverview } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, SPACING, FONTS } from "../theme";
+import { COLORS, DEPTH, FONTS, RADIUS, SPACING } from "../theme";
 import {
   Button,
   Card,
@@ -16,12 +17,23 @@ import {
   SectionHeader,
   SuccessBanner,
 } from "../components/UI";
+import { CurrencyLogo } from "../components/CurrencyLogo";
+import { PressableScale } from "../components/Touch";
+
+function formatCompactTvl(tvl?: number): string | null {
+  const n = Number(tvl || 0);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M TVL`;
+  if (n >= 1_000) return `$${Math.round(n / 1_000)}K TVL`;
+  return `$${Math.round(n)} TVL`;
+}
 
 export function SavingsScreen({ onBack }: { onBack: () => void }) {
   const { activeAccount, dataVersion, requestApproval } = useApp();
   const isBiz = activeAccount === "business";
 
   const [savings, setSavings] = useState<SavingsOverview | null>(null);
+  const [selectedVault, setSelectedVault] = useState<string | null>(null);
   const [saveAmt, setSaveAmt] = useState("");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -37,6 +49,14 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
       try {
         const res = await api.getSavings(activeAccount);
         setSavings(res);
+        setSelectedVault((prev) => {
+          const pools = res.pools || [];
+          if (prev && pools.some((p) => p.vaultAddress && p.vaultAddress.toLowerCase() === prev.toLowerCase())) {
+            return prev;
+          }
+          const top = pools.find((p) => p.isHighestApy && p.vaultAddress) || pools.find((p) => p.vaultAddress);
+          return top?.vaultAddress || null;
+        });
       } catch (err) {
         setError(err instanceof Error ? err.message : "Could not load savings right now.");
       } finally {
@@ -51,9 +71,19 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
     loadSavings(false);
   }, [loadSavings, dataVersion]);
 
+  const pools = savings?.pools || [];
+  const activePool =
+    pools.find((p) => p.vaultAddress && selectedVault && p.vaultAddress.toLowerCase() === selectedVault.toLowerCase()) ||
+    null;
+  const feePct = savings?.platformFeePct ?? 10;
+
   const handleDeposit = async () => {
     setError(null);
     setNotice(null);
+    if (!activePool || !activePool.vaultAddress) {
+      setError("Select a savings type above before depositing.");
+      return;
+    }
     const amount = Number(saveAmt);
     if (!Number.isFinite(amount) || amount < 1) {
       setError("Enter a deposit amount of at least $1.00 USDC.");
@@ -64,8 +94,9 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
       const res = await requestApproval("savings.deposit", {
         accountType: activeAccount,
         amountUsdc: amount,
+        vaultAddress: activePool.vaultAddress,
       });
-      setNotice(res.notice || "Deposited into Dollar Savings!");
+      setNotice(res.notice || `Deposited into ${activePool.name}!`);
       setSaveAmt("");
       loadSavings(true);
     } catch (err) {
@@ -96,7 +127,7 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
     <View style={styles.root}>
       <ScreenHeader
         title="Dollar Savings"
-        subtitle={`${isBiz ? "Business" : "Personal"} yield vault · Withdraw anytime`}
+        subtitle={`${isBiz ? "Business" : "Personal"} yield vaults · Withdraw anytime`}
         onBack={onBack}
       />
 
@@ -116,25 +147,34 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
           </View>
         ) : (
           <>
+            {/* Active savings position */}
             <Card>
-              <SectionHeader title={`${isBiz ? "Business" : "Personal"} savings`} />
+              <SectionHeader title={`${isBiz ? "Business" : "Personal"} active savings`} />
               {savings?.position ? (
                 <>
                   <Text style={styles.bigVal}>{formatUsdc(savings.position.principalUsdc)}</Text>
+                  {savings.position.vaultName ? (
+                    <KeyValueRow label="Savings vault" value={savings.position.vaultName} />
+                  ) : null}
                   <KeyValueRow
-                    label="Earned so far"
+                    label="Net profit earned"
                     value={`+${formatUsdc(savings.position.accruedYieldUsdc, 4)}`}
                   />
                   <KeyValueRow
                     label="Rate when you saved"
-                    value={(savings.position.apyAtDeposit ?? savings.position.apy) > 0
-                      ? `${(savings.position.apyAtDeposit ?? savings.position.apy).toFixed(2)}% a year`
-                      : "Variable"}
+                    value={
+                      (savings.position.apyAtDeposit ?? savings.position.apy) > 0
+                        ? `${(savings.position.apyAtDeposit ?? savings.position.apy).toFixed(2)}% net APY`
+                        : "Variable"
+                    }
                   />
                   {savings.position.currentApy != null && savings.position.currentApy > 0 ? (
-                    <KeyValueRow label="Rate today" value={`${savings.position.currentApy.toFixed(2)}% a year`} />
+                    <KeyValueRow label="Current vault rate" value={`${savings.position.currentApy.toFixed(2)}% net APY`} />
                   ) : null}
-                  {savings.position.isAutoEarn ? <KeyValueRow label="Added by" value="Auto-save (idle balance)" /> : null}
+                  <KeyValueRow label="Platform fee" value={`${feePct}% of earned yield only`} />
+                  {savings.position.isAutoEarn ? (
+                    <KeyValueRow label="Added by" value="Auto-save (highest APY)" />
+                  ) : null}
                   <Button
                     title="Move all to balance"
                     variant="secondary"
@@ -147,35 +187,103 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
                 <EmptyState
                   icon="trending-up-outline"
                   title="No active savings yet"
-                  subtitle="Earn on your dollars and move them back to your balance anytime."
+                  subtitle="Choose a savings vault below to start earning interest. Withdraw anytime with zero lockups."
                 />
               )}
             </Card>
 
-            {savings?.pools && savings.pools.length > 0 ? (
+            {/* Auto-Save info banner */}
+            <View style={styles.autoSaveBanner}>
+              <Ionicons name="sparkles" size={18} color={COLORS.primary} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.autoSaveTitle}>
+                  Auto-Save {savings?.autoEarnEnabled ? "is ON" : "uses the highest APY"}
+                </Text>
+                <Text style={styles.autoSaveSub}>
+                  When Auto-Save moves idle funds, it automatically picks the highest-APY USDC vault. For manual deposits, choose any vault below.
+                </Text>
+              </View>
+            </View>
+
+            {/* Step 1: Selectable savings vault cards */}
+            {pools.length > 0 ? (
               <Card>
-                <SectionHeader title="Rates today" />
-                {savings.pools.map((p, i) => (
-                  <KeyValueRow
-                    key={`${p.name}-${i}`}
-                    label={p.name}
-                    value={p.apy > 0 ? `${p.apy.toFixed(2)}% a year` : "Active"}
-                  />
-                ))}
+                <SectionHeader title="1. Choose your savings type" />
+                <Text style={styles.selectHint}>
+                  Tap the vault you want to deposit into. Rates shown are net after the {feePct}% yield performance fee.
+                </Text>
+                <View style={{ gap: 10 }}>
+                  {pools.map((p, i) => {
+                    const isSelected = Boolean(
+                      p.vaultAddress && selectedVault && p.vaultAddress.toLowerCase() === selectedVault.toLowerCase()
+                    );
+                    const tvlLabel = formatCompactTvl(p.tvlUsd);
+                    return (
+                      <PressableScale
+                        key={`${p.vaultAddress || p.name}-${i}`}
+                        onPress={() => p.vaultAddress && setSelectedVault(p.vaultAddress)}
+                        haptic="selection"
+                        depth={0.98}
+                        style={[styles.poolCard, isSelected && styles.poolCardSelected]}
+                      >
+                        <CurrencyLogo code={p.symbol === "EURC" ? "EUR" : "USD"} size={34} />
+                        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+                          <View style={styles.poolTitleRow}>
+                            <Text style={styles.poolName} numberOfLines={1}>
+                              {p.name}
+                            </Text>
+                          </View>
+                          <View style={styles.poolMetaRow}>
+                            <Text style={styles.poolMeta}>
+                              {p.symbol}
+                              {tvlLabel ? ` · ${tvlLabel}` : ""}
+                            </Text>
+                            {p.isHighestApy ? (
+                              <View style={styles.topBadge}>
+                                <Text style={styles.topBadgeText}>Highest APY · Auto-Save</Text>
+                              </View>
+                            ) : null}
+                          </View>
+                        </View>
+                        <View style={{ alignItems: "flex-end", gap: 4 }}>
+                          <Text style={styles.poolApy}>{p.apy > 0 ? `${p.apy.toFixed(2)}%` : "Active"}</Text>
+                          <Text style={styles.poolApySub}>net APY</Text>
+                        </View>
+                        <View style={[styles.radio, isSelected && styles.radioOn]}>
+                          {isSelected ? <Ionicons name="checkmark" size={14} color={COLORS.onPrimary} /> : null}
+                        </View>
+                      </PressableScale>
+                    );
+                  })}
+                </View>
               </Card>
             ) : null}
 
+            {/* Step 2: Deposit amount */}
             <Card>
-              <SectionHeader title="Deposit into Savings" />
+              <SectionHeader title="2. Deposit into Savings" />
+              {activePool ? (
+                <View style={styles.chosenSummary}>
+                  <Text style={styles.chosenLabel}>Selected vault</Text>
+                  <Text style={styles.chosenVal}>
+                    {activePool.name} ({activePool.apy.toFixed(2)}% net APY)
+                  </Text>
+                </View>
+              ) : null}
               <Input
                 label="Amount (USD)"
                 placeholder="e.g. 50"
                 value={saveAmt}
                 onChangeText={(t) => setSaveAmt(t.replace(/[^\d.]/g, ""))}
                 keyboardType="decimal-pad"
-                hint="Minimum $1.00. Approved with your passkey and PIN."
+                hint={`Minimum $1.00. ${feePct}% platform fee applies only to earned yield on withdrawal.`}
               />
-              <Button title="Review & Deposit" onPress={handleDeposit} loading={submitting} />
+              <Button
+                title={activePool ? `Deposit into ${activePool.name}` : "Select a vault above"}
+                onPress={handleDeposit}
+                loading={submitting}
+                disabled={!activePool}
+              />
             </Card>
           </>
         )}
@@ -186,6 +294,66 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: COLORS.bg },
-  content: { padding: SPACING.md, paddingBottom: 40 },
+  content: { padding: SPACING.md, paddingBottom: 40, gap: 12 },
   bigVal: { color: COLORS.text, fontSize: 34, fontFamily: FONTS.extrabold, marginBottom: 10 },
+  autoSaveBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    backgroundColor: COLORS.primaryMuted,
+    borderWidth: 1,
+    borderColor: COLORS.primaryBorder,
+    borderRadius: RADIUS.md,
+    padding: 12,
+  },
+  autoSaveTitle: { fontFamily: FONTS.bold, fontSize: 13, color: COLORS.primaryDark },
+  autoSaveSub: { fontFamily: FONTS.regular, fontSize: 12, color: COLORS.textSecondary, marginTop: 2, lineHeight: 17 },
+  selectHint: { fontFamily: FONTS.regular, fontSize: 12, color: COLORS.textSecondary, marginBottom: 10 },
+  poolCard: {
+    ...DEPTH.raised,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 12,
+    borderRadius: RADIUS.md,
+    backgroundColor: COLORS.page,
+  },
+  poolCardSelected: {
+    borderColor: COLORS.primary,
+    borderWidth: 2,
+    backgroundColor: COLORS.deep,
+  },
+  poolTitleRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  poolName: { fontFamily: FONTS.bold, fontSize: 14, color: COLORS.text, flexShrink: 1 },
+  poolMetaRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 2 },
+  poolMeta: { fontFamily: FONTS.medium, fontSize: 11, color: COLORS.textSecondary },
+  topBadge: {
+    backgroundColor: COLORS.primaryMuted,
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  topBadgeText: { fontFamily: FONTS.bold, fontSize: 10, color: COLORS.primaryDark },
+  poolApy: { fontFamily: FONTS.extrabold, fontSize: 15, color: COLORS.primaryDark },
+  poolApySub: { fontFamily: FONTS.medium, fontSize: 10, color: COLORS.textMuted, marginTop: -4 },
+  radio: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: COLORS.borderStrong,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  radioOn: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  chosenSummary: {
+    backgroundColor: COLORS.page,
+    borderRadius: RADIUS.sm,
+    borderWidth: 1,
+    borderColor: COLORS.primaryBorder,
+    padding: 10,
+    marginBottom: 12,
+  },
+  chosenLabel: { fontFamily: FONTS.semibold, fontSize: 11, color: COLORS.textMuted, textTransform: "uppercase" },
+  chosenVal: { fontFamily: FONTS.bold, fontSize: 13, color: COLORS.text, marginTop: 2 },
 });

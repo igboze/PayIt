@@ -102,7 +102,7 @@ async function getYieldPools() {
             payitApy: parseFloat((rawApy * PAYIT_FEE_FRACTION).toFixed(2)),
             totalDeposits: v.totalDeposits || "0",
           };
-        });
+        }).sort((a, b) => Number(b.userApy || 0) - Number(a.userApy || 0));
       }
     }
   } catch (err) {
@@ -171,7 +171,8 @@ function openYieldPosition(telegramId, amountUsdc, pool, options = {}) {
 }
 
 /**
- * Calculate accrued yield for a user position.
+ * Calculate accrued gross yield for a user position.
+ * Uses the position's gross vault APY (recovering it if an older row stored user_apy only).
  */
 function calcAccruedYield(position) {
   if (!position) return 0;
@@ -181,9 +182,34 @@ function calcAccruedYield(position) {
   const elapsedMs = Math.max(0, (Date.now() - safeOpenedAt) * DEMO_SPEED);
   const elapsedYears = elapsedMs / (1000 * 60 * 60 * 24 * 365);
   const amount = Number(position.amount_usdc) || 0;
-  const apy = Number(position.apy) || 0;
-  const accrued = amount * (apy / 100) * elapsedYears;
+  let grossApy = Number(position.apy) || 0;
+  const userApy = Number(position.user_apy) || 0;
+  const feeApy = Number(position.payit_fee_apy) || 0;
+  // If an older row stored net APY in `apy` while `payit_fee_apy` is known, reconstruct gross APY.
+  if (grossApy > 0 && userApy > 0 && Math.abs(grossApy - userApy) < 0.005 && feeApy > 0) {
+    grossApy = userApy + feeApy;
+  }
+  const accrued = amount * (grossApy / 100) * elapsedYears;
   return Number.isFinite(accrued) ? Math.max(0, accrued) : 0;
+}
+
+/**
+ * Exact breakdown of accrued yield vs 10% platform performance fee.
+ */
+function calcYieldBreakdown(position, onChainGrossYield = null) {
+  const estimatedGross = calcAccruedYield(position);
+  const realGross = onChainGrossYield != null && Number.isFinite(Number(onChainGrossYield)) && Number(onChainGrossYield) > 0
+    ? Number(onChainGrossYield)
+    : 0;
+  const grossYield = parseFloat(Math.max(realGross, estimatedGross).toFixed(6));
+  const devFee = parseFloat((grossYield * PAYIT_FEE_FRACTION).toFixed(6));
+  const netYield = parseFloat(Math.max(0, grossYield - devFee).toFixed(6));
+  return {
+    grossYield,
+    devFee,
+    netYield,
+    feePct: Math.round(PAYIT_FEE_FRACTION * 100),
+  };
 }
 
 /**
@@ -192,11 +218,10 @@ function calcAccruedYield(position) {
 function formatPosition(position) {
   if (!position) return "No active savings position found.";
   const principal = Number(position.amount_usdc) || 0;
-  const apy = Number(position.apy) || 0;
-  const accrued = calcAccruedYield(position);
-  const grossYield = apy > 0 ? (accrued / (1 - PAYIT_FEE_FRACTION)) : accrued;
-  const estDevFee = grossYield * PAYIT_FEE_FRACTION;
-  const netAccrued = grossYield - estDevFee;
+  const userApy = Number(position.user_apy) > 0
+    ? Number(position.user_apy)
+    : Number((Number(position.apy || 0) * (1 - PAYIT_FEE_FRACTION)).toFixed(2));
+  const { netYield: netAccrued } = calcYieldBreakdown(position);
   const total = principal + netAccrued;
   const vaultAddr = position.vault_address || position.vaultAddress || "—";
   const shortVault = vaultAddr.length > 12 ? `${vaultAddr.slice(0, 6)}...${vaultAddr.slice(-4)}` : vaultAddr;
@@ -208,7 +233,7 @@ function formatPosition(position) {
     `• <b>Principal Saved:</b> $${principal.toFixed(2)} USDC\n` +
     `• <b>Vault:</b> ${position.project || "Arc Morpho Vault"} (<code>${shortVault}</code>)\n` +
     `• <b>Network:</b> ${position.chain || "Arc"}\n` +
-    `• <b>APY:</b> ${apy}% per year\n` +
+    `• <b>APY:</b> ${userApy}% per year\n` +
     `• <b>Started:</b> ${position.opened_at || "Recently"}\n` +
     `• <b>Profit Earned (Interest):</b> +$${netAccrued.toFixed(4)} USDC\n` +
     `• <b>Current Vault Total:</b> $${total.toFixed(4)} USDC\n\n` +
@@ -435,12 +460,7 @@ async function withdrawFromVaultWithFee({ userWallet, position, feeRecipientAddr
     process.env.PAYIT_DEV_FEE_ADDRESS ||
     "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
 
-  // Calculate yield and fee breakdown
   const principal = Number(position.amount_usdc) || 0;
-  const grossYield = calcAccruedYield(position);
-  const devFee = parseFloat((grossYield * PAYIT_FEE_FRACTION).toFixed(6));
-  const netYield = parseFloat((grossYield - devFee).toFixed(6));
-  const totalUserPayout = parseFloat((principal + netYield).toFixed(6));
 
   // 1. Withdraw principal + gross yield from vault back to user's wallet (redeem all shares)
   let withdrawRes = null;
@@ -472,6 +492,12 @@ async function withdrawFromVaultWithFee({ userWallet, position, feeRecipientAddr
   let withdrawTxHash = withdrawRes.txHash || withdrawRes.hash || null;
   let isSimulated = Boolean(withdrawRes.simulated || withdrawTxHash === "0xsimulated_withdraw_tx_hash");
 
+  // Reconcile actual on-chain redeemed profit (when real shares were redeemed) against accrued yield
+  const redeemedUsdc = Number(withdrawRes.amountUsdc || 0);
+  const onChainGrossYield = !isSimulated && redeemedUsdc > principal ? redeemedUsdc - principal : 0;
+  const { grossYield, devFee, netYield } = calcYieldBreakdown(position, onChainGrossYield);
+  const totalUserPayout = parseFloat((principal + netYield).toFixed(6));
+
   // If vault withdrawal was simulated or fallback, disburse real USDC float to user's wallet on Arc
   if (isSimulated && userWallet && userWallet.address) {
     try {
@@ -489,13 +515,14 @@ async function withdrawFromVaultWithFee({ userWallet, position, feeRecipientAddr
     }
   }
 
-  // 2. Route Dev Fee on-chain to project fee address
+  // 2. Route 10% platform performance fee on accrued yield on-chain to fee recipient
   let feeTxHash = null;
-  if (devFee > 0.0001 && feeTarget && walletLib.isValidAddress(feeTarget)) {
+  if (devFee >= 0.00001 && feeTarget && walletLib.isValidAddress(feeTarget)) {
     try {
       const devFeeMicro = walletLib.parseToMicro(devFee.toFixed(6));
       const feeTx = await walletLib.sendSponsoredOrDirectTransaction(userWallet, feeTarget, devFeeMicro);
       feeTxHash = feeTx.txHash;
+      console.log(`[savings:fee] Routed 10% platform fee ($${devFee.toFixed(6)} USDC) -> ${feeTarget} (tx: ${feeTxHash})`);
     } catch (feeErr) {
       console.warn("[savings] Dev fee transfer note:", feeErr.message);
     }
@@ -623,6 +650,7 @@ module.exports = {
   formatYieldList,
   openYieldPosition,
   calcAccruedYield,
+  calcYieldBreakdown,
   formatPosition,
   getDepositQuote,
   depositIntoVault,

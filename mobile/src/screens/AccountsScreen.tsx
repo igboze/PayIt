@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Image,
+  Linking,
   RefreshControl,
   ScrollView,
   Share,
@@ -9,18 +11,20 @@ import {
   View,
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
-import { api } from "../api/client";
+import { Ionicons } from "@expo/vector-icons";
+import { api, getAccessToken } from "../api/client";
 import type {
   AccountSummary,
   BusinessExpenseItem,
   BusinessHomeResponse,
   GlobalAccountItem,
+  IntentTokenInfo,
   InvoiceItem,
+  InvoicePaymentOptionsResponse,
   PaymentLinkItem,
-  SavingsOverview,
 } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, SPACING, FONTS } from "../theme";
+import { COLORS, DEPTH, FONTS, RADIUS, SPACING } from "../theme";
 import {
   Button,
   Card,
@@ -36,6 +40,8 @@ import {
   SuccessBanner,
 } from "../components/UI";
 import { CurrencyLogo } from "../components/CurrencyLogo";
+import { PressableScale, notifyHaptic } from "../components/Touch";
+import { getLegacyFileSystem, getSharing } from "../nativeModules";
 
 export type AccountsSection = "accounts" | "global" | "business";
 
@@ -63,19 +69,27 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
   const [plAmount, setPlAmount] = useState("");
   const [plFunding, setPlFunding] = useState<"open-banking" | "interac" | "momo">("open-banking");
 
-  // Savings
-  const [savings, setSavings] = useState<SavingsOverview | null>(null);
-  const [saveAmt, setSaveAmt] = useState("");
-
-  // Swap
-  const [swapRates, setSwapRates] = useState<Record<string, unknown> | null>(null);
-  const [swapDir, setSwapDir] = useState<"USDC_EURC" | "EURC_USDC">("USDC_EURC");
-  const [swapAmt, setSwapAmt] = useState("");
-  const [swapQuote, setSwapQuote] = useState<Record<string, unknown> | null>(null);
-
   // Business & Invoices
   const [bizHome, setBizHome] = useState<BusinessHomeResponse | null>(null);
   const [invoices, setInvoices] = useState<InvoiceItem[]>([]);
+  const [invoiceOptions, setInvoiceOptions] = useState<InvoicePaymentOptionsResponse | null>(null);
+  const [invPayMode, setInvPayMode] = useState<"fiat" | "crypto" | "both">("fiat");
+  const [invFiatCurrency, setInvFiatCurrency] = useState<string>("NGN");
+  const [invCryptoChain, setInvCryptoChain] = useState<string>("sol");
+  const [invCryptoToken, setInvCryptoToken] = useState<IntentTokenInfo | null>(null);
+  const [invClientEmail, setInvClientEmail] = useState("");
+  const [invDueDate, setInvDueDate] = useState("");
+  const [createdPaymentDetails, setCreatedPaymentDetails] = useState<{
+    invoiceId: number | null;
+    invoiceNumber: string;
+    fiat: Record<string, unknown> | null;
+    crypto: Record<string, unknown> | null;
+    paymentAddress: string | null;
+    clientCopyText: string | null;
+    fiatPendingCurrency: string | null;
+  } | null>(null);
+  const [previewInvoiceId, setPreviewInvoiceId] = useState<number | null>(null);
+  const [downloadingInvoiceId, setDownloadingInvoiceId] = useState<number | null>(null);
   const [expenses, setExpenses] = useState<BusinessExpenseItem[]>([]);
   const [paymentLinks, setPaymentLinks] = useState<PaymentLinkItem[]>([]);
   const [invClient, setInvClient] = useState("");
@@ -117,12 +131,14 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
           setGlobalKycStatus(res.kycStatus || "not_started");
           setSupportedCurrencies(res.supportedCurrencies || []);
         } else if (section === "business") {
+          const optsPromise = api.getInvoicePaymentOptions(activeAccount).catch(() => null);
           if (isBiz) {
-            const [home, invs, exps, links] = await Promise.all([
+            const [home, invs, exps, links, opts] = await Promise.all([
               api.getBusinessHome(),
               api.listBusinessInvoices(20),
               api.listBusinessExpenses(20),
               api.listBusinessPaymentLinks(),
+              optsPromise,
             ]);
             setBizHome(home);
             if (home.profile) {
@@ -138,9 +154,33 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
             setInvoices(invs.invoices || []);
             setExpenses(exps.expenses || []);
             setPaymentLinks(links.paymentLinks || []);
+            if (opts) {
+              setInvoiceOptions(opts);
+              if (opts.cryptoChains?.length) {
+                const defaultChain =
+                  opts.cryptoChains.find((c) => c.key === "sol") ||
+                  opts.cryptoChains.find((c) => c.key === "base") ||
+                  opts.cryptoChains[0];
+                setInvCryptoChain((prev) =>
+                  prev && opts.cryptoTokensByChain?.[prev]?.length ? prev : defaultChain.key
+                );
+              }
+            }
           } else {
-            const invs = await api.listPersonalInvoices(20);
+            const [invs, opts] = await Promise.all([api.listPersonalInvoices(20), optsPromise]);
             setInvoices(invs.invoices || []);
+            if (opts) {
+              setInvoiceOptions(opts);
+              if (opts.cryptoChains?.length) {
+                const defaultChain =
+                  opts.cryptoChains.find((c) => c.key === "sol") ||
+                  opts.cryptoChains.find((c) => c.key === "base") ||
+                  opts.cryptoChains[0];
+                setInvCryptoChain((prev) =>
+                  prev && opts.cryptoTokensByChain?.[prev]?.length ? prev : defaultChain.key
+                );
+              }
+            }
           }
         }
       } catch (err) {
@@ -217,90 +257,120 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
     }
   };
 
-  const handleSaveDeposit = async () => {
-    setError(null);
-    try {
-      const res = await requestApproval("savings.deposit", {
-        accountType: activeAccount,
-        amountUsdc: Number(saveAmt),
-      });
-      setNotice(res.notice || "Deposited into savings!");
-      setSaveAmt("");
-      loadSection(true);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Savings deposit failed.";
-      if (!/cancel/i.test(msg)) setError(msg);
+  useEffect(() => {
+    const tokens = invoiceOptions?.cryptoTokensByChain?.[invCryptoChain] || [];
+    if (!tokens.length) {
+      setInvCryptoToken(null);
+      return;
     }
-  };
-
-  const handleSaveWithdraw = async () => {
-    setError(null);
-    try {
-      const res = await requestApproval("savings.withdraw", { accountType: activeAccount });
-      setNotice(res.notice || "Withdrew savings back to balance!");
-      loadSection(true);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Savings withdrawal failed.";
-      if (!/cancel/i.test(msg)) setError(msg);
-    }
-  };
-
-  const handleQuoteSwap = async () => {
-    setError(null);
-    setSwapQuote(null);
-    setLoading(true);
-    try {
-      const tokenIn = swapDir === "USDC_EURC" ? "USDC" : "EURC";
-      const tokenOut = swapDir === "USDC_EURC" ? "EURC" : "USDC";
-      const res = await api.quoteSwap(tokenIn, tokenOut, Number(swapAmt));
-      setSwapQuote(res.quote || null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not fetch swap quote.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleExecuteSwap = async () => {
-    setError(null);
-    try {
-      const tokenIn = swapDir === "USDC_EURC" ? "USDC" : "EURC";
-      const tokenOut = swapDir === "USDC_EURC" ? "EURC" : "USDC";
-      const res = await requestApproval("swap.execute", {
-        accountType: activeAccount,
-        tokenIn,
-        tokenOut,
-        amountIn: Number(swapAmt),
-      });
-      setNotice(res.notice || "Swap completed!");
-      setSwapAmt("");
-      setSwapQuote(null);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Swap failed.";
-      if (!/cancel/i.test(msg)) setError(msg);
-    }
-  };
+    setInvCryptoToken((prev) => {
+      if (prev && tokens.some((t) => t.assetId === prev.assetId)) return prev;
+      return tokens.find((t) => t.symbol === "USDC") || tokens.find((t) => t.symbol === "USDT") || tokens[0];
+    });
+  }, [invCryptoChain, invoiceOptions]);
 
   const handleCreateInvoice = async () => {
     setError(null);
+    if (!invClient.trim()) {
+      setError("Enter the client's name.");
+      return;
+    }
+    const amt = Number(invAmount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      setError("Enter a valid invoice amount.");
+      return;
+    }
     setLoading(true);
     try {
-      const payload = {
+      const wantsFiat = invPayMode === "fiat" || invPayMode === "both";
+      const wantsCrypto = invPayMode === "crypto" || invPayMode === "both";
+      const useGlobalBank = Boolean(invoiceOptions?.globalBankEnabled) || invFiatCurrency !== "NGN";
+      let paymentChannel: "ngn_bank" | "nuvion_bank" | "crypto_intent" | "both" | "both_nuvion";
+      if (wantsFiat && wantsCrypto) {
+        paymentChannel = useGlobalBank ? "both_nuvion" : "both";
+      } else if (wantsFiat) {
+        paymentChannel = useGlobalBank ? "nuvion_bank" : "ngn_bank";
+      } else {
+        paymentChannel = "crypto_intent";
+      }
+
+      const invoiceCurrency = wantsFiat ? invFiatCurrency : "USD";
+      const payload: Record<string, unknown> = {
         clientName: invClient.trim(),
-        amount: Number(invAmount),
+        clientEmail: invClientEmail.trim() || undefined,
+        amount: amt,
+        currency: invoiceCurrency,
+        paymentChannel,
+        globalBankCurrency: wantsFiat ? invFiatCurrency : undefined,
+        cryptoChain: wantsCrypto ? invCryptoChain : undefined,
+        cryptoAssetId: wantsCrypto && invCryptoToken && invCryptoChain !== "arc" ? invCryptoToken.assetId : undefined,
+        cryptoSymbol: wantsCrypto && invCryptoToken ? invCryptoToken.symbol : undefined,
+        cryptoBlockchain: wantsCrypto ? invCryptoChain : undefined,
+        dueDate: invDueDate.trim() || undefined,
         notes: invNotes.trim() || undefined,
       };
-      if (isBiz) await api.createBusinessInvoice(payload);
-      else await api.createPersonalInvoice(payload);
-      setNotice("Invoice created!");
+      const res = isBiz ? await api.createBusinessInvoice(payload) : await api.createPersonalInvoice(payload);
+      const pd = (res.paymentDetails || {}) as Record<string, unknown>;
+      setCreatedPaymentDetails({
+        invoiceId: res.invoice?.id ?? null,
+        invoiceNumber: res.invoice?.invoiceNumber || "Invoice",
+        fiat: (pd.fiat as Record<string, unknown> | null) || null,
+        crypto: (pd.crypto as Record<string, unknown> | null) || null,
+        paymentAddress: (pd.paymentAddress as string | null) || res.invoice?.paymentAddress || null,
+        clientCopyText: (pd.clientCopyText as string | null) || null,
+        fiatPendingCurrency: (pd.fiatPendingCurrency as string | null) || null,
+      });
+      setNotice(`Invoice ${res.invoice?.invoiceNumber || ""} created with payment details!`);
       setInvClient("");
+      setInvClientEmail("");
       setInvAmount("");
+      setInvDueDate("");
       setInvNotes("");
       loadSection(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create invoice.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleDownloadInvoice = async (invId: number, invoiceNumber: string) => {
+    setError(null);
+    setDownloadingInvoiceId(invId);
+    const scope = isBiz ? "business" : "personal";
+    const token = getAccessToken();
+    try {
+      let shared = false;
+      const Sharing = getSharing();
+      const LegacyFS = getLegacyFileSystem();
+      if (Sharing && LegacyFS && token && (await Sharing.isAvailableAsync().catch(() => false))) {
+        try {
+          const safeNum = String(invoiceNumber || invId).replace(/[^A-Za-z0-9._-]/g, "_");
+          const target = `${LegacyFS.cacheDirectory}proxim-invoice-${safeNum}.png`;
+          const res = await LegacyFS.downloadAsync(api.getInvoiceDownloadUrl(invId, scope), target, {
+            headers: { Authorization: `Bearer ${token}`, "X-Proxim-Account": activeAccount },
+          });
+          if (res.status !== 200) throw new Error("download failed");
+          await Sharing.shareAsync(res.uri, {
+            mimeType: "image/png",
+            dialogTitle: `Save or share invoice ${invoiceNumber}`,
+            UTI: "public.png",
+          });
+          shared = true;
+        } catch (_) {
+          shared = false;
+        }
+      }
+      if (!shared) {
+        const link = await api.getInvoiceDownloadLink(invId, scope);
+        await Linking.openURL(link);
+      }
+      notifyHaptic("success");
+      setNotice(`Invoice ${invoiceNumber} ready to save or share`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't download invoice.");
+    } finally {
+      setDownloadingInvoiceId(null);
     }
   };
 
@@ -473,18 +543,20 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
                   }
                 />
                 <View style={styles.balDualBlock}>
-                  <View style={styles.balRow}>
-                    <CurrencyLogo code="USD" size={20} />
-                    <Text style={styles.bigVal}>{a.balance ? formatUsdc(a.balance.totalUsdc) : "—"}</Text>
-                    <Text style={styles.balCode}>USD</Text>
-                  </View>
                   {ngnBal !== null ? (
                     <View style={styles.balRow}>
-                      <CurrencyLogo code="NGN" size={16} />
-                      <Text style={styles.ngnVal}>{formatNgn(ngnBal)}</Text>
-                      <Text style={styles.ngnCode}>NGN</Text>
+                      <CurrencyLogo code="NGN" size={20} />
+                      <Text style={styles.bigVal}>{formatNgn(ngnBal)}</Text>
+                      <Text style={styles.balCode}>NGN</Text>
                     </View>
                   ) : null}
+                  <View style={styles.balRow}>
+                    <CurrencyLogo code="USD" size={16} />
+                    <Text style={ngnBal !== null ? styles.ngnVal : styles.bigVal}>
+                      {a.balance ? formatUsdc(a.balance.totalUsdc) : "—"}
+                    </Text>
+                    <Text style={styles.ngnCode}>USD</Text>
+                  </View>
                 </View>
                 <KeyValueRow label="Verification" value={`${a.kycStatus} (Tier ${a.kycTier})`} />
                 <KeyValueRow
@@ -629,35 +701,266 @@ export function AccountsScreen({ initialSection = "accounts" }: { initialSection
           ) : null}
 
           <Card>
-            <SectionHeader title={isBiz ? "Business Invoices" : "Personal Invoices"} />
+            <SectionHeader title={isBiz ? "Create Business Invoice" : "Create Personal Invoice"} />
             <Input label="Client Name" placeholder="Client or Company" value={invClient} onChangeText={setInvClient} />
-            <Input label="Amount (USD)" placeholder="e.g. 250" value={invAmount} onChangeText={setInvAmount} keyboardType="decimal-pad" />
-            <Input label="Notes (optional)" placeholder="Design sprint" value={invNotes} onChangeText={setInvNotes} />
-            <Button title="Create Invoice" onPress={handleCreateInvoice} loading={loading} style={{ marginBottom: 14 }} />
+            <Input
+              label="Client Email (optional)"
+              placeholder="client@company.com"
+              value={invClientEmail}
+              onChangeText={setInvClientEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
 
+            {/* Step 1: Payment Method (identical to Telegram bot: Fiat / Crypto / Both) */}
+            <Text style={styles.invStepLabel}>How should your client pay?</Text>
+            <View style={styles.pillWrap}>
+              <Pill label="Bank Transfer (Fiat)" active={invPayMode === "fiat"} onPress={() => setInvPayMode("fiat")} />
+              <Pill label="Crypto (NEAR Intents)" active={invPayMode === "crypto"} onPress={() => setInvPayMode("crypto")} />
+              <Pill label="Both (Fiat + Crypto)" active={invPayMode === "both"} onPress={() => setInvPayMode("both")} />
+            </View>
+
+            {/* Fiat currency grid (Global Neobank / Nuvion currencies + instant NGN) */}
+            {invPayMode === "fiat" || invPayMode === "both" ? (
+              <View style={styles.invMethodBox}>
+                <Text style={styles.invMethodTitle}>Select Fiat Currency</Text>
+                <Text style={styles.muted}>
+                  {invoiceOptions?.globalBankEnabled
+                    ? "Your Global Neobank receiving details for the chosen currency will be provisioned directly on the invoice."
+                    : "Naira instant bank account is ready now. Complete ID verification in Profile to receive GBP, EUR, USD & more."}
+                </Text>
+                <View style={styles.fiatGrid}>
+                  {(
+                    invoiceOptions?.fiatCurrencies || [
+                      { currency: "NGN", label: "Nigerian Naira", provider: "naira_instant", provisioned: true },
+                      { currency: "USD", label: "US Dollar", provider: "global_bank", provisioned: false },
+                      { currency: "GBP", label: "British Pound", provider: "global_bank", provisioned: false },
+                      { currency: "EUR", label: "Euro", provider: "global_bank", provisioned: false },
+                    ]
+                  ).map((fc) => {
+                    const active = invFiatCurrency === fc.currency;
+                    return (
+                      <PressableScale
+                        key={fc.currency}
+                        onPress={() => setInvFiatCurrency(fc.currency)}
+                        style={[styles.fiatTile, active && styles.fiatTileOn]}
+                      >
+                        <CurrencyLogo code={fc.currency} size={24} />
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text style={styles.fiatCode}>{fc.currency}</Text>
+                          <Text style={styles.fiatName} numberOfLines={1}>
+                            {fc.label}
+                          </Text>
+                        </View>
+                        {active ? <Ionicons name="checkmark-circle" size={16} color={COLORS.primary} /> : null}
+                      </PressableScale>
+                    );
+                  })}
+                </View>
+              </View>
+            ) : null}
+
+            {/* Crypto chain & token picker (NEAR Intents + Direct USDC) */}
+            {invPayMode === "crypto" || invPayMode === "both" ? (
+              <View style={styles.invMethodBox}>
+                <Text style={styles.invMethodTitle}>Select Crypto Network & Token</Text>
+                <Text style={styles.muted}>
+                  Exact payment address for your selected network & token is automatically generated on the invoice.
+                </Text>
+                <View style={styles.pillWrap}>
+                  {(invoiceOptions?.cryptoChains || []).slice(0, 14).map((ch) => (
+                    <Pill
+                      key={ch.key}
+                      label={ch.name}
+                      active={invCryptoChain === ch.key}
+                      onPress={() => setInvCryptoChain(ch.key)}
+                    />
+                  ))}
+                </View>
+                {(invoiceOptions?.cryptoTokensByChain?.[invCryptoChain] || []).length > 0 ? (
+                  <>
+                    <Text style={[styles.invMethodTitle, { marginTop: 4 }]}>Token</Text>
+                    <View style={styles.pillWrap}>
+                      {(invoiceOptions?.cryptoTokensByChain?.[invCryptoChain] || []).slice(0, 12).map((tk) => {
+                        const active = invCryptoToken?.assetId === tk.assetId;
+                        return (
+                          <PressableScale
+                            key={tk.assetId}
+                            onPress={() => setInvCryptoToken(tk)}
+                            style={[styles.tokenChip, active && styles.tokenChipOn]}
+                          >
+                            {tk.logoUrl ? (
+                              <Image source={{ uri: tk.logoUrl }} style={styles.tokenLogo} resizeMode="contain" />
+                            ) : null}
+                            <Text style={[styles.tokenChipText, active && { color: COLORS.primaryDark }]}>
+                              {tk.symbol}
+                            </Text>
+                          </PressableScale>
+                        );
+                      })}
+                    </View>
+                  </>
+                ) : null}
+              </View>
+            ) : null}
+
+            <Input
+              label={`Amount (${invPayMode === "crypto" ? "USD" : invFiatCurrency})`}
+              placeholder={invPayMode !== "crypto" && invFiatCurrency === "NGN" ? "e.g. 250000" : "e.g. 250"}
+              value={invAmount}
+              onChangeText={(t) => setInvAmount(t.replace(/[^\d.]/g, ""))}
+              keyboardType="decimal-pad"
+              currency={invPayMode === "crypto" ? "USD" : invFiatCurrency}
+            />
+            <Input label="Due Date (optional)" placeholder="YYYY-MM-DD" value={invDueDate} onChangeText={setInvDueDate} />
+            <Input label="Item / Notes (optional)" placeholder="Design sprint or invoice description" value={invNotes} onChangeText={setInvNotes} />
+            <Button title="Create & Provision Invoice" onPress={handleCreateInvoice} loading={loading} style={{ marginBottom: 14 }} />
+
+            {/* Provisioned details card for freshly created invoice */}
+            {createdPaymentDetails ? (
+              <View style={[styles.subCard, { borderColor: COLORS.primaryBorder, backgroundColor: COLORS.deep }]}>
+                <SectionHeader
+                  title={`Provisioned · ${createdPaymentDetails.invoiceNumber}`}
+                  right={
+                    <PressableScale onPress={() => setCreatedPaymentDetails(null)}>
+                      <Ionicons name="close" size={18} color={COLORS.textMuted} />
+                    </PressableScale>
+                  }
+                />
+                {createdPaymentDetails.fiat ? (
+                  <>
+                    <KeyValueRow
+                      label="Bank"
+                      value={String(createdPaymentDetails.fiat.bankName || "Partner Bank")}
+                    />
+                    {createdPaymentDetails.fiat.accountNumber || createdPaymentDetails.fiat.iban ? (
+                      <KeyValueRow
+                        label={createdPaymentDetails.fiat.iban ? "IBAN / Account" : "Account No."}
+                        value={String(createdPaymentDetails.fiat.accountNumber || createdPaymentDetails.fiat.iban)}
+                        onCopy={() =>
+                          copy(
+                            "Invoice account",
+                            String(createdPaymentDetails.fiat?.accountNumber || createdPaymentDetails.fiat?.iban || "")
+                          )
+                        }
+                      />
+                    ) : null}
+                    {createdPaymentDetails.fiat.accountName ? (
+                      <KeyValueRow label="Account Name" value={String(createdPaymentDetails.fiat.accountName)} />
+                    ) : null}
+                  </>
+                ) : createdPaymentDetails.fiatPendingCurrency ? (
+                  <Text style={styles.muted}>
+                    {createdPaymentDetails.fiatPendingCurrency} global bank details are pending activation. Complete ID verification or check Global Bank tab.
+                  </Text>
+                ) : null}
+                {createdPaymentDetails.crypto && createdPaymentDetails.crypto.depositAddress ? (
+                  <>
+                    <KeyValueRow
+                      label="Crypto Method"
+                      value={`${String(createdPaymentDetails.crypto.chainLabel || "Crypto")} · ${String(createdPaymentDetails.crypto.tokenSymbol || "USDC")}`}
+                    />
+                    <KeyValueRow
+                      label="Deposit Address"
+                      value={shortAddr(String(createdPaymentDetails.crypto.depositAddress), 10, 8)}
+                      onCopy={() => copy("Crypto address", String(createdPaymentDetails.crypto?.depositAddress || ""))}
+                    />
+                  </>
+                ) : null}
+                <View style={{ flexDirection: "row", gap: 8, marginTop: 8 }}>
+                  {createdPaymentDetails.invoiceId ? (
+                    <View style={{ flex: 1 }}>
+                      <Button
+                        title="Download PNG"
+                        onPress={() =>
+                          handleDownloadInvoice(createdPaymentDetails.invoiceId!, createdPaymentDetails.invoiceNumber)
+                        }
+                        loading={downloadingInvoiceId === createdPaymentDetails.invoiceId}
+                      />
+                    </View>
+                  ) : null}
+                  {createdPaymentDetails.clientCopyText ? (
+                    <View style={{ flex: 1 }}>
+                      <Button
+                        title="Copy Details"
+                        variant="secondary"
+                        onPress={() => copy("Invoice payment details", createdPaymentDetails.clientCopyText!)}
+                      />
+                    </View>
+                  ) : null}
+                </View>
+              </View>
+            ) : null}
+
+            <SectionHeader title={isBiz ? "Your Business Invoices" : "Your Personal Invoices"} />
             {invoices.length === 0 ? (
               <EmptyState icon="document-text-outline" title="No invoices yet" />
             ) : (
-              invoices.map((inv) => (
-                <View key={inv.id} style={styles.subCard}>
-                  <KeyValueRow label={`${inv.invoiceNumber} · ${inv.clientName}`} value={`${formatUsdc(inv.totalUsdc)} (${inv.status})`} />
-                  {inv.paymentAddress ? (
+              invoices.map((inv) => {
+                const token = getAccessToken();
+                const scope = isBiz ? "business" : "personal";
+                const showingPreview = previewInvoiceId === inv.id;
+                return (
+                  <View key={inv.id} style={styles.subCard}>
                     <KeyValueRow
-                      label="Pay Address"
-                      value={shortAddr(inv.paymentAddress, 8, 6)}
-                      onCopy={() => copy("Invoice address", inv.paymentAddress!)}
+                      label={`${inv.invoiceNumber} · ${inv.clientName}`}
+                      value={`${formatUsdc(inv.totalUsdc)} (${inv.status})`}
                     />
-                  ) : null}
-                  {inv.status !== "paid" ? (
-                    <Button
-                      title="Mark Paid"
-                      variant="secondary"
-                      onPress={() => handleMarkInvoicePaid(inv.id)}
-                      style={{ height: 36, marginTop: 8 }}
-                    />
-                  ) : null}
-                </View>
-              ))
+                    {inv.fiatAccountNumber ? (
+                      <KeyValueRow
+                        label={inv.fiatBankName ? `Bank (${inv.fiatBankName})` : "Bank Account"}
+                        value={inv.fiatAccountNumber}
+                        onCopy={() => copy("Invoice bank account", inv.fiatAccountNumber!)}
+                      />
+                    ) : null}
+                    {inv.paymentAddress ? (
+                      <KeyValueRow
+                        label="Crypto Address"
+                        value={shortAddr(inv.paymentAddress, 8, 6)}
+                        onCopy={() => copy("Invoice address", inv.paymentAddress!)}
+                      />
+                    ) : null}
+                    {showingPreview && token ? (
+                      <View style={styles.invoicePreviewBox}>
+                        <Image
+                          source={{
+                            uri: api.getInvoiceDownloadUrl(inv.id, scope),
+                            headers: { Authorization: `Bearer ${token}`, "X-Proxim-Account": activeAccount },
+                          }}
+                          style={styles.invoicePreviewImg}
+                          resizeMode="contain"
+                        />
+                      </View>
+                    ) : null}
+                    <View style={styles.invActionRow}>
+                      <View style={{ flex: 1 }}>
+                        <Button
+                          title="Download / Share"
+                          onPress={() => handleDownloadInvoice(inv.id, inv.invoiceNumber)}
+                          loading={downloadingInvoiceId === inv.id}
+                          style={{ height: 38 }}
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Button
+                          title={showingPreview ? "Hide Preview" : "Preview"}
+                          variant="secondary"
+                          onPress={() => setPreviewInvoiceId(showingPreview ? null : inv.id)}
+                          style={{ height: 38 }}
+                        />
+                      </View>
+                    </View>
+                    {inv.status !== "paid" ? (
+                      <Button
+                        title="Mark Paid"
+                        variant="ghost"
+                        onPress={() => handleMarkInvoicePaid(inv.id)}
+                        style={{ height: 34, marginTop: 4 }}
+                      />
+                    ) : null}
+                  </View>
+                );
+              })
             )}
           </Card>
 
@@ -747,4 +1050,53 @@ const styles = StyleSheet.create({
     padding: 10,
     marginBottom: 10,
   },
+  invStepLabel: { fontFamily: FONTS.bold, fontSize: 13, color: COLORS.text, marginBottom: 8, marginTop: 4 },
+  invMethodBox: {
+    backgroundColor: COLORS.page,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 10,
+    marginBottom: 12,
+  },
+  invMethodTitle: { fontFamily: FONTS.bold, fontSize: 12, color: COLORS.text, marginBottom: 4 },
+  fiatGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  fiatTile: {
+    ...DEPTH.raised,
+    flexBasis: "47%",
+    flexGrow: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    padding: 9,
+    borderRadius: RADIUS.sm,
+    backgroundColor: COLORS.surface,
+  },
+  fiatTileOn: { borderColor: COLORS.primary, borderWidth: 2, backgroundColor: COLORS.deep },
+  fiatCode: { fontFamily: FONTS.extrabold, fontSize: 13, color: COLORS.text },
+  fiatName: { fontFamily: FONTS.regular, fontSize: 11, color: COLORS.textSecondary },
+  tokenChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: RADIUS.pill,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  tokenChipOn: { borderColor: COLORS.primary, borderWidth: 2, backgroundColor: COLORS.deep },
+  tokenLogo: { width: 16, height: 16, borderRadius: 8 },
+  tokenChipText: { fontFamily: FONTS.bold, fontSize: 12, color: COLORS.text },
+  invActionRow: { flexDirection: "row", gap: 8, marginTop: 8 },
+  invoicePreviewBox: {
+    marginTop: 10,
+    borderRadius: RADIUS.sm,
+    overflow: "hidden",
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  invoicePreviewImg: { width: "100%", height: 340 },
 });

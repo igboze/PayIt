@@ -35,6 +35,7 @@ export type HomeModalTarget =
   | "bills"
   | "cards"
   | "savings"
+  | "stocks"
   | "swap"
   | "assistant"
   | "global"
@@ -270,7 +271,13 @@ export function HomeScreen({
         ) : (
           <View style={styles.amountRow}>
             <Text style={styles.totalAmount} numberOfLines={1} adjustsFontSizeToFit>
-              {hidden ? "$••••" : balance ? formatUsdc(balance.totalUsdc) : "—"}
+              {hidden
+                ? "₦••••"
+                : totalNgn !== null
+                  ? formatNgn(totalNgn)
+                  : balance
+                    ? formatUsdc(balance.totalUsdc)
+                    : "—"}
             </Text>
             <PressableScale
               onPress={() => setHidden((h) => !h)}
@@ -286,8 +293,8 @@ export function HomeScreen({
         {balance ? (
           <View style={styles.ngnValueRow}>
             <View style={styles.ngnValueLeft}>
-              <CurrencyLogo code="NGN" size={20} />
-              <Text style={styles.ngnValue}>{hidden ? "₦••••" : totalNgn !== null ? formatNgn(totalNgn) : "₦—"}</Text>
+              <CurrencyLogo code="USD" size={20} />
+              <Text style={styles.ngnValue}>{hidden ? "$••••" : formatUsdc(balance.totalUsdc)}</Text>
             </View>
             {ngnRate ? <Text style={styles.rateText}>$1 = ₦{Math.round(ngnRate).toLocaleString("en-NG")}</Text> : null}
           </View>
@@ -356,7 +363,17 @@ export function HomeScreen({
         <Tile icon="server-outline" tone="teal" />
         <View style={{ flex: 1, gap: 2 }}>
           <Text style={styles.rowTitle}>Savings</Text>
-          <Text style={styles.rowSub}>Earn on your dollars · withdraw anytime</Text>
+          <Text style={styles.rowSub}>Choose a savings vault · withdraw anytime</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
+      </PressableScale>
+
+      {/* US Stocks (Pods Finance / Ondo Global Markets) */}
+      <PressableScale onPress={() => onNavigate("stocks")} depth={0.98} style={styles.rowCard}>
+        <Tile icon="trending-up-outline" tone="blue" />
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text style={styles.rowTitle}>US Stocks & ETFs</Text>
+          <Text style={styles.rowSub}>Buy Apple, NVIDIA, Tesla & 470+ stocks · live charts</Text>
         </View>
         <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
       </PressableScale>
