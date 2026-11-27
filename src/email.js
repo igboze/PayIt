@@ -547,11 +547,16 @@ async function sendTransactionAlertEmail({
   const whenStr = new Date(timestamp || Date.now()).toUTCString();
   const greeting = name ? `Hello ${safe(name)},` : "Hello,";
 
+  const rawStatus = String(status || "confirmed").trim().toLowerCase();
+  const displayStatus = ["confirmed", "completed", "submitted", "success", "successful", "paid", "settled"].includes(rawStatus)
+    ? "SUCCESSFUL"
+    : rawStatus.toUpperCase();
+
   const rows = [
     ["Transaction Type", meta.label],
     ["Amount", `${sign}${amtText}`],
     ["Account", acctLabel],
-    ["Status", String(status || "confirmed").toUpperCase()],
+    ["Status", displayStatus],
     ["Date (UTC)", whenStr],
   ];
   if (narration) rows.push(["Description", String(narration).slice(0, 120)]);
