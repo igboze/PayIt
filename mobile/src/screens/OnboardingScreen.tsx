@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import {
   Image,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   ScrollView,
   StyleSheet,
@@ -161,7 +162,7 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
     setError(null);
     const cleanedCode = linkCode.trim();
     if (cleanedCode.length < 6) {
-      setError("Enter the link code from /linkapp in @payeetbot.");
+      setError("Enter the link code from /linkapp at https://t.me/payeetbot.");
       return;
     }
     if (!/^\d{4}$/.test(linkPin)) {
@@ -431,8 +432,15 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
             <Card>
               <Text style={styles.cardTitle}>Link Telegram account</Text>
               <Text style={styles.cardSub}>
-                1. Open <Text style={{ color: COLORS.primary, fontFamily: FONTS.bold }}>@payeetbot</Text>{" "}
-                in Telegram and send <Text style={{ fontFamily: FONTS.bold, color: COLORS.text }}>/linkapp</Text>.
+                1. Tap{" "}
+                <Text
+                  onPress={() => Linking.openURL("https://t.me/payeetbot").catch(() => {})}
+                  accessibilityRole="link"
+                  style={{ color: COLORS.success, fontFamily: FONTS.bold, textDecorationLine: "underline" }}
+                >
+                  https://t.me/payeetbot
+                </Text>{" "}
+                to open Telegram and send <Text style={{ fontFamily: FONTS.bold, color: COLORS.text }}>/linkapp</Text>.
                 {"\n"}2. Paste the one-time code below along with your existing 4-digit wallet PIN.
               </Text>
               <Input

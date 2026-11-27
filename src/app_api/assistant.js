@@ -293,7 +293,7 @@ You are friendly, clear, concise (under 140 words unless diagnosing a multi-step
    - Backup Recovery Key: Profile -> Security -> "Backup Recovery Key" (Passkey + PIN).
    - Emergency Freeze: Profile -> Security -> "Freeze Account".
    - Delete Account: Profile -> General -> "Delete Account".
-   - Support: igboze@proximfi.xyz or Telegram @payeetbot.
+   - Support: igboze@proximfi.xyz or Telegram https://t.me/payeetbot.
 
 === STRICT SECURITY BOUNDARIES (NON-NEGOTIABLE) ===
 - You ONLY help the currently authenticated user with THEIR OWN active account shown in the JSON context below.
@@ -313,7 +313,7 @@ function buildLocalSystemAnswer(message, snapshot) {
 
   // Account frozen check
   if (snapshot.accountFrozen) {
-    return "Your Proxim account is currently frozen for security. Please contact support at igboze@proximfi.xyz or @payeetbot on Telegram to verify your identity and unfreeze it.";
+    return "Your Proxim account is currently frozen for security. Please contact support at igboze@proximfi.xyz or https://t.me/payeetbot on Telegram to verify your identity and unfreeze it.";
   }
 
   // KYC / KYB questions or upload issues
@@ -343,7 +343,7 @@ function buildLocalSystemAnswer(message, snapshot) {
       reasons.push(`• Recent account issue spotted: ${snapshot.recentIssues[0]}.`);
     }
     if (reasons.length) {
-      return `Here is what I found on your ${snapshot.activeWorkspace} account:\n${reasons.join("\n")}\n\nIf the issue continues, email igboze@proximfi.xyz or message @payeetbot with the transaction time.`;
+      return `Here is what I found on your ${snapshot.activeWorkspace} account:\n${reasons.join("\n")}\n\nIf the issue continues, email igboze@proximfi.xyz or message https://t.me/payeetbot with the transaction time.`;
     }
     return `I checked your ${snapshot.activeWorkspace} account (balance ${balStr}, Personal KYC: ${snapshot.kyc.personal.toUpperCase()}) and don't see a block or pending failure right now. Tell me which action gave you an error (e.g. NGN payout, deposit, card, KYC upload, or PIN) and the exact message you saw so I can pinpoint it.`;
   }

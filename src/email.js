@@ -222,7 +222,7 @@ async function sendWelcomeEmail({ to, name } = {}) {
           <b>Quick tip:</b> Head to <b>Profile</b> in the app to claim your personal <code>@username</code> so friends and clients can pay you for free.
         </p>
         <p style="font-size: 13px; line-height: 1.5; color: #776F5F; margin: 0;">
-          Need help anytime? Reply to this email, contact <a href="mailto:igboze@proximfi.xyz" style="color: #002018; font-weight: 600;">igboze@proximfi.xyz</a>, or chat with us on Telegram at <a href="https://t.me/payeetbot" style="color: #002018; font-weight: 600;">@payeetbot</a>.
+          Need help anytime? Reply to this email, contact <a href="mailto:igboze@proximfi.xyz" style="color: #002018; font-weight: 600;">igboze@proximfi.xyz</a>, or chat with us on Telegram at <a href="https://t.me/payeetbot" style="color: #002018; font-weight: 600;">https://t.me/payeetbot</a>.
         </p>
         <hr style="border: none; border-top: 1px solid #E6DEC9; margin: 22px 0;" />
         <p style="font-size: 12px; color: #8A8170; margin: 0;">
