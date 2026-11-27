@@ -17,18 +17,22 @@ const emailModule = require("./email");
 let deps = {};
 
 const UPLOAD_STEP_ALLOWED_MIMES = {
-  nuvion_kyc_doc_id_front: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
-  nuvion_kyc_doc_id_back: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
-  nuvion_kyc_doc_poa: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
-  nuvion_kyb_doc_coi: new Set(["application/pdf"]),
+  nuvion_kyc_doc_id_front: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"]),
+  nuvion_kyc_doc_id_back: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"]),
+  nuvion_kyc_doc_poa: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"]),
+  nuvion_kyb_doc_coi: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"]),
   nuvion_kyb_doc_memart: new Set([
     "application/pdf",
     "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/webp",
   ]),
-  nuvion_kyb_doc_poa: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
-  nuvion_kyb_doc_officer_id: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
-  nuvion_kyb_doc_officer_poa: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+  nuvion_kyb_doc_poa: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"]),
+  nuvion_kyb_doc_officer_id: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"]),
+  nuvion_kyb_doc_officer_poa: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"]),
 };
 
 function escapeHtml(str) {
@@ -74,28 +78,45 @@ function normalizeWebsiteUrl(raw) {
     if ((parsed.protocol === "https:" || parsed.protocol === "http:") && parsed.hostname.includes(".")) {
       return parsed.toString().replace(/\/$/, "");
     }
-  } catch (_) {}
+  } catch (_) { }
   return undefined; // signals invalid URL format
 }
 
+function normalizeDateInput(raw) {
+  const s = String(raw || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const slashYmd = s.match(/^(\d{4})[/.](\d{1,2})[/.](\d{1,2})$/);
+  if (slashYmd) {
+    return `${slashYmd[1]}-${slashYmd[2].padStart(2, "0")}-${slashYmd[3].padStart(2, "0")}`;
+  }
+  const dmy = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (dmy) {
+    return `${dmy[3]}-${dmy[2].padStart(2, "0")}-${dmy[1].padStart(2, "0")}`;
+  }
+  return s;
+}
+
+function isValidIsoDate(d) {
+  const norm = normalizeDateInput(d);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(norm)) return false;
+  const parsed = new Date(`${norm}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().startsWith(norm);
+}
+
 function isFutureIsoDate(d) {
-  if (!isValidIsoDate(d)) return false;
-  return new Date(`${d}T23:59:59Z`).getTime() > Date.now();
+  const norm = normalizeDateInput(d);
+  if (!isValidIsoDate(norm)) return false;
+  return new Date(`${norm}T23:59:59Z`).getTime() > Date.now();
 }
 
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(email || "").trim());
 }
 
-function isValidIsoDate(d) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(d || "").trim())) return false;
-  const parsed = new Date(`${d}T00:00:00Z`);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().startsWith(d);
-}
-
 function isAdultDob(dobStr) {
-  if (!isValidIsoDate(dobStr)) return false;
-  const dob = new Date(`${dobStr}T00:00:00Z`);
+  const norm = normalizeDateInput(dobStr);
+  if (!isValidIsoDate(norm)) return false;
+  const dob = new Date(`${norm}T00:00:00Z`);
   const ageYears = (Date.now() - dob.getTime()) / (1000 * 60 * 60 * 24 * 365.25);
   return ageYears >= 18 && ageYears <= 110;
 }
@@ -136,20 +157,20 @@ async function deleteUserStepMessage(ctx) {
       await deps.deleteSensitiveMessage(ctx);
       return;
     }
-  } catch (_) {}
+  } catch (_) { }
   try {
     if (typeof ctx.deleteMessage === "function") {
       await ctx.deleteMessage();
       return;
     }
-  } catch (_) {}
+  } catch (_) { }
   try {
     const chatId = ctx.chat?.id || ctx.from?.id;
     const msgId = ctx.message?.message_id || ctx.callbackQuery?.message?.message_id;
     if (chatId && msgId && ctx.telegram && typeof ctx.telegram.deleteMessage === "function") {
       await ctx.telegram.deleteMessage(chatId, msgId);
     }
-  } catch (_) {}
+  } catch (_) { }
 }
 
 const NUVION_PRIVACY_FOOTER = compliance.KYC_CONSENT_FOOTER;
@@ -396,14 +417,14 @@ async function showGlobalPortal(ctx, forcedContext = null) {
       `• ✈️ <b>Global Transfers</b> (27+ currencies via bank &amp; mobile money rails)\n` +
       (isBiz ? `• 🧾 <b>Global Client Invoicing &amp; 27-Currency Payroll</b>\n` : "") +
       `\n<i>All deposits automatically settle straight into your main Proxim balance.</i>\n\n` +
-      `🌍 <b>Supported Countries for KYC &amp; KYB (Powered by Nuvion):</b>\n` +
+      `🌍 <b>Supported Countries for KYC &amp; KYB:</b>\n` +
       `🇳🇬 Nigeria · 🇺🇸 US · 🇬🇧 UK · 🇨🇦 Canada · 🇪🇺 Eurozone (DE, FR, NL, ES, IT &amp; EU) · 🇦🇪 UAE · 🇬🇭 Ghana · 🇰🇪 Kenya · 🇹🇿 Tanzania · 🇺🇬 Uganda · 🇿🇦 South Africa · 🇲🇽 Mexico · 🇧🇷 Brazil · 🇨🇭 Switzerland · 🇸🇪 Sweden · 🇳🇴 Norway · 🇩🇰 Denmark · 🇦🇺 Australia · 🇳🇿 New Zealand · 🇸🇬 Singapore · 🇭🇰 Hong Kong · 🇯🇵 Japan · 🇰🇷 South Korea · 🇵🇭 Philippines · 🇹🇭 Thailand · 🇮🇱 Israel &amp; global ISO jurisdictions — select your country in Step 1.\n\n` +
       `<b>What you'll need:</b>\n` +
       (isBiz
-        ? `• Certificate of Incorporation &amp; Articles/Memorandum of Association (PDF)\n• Business proof of address (&lt; 3 months)\n• Director / Owner Government ID &amp; proof of address\n\n`
+        ? `• Certificate of Incorporation &amp; Articles/Memorandum of Association (PDF or clear photo)\n• Business proof of address (&lt; 3 months)\n• Director / Owner Government ID &amp; proof of address\n\n`
         : `• Valid Government ID (Passport, National ID, or Driver's License)\n• Proof of address (utility bill or bank statement &lt; 3 months)\n• Local tax/identity number where required by your country (e.g. SSN for US, BVN/NIN for NG)\n\n`) +
-      `🛡️ <b>Privacy &amp; Compliance Guarantee (Powered by Nuvion)</b>\n` +
-      `• Your KYC/KYB verification is handled directly by <b>Nuvion</b>, our regulated global banking &amp; compliance infrastructure partner.\n` +
+      `🛡️ <b>Privacy &amp; Compliance Guarantee</b>\n` +
+      `• Your KYC/KYB verification is handled directly by our regulated <b>Global Banking Compliance Partner</b>.\n` +
       `• <b>100% Compliant &amp; Confidential:</b> Your data and documents are encrypted, used strictly for regulatory verification, and <b>will never be shared with anyone</b>.\n` +
       `• <b>Auto-Delete Chat Protection:</b> Every detail and document you enter is automatically deleted from this Telegram chat as soon as each step is completed.`,
       { parse_mode: "HTML", ...Markup.inlineKeyboard(buttons) }
@@ -445,7 +466,7 @@ async function showGlobalPortal(ctx, forcedContext = null) {
       `• <b>Name:</b> ${escapeHtml(entity.legal_name || "—")}\n` +
       `• <b>${isBiz ? "Business KYB" : "Personal KYC"} Status:</b> <code>${escapeHtml(status.toUpperCase())}</code>\n` +
       otherStatusLine +
-      `• <b>Compliance Partner:</b> <b>Nuvion</b>\n\n` +
+      `• <b>Compliance Partner:</b> <b>Proxim Global Banking Compliance</b>\n\n` +
       `We'll message you automatically the moment your verification is approved.`,
       {
         parse_mode: "HTML",
@@ -686,7 +707,7 @@ async function promptPersonalKycStep(ctx, userId, step, data = {}) {
         (data.ssn ? `• <b>SSN:</b> <code>${maskSecret(data.ssn)}</code>\n` : "") +
         `• <b>ID:</b> ${escapeHtml(data.id_type)} (<code>${maskSecret(data.id_number)}</code>)\n` +
         `• <b>Documents:</b> ID Front ✅${data.doc_id_back ? " · ID Back ✅" : ""} · Proof of Address ✅\n\n` +
-        `🛡️ <i>Your verification is processed by <b>Nuvion</b> (100% compliant &amp; confidential — never shared with anyone). This review card will also be auto-deleted upon submission.</i>`,
+        `🛡️ <i>Your verification is processed securely by our regulated <b>Global Banking Compliance Partner</b> (100% compliant &amp; confidential — never shared with anyone). This review card will also be auto-deleted upon submission.</i>`,
         {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
@@ -785,31 +806,39 @@ async function promptBusinessKybStep(ctx, userId, step, data = {}) {
     case "nuvion_kyb_officer":
       return ctx.reply(
         `👤 <b>Step 7/9 — Controlling Officer / Beneficial Owner (≥25%)</b>\n──────────────────────────\n` +
-        `Send <b>First Name, Last Name, Job Title, Ownership %, Email, Phone, DOB (YYYY-MM-DD), Nationality (2-letter), Gender (m/f)</b> separated by commas:` +
+        `Send <b>First Name, Last Name, Job Title, Ownership %, Email, Phone, DOB (YYYY-MM-DD), Nationality (2-letter), Gender (m/f)</b> separated by commas:\n\n` +
+        `Example: <code>${escapeHtml(preset.sampleName.replace(/\s+/, ", "))}, CEO, 100, director@company.com, ${escapeHtml(preset.samplePhone)}, 1990-05-15, ${escapeHtml(data.incorp_country || "NG")}, m</code>` +
         NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
 
-    case "nuvion_kyb_officer_ids":
+    case "nuvion_kyb_officer_ids": {
+      const offNat = String(data.officer_nationality || data.biz_country_code || "NG").toUpperCase();
+      const extraHint = offNat === "NG"
+        ? `, BVN (11 digits), NIN (11 digits)\n\nExample: <code>passport, A12345678, 2022-01-01, 2032-01-01, 12345678901, 10987654321</code>`
+        : offNat === "US"
+          ? `, SSN (9 digits)\n\nExample: <code>passport, 543219876, 2022-01-01, 2032-01-01, 123-45-6789</code>`
+          : `\n\nExample: <code>passport, A12345678, 2022-01-01, 2032-01-01</code>`;
       return ctx.reply(
         `🔒 <b>Step 7b/9 — Officer ID Details</b>\n──────────────────────────\n` +
-        `Send <b>ID Type (passport/national_id/drivers_license), ID Number, Issue Date, Expiry Date, BVN (if NG) / SSN (if US), NIN (if NG)</b> separated by commas:` +
+        `Send <b>ID Type (passport / national_id / drivers_license), ID Number, Issue Date, Expiry Date</b>${extraHint} separated by commas:` +
         NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
+    }
 
     case "nuvion_kyb_doc_coi":
       return ctx.reply(
-        `📄 <b>Step 8/9 — Upload Certificate of Incorporation (PDF)</b>\n──────────────────────────\n` +
-        `Send the <b>PDF</b> of your company's Certificate of Incorporation:` +
+        `📄 <b>Step 8/9 — Upload Certificate of Incorporation</b>\n──────────────────────────\n` +
+        `Send the <b>PDF or a clear photo</b> of your company's Certificate of Incorporation (photos are auto-converted to PDF):` +
         NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
 
     case "nuvion_kyb_doc_memart":
       return ctx.reply(
-        `📄 <b>Step 8b/9 — Upload Memorandum of Association (PDF/DOCX)</b>\n──────────────────────────\n` +
-        `Send the <b>PDF or DOCX</b> of your Memorandum &amp; Articles of Association:` +
+        `📄 <b>Step 8b/9 — Upload Memorandum of Association</b>\n──────────────────────────\n` +
+        `Send the <b>PDF, DOC/DOCX, or a clear photo</b> of your Memorandum &amp; Articles of Association:` +
         NUVION_PRIVACY_FOOTER,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(wizardControls("business")) }
       );
@@ -847,7 +876,7 @@ async function promptBusinessKybStep(ctx, userId, step, data = {}) {
         `• <b>Email:</b> ${escapeHtml(data.business_email)}\n` +
         `• <b>Officer:</b> ${escapeHtml(data.officer_first_name)} ${escapeHtml(data.officer_last_name)} (${escapeHtml(data.officer_job_title)}, ${data.officer_ownership}%)\n` +
         `• <b>Documents:</b> COI ✅ · MemArt ✅ · Biz POA ✅ · Officer ID ✅ · Officer POA ✅\n\n` +
-        `🛡️ <i>Your KYB verification is processed by <b>Nuvion</b> (100% compliant &amp; confidential — never shared with anyone). This review card will also be auto-deleted upon submission.</i>`,
+        `🛡️ <i>Your KYB verification is processed securely by our regulated <b>Global Banking Compliance Partner</b> (100% compliant &amp; confidential — never shared with anyone). This review card will also be auto-deleted upon submission.</i>`,
         {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
@@ -988,21 +1017,26 @@ async function executePersonalKycSubmission(ctx, userId) {
         personId = live?.person?.id || live?.entity?.person_id || null;
         if (personId) db.updateNuvionEntity(entityId, { person_id: personId });
         if (live?.entity?.status) entityStatus = String(live.entity.status).toLowerCase();
-      } catch (_) {}
+      } catch (_) { }
     }
 
-    // Stream Telegram files directly into memory as Base64 (never saved to disk)
+    // Stream Telegram files directly into memory and normalize formats (e.g. WEBP -> JPEG)
+    const { normalizeDocumentForNuvion } = require("./app_api/features");
     const idFrontBuf = await deps.downloadTelegramFile(ctx, d.doc_id_front.fileId);
     const idBackBuf = d.doc_id_back?.fileId ? await deps.downloadTelegramFile(ctx, d.doc_id_back.fileId) : null;
     const poaBuf = await deps.downloadTelegramFile(ctx, d.doc_poa.fileId);
+
+    const normFront = await normalizeDocumentForNuvion(idFrontBuf.toString("base64"), d.doc_id_front.mimeType || "image/jpeg", "id_front");
+    const normBack = idBackBuf ? await normalizeDocumentForNuvion(idBackBuf.toString("base64"), d.doc_id_back.mimeType || "image/jpeg", "id_back") : null;
+    const normPoa = await normalizeDocumentForNuvion(poaBuf.toString("base64"), d.doc_poa.mimeType || "image/jpeg", "poa");
 
     await nuvion.uploadDocument({
       entityId,
       key: "identity",
       description: `${d.id_type} for ${fullName}`,
-      fileBase64: idFrontBuf.toString("base64"),
-      fileBackBase64: idBackBuf ? idBackBuf.toString("base64") : null,
-      fileType: d.doc_id_front.mimeType || "image/jpeg",
+      fileBase64: normFront.base64,
+      fileBackBase64: normBack ? normBack.base64 : null,
+      fileType: normFront.mimeType,
       personId,
     });
 
@@ -1010,8 +1044,8 @@ async function executePersonalKycSubmission(ctx, userId) {
       entityId,
       key: "proof_of_address",
       description: `Proof of address for ${fullName}`,
-      fileBase64: poaBuf.toString("base64"),
-      fileType: d.doc_poa.mimeType || "image/jpeg",
+      fileBase64: normPoa.base64,
+      fileType: normPoa.mimeType,
       personId,
     });
 
@@ -1037,7 +1071,7 @@ async function executePersonalKycSubmission(ctx, userId) {
 
     return ctx.reply(
       `🎉 <b>Verification Submitted!</b>\n──────────────────────────\n` +
-      `Your Tier-1 verification is now being reviewed by <b>Nuvion</b>.\n\n` +
+      `Your Tier-1 verification is now being reviewed by our regulated <b>Global Banking Compliance Partner</b>.\n\n` +
       `🛡️ <b>Privacy Confirmed:</b> Your application is 100% compliant and confidential, will never be shared with anyone, and your local chat inputs &amp; draft have been erased.\n\n` +
       `We'll notify you automatically right here as soon as your Global Bank Accounts, Virtual USD Cards, and International Transfers are active!`,
       {
@@ -1276,16 +1310,17 @@ async function executeBusinessKybSubmission(ctx, userId) {
           null;
         if (officerPersonId) db.updateNuvionEntity(entityId, { person_id: officerPersonId });
         if (live?.entity?.status) entityStatus = String(live.entity.status).toLowerCase();
-      } catch (_) {}
+      } catch (_) { }
     }
 
     if (!officerPersonId) {
       throw new Error("Could not resolve officer person_id from Nuvion business entity; aborting document upload to prevent unlinked officer docs.");
     }
 
+    const { normalizeDocumentForNuvion } = require("./app_api/features");
     const docs = [
-      { key: "certificate_of_incorporation", doc: d.doc_coi, desc: `COI for ${d.legal_name}` },
-      { key: "memorandum_of_association", doc: d.doc_memart, desc: `MemArt for ${d.legal_name}` },
+      { key: "certificate_of_incorporation", doc: d.doc_coi, desc: `COI for ${d.legal_name}`, requirePdf: true },
+      { key: "memorandum_of_association", doc: d.doc_memart, desc: `MemArt for ${d.legal_name}`, requirePdf: String(d.doc_memart?.mimeType || "").startsWith("image/") },
       { key: "proof_of_address", doc: d.doc_poa, desc: `Business POA for ${d.legal_name}` },
       { key: "identity", doc: d.doc_officer_id, desc: `Officer ID`, personId: officerPersonId },
       { key: "proof_of_address", doc: d.doc_officer_poa, desc: `Officer POA`, personId: officerPersonId },
@@ -1293,12 +1328,18 @@ async function executeBusinessKybSubmission(ctx, userId) {
 
     for (const item of docs) {
       const buf = await deps.downloadTelegramFile(ctx, item.doc.fileId);
+      const norm = await normalizeDocumentForNuvion(
+        buf.toString("base64"),
+        item.doc.mimeType || "application/pdf",
+        item.key,
+        { requirePdf: Boolean(item.requirePdf) }
+      );
       await nuvion.uploadDocument({
         entityId,
         key: item.key,
         description: item.desc,
-        fileBase64: buf.toString("base64"),
-        fileType: item.doc.mimeType || "application/pdf",
+        fileBase64: norm.base64,
+        fileType: norm.mimeType,
         personId: item.personId || null,
       });
     }
@@ -1324,7 +1365,7 @@ async function executeBusinessKybSubmission(ctx, userId) {
 
     return ctx.reply(
       `🎉 <b>Business Verification Submitted!</b>\n──────────────────────────\n` +
-      `<b>${escapeHtml(d.legal_name)}</b> is now under KYB compliance review by <b>Nuvion</b>.\n\n` +
+      `<b>${escapeHtml(d.legal_name)}</b> is now under KYB compliance review by our regulated <b>Global Banking Partner</b>.\n\n` +
       `🛡️ <b>Privacy Confirmed:</b> Your business records are 100% compliant and confidential, will never be shared with anyone, and your local chat inputs &amp; draft have been erased.\n\n` +
       `We'll notify you automatically the moment your Business Global Bank Accounts and Team Cards are live!`,
       {
@@ -1435,12 +1476,13 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
   }
 
   if (state.type === "nuvion_kyc_dob") {
-    if (!isAdultDob(val)) {
+    const normDob = normalizeDateInput(val);
+    if (!isAdultDob(normDob)) {
       await ctx.reply("Please enter a valid date of birth in <code>YYYY-MM-DD</code> format (must be 18+, e.g. <code>1994-06-15</code>).", { parse_mode: "HTML" });
       return true;
     }
     await deleteUserStepMessage(ctx);
-    data.date_of_birth = val;
+    data.date_of_birth = normDob;
     await promptPersonalKycStep(ctx, userId, "nuvion_kyc_gender", data);
     return true;
   }
@@ -1481,9 +1523,9 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
     data.postal_code = parts[2] || "100001";
     if (parts[3] && /^[A-Za-z]{2}$/.test(parts[3])) data.country_code = parts[3].toUpperCase();
 
-    if (data.nationality === "NG") {
+    if (data.nationality === "NG" || data.country_code === "NG") {
       await promptPersonalKycStep(ctx, userId, "nuvion_kyc_bvn", data);
-    } else if (data.nationality === "US") {
+    } else if (data.nationality === "US" || data.country_code === "US") {
       await promptPersonalKycStep(ctx, userId, "nuvion_kyc_ssn", data);
     } else {
       await promptPersonalKycStep(ctx, userId, "nuvion_kyc_id_type", data);
@@ -1539,7 +1581,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
   }
 
   if (state.type === "nuvion_kyc_id_dates") {
-    const parts = val.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
+    const parts = val.split(/[,\s]+/).map((s) => normalizeDateInput(s)).filter(Boolean);
     if (parts.length < 2 || !isValidIsoDate(parts[0]) || !isValidIsoDate(parts[1])) {
       await ctx.reply("Please enter two valid dates: <code>YYYY-MM-DD, YYYY-MM-DD</code> (Issue Date, Expiry Date).", { parse_mode: "HTML" });
       return true;
@@ -1684,7 +1726,8 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
 
   if (state.type === "nuvion_kyb_officer") {
     const parts = val.split(",").map((s) => s.trim()).filter(Boolean);
-    if (parts.length < 8 || !isValidEmail(parts[4]) || !isAdultDob(parts[6]) || !/^[A-Za-z]{2}$/.test(parts[7])) {
+    const normOffDob = normalizeDateInput(parts[6]);
+    if (parts.length < 8 || !isValidEmail(parts[4]) || !isAdultDob(normOffDob) || !/^[A-Za-z]{2}$/.test(parts[7])) {
       await ctx.reply("Send <b>First Name, Last Name, Job Title, Ownership %, Email, Phone, DOB (YYYY-MM-DD), Nationality (2-letter), Gender (m/f)</b> separated by commas.", { parse_mode: "HTML" });
       return true;
     }
@@ -1703,7 +1746,7 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
     data.officer_ownership = Math.min(100, Math.max(25, Number(parts[3].replace("%", "")) || 100));
     data.officer_email = parts[4].toLowerCase();
     data.officer_phone = phone;
-    data.officer_dob = parts[6];
+    data.officer_dob = normOffDob;
     data.officer_nationality = parts[7].toUpperCase();
     data.officer_gender = gender;
     await promptBusinessKybStep(ctx, userId, "nuvion_kyb_officer_ids", data);
@@ -1713,11 +1756,13 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
   if (state.type === "nuvion_kyb_officer_ids") {
     await deleteUserStepMessage(ctx);
     const parts = val.split(",").map((s) => s.trim()).filter(Boolean);
-    if (parts.length < 4 || !isValidIsoDate(parts[2]) || !isValidIsoDate(parts[3])) {
+    const normIssue = normalizeDateInput(parts[2]);
+    const normExpiry = normalizeDateInput(parts[3]);
+    if (parts.length < 4 || !isValidIsoDate(normIssue) || !isValidIsoDate(normExpiry)) {
       await ctx.reply("Send <b>ID Type, ID Number, Issue Date (YYYY-MM-DD), Expiry Date (YYYY-MM-DD), BVN (if NG) / SSN (if US), NIN (if NG)</b> separated by commas.", { parse_mode: "HTML" });
       return true;
     }
-    if (!isFutureIsoDate(parts[3]) || parts[2] > parts[3]) {
+    if (!isFutureIsoDate(normExpiry) || normIssue > normExpiry) {
       await ctx.reply("⚠️ Officer ID must be unexpired with a valid Issue Date before Expiry Date. Please re-enter.", { parse_mode: "HTML" });
       return true;
     }
@@ -1744,10 +1789,10 @@ async function handleNuvionKycTextState(ctx, state, text, userId) {
       if (parts[5]) data.officer_nin = parts[5].replace(/\D/g, "");
     }
     const rawType = parts[0].toLowerCase();
-    data.officer_id_type = rawType.includes("pass") ? "international_passport" : rawType.includes("driv") ? "drivers_license" : "national_id";
+    data.officer_id_type = rawType.includes("pass") ? "international_passport" : rawType.includes("driv") || rawType === "dl" ? "drivers_license" : "national_id";
     data.officer_id_number = parts[1];
-    data.officer_id_issue_date = parts[2];
-    data.officer_id_expiry_date = parts[3];
+    data.officer_id_issue_date = normIssue;
+    data.officer_id_expiry_date = normExpiry;
     await promptBusinessKybStep(ctx, userId, "nuvion_kyb_doc_coi", data);
     return true;
   }
@@ -1768,14 +1813,14 @@ async function handleNuvionKycMediaUpload(ctx, { fileId, mimeType = "image/jpeg"
   // Immediately delete sensitive upload from chat
   await deleteUserStepMessage(ctx);
 
-  const normalizedMime = String(mimeType || "image/jpeg").trim().toLowerCase();
+  const normalizedMime = String(mimeType || "image/jpeg").trim().toLowerCase() === "image/jpg"
+    ? "image/jpeg"
+    : String(mimeType || "image/jpeg").trim().toLowerCase();
   const stepAllowed = UPLOAD_STEP_ALLOWED_MIMES[state.type] || nuvion.ALLOWED_DOCUMENT_MIME_TYPES;
-  if (!nuvion.ALLOWED_DOCUMENT_MIME_TYPES.has(normalizedMime) || !stepAllowed.has(normalizedMime)) {
-    const allowedLabels = state.type === "nuvion_kyb_doc_coi"
-      ? "PDF"
-      : state.type === "nuvion_kyb_doc_memart"
-        ? "PDF or DOC/DOCX"
-        : "JPG, PNG, or PDF";
+  if (!stepAllowed.has(normalizedMime)) {
+    const allowedLabels = state.type === "nuvion_kyb_doc_memart"
+      ? "PDF, DOC/DOCX, or photo (JPG/PNG)"
+      : "JPG, PNG, or PDF";
     await ctx.reply(
       `⚠️ Unsupported file format (<code>${escapeHtml(normalizedMime)}</code>). Please upload a <b>${allowedLabels}</b> file.`,
       { parse_mode: "HTML" }
@@ -1868,17 +1913,17 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
   });
 
   bot.action("action_nuvion_portal", async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     return showGlobalPortal(ctx, "personal");
   });
 
   bot.action("biz_nuvion_portal", async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     return showGlobalPortal(ctx, "business");
   });
 
   bot.action(/^nuvion_refresh_(personal|business)$/, async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     const acctType = ctx.match[1];
     if (!nuvion.isUserAllowedNuvion(ctx.from.id)) return showGlobalPortal(ctx, acctType);
     const local = db.getNuvionEntityByUser(ctx.from.id, acctType);
@@ -1903,14 +1948,14 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
 
   // Personal KYC start / resume / pause / reset / inline selections
   bot.action("nuvion_kyc_start", async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     if (!nuvion.isUserAllowedNuvion(ctx.from.id)) return showGlobalPortal(ctx, "personal");
     db.deleteNuvionKycDraft(ctx.from.id, "personal");
     return promptPersonalKycStep(ctx, ctx.from.id, "nuvion_kyc_country", {});
   });
 
   bot.action(/^nuvion_kyc_pick_country_([A-Z]{2})$/, async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     const nat = ctx.match[1];
     const draft = db.getNuvionKycDraft(ctx.from.id, "personal");
     const data = { ...(draft?.data || {}), nationality: nat, country_code: nat };
@@ -1918,14 +1963,14 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
   });
 
   bot.action("nuvion_kyc_resume", async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     const draft = db.getNuvionKycDraft(ctx.from.id, "personal");
     if (!draft) return promptPersonalKycStep(ctx, ctx.from.id, "nuvion_kyc_country", {});
     return promptPersonalKycStep(ctx, ctx.from.id, draft.step, draft.data);
   });
 
   bot.action("nuvion_kyc_pause", async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     const currentState = convState.getState(ctx.from.id);
     if (currentState && String(currentState.type || "").startsWith("nuvion_kyc_")) {
       db.saveNuvionKycDraft(ctx.from.id, "personal", currentState.type, currentState.data || {});
@@ -1946,7 +1991,7 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
   });
 
   bot.action("nuvion_kyc_reset", async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     await deleteUserStepMessage(ctx);
     db.deleteNuvionKycDraft(ctx.from.id, "personal");
     convState.clearState(ctx.from.id);
@@ -1954,7 +1999,7 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
   });
 
   bot.action(/^nuvion_kyc_set_gender_(m|f)$/, async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     const draft = db.getNuvionKycDraft(ctx.from.id, "personal");
     const data = { ...(draft?.data || {}), gender: ctx.match[1] };
     // If the user already selected their country at Step 1, skip straight to Residential Address!
@@ -1965,7 +2010,7 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
   });
 
   bot.action(/^nuvion_kyc_set_nat_([A-Z]{2})$/, async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     const draft = db.getNuvionKycDraft(ctx.from.id, "personal");
     const nat = ctx.match[1];
     const data = { ...(draft?.data || {}), nationality: nat, country_code: nat };
@@ -1973,14 +2018,14 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
   });
 
   bot.action(/^nuvion_kyc_set_idtype_(international_passport|national_id|drivers_license)$/, async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     const draft = db.getNuvionKycDraft(ctx.from.id, "personal");
     const data = { ...(draft?.data || {}), id_type: ctx.match[1] };
     return promptPersonalKycStep(ctx, ctx.from.id, "nuvion_kyc_id_number", data);
   });
 
   bot.action(/^nuvion_kyc_set_auth_(.+)$/, async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     const authMap = {
       NIS: "Nigeria Immigration Service",
       NIMC: "National Identity Management Commission",
@@ -2007,27 +2052,27 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
   });
 
   bot.action("nuvion_kyc_skip_id_back", async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     const draft = db.getNuvionKycDraft(ctx.from.id, "personal");
     return promptPersonalKycStep(ctx, ctx.from.id, "nuvion_kyc_doc_poa", draft?.data || {});
   });
 
   bot.action("nuvion_kyc_submit", async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     await deleteUserStepMessage(ctx);
     return executePersonalKycSubmission(ctx, ctx.from.id);
   });
 
   // Business KYB start / resume / pause / reset / inline selections
   bot.action("nuvion_kyb_start", async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     if (!nuvion.isUserAllowedNuvion(ctx.from.id)) return showGlobalPortal(ctx, "business");
     db.deleteNuvionKycDraft(ctx.from.id, "business");
     return promptBusinessKybStep(ctx, ctx.from.id, "nuvion_kyb_country", {});
   });
 
   bot.action(/^nuvion_kyb_pick_country_([A-Z]{2})$/, async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     const country = ctx.match[1];
     const draft = db.getNuvionKycDraft(ctx.from.id, "business");
     const data = { ...(draft?.data || {}), incorp_country: country, biz_country_code: country };
@@ -2035,14 +2080,14 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
   });
 
   bot.action("nuvion_kyb_resume", async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     const draft = db.getNuvionKycDraft(ctx.from.id, "business");
     if (!draft) return promptBusinessKybStep(ctx, ctx.from.id, "nuvion_kyb_country", {});
     return promptBusinessKybStep(ctx, ctx.from.id, draft.step, draft.data);
   });
 
   bot.action("nuvion_kyb_pause", async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     const currentState = convState.getState(ctx.from.id);
     if (currentState && String(currentState.type || "").startsWith("nuvion_kyb_")) {
       db.saveNuvionKycDraft(ctx.from.id, "business", currentState.type, currentState.data || {});
@@ -2063,7 +2108,7 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
   });
 
   bot.action("nuvion_kyb_reset", async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     await deleteUserStepMessage(ctx);
     db.deleteNuvionKycDraft(ctx.from.id, "business");
     convState.clearState(ctx.from.id);
@@ -2071,14 +2116,14 @@ function registerNuvionKycFlows(bot, depsIn = {}) {
   });
 
   bot.action(/^nuvion_kyb_set_type_(llc|corporation|sole_proprietorship|partnership)$/, async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     const draft = db.getNuvionKycDraft(ctx.from.id, "business");
     const data = { ...(draft?.data || {}), business_type: ctx.match[1] };
     return promptBusinessKybStep(ctx, ctx.from.id, "nuvion_kyb_reg", data);
   });
 
   bot.action("nuvion_kyb_submit", async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
+    ctx.answerCbQuery().catch(() => { });
     await deleteUserStepMessage(ctx);
     return executeBusinessKybSubmission(ctx, ctx.from.id);
   });

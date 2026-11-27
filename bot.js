@@ -6305,16 +6305,39 @@ bot.on("document", async (ctx) => {
   const mimeType = doc.mime_type || "";
   const fileName = (doc.file_name || "").toLowerCase();
 
-  // ── Nuvion Tier-1 KYC / KYB document upload (PDF/DOCX/image, auto-deleted) ──
+  // ── Nuvion Tier-1 KYC / KYB document upload (PDF/DOC/DOCX/image, auto-deleted) ──
   const docState = convState.getState(ctx.from.id);
   if (flowsNuvionKyc.isUploadState(docState?.type)) {
-    const allowedMimes = ["application/pdf", "image/jpeg", "image/jpg", "image/png", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
-    const resolvedMime = allowedMimes.includes(mimeType)
-      ? mimeType
-      : (fileName.endsWith(".pdf") ? "application/pdf" : fileName.endsWith(".png") ? "image/png" : fileName.endsWith(".docx") ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : "image/jpeg");
+    const allowedMimes = [
+      "application/pdf",
+      "image/jpeg",
+      "image/jpg",
+      "image/png",
+      "image/webp",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ];
+    const cleanMime = String(mimeType || "").trim().toLowerCase();
+    const resolvedMime =
+      cleanMime && cleanMime !== "application/octet-stream" && allowedMimes.includes(cleanMime)
+        ? (cleanMime === "image/jpg" ? "image/jpeg" : cleanMime)
+        : fileName.endsWith(".pdf")
+          ? "application/pdf"
+          : fileName.endsWith(".docx")
+            ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            : fileName.endsWith(".doc")
+              ? "application/msword"
+              : fileName.endsWith(".png")
+                ? "image/png"
+                : fileName.endsWith(".webp")
+                  ? "image/webp"
+                  : fileName.endsWith(".jpg") || fileName.endsWith(".jpeg")
+                    ? "image/jpeg"
+                    : cleanMime || "application/octet-stream";
     const handled = await flowsNuvionKyc.handleNuvionKycMediaUpload(ctx, {
       fileId: doc.file_id,
       mimeType: resolvedMime,
+      fileName: doc.file_name || "",
     });
     if (handled) return;
   }

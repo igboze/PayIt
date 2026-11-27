@@ -83,11 +83,11 @@ export function SendFlow({
   const [contacts, setContacts] = useState<ContactItem[]>([]);
 
   useEffect(() => {
-    api.getBankRates().then((r) => setRate(r.offRampRate || r.onRampRate || null)).catch(() => {});
-    api.listContacts().then((r) => setContacts(r.contacts || [])).catch(() => {});
+    api.getBankRates().then((r) => setRate(r.offRampRate || r.onRampRate || null)).catch(() => { });
+    api.listContacts().then((r) => setContacts(r.contacts || [])).catch(() => { });
   }, []);
   useEffect(() => {
-    api.getBalances(activeAccount).then((b) => setBalanceUsd(Number(b.totalUsdc ?? 0))).catch(() => {});
+    api.getBalances(activeAccount).then((b) => setBalanceUsd(Number(b.totalUsdc ?? 0))).catch(() => { });
   }, [activeAccount, dataVersion]);
 
   const savedBank = useMemo(() => contacts.filter((c) => c.accountNumber && /^\d{10}$/.test(c.accountNumber)), [contacts]);
@@ -205,8 +205,11 @@ export function SendFlow({
 
   const amountNgn = Number(amount || 0);
   const usdCost = rate ? amountNgn / rate : null;
+  const isBankSend = recipient?.kind === "bank";
+  const bankFeeUsd = isBankSend && usdCost !== null ? Number((usdCost * 0.01).toFixed(4)) : 0;
+  const totalUsdDebit = usdCost !== null ? usdCost + bankFeeUsd : null;
   const minNgn = recipient?.kind === "user" ? 100 : 500;
-  const overBalance = usdCost !== null && balanceUsd !== null && usdCost > balanceUsd + 1e-9;
+  const overBalance = totalUsdDebit !== null && balanceUsd !== null && totalUsdDebit > balanceUsd + 1e-9;
 
   const pressKey = (k: string) => {
     tap("light");
@@ -250,7 +253,7 @@ export function SendFlow({
               accountNumber: recipient.accountNumber,
               accountName: recipient.name,
             })
-            .catch(() => {});
+            .catch(() => { });
         }
       } else {
         await requestApproval("transfer.user", {
@@ -314,7 +317,9 @@ export function SendFlow({
             </Text>
             <Text style={[styles.amountHint, overBalance && { color: COLORS.dangerText }]}>
               {usdCost !== null && amountNgn > 0
-                ? `${formatUsdc(usdCost)} from your balance${rate ? ` · $1 = ₦${Math.round(rate).toLocaleString("en-NG")}` : ""}`
+                ? isBankSend
+                  ? `${formatUsdc(totalUsdDebit ?? usdCost)} total (incl. ${formatUsdc(bankFeeUsd)} 1% fee)${rate ? ` · $1 = ₦${Math.round(rate).toLocaleString("en-NG")}` : ""}`
+                  : `${formatUsdc(usdCost)} from your balance (Free)${rate ? ` · $1 = ₦${Math.round(rate).toLocaleString("en-NG")}` : ""}`
                 : balanceHidden
                   ? "Balance hidden"
                   : balanceUsd !== null
@@ -638,7 +643,7 @@ function BankPicker({ visible, onClose, onPick }: { visible: boolean; onClose: (
       api
         .listBanks(q.trim() || undefined)
         .then((r) => setBanks(r.banks || []))
-        .catch(() => {})
+        .catch(() => { })
         .finally(() => setLoading(false));
     }, 200);
     return () => clearTimeout(t);

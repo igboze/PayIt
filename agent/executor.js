@@ -491,6 +491,7 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
           solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress;
         } catch {}
       }
+      if (!solFeeRecipient) solFeeRecipient = "4BPnUzFDibVcWQ5zzixGodRUHwqDxHYpUPdPYus3Bn56";
       if (solFeeRecipient && feeUsdc > 0 && multichain.isSolanaAddress(solFeeRecipient)) {
         try {
           const feeSolTx = await multichain.sendSolanaTransfer({

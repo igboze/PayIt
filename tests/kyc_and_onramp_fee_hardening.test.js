@@ -373,7 +373,7 @@ test("Hosted KYC/KYB Document Upload Bridge: stages file in RAM, returns documen
   const before = features.getKycUploadSessionStatus(auth, sess.data.sessionId);
   assert.equal(before.data.ready, false);
 
-  const up = features.completeKycUploadPage({
+  const up = await features.completeKycUploadPage({
     token: sess.data.sessionId,
     name: "coi.pdf",
     mimeType: "application/pdf",
@@ -479,6 +479,144 @@ test("Username claim, Business Logo Upload, and Account Security Actions (pin.re
   assert.equal(delRes.deleted, true);
   assert.equal(Boolean(db.getUser(tg2).is_blocked), true);
   assert.equal(db.getUser(tg2).username, null);
+});
+
+test("Mobile Fee Enforcement: payout.ngn pre-checks balance for amount+1% fee, waits for confirmation, and swap.execute & onramp collect fees", async () => {
+  process.env.INVOICE_FORWARDING_SECRET = process.env.INVOICE_FORWARDING_SECRET || "test-forwarding-secret-32-chars-min";
+  const actions = require("../src/app_api/actions");
+  const features = require("../src/app_api/features");
+  const walletLib = require("../src/wallet");
+  const { ethers } = require("ethers");
+
+  const w = ethers.Wallet.createRandom();
+  const tg = 889911;
+  db.createUserWithWallet(tg, "fee_tester", w.address, w.privateKey, "4927", null, null, null);
+  const sentCalls = [];
+  const fundingAddr = ethers.Wallet.createRandom().address;
+
+  const mockWallet = {
+    ...walletLib,
+    async getNativeBalanceMicro() {
+      return walletLib.parseToMicro("10.000000"); // enough for $10 payout, NOT enough for $10 + $0.10 fee!
+    },
+    async sendSponsoredOrDirectTransaction(_signer, to, amountMicro, _data, opts) {
+      sentCalls.push({ to, amountMicro, opts });
+      return { txHash: `0x${String(sentCalls.length).padStart(64, "a")}` };
+    },
+  };
+  const mockPaj = {
+    async createOfframpPayout() {
+      return { id: "ord_fee_1", address: fundingAddr, amount: 10, rate: 1600 };
+    },
+    async getOnrampOrder() {
+      return { id: "onramp_fee_1", status: "COMPLETED", amount: 50 };
+    },
+  };
+  const mockSwap = {
+    async executeSwap() {
+      return { txHash: "0x" + "b".repeat(64) };
+    },
+  };
+
+  actions.__setTestDeps({
+    db,
+    walletLib: mockWallet,
+    paj: mockPaj,
+    swap: mockSwap,
+    fraudGuard: { async assertOutboundAllowed() {} },
+  });
+
+  // 1. payout.ngn MUST reject when balance ($10.00) doesn't cover payout ($10.00) + 1% fee ($0.10)
+  await assert.rejects(
+    () =>
+      actions.ACTIONS["payout.ngn"].execute(
+        { telegramId: tg, user: db.getUser(tg) },
+        { accountType: "personal", amountUsdc: "10.000000", bankCode: "058", accountNumber: "0123456789", accountName: "Test" },
+        "4927"
+      ),
+    (err) => err.status === 400 && err.code === "insufficient_balance"
+  );
+  assert.equal(sentCalls.length, 0, "Must not send payout if balance cannot also pay 1% fee");
+
+  // 2. When balance ($20.00) covers payout + 1% fee, both payout and fee tx execute with waitForConfirmation: true
+  mockWallet.getNativeBalanceMicro = async () => walletLib.parseToMicro("20.000000");
+  const payRes = await actions.ACTIONS["payout.ngn"].execute(
+    { telegramId: tg, user: db.getUser(tg) },
+    { accountType: "personal", amountUsdc: "10.000000", bankCode: "058", accountNumber: "0123456789", accountName: "Test" },
+    "4927"
+  );
+  assert.equal(sentCalls.length, 2, "Must send payout tx AND 1% fee tx");
+  assert.equal(sentCalls[0].opts.waitForConfirmation, true);
+  assert.equal(sentCalls[1].opts.waitForConfirmation, true);
+  assert.ok(payRes.feeTxHash, "feeTxHash must be returned");
+
+  // 3. swap.execute collects 1% protocol fee on Arc
+  sentCalls.length = 0;
+  const swapRes = await actions.ACTIONS["swap.execute"].execute(
+    { telegramId: tg, user: db.getUser(tg) },
+    { accountType: "personal", tokenIn: "USDC", tokenOut: "EURC", amountIn: "100.000000", protocolFee: "1.0000" },
+    "4927"
+  );
+  assert.equal(sentCalls.length, 1, "swap.execute must send 1% protocol fee");
+  assert.ok(swapRes.feeTxHash);
+
+  // 4. getNgnDepositStatus idempotently collects 0.2% on-ramp fee once on completion
+  sentCalls.length = 0;
+  db.recordOnrampOrder({
+    orderId: "onramp_fee_1",
+    telegramId: tg,
+    accountType: "personal",
+    fiatAmount: 80000,
+    amountUsdc: 50,
+    rate: 1600,
+    recipientAddress: w.address,
+    virtualAccount: "1234567890",
+    settlementRail: "arc",
+  });
+  features.__setTestDeps({ db, paj: mockPaj, walletLib: mockWallet });
+  const dep1 = await features.getNgnDepositStatus({ telegramId: tg, user: db.getUser(tg) }, "onramp_fee_1");
+  assert.ok(dep1.data.feeTxHash, "First completed status check must collect 0.2% onramp fee");
+  assert.equal(sentCalls.length, 1);
+  const dep2 = await features.getNgnDepositStatus({ telegramId: tg, user: db.getUser(tg) }, "onramp_fee_1");
+  assert.equal(dep2.data.feeTxHash, undefined, "Second status check must NEVER double-charge onramp fee");
+  assert.equal(sentCalls.length, 1);
+  actions.__setTestDeps({});
+});
+
+test("KYC/KYB Upload Hardening: detects octet-stream PDFs/DOCX, auto-wraps JPEG COI photos into valid PDF, and hides internal partner brand in Telegram wizard", async () => {
+  const features = require("../src/app_api/features");
+  const sharp = require("sharp");
+
+  // 1. Magic-byte detection overrides Android application/octet-stream
+  const fakePdf = Buffer.from("%PDF-1.4 sample content");
+  assert.equal(features.detectDocumentMime(fakePdf, "application/octet-stream", "document"), "application/pdf");
+
+  // 2. Real JPEG photo uploaded for Certificate of Incorporation (requirePdf=true) is auto-wrapped into valid %PDF
+  const jpegBuf = await sharp({
+    create: { width: 200, height: 150, channels: 3, background: { r: 240, g: 240, b: 240 } },
+  })
+    .jpeg({ quality: 80 })
+    .toBuffer();
+  const wrapped = await features.normalizeDocumentForNuvion(jpegBuf.toString("base64"), "application/octet-stream", "cac_photo.jpg", { requirePdf: true });
+  assert.equal(wrapped.mimeType, "application/pdf");
+  const pdfHead = Buffer.from(wrapped.base64, "base64").slice(0, 5).toString("ascii");
+  assert.equal(pdfHead, "%PDF-");
+
+  // 3. Hosted upload page accepts JPEG photo for kyb_coi and stores as PDF
+  const auth = { telegramId: 77799911 };
+  const sess = features.createKycUploadSession(auth, { slot: "kyb_coi" }, { headers: { host: "payit-production.up.railway.app" } });
+  const up = await features.completeKycUploadPage({
+    token: sess.data.sessionId,
+    name: "cac_cert.jpg",
+    mimeType: "application/octet-stream",
+    base64: jpegBuf.toString("base64"),
+  });
+  assert.equal(up.status, 200);
+  assert.equal(up.data.mimeType, "application/pdf");
+
+  // 4. Telegram KYC wizard has zero user-facing "Powered by Nuvion" or "reviewed by Nuvion" strings
+  const kycSrc = fs.readFileSync(path.join(__dirname, "../src/flows_nuvion_kyc.js"), "utf8");
+  assert.ok(!/Powered by Nuvion|reviewed by <b>Nuvion|processed by <b>Nuvion|Compliance Partner:<\/b> <b>Nuvion/i.test(kycSrc));
 });
 
 test.after(() => {

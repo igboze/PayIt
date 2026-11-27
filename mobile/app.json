@@ -68,6 +68,7 @@
       "./plugins/withReleaseSigning",
       "expo-font",
       "expo-sharing",
+      "expo-document-picker",
       [
         "expo-image-picker",
         {

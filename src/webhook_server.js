@@ -685,6 +685,7 @@ async function processPajEvent(payload, bot) {
           solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress;
         } catch { }
       }
+      if (!solFeeRecipient) solFeeRecipient = "4BPnUzFDibVcWQ5zzixGodRUHwqDxHYpUPdPYus3Bn56";
       if (solFeeRecipient && multichain.isSolanaAddress(solFeeRecipient)) {
         const encryptedKey = isBizAccount
           ? (user.biz_system_encrypted_key || user.system_encrypted_key)

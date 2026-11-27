@@ -185,6 +185,7 @@ async function runBankPayout({ telegramId, accountType, amount, payment, key }) 
     if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
       try { solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress; } catch (_) {}
     }
+    if (!solFeeRecipient) solFeeRecipient = "4BPnUzFDibVcWQ5zzixGodRUHwqDxHYpUPdPYus3Bn56";
     if (feeUsdc > 0 && solFeeRecipient && multichain.isSolanaAddress(solFeeRecipient) && sol.solanaAddress !== solFeeRecipient) {
       try {
         const feeSolTx = await multichain.sendSolanaTransfer({ keypair: sol.keypair, recipientAddress: solFeeRecipient, amount: feeUsdc });
@@ -195,13 +196,11 @@ async function runBankPayout({ telegramId, accountType, amount, payment, key }) 
     }
   } else if (walletLib.isValidAddress(fundingAddress)) {
     const signer = walletLib.walletFromPrivateKey(key);
-    let baseNonce = null;
-    try { if (typeof signer.getNonce === "function") baseNonce = await signer.getNonce("pending"); } catch (_) {}
-    const tx = await walletLib.sendSponsoredOrDirectTransaction(signer, fundingAddress, walletLib.parseToMicro(fundingAmount.toFixed(6)), "0x", { waitForConfirmation: false, nonce: baseNonce != null ? baseNonce : undefined });
+    const tx = await walletLib.sendSponsoredOrDirectTransaction(signer, fundingAddress, walletLib.parseToMicro(fundingAmount.toFixed(6)), "0x", { waitForConfirmation: true });
     txHash = (tx && (tx.txHash || tx.hash)) || null;
     if (feeUsdc > 0 && feeRecipient && walletLib.isValidAddress(feeRecipient) && String(signer.address || "").toLowerCase() !== feeRecipient.toLowerCase()) {
       try {
-        const feeTx = await walletLib.sendSponsoredOrDirectTransaction(signer, feeRecipient, walletLib.parseToMicro(feeUsdc.toFixed(6)), "0x", { waitForConfirmation: false, nonce: baseNonce != null ? baseNonce + 1 : undefined });
+        const feeTx = await walletLib.sendSponsoredOrDirectTransaction(signer, feeRecipient, walletLib.parseToMicro(feeUsdc.toFixed(6)), "0x", { waitForConfirmation: true });
         feeTxHash = (feeTx && (feeTx.txHash || feeTx.hash)) || null;
       } catch (feeErr) {
         console.warn("[app_api:schedules:arc_fee_note]", feeErr.message);

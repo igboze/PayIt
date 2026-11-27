@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { ActivityIndicator, BackHandler, Image, Linking, StyleSheet, Text, View } from "react-native";
+import * as SecureStore from "expo-secure-store";
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
@@ -122,6 +123,20 @@ function MainShell() {
     };
     Linking.getInitialURL().then(handleUrl).catch(() => {});
     const sub = Linking.addEventListener("url", (ev) => handleUrl(ev.url));
+    // If Android killed & restarted the Activity while the user was picking a KYC/KYB document in Chrome,
+    // automatically restore straight back to Profile -> Verify ID so their upload & draft are immediately visible.
+    SecureStore.getItemAsync("proxim_kyc_pending_upload_v1")
+      .then((raw) => {
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.ts && Date.now() - Number(parsed.ts) < 15 * 60 * 1000) {
+          setOverlay(null);
+          setProfileSection("kyc");
+          setProfileVerifyMode(String(parsed.slot || "").startsWith("kyb_") ? "kyb" : "kyc");
+          setTab("profile");
+        }
+      })
+      .catch(() => {});
     return () => sub.remove();
   }, []);
 

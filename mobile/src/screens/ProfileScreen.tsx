@@ -56,8 +56,9 @@ type DocSlot =
   | "kyb_officer_id_back"
   | "kyb_officer_poa";
 
-const MAX_DOC_BASE64_CHARS = Math.ceil(6 * 1024 * 1024 * 1.37); // ~6MB raw file per document
+const MAX_DOC_BASE64_CHARS = Math.ceil(6.5 * 1024 * 1024 * 1.37); // ~6.5MB raw file per document
 const KYC_DRAFT_STORE_KEY = "proxim_kyc_kyb_draft_v1";
+const KYC_PENDING_UPLOAD_KEY = "proxim_kyc_pending_upload_v1";
 
 function inferMimeFromName(name: string, fallback: string): string {
   const lower = String(name || "").toLowerCase();
@@ -66,7 +67,58 @@ function inferMimeFromName(name: string, fallback: string): string {
   if (lower.endsWith(".doc")) return "application/msword";
   if (lower.endsWith(".png")) return "image/png";
   if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".heic") || lower.endsWith(".heif")) return "image/heic";
   return fallback;
+}
+
+function normalizePickedMime(rawMime: string | null | undefined, name: string, fallback: string): string {
+  const clean = String(rawMime || "").trim().toLowerCase();
+  if (clean === "image/jpg") return "image/jpeg";
+  if (clean && clean !== "application/octet-stream" && clean !== "*/*" && !clean.endsWith("/*")) {
+    return clean;
+  }
+  return inferMimeFromName(name, fallback);
+}
+
+function normalizePhoneInput(raw: string, country: string): string {
+  const clean = String(raw || "").trim().replace(/[\s\-().]/g, "");
+  if (!clean) return "";
+  if (clean.startsWith("00")) return "+" + clean.slice(2);
+  if (clean.startsWith("+")) return clean;
+  const cc = String(country || "").trim().toUpperCase();
+  if (cc === "NG" && /^0[789]\d{9}$/.test(clean)) return "+234" + clean.slice(1);
+  if (cc === "NG" && /^234\d{10}$/.test(clean)) return "+" + clean;
+  return clean;
+}
+
+async function readUriAsBase64(uri: string): Promise<string | null> {
+  if (!uri) return null;
+  const FS = getLegacyFileSystem();
+  if (FS?.readAsStringAsync) {
+    try {
+      const b64 = await FS.readAsStringAsync(uri, { encoding: "base64" as never });
+      if (b64) return b64;
+    } catch {
+      // Fall through to fetch + FileReader (handles Android content:// URIs reliably)
+    }
+  }
+  try {
+    const resp = await fetch(uri);
+    const blob = await resp.blob();
+    return await new Promise<string | null>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const res = String(reader.result || "");
+        const idx = res.indexOf(",");
+        resolve(idx >= 0 ? res.slice(idx + 1) : res || null);
+      };
+      reader.onerror = () => reject(new Error("Could not read file bytes."));
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
 }
 
 export function ProfileScreen({
@@ -328,6 +380,7 @@ export function ProfileScreen({
           name: status.name || target.label,
         });
         setPendingUpload(null);
+        SecureStore.deleteItemAsync(KYC_PENDING_UPLOAD_KEY).catch(() => {});
         setNotice(`${target.label} attached!`);
         setError(null);
       }
@@ -338,6 +391,18 @@ export function ProfileScreen({
 
   useEffect(() => {
     if (tab !== "kyc") return;
+    SecureStore.getItemAsync(KYC_PENDING_UPLOAD_KEY)
+      .then((raw) => {
+        if (!raw) return;
+        const p = JSON.parse(raw);
+        if (p?.sessionId && p?.slot && p?.ts && Date.now() - Number(p.ts) < 15 * 60 * 1000) {
+          setPendingUpload((prev) => prev || { sessionId: p.sessionId, slot: p.slot, label: p.label || p.slot });
+          checkPendingUpload({ sessionId: p.sessionId, slot: p.slot, label: p.label || p.slot });
+        } else {
+          SecureStore.deleteItemAsync(KYC_PENDING_UPLOAD_KEY).catch(() => {});
+        }
+      })
+      .catch(() => {});
     const sub = AppState.addEventListener("change", (nextState) => {
       if (nextState === "active") {
         if (pendingUpload) checkPendingUpload(pendingUpload);
@@ -362,7 +427,9 @@ export function ProfileScreen({
     await persistFormDraft();
     try {
       const sess = await api.createKycUploadSession(slot, label);
-      setPendingUpload({ sessionId: sess.sessionId, slot, label });
+      const pending = { sessionId: sess.sessionId, slot, label };
+      setPendingUpload(pending);
+      SecureStore.setItemAsync(KYC_PENDING_UPLOAD_KEY, JSON.stringify({ ...pending, ts: Date.now() })).catch(() => {});
       await Linking.openURL(sess.uploadUrl);
       setNotice(`Secure uploader opened for "${label}". Upload your file there and switch back to Proxim.`);
     } catch (err) {
@@ -380,39 +447,45 @@ export function ProfileScreen({
       return;
     }
     const DocPicker = getDocumentPicker();
-    const FS = getLegacyFileSystem();
-    if (!DocPicker || !FS?.readAsStringAsync) {
+    if (!DocPicker) {
       // Seamlessly open Proxim's secure browser uploader — works on EVERY APK without reinstalling!
       await openHostedDocumentUpload(slot, label);
       return;
     }
     try {
+      // Use "*/*" on Android so Downloads / Google Drive never grey out PDFs, DOCX, or photos.
       const res = await DocPicker.getDocumentAsync({
-        type: mimeTypes,
+        type: Platform.OS === "android" ? "*/*" : mimeTypes,
         copyToCacheDirectory: true,
         multiple: false,
       });
       const asset = res.assets?.[0];
       if (res.canceled || !asset?.uri) return;
-      const base64 = await FS.readAsStringAsync(asset.uri, { encoding: "base64" as never });
+      const base64 = await readUriAsBase64(asset.uri);
       if (!base64) {
-        setError("Couldn't read that file. Please try another file.");
+        setError("Couldn't read that file in-app — opening secure web uploader instead.");
+        await openHostedDocumentUpload(slot, label);
         return;
       }
       if (base64.length > MAX_DOC_BASE64_CHARS) {
-        setError("That file is too large (max 6 MB per document). Please compress it and try again.");
+        setError("That file is too large (max 6 MB). Use Web Upload to auto-compress photos, or pick a smaller file.");
         return;
       }
       const name = asset.name || `${slot}.pdf`;
-      const mimeType = (asset.mimeType || inferMimeFromName(name, fallbackMime)).toLowerCase();
-      if (!mimeTypes.includes(mimeType) && !mimeTypes.includes("*/*")) {
-        setError(`Unsupported file type (${mimeType}). Please select one of: ${mimeTypes.join(", ")}`);
+      const mimeType = normalizePickedMime(asset.mimeType, name, fallbackMime);
+      const isAllowed =
+        mimeTypes.includes("*/*") ||
+        mimeTypes.includes(mimeType) ||
+        (mimeType.startsWith("image/") && mimeTypes.some((m) => m.startsWith("image/")));
+      if (!isAllowed) {
+        setError(`Unsupported file type (${mimeType}) for ${label}. Pick a PDF, JPG, PNG, or DOC/DOCX file.`);
         return;
       }
       assignPickedDoc(slot, { base64, mimeType, name });
+      setNotice(`${label} attached (${name}).`);
       setError(null);
     } catch (err) {
-      setError(toUserError(err, "Could not attach document file."));
+      setError(toUserError(err, "Could not attach document file — try the Web Upload button next to it."));
     }
   };
 
@@ -425,7 +498,6 @@ export function ProfileScreen({
     }
     const Picker = getImagePicker();
     if (!Picker) {
-      // Seamlessly open Proxim's secure browser uploader — supports camera, gallery & PDFs on any APK!
       await openHostedDocumentUpload(slot, label);
       return;
     }
@@ -437,52 +509,100 @@ export function ProfileScreen({
         setError(fromCamera ? "Allow camera access to take a document photo." : "Allow photo library access to attach a document.");
         return;
       }
-      const opts = { mediaTypes: ["images"] as never, allowsEditing: false, quality: 0.65, base64: true };
-      const res = fromCamera ? await Picker.launchCameraAsync(opts) : await Picker.launchImageLibraryAsync(opts);
+      const launch = async (mediaTypes: unknown) => {
+        const opts = { mediaTypes: mediaTypes as never, allowsEditing: false, quality: 0.55, base64: true };
+        return fromCamera ? Picker.launchCameraAsync(opts) : Picker.launchImageLibraryAsync(opts);
+      };
+      let res;
+      try {
+        res = await launch(["images"]);
+      } catch {
+        const legacyType = (Picker as unknown as { MediaTypeOptions?: { Images?: unknown } }).MediaTypeOptions?.Images ?? "Images";
+        res = await launch(legacyType);
+      }
       const asset = res.assets?.[0];
       if (res.canceled || !asset) return;
       let base64 = asset.base64 || null;
       if (!base64 && asset.uri) {
-        const FS = getLegacyFileSystem();
-        if (FS?.readAsStringAsync) {
-          base64 = await FS.readAsStringAsync(asset.uri, { encoding: "base64" as never });
-        }
+        base64 = await readUriAsBase64(asset.uri);
       }
       if (!base64) {
-        setError("Couldn't read that photo. Please pick another image.");
+        setError("Couldn't read that photo in-app — opening secure web uploader instead.");
+        await openHostedDocumentUpload(slot, label);
         return;
       }
       if (base64.length > MAX_DOC_BASE64_CHARS) {
-        setError("That photo is too large (max 6 MB). Please choose a smaller image.");
+        setError("That photo is too large (max 6 MB). Use Web Upload to auto-compress it or pick a smaller photo.");
         return;
       }
       const name = asset.fileName || `${slot}.jpg`;
-      assignPickedDoc(slot, {
-        base64,
-        mimeType: (asset.mimeType || inferMimeFromName(name, "image/jpeg")).toLowerCase(),
-        name,
-      });
+      const mimeType = normalizePickedMime(asset.mimeType, name, "image/jpeg");
+      assignPickedDoc(slot, { base64, mimeType, name });
+      setNotice(`${label} attached (${name}).`);
       setError(null);
     } catch (err) {
-      setError(toUserError(err, "Could not attach document photo."));
+      setError(toUserError(err, "Could not attach document photo — try the Web Upload button next to it."));
     }
   };
 
-  const promptPickImageOrPdf = (slot: DocSlot, title: string) => {
+  const promptPickImageOrPdf = (slot: DocSlot, title: string, allowDocs = false) => {
     const hasNativePicker = Boolean(getImagePicker() || getDocumentPicker());
     if (!hasNativePicker) {
-      // Go straight to secure browser upload (supports camera, gallery & PDF with 1 tap)
       openHostedDocumentUpload(slot, title);
       return;
     }
-    const imgPdfMimes = ["application/pdf", "image/jpeg", "image/jpg", "image/png"];
-    Alert.alert(title, "Choose how to attach this document (PDF, JPG, or PNG):", [
+    const mimes = allowDocs
+      ? [
+          "application/pdf",
+          "application/msword",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "image/jpeg",
+          "image/jpg",
+          "image/png",
+          "image/webp",
+        ]
+      : ["application/pdf", "image/jpeg", "image/jpg", "image/png", "image/webp"];
+    Alert.alert(title, allowDocs ? "Choose how to attach this document (PDF, DOCX, or Photo):" : "Choose how to attach this document (PDF, JPG, or PNG):", [
       { text: "Cancel", style: "cancel" },
-      { text: "📄 Pick File (PDF / Image)", onPress: () => pickFileDocument(slot, imgPdfMimes, "application/pdf", title) },
+      { text: "📄 Pick File (PDF / Doc / Image)", onPress: () => pickFileDocument(slot, mimes, "application/pdf", title) },
       { text: "🖼️ Photo Library", onPress: () => pickPhotoDocument(slot, false, title) },
       { text: "📷 Take Photo", onPress: () => pickPhotoDocument(slot, true, title) },
+      { text: "🌐 Secure Web Upload", onPress: () => openHostedDocumentUpload(slot, title) },
     ]);
   };
+
+  const renderDocUploadRow = (
+    slot: DocSlot,
+    title: string,
+    hint: string,
+    picked: PickedDoc | null,
+    opts?: { required?: boolean; allowDocs?: boolean }
+  ) => (
+    <View key={slot} style={styles.docRow}>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={styles.rowTitle}>
+          {title} {opts?.required ? "*" : "(optional)"}
+        </Text>
+        <Text style={[styles.rowSub, picked ? { color: COLORS.primary } : null]} numberOfLines={2}>
+          {picked ? `✅ Attached: ${picked.name}` : hint}
+        </Text>
+      </View>
+      <View style={{ flexDirection: "row", gap: 6 }}>
+        <Button
+          title={picked ? "Replace" : "Upload"}
+          variant={picked ? "secondary" : "primary"}
+          onPress={() => promptPickImageOrPdf(slot, title, Boolean(opts?.allowDocs))}
+          style={{ height: 34, paddingHorizontal: 12 }}
+        />
+        <Button
+          title="Web"
+          variant="ghost"
+          onPress={() => openHostedDocumentUpload(slot, title)}
+          style={{ height: 34, paddingHorizontal: 8 }}
+        />
+      </View>
+    </View>
+  );
 
   // Devices
   const [devices, setDevices] = useState<DeviceItem[]>([]);
@@ -639,7 +759,7 @@ export function ProfileScreen({
         firstName: firstName.trim(),
         lastName: lastName.trim(),
         email: email.trim(),
-        phoneNumber: phoneNumber.trim(),
+        phoneNumber: normalizePhoneInput(phoneNumber, cc),
         dateOfBirth: dob.trim(),
         gender,
         ...(cc === "NG" ? { bvn: bvn.trim(), nin: nin.trim() } : {}),
@@ -797,7 +917,7 @@ export function ProfileScreen({
         description: bizDescription.trim(),
         businessType: bizType,
         email: bizEmail.trim(),
-        phoneNumber: bizPhone.trim(),
+        phoneNumber: normalizePhoneInput(bizPhone, cc),
         ...(bizWebsite.trim() ? { website: bizWebsite.trim() } : {}),
         address: {
           line1: bizStreet.trim(),
@@ -810,7 +930,7 @@ export function ProfileScreen({
           firstName: officerFirst.trim(),
           lastName: officerLast.trim(),
           email: officerEmail.trim(),
-          phoneNumber: officerPhone.trim(),
+          phoneNumber: normalizePhoneInput(officerPhone, offNat),
           dateOfBirth: officerDob.trim(),
           gender: officerGender,
           nationality: offNat,
@@ -1412,52 +1532,18 @@ export function ProfileScreen({
 
                   <Text style={styles.sectionSubHead}>4. Required Business Documents (All 5 Required)</Text>
                   <Text style={[styles.rowSub, { marginBottom: 10 }]}>
-                    Attach clear, readable documents. COI must be PDF; Memorandum & Articles must be PDF, DOC, or DOCX.
+                    Attach clear, readable documents (PDF, DOCX, JPG, or PNG). Photos of Certificates of Incorporation are automatically converted to PDF.
                   </Text>
-                  <View style={styles.pillRow}>
-                    <Pill
-                      label={docKybCoi ? `COI (${docKybCoi.name.slice(0, 14)}) ✅` : "📄 Certificate of Incorp. (PDF) *"}
-                      active={Boolean(docKybCoi)}
-                      onPress={() => pickFileDocument("kyb_coi", ["application/pdf"], "application/pdf", "Certificate of Incorporation (PDF)")}
-                    />
-                    <Pill
-                      label={docKybMemart ? `MemArt (${docKybMemart.name.slice(0, 12)}) ✅` : "📄 Memo & Articles (PDF/DOCX) *"}
-                      active={Boolean(docKybMemart)}
-                      onPress={() =>
-                        pickFileDocument(
-                          "kyb_memart",
-                          [
-                            "application/pdf",
-                            "application/msword",
-                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                          ],
-                          "application/pdf",
-                          "Memorandum & Articles of Association"
-                        )
-                      }
-                    />
-                    <Pill
-                      label={docKybBizPoa ? `Biz POA ✅` : "🧾 Business Proof of Address *"}
-                      active={Boolean(docKybBizPoa)}
-                      onPress={() => promptPickImageOrPdf("kyb_biz_poa", "Business Proof of Address")}
-                    />
-                    <Pill
-                      label={docKybOfficerIdFront ? `Officer ID Front ✅` : "🪪 Officer ID (Front) *"}
-                      active={Boolean(docKybOfficerIdFront)}
-                      onPress={() => promptPickImageOrPdf("kyb_officer_id_front", "Officer Government ID (Front)")}
-                    />
-                    <Pill
-                      label={docKybOfficerIdBack ? `Officer ID Back ✅` : "🪪 Officer ID Back (optional)"}
-                      active={Boolean(docKybOfficerIdBack)}
-                      onPress={() => promptPickImageOrPdf("kyb_officer_id_back", "Officer Government ID (Back)")}
-                    />
-                    <Pill
-                      label={docKybOfficerPoa ? `Officer POA ✅` : "🧾 Officer Proof of Address *"}
-                      active={Boolean(docKybOfficerPoa)}
-                      onPress={() => promptPickImageOrPdf("kyb_officer_poa", "Officer Proof of Address")}
-                    />
-                  </View>
+                  {renderDocUploadRow("kyb_coi", "Certificate of Incorporation", "PDF or clear photo (auto-converted to PDF)", docKybCoi, { required: true, allowDocs: true })}
+                  {renderDocUploadRow("kyb_memart", "Memorandum & Articles of Association", "PDF, DOC, DOCX, or clear photo", docKybMemart, { required: true, allowDocs: true })}
+                  {renderDocUploadRow("kyb_biz_poa", "Business Proof of Address", "Utility bill or bank statement (< 3 months)", docKybBizPoa, { required: true })}
+                  {renderDocUploadRow("kyb_officer_id_front", "Officer Government ID (Front)", "Passport, National ID, or Driver's License", docKybOfficerIdFront, { required: true })}
+                  {renderDocUploadRow("kyb_officer_id_back", "Officer Government ID (Back)", "Optional for passport", docKybOfficerIdBack)}
+                  {renderDocUploadRow("kyb_officer_poa", "Officer Proof of Address", "Personal utility bill or bank statement (< 3 months)", docKybOfficerPoa, { required: true })}
 
+                  <View style={{ marginTop: 10 }}>
+                    <ErrorBanner message={error} onDismiss={() => setError(null)} />
+                  </View>
                   <Button title="Submit Business KYB Verification" onPress={handleSubmitKyb} loading={loading} style={{ marginTop: 8 }} />
                 </View>
               ) : null}
@@ -1545,24 +1631,13 @@ export function ProfileScreen({
                 ) : null}
 
                 <Text style={[styles.sectionSubHead, { marginTop: 8 }]}>Required Verification Documents (Photo or PDF)</Text>
-                <View style={[styles.pillRow, { marginBottom: 10 }]}>
-                  <Pill
-                    label={docIdFront ? `ID Front (${docIdFront.name.slice(0, 12)}) ✅` : "📷 Upload ID Front *"}
-                    active={Boolean(docIdFront)}
-                    onPress={() => promptPickImageOrPdf("kyc_front", "Government ID (Front)")}
-                  />
-                  <Pill
-                    label={docIdBack ? `ID Back ✅` : "📷 ID Back (optional)"}
-                    active={Boolean(docIdBack)}
-                    onPress={() => promptPickImageOrPdf("kyc_back", "Government ID (Back)")}
-                  />
-                  <Pill
-                    label={docPoa ? `Proof of Address ✅` : "🧾 Proof of Address *"}
-                    active={Boolean(docPoa)}
-                    onPress={() => promptPickImageOrPdf("kyc_poa", "Proof of Address (< 3 months)")}
-                  />
-                </View>
+                {renderDocUploadRow("kyc_front", "Government ID (Front)", "Passport, National ID, or Driver's License (Photo or PDF)", docIdFront, { required: true })}
+                {renderDocUploadRow("kyc_back", "Government ID (Back)", "Optional for passports", docIdBack)}
+                {renderDocUploadRow("kyc_poa", "Proof of Address", "Utility bill or bank statement (< 3 months)", docPoa, { required: true })}
 
+                <View style={{ marginTop: 10 }}>
+                  <ErrorBanner message={error} onDismiss={() => setError(null)} />
+                </View>
                 <Button title="Submit Personal KYC Verification" onPress={handleSubmitKyc} loading={loading} style={{ marginTop: 8 }} />
               </View>
             ) : null}
@@ -1650,48 +1725,14 @@ export function ProfileScreen({
                   ) : null}
 
                   <Text style={styles.sectionSubHead}>4. Required Business Documents (All 5 Required)</Text>
-                  <View style={styles.pillRow}>
-                    <Pill
-                      label={docKybCoi ? `COI ✅` : "📄 Certificate of Incorp. (PDF) *"}
-                      active={Boolean(docKybCoi)}
-                      onPress={() => pickFileDocument("kyb_coi", ["application/pdf"], "application/pdf", "Certificate of Incorporation (PDF)")}
-                    />
-                    <Pill
-                      label={docKybMemart ? `MemArt ✅` : "📄 Memo & Articles (PDF/DOCX) *"}
-                      active={Boolean(docKybMemart)}
-                      onPress={() =>
-                        pickFileDocument(
-                          "kyb_memart",
-                          [
-                            "application/pdf",
-                            "application/msword",
-                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                          ],
-                          "application/pdf",
-                          "Memorandum & Articles of Association"
-                        )
-                      }
-                    />
-                    <Pill
-                      label={docKybBizPoa ? `Biz POA ✅` : "🧾 Business Proof of Address *"}
-                      active={Boolean(docKybBizPoa)}
-                      onPress={() => promptPickImageOrPdf("kyb_biz_poa", "Business Proof of Address")}
-                    />
-                    <Pill
-                      label={docKybOfficerIdFront ? `Officer ID Front ✅` : "🪪 Officer ID (Front) *"}
-                      active={Boolean(docKybOfficerIdFront)}
-                      onPress={() => promptPickImageOrPdf("kyb_officer_id_front", "Officer Government ID (Front)")}
-                    />
-                    <Pill
-                      label={docKybOfficerIdBack ? `Officer ID Back ✅` : "🪪 Officer ID Back (optional)"}
-                      active={Boolean(docKybOfficerIdBack)}
-                      onPress={() => promptPickImageOrPdf("kyb_officer_id_back", "Officer Government ID (Back)")}
-                    />
-                    <Pill
-                      label={docKybOfficerPoa ? `Officer POA ✅` : "🧾 Officer Proof of Address *"}
-                      active={Boolean(docKybOfficerPoa)}
-                      onPress={() => promptPickImageOrPdf("kyb_officer_poa", "Officer Proof of Address")}
-                    />
+                  {renderDocUploadRow("kyb_coi", "Certificate of Incorporation", "PDF or clear photo (auto-converted to PDF)", docKybCoi, { required: true, allowDocs: true })}
+                  {renderDocUploadRow("kyb_memart", "Memorandum & Articles of Association", "PDF, DOC, DOCX, or clear photo", docKybMemart, { required: true, allowDocs: true })}
+                  {renderDocUploadRow("kyb_biz_poa", "Business Proof of Address", "Utility bill or bank statement (< 3 months)", docKybBizPoa, { required: true })}
+                  {renderDocUploadRow("kyb_officer_id_front", "Officer Government ID (Front)", "Passport, National ID, or Driver's License", docKybOfficerIdFront, { required: true })}
+                  {renderDocUploadRow("kyb_officer_id_back", "Officer Government ID (Back)", "Optional for passport", docKybOfficerIdBack)}
+                  {renderDocUploadRow("kyb_officer_poa", "Officer Proof of Address", "Personal utility bill or bank statement (< 3 months)", docKybOfficerPoa, { required: true })}
+                  <View style={{ marginTop: 10 }}>
+                    <ErrorBanner message={error} onDismiss={() => setError(null)} />
                   </View>
                   <Button title="Submit Business KYB Verification" onPress={handleSubmitKyb} loading={loading} style={{ marginTop: 8 }} />
                 </View>
@@ -1989,6 +2030,19 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
+    gap: 10,
+  },
+  docRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    marginBottom: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.surfaceElevated,
     gap: 10,
   },
   rowTitle: { color: COLORS.text, fontSize: 14, fontFamily: FONTS.semibold },

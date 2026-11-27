@@ -783,18 +783,82 @@ async function getNgnDepositStatus(auth, orderId) {
   const id = decodeURIComponent(String(orderId || "")).trim();
   if (!id) throw bad("Order ID is required.");
   // Strict ownership check BEFORE querying Paj — prevents IDOR enumeration of other users' orders.
-  const local = dep("db").getOnrampOrderByOrderId?.(id) || null;
+  const db = dep("db");
+  const local = db.getOnrampOrderByOrderId?.(id) || null;
   if (!local || Number(local.telegram_id) !== auth.telegramId) {
     throw new FeatureError(404, "not_found", "Deposit order not found.");
   }
   let live = null;
   try { live = await dep("paj").getOnrampOrder(id); } catch (_) { }
+  const liveStatus = String(live?.status || local.status || "pending").toLowerCase();
+  const isCompletedNow = liveStatus === "completed" || liveStatus === "paid" || liveStatus === "settled";
+  let feeTxHash = null;
+
+  // Idempotent 0.2% on-ramp fee collection if webhook hasn't already settled this order
+  if (isCompletedNow && String(local.status || "").toLowerCase() !== "completed") {
+    let claimed = false;
+    try {
+      const upd = db.db?.prepare?.(
+        "UPDATE paj_onramp_orders SET status = 'completed', completed_at = COALESCE(completed_at, datetime('now')) WHERE order_id = ? AND status != 'completed'"
+      ).run(id);
+      claimed = Boolean(upd && upd.changes > 0);
+    } catch (_) {
+      claimed = false;
+    }
+    if (claimed) {
+      const amountUsdc = Number(live?.amount || local.amount_usdc || 0);
+      const onrampFeeRate = Number(process.env.ONRAMP_PLATFORM_FEE_RATE ?? 0.002);
+      const feeUsdc = Number((amountUsdc * onrampFeeRate).toFixed(4));
+      const acctType = local.account_type || "personal";
+      const rail = String(local.settlement_rail || live?.rail || "arc").toLowerCase();
+      if (feeUsdc >= 0.0001) {
+        try {
+          const user = db.getUser(auth.telegramId);
+          const rawKey = user && typeof db.getSystemDecryptedPrivateKey === "function"
+            ? db.getSystemDecryptedPrivateKey(user, acctType)
+            : null;
+          if (rawKey) {
+            const walletLib = dep("walletLib");
+            if (rail === "solana") {
+              const mc = dep("multichain");
+              const solData = mc.deriveSolanaFromEvmKey(rawKey);
+              let solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
+              if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
+                try { solFeeRecipient = mc.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress; } catch (_) {}
+              }
+              if (!solFeeRecipient) solFeeRecipient = "4BPnUzFDibVcWQ5zzixGodRUHwqDxHYpUPdPYus3Bn56";
+              if (mc.isSolanaAddress(solFeeRecipient) && solData.solanaAddress !== solFeeRecipient) {
+                const feeSol = await mc.sendSolanaTransfer({ keypair: solData.keypair, recipientAddress: solFeeRecipient, amount: feeUsdc });
+                if (feeSol && feeSol.success !== false) feeTxHash = feeSol.txHash || feeSol.signature || null;
+              }
+            } else {
+              const feeRecipient =
+                process.env.APP_FEE_RECIPIENT_ADDRESS ||
+                process.env.PAYIT_DEV_FEE_ADDRESS ||
+                process.env.FEE_RECIPIENT_ADDRESS ||
+                "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
+              const signer = walletLib.walletFromPrivateKey(rawKey);
+              if (walletLib.isValidAddress(feeRecipient) && String(signer.address || "").toLowerCase() !== feeRecipient.toLowerCase()) {
+                const feeMicro = walletLib.parseToMicro(feeUsdc.toFixed(6));
+                const feeTx = await walletLib.sendSponsoredOrDirectTransaction(signer, feeRecipient, feeMicro, "0x", { waitForConfirmation: true });
+                feeTxHash = feeTx?.txHash || feeTx?.hash || null;
+              }
+            }
+          }
+        } catch (feeErr) {
+          console.warn("[app_api:onramp_status_fee_note]", feeErr.message);
+        }
+      }
+    }
+  }
+
   return {
     status: 200,
     data: {
       orderId: id,
       accountType: local.account_type || "personal",
       status: live?.status || local.status || "pending",
+      ...(feeTxHash ? { feeTxHash } : {}),
       order: live || local,
     },
   };
@@ -2321,6 +2385,130 @@ function stripBase64DataUrl(val) {
   return m ? m[1] : s;
 }
 
+/**
+ * Inspect magic bytes first (reliable even when Android sends application/octet-stream or ""),
+ * then fall back to explicit MIME and filename extension.
+ */
+function detectDocumentMime(buffer, rawMime = "", fileName = "") {
+  if (Buffer.isBuffer(buffer) && buffer.length >= 4) {
+    if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) {
+      return "application/pdf"; // %PDF
+    }
+    if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+      return "image/jpeg";
+    }
+    if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+      return "image/png";
+    }
+    if (buffer.length >= 12 && buffer.slice(0, 4).toString("ascii") === "RIFF" && buffer.slice(8, 12).toString("ascii") === "WEBP") {
+      return "image/webp";
+    }
+    if (buffer[0] === 0x50 && buffer[1] === 0x4b && buffer[2] === 0x03 && buffer[3] === 0x04) {
+      return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"; // DOCX (ZIP)
+    }
+    if (buffer[0] === 0xd0 && buffer[1] === 0xcf && buffer[2] === 0x11 && buffer[3] === 0xe0) {
+      return "application/msword"; // Legacy DOC (OLE2)
+    }
+  }
+  const m = String(rawMime || "").trim().toLowerCase();
+  if (m === "image/jpg") return "image/jpeg";
+  if (m && m !== "application/octet-stream" && m !== "*/*" && !m.endsWith("/*")) {
+    return m;
+  }
+  const n = String(fileName || "").trim().toLowerCase();
+  if (n.endsWith(".pdf")) return "application/pdf";
+  if (n.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (n.endsWith(".doc")) return "application/msword";
+  if (n.endsWith(".png")) return "image/png";
+  if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
+  if (n.endsWith(".webp")) return "image/webp";
+  return m || "application/octet-stream";
+}
+
+/**
+ * Pure-Node minimal single-page PDF wrapper around a raw JPEG buffer.
+ * Lets users upload a clear photo of a Certificate of Incorporation when Nuvion requires PDF.
+ */
+function wrapJpegBufferAsPdf(jpegBuf, width = 1200, height = 1600) {
+  const w = Math.max(100, Math.round(width || 1200));
+  const h = Math.max(100, Math.round(height || 1600));
+  // Scale to fit A4-like points (max 595 x 842)
+  const scale = Math.min(595 / w, 842 / h, 1);
+  const pw = Math.round(w * scale);
+  const ph = Math.round(h * scale);
+
+  const chunks = [];
+  const offsets = [0];
+  let byteLen = 0;
+  const push = (val) => {
+    const b = Buffer.isBuffer(val) ? val : Buffer.from(val, "latin1");
+    chunks.push(b);
+    byteLen += b.length;
+  };
+  const startObj = (num) => {
+    offsets[num] = byteLen;
+    push(`${num} 0 obj\n`);
+  };
+
+  push("%PDF-1.4\n%\xFF\xFF\xFF\xFF\n");
+  startObj(1);
+  push("<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+  startObj(2);
+  push("<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+  startObj(3);
+  push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pw} ${ph}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>\nendobj\n`);
+  startObj(4);
+  push(`<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBuf.length} >>\nstream\n`);
+  push(jpegBuf);
+  push("\nendstream\nendobj\n");
+  const contentStream = `q\n${pw} 0 0 ${ph} 0 0 cm\n/Im0 Do\nQ\n`;
+  startObj(5);
+  push(`<< /Length ${contentStream.length} >>\nstream\n${contentStream}endstream\nendobj\n`);
+
+  const xrefPos = byteLen;
+  push("xref\n0 6\n0000000000 65535 f \n");
+  for (let i = 1; i <= 5; i++) {
+    push(`${String(offsets[i]).padStart(10, "0")} 00000 n \n`);
+  }
+  push(`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF\n`);
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Normalize an uploaded document buffer for Nuvion:
+ * - Detects real MIME from magic bytes / filename (fixes Android application/octet-stream)
+ * - Converts WEBP/HEIC/oversized images to JPEG via sharp
+ * - If requirePdf=true and user uploaded a JPG/PNG photo (e.g. CAC cert), wraps it into a valid PDF!
+ */
+async function normalizeDocumentForNuvion(rawBase64, rawMime = "", fileName = "", { requirePdf = false } = {}) {
+  const cleanB64 = stripBase64DataUrl(rawBase64);
+  const buf = Buffer.from(cleanB64, "base64");
+  let mime = detectDocumentMime(buf, rawMime, fileName);
+
+  const isConvertibleImage = mime.startsWith("image/") && (mime !== "image/jpeg" && mime !== "image/png" || requirePdf || buf.length > 3.5 * 1024 * 1024);
+  if (isConvertibleImage) {
+    try {
+      const sharp = require("sharp");
+      const meta = await sharp(buf).rotate().metadata();
+      const resized = await sharp(buf)
+        .rotate()
+        .resize({ width: 1800, height: 1800, fit: "inside", withoutEnlargement: true })
+        .flatten({ background: { r: 255, g: 255, b: 255 } })
+        .jpeg({ quality: 82 })
+        .toBuffer({ resolveWithObject: true });
+      if (requirePdf) {
+        const pdfBuf = wrapJpegBufferAsPdf(resized.data, resized.info?.width || meta?.width, resized.info?.height || meta?.height);
+        return { base64: pdfBuf.toString("base64"), mimeType: "application/pdf" };
+      }
+      return { base64: resized.data.toString("base64"), mimeType: "image/jpeg" };
+    } catch (_) {
+      // Fall through if buffer isn't a real decodable image (e.g. synthetic test fixture bytes)
+    }
+  }
+
+  return { base64: cleanB64, mimeType: mime === "image/jpg" ? "image/jpeg" : mime };
+}
+
 // ─── 18b. Hosted KYC/KYB document upload bridge (works on any APK via browser) ─
 
 const crypto = require("node:crypto");
@@ -2328,60 +2516,66 @@ const crypto = require("node:crypto");
 const KYC_UPLOAD_SLOT_CONFIG = {
   kyc_front: {
     label: "Government ID (Front)",
-    accept: ".pdf,image/jpeg,image/png",
-    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+    accept: "image/*,application/pdf,.pdf,.jpg,.jpeg,.png",
+    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"]),
     hint: "Upload a clear photo or PDF of the front of your Passport, National ID, or Driver's License.",
   },
   kyc_back: {
     label: "Government ID (Back)",
-    accept: ".pdf,image/jpeg,image/png",
-    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+    accept: "image/*,application/pdf,.pdf,.jpg,.jpeg,.png",
+    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"]),
     hint: "Upload a clear photo or PDF of the back of your ID (optional for passports).",
   },
   kyc_poa: {
     label: "Proof of Address",
-    accept: ".pdf,image/jpeg,image/png",
-    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+    accept: "image/*,application/pdf,.pdf,.jpg,.jpeg,.png",
+    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"]),
     hint: "Utility bill, bank statement, or government letter dated within the last 3 months (PDF, JPG, or PNG).",
   },
   kyb_coi: {
-    label: "Certificate of Incorporation (PDF)",
-    accept: "application/pdf,.pdf",
-    mimes: new Set(["application/pdf"]),
-    hint: "Upload your company's official Certificate of Incorporation as a PDF file.",
+    label: "Certificate of Incorporation (PDF or Photo)",
+    accept: "*/*",
+    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"]),
+    requirePdf: true,
+    hint: "Upload your company's official Certificate of Incorporation as a PDF (or clear photo — we'll convert it to PDF automatically).",
   },
   kyb_memart: {
     label: "Memorandum & Articles of Association",
-    accept: ".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    accept: "*/*",
     mimes: new Set([
       "application/pdf",
       "application/msword",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "image/png",
+      "image/jpeg",
+      "image/jpg",
+      "image/webp",
     ]),
-    hint: "Upload your Memorandum & Articles of Association (PDF, DOC, or DOCX).",
+    requirePdf: true,
+    hint: "Upload your Memorandum & Articles of Association (PDF, DOC, DOCX, or clear photo).",
   },
   kyb_biz_poa: {
     label: "Business Proof of Address",
-    accept: ".pdf,image/jpeg,image/png",
-    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+    accept: "image/*,application/pdf,.pdf,.jpg,.jpeg,.png",
+    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"]),
     hint: "Company utility bill or bank statement dated within the last 3 months (PDF, JPG, or PNG).",
   },
   kyb_officer_id_front: {
     label: "Officer Government ID (Front)",
-    accept: ".pdf,image/jpeg,image/png",
-    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+    accept: "image/*,application/pdf,.pdf,.jpg,.jpeg,.png",
+    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"]),
     hint: "Clear photo or PDF of the controlling director/owner's valid government ID.",
   },
   kyb_officer_id_back: {
     label: "Officer Government ID (Back)",
-    accept: ".pdf,image/jpeg,image/png",
-    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+    accept: "image/*,application/pdf,.pdf,.jpg,.jpeg,.png",
+    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"]),
     hint: "Clear photo or PDF of the back of the officer's government ID (optional for passports).",
   },
   kyb_officer_poa: {
     label: "Officer Proof of Address",
-    accept: ".pdf,image/jpeg,image/png",
-    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]),
+    accept: "image/*,application/pdf,.pdf,.jpg,.jpeg,.png",
+    mimes: new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"]),
     hint: "Personal utility bill or bank statement (< 3 months) for the controlling director/owner (PDF, JPG, or PNG).",
   },
 };
@@ -2566,18 +2760,22 @@ function renderKycUploadPage(url) {
   function showErr(t) { errBox.textContent = t; errBox.style.display = "block"; okBox.style.display = "none"; }
   function inferMime(f) {
     const m = (f.type || "").toLowerCase();
-    if (m) return m;
+    if (m === "image/jpg") return "image/jpeg";
+    if (m && m !== "application/octet-stream" && m !== "*/*") return m;
     const n = (f.name || "").toLowerCase();
     if (n.endsWith(".pdf")) return "application/pdf";
     if (n.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
     if (n.endsWith(".doc")) return "application/msword";
     if (n.endsWith(".png")) return "image/png";
     if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
-    return "";
+    if (n.endsWith(".webp")) return "image/webp";
+    if (n.endsWith(".heic") || n.endsWith(".heif")) return "image/heic";
+    return "application/octet-stream";
   }
   function readBase64(file, mime) {
     return new Promise((resolve, reject) => {
-      if (mime.startsWith("image/") && file.size > 1400000) {
+      const needsCanvas = mime.startsWith("image/") && (file.size > 1200000 || (mime !== "image/jpeg" && mime !== "image/png"));
+      if (needsCanvas) {
         const img = new Image();
         const objUrl = URL.createObjectURL(file);
         img.onload = () => {
@@ -2596,7 +2794,18 @@ function renderKycUploadPage(url) {
             resolve({ base64: dataUrl.split(",")[1], mimeType: "image/jpeg" });
           } catch (e) { URL.revokeObjectURL(objUrl); reject(e); }
         };
-        img.onerror = () => { URL.revokeObjectURL(objUrl); reject(new Error("Could not read image.")); };
+        img.onerror = () => {
+          URL.revokeObjectURL(objUrl);
+          // Fallback to raw FileReader so server-side sharp/magic-byte normalizer can handle it
+          const reader = new FileReader();
+          reader.onload = () => {
+            const res = String(reader.result || "");
+            const idx = res.indexOf(",");
+            resolve({ base64: idx >= 0 ? res.slice(idx + 1) : res, mimeType: mime });
+          };
+          reader.onerror = () => reject(new Error("Could not read selected file."));
+          reader.readAsDataURL(file);
+        };
         img.src = objUrl;
         return;
       }
@@ -2617,12 +2826,13 @@ function renderKycUploadPage(url) {
     const f = input.files && input.files[0];
     if (!f) { chosen = null; btn.disabled = true; return; }
     const mime = inferMime(f);
-    if (!ALLOWED.has(mime)) {
+    const isImage = mime.startsWith("image/");
+    if (!ALLOWED.has(mime) && !isImage && mime !== "application/octet-stream") {
       chosen = null; btn.disabled = true;
-      showErr("Unsupported file type (" + (mime || f.name) + "). Please pick an allowed file format.");
+      showErr("Unsupported file type (" + (mime || f.name) + "). Please pick a PDF, DOC/DOCX, JPG, or PNG file.");
       return;
     }
-    if (f.size > 6.5 * 1024 * 1024 && !mime.startsWith("image/")) {
+    if (f.size > 6.5 * 1024 * 1024 && !isImage) {
       chosen = null; btn.disabled = true;
       showErr("File is larger than 6 MB. Please upload a smaller file.");
       return;
@@ -2672,7 +2882,7 @@ function renderKycUploadPage(url) {
   };
 }
 
-function completeKycUploadPage(body) {
+async function completeKycUploadPage(body) {
   pruneKycUploadSessions();
   const token = String(body?.token || "").trim();
   const sess = kycUploadSessions.get(token);
@@ -2685,14 +2895,17 @@ function completeKycUploadPage(body) {
   if (rawBase64.length > Math.ceil(6.5 * 1024 * 1024 * 1.37)) {
     throw bad("Uploaded document is too large (max 6 MB).");
   }
-  const mimeType = String(body?.mimeType || "").trim().toLowerCase();
-  if (!cfg.mimes.has(mimeType)) {
-    throw bad(`Unsupported file type for ${cfg.label}.`);
-  }
   const name = String(body?.name || `${sess.slot}`).trim().slice(0, 120);
+  const normalized = await normalizeDocumentForNuvion(rawBase64, body?.mimeType || "", name, {
+    requirePdf: Boolean(cfg.requirePdf),
+  });
+  const mimeType = normalized.mimeType;
+  if (!cfg.mimes.has(mimeType)) {
+    throw bad(`Unsupported file type (${mimeType}) for ${cfg.label}.`);
+  }
   const documentId = `doc_${crypto.randomBytes(16).toString("base64url")}`;
   sess.documentId = documentId;
-  sess.base64 = rawBase64;
+  sess.base64 = normalized.base64;
   sess.mimeType = mimeType;
   sess.name = name;
   sess.createdAt = Date.now(); // refresh 15m TTL from upload time
@@ -2810,12 +3023,17 @@ async function submitKyc(auth, body) {
   };
 
   const docs = body.documents && typeof body.documents === "object" ? body.documents : null;
-  const resolvedFront = resolveSubmittedDocument(auth.telegramId, docs?.idFrontBase64, docs?.idFrontMimeType, docs?.idFrontDocumentId, "image/jpeg");
-  const resolvedBack = resolveSubmittedDocument(auth.telegramId, docs?.idBackBase64, docs?.idBackMimeType, docs?.idBackDocumentId, "image/jpeg");
-  const resolvedPoa = resolveSubmittedDocument(auth.telegramId, docs?.proofOfAddressBase64, docs?.proofOfAddressMimeType, docs?.proofOfAddressDocumentId, "image/jpeg");
+  let resolvedFront = resolveSubmittedDocument(auth.telegramId, docs?.idFrontBase64, docs?.idFrontMimeType, docs?.idFrontDocumentId, "image/jpeg");
+  let resolvedBack = resolveSubmittedDocument(auth.telegramId, docs?.idBackBase64, docs?.idBackMimeType, docs?.idBackDocumentId, "image/jpeg");
+  let resolvedPoa = resolveSubmittedDocument(auth.telegramId, docs?.proofOfAddressBase64, docs?.proofOfAddressMimeType, docs?.proofOfAddressDocumentId, "image/jpeg");
   if (!resolvedFront || !resolvedPoa) {
     throw bad("Please upload both your Government ID (front) and Proof of Address document.");
   }
+  resolvedFront = { ...resolvedFront, ...(await normalizeDocumentForNuvion(resolvedFront.base64, resolvedFront.mimeType, "id_front")) };
+  if (resolvedBack) {
+    resolvedBack = { ...resolvedBack, ...(await normalizeDocumentForNuvion(resolvedBack.base64, resolvedBack.mimeType, "id_back")) };
+  }
+  resolvedPoa = { ...resolvedPoa, ...(await normalizeDocumentForNuvion(resolvedPoa.base64, resolvedPoa.mimeType, "poa")) };
   const allowedKycMimes = new Set(["application/pdf", "image/png", "image/jpeg", "image/jpg"]);
   const idFrontMime = resolvedFront.mimeType;
   const poaMime = resolvedPoa.mimeType;
@@ -3018,12 +3236,12 @@ async function submitKyb(auth, body) {
 
   // Required KYB documents (all 5 per Nuvion X-API-Version: 2026-02-06 — direct base64 or hosted upload documentId)
   const docs = body.documents && typeof body.documents === "object" ? body.documents : null;
-  const resolvedCoi = resolveSubmittedDocument(auth.telegramId, docs?.coiBase64, docs?.coiMimeType, docs?.coiDocumentId, "application/pdf");
-  const resolvedMemart = resolveSubmittedDocument(auth.telegramId, docs?.memartBase64, docs?.memartMimeType, docs?.memartDocumentId, "application/pdf");
-  const resolvedBizPoa = resolveSubmittedDocument(auth.telegramId, docs?.businessPoaBase64, docs?.businessPoaMimeType, docs?.businessPoaDocumentId, "application/pdf");
-  const resolvedOffIdFront = resolveSubmittedDocument(auth.telegramId, docs?.officerIdFrontBase64, docs?.officerIdMimeType, docs?.officerIdFrontDocumentId, "image/jpeg");
-  const resolvedOffIdBack = resolveSubmittedDocument(auth.telegramId, docs?.officerIdBackBase64, docs?.officerIdBackMimeType, docs?.officerIdBackDocumentId, "image/jpeg");
-  const resolvedOffPoa = resolveSubmittedDocument(auth.telegramId, docs?.officerPoaBase64, docs?.officerPoaMimeType, docs?.officerPoaDocumentId, "image/jpeg");
+  let resolvedCoi = resolveSubmittedDocument(auth.telegramId, docs?.coiBase64, docs?.coiMimeType, docs?.coiDocumentId, "application/pdf");
+  let resolvedMemart = resolveSubmittedDocument(auth.telegramId, docs?.memartBase64, docs?.memartMimeType, docs?.memartDocumentId, "application/pdf");
+  let resolvedBizPoa = resolveSubmittedDocument(auth.telegramId, docs?.businessPoaBase64, docs?.businessPoaMimeType, docs?.businessPoaDocumentId, "application/pdf");
+  let resolvedOffIdFront = resolveSubmittedDocument(auth.telegramId, docs?.officerIdFrontBase64, docs?.officerIdMimeType, docs?.officerIdFrontDocumentId, "image/jpeg");
+  let resolvedOffIdBack = resolveSubmittedDocument(auth.telegramId, docs?.officerIdBackBase64, docs?.officerIdBackMimeType, docs?.officerIdBackDocumentId, "image/jpeg");
+  let resolvedOffPoa = resolveSubmittedDocument(auth.telegramId, docs?.officerPoaBase64, docs?.officerPoaMimeType, docs?.officerPoaDocumentId, "image/jpeg");
   if (
     !resolvedCoi ||
     !resolvedMemart ||
@@ -3032,9 +3250,23 @@ async function submitKyb(auth, body) {
     !resolvedOffPoa
   ) {
     throw bad(
-      "Business KYB requires all 5 documents: Certificate of Incorporation (PDF), Memorandum & Articles of Association (PDF/DOCX), Business Proof of Address, Officer Government ID, and Officer Proof of Address."
+      "Business KYB requires all 5 documents: Certificate of Incorporation (PDF or Photo), Memorandum & Articles of Association (PDF/DOCX), Business Proof of Address, Officer Government ID, and Officer Proof of Address."
     );
   }
+  // Auto-normalize formats: e.g. convert JPG/PNG photos of COI/MemArt into valid single-page PDFs & fix Android octet-stream
+  resolvedCoi = { ...resolvedCoi, ...(await normalizeDocumentForNuvion(resolvedCoi.base64, resolvedCoi.mimeType, "coi", { requirePdf: true })) };
+  resolvedMemart = {
+    ...resolvedMemart,
+    ...(await normalizeDocumentForNuvion(resolvedMemart.base64, resolvedMemart.mimeType, "memart", {
+      requirePdf: String(resolvedMemart.mimeType || "").startsWith("image/"),
+    })),
+  };
+  resolvedBizPoa = { ...resolvedBizPoa, ...(await normalizeDocumentForNuvion(resolvedBizPoa.base64, resolvedBizPoa.mimeType, "biz_poa")) };
+  resolvedOffIdFront = { ...resolvedOffIdFront, ...(await normalizeDocumentForNuvion(resolvedOffIdFront.base64, resolvedOffIdFront.mimeType, "officer_id")) };
+  if (resolvedOffIdBack) {
+    resolvedOffIdBack = { ...resolvedOffIdBack, ...(await normalizeDocumentForNuvion(resolvedOffIdBack.base64, resolvedOffIdBack.mimeType, "officer_id_back")) };
+  }
+  resolvedOffPoa = { ...resolvedOffPoa, ...(await normalizeDocumentForNuvion(resolvedOffPoa.base64, resolvedOffPoa.mimeType, "officer_poa")) };
   const coiMime = resolvedCoi.mimeType;
   const memartMime = resolvedMemart.mimeType;
   const bizPoaMime = resolvedBizPoa.mimeType;
@@ -3850,6 +4082,9 @@ module.exports = {
   listKycUploadSessions,
   renderKycUploadPage,
   completeKycUploadPage,
+  detectDocumentMime,
+  wrapJpegBufferAsPdf,
+  normalizeDocumentForNuvion,
   submitKyc,
   submitKyb,
   refreshKycStatus,

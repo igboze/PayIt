@@ -327,6 +327,28 @@ function findRecipientUser(raw) {
 const fmt = (n) => Number(n).toFixed(2);
 const cleanBrand = (msg) => String(msg || "").replace(/nuvion/gi, "Global Neobank");
 
+const DEFAULT_ARC_FEE_RECIPIENT = "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
+const DEFAULT_SOLANA_FEE_RECIPIENT = "4BPnUzFDibVcWQ5zzixGodRUHwqDxHYpUPdPYus3Bn56";
+
+function getArcFeeRecipient() {
+  return (
+    process.env.APP_FEE_RECIPIENT_ADDRESS ||
+    process.env.PAYIT_DEV_FEE_ADDRESS ||
+    process.env.FEE_RECIPIENT_ADDRESS ||
+    DEFAULT_ARC_FEE_RECIPIENT
+  );
+}
+
+function getSolanaFeeRecipient(multichain) {
+  let solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
+  if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY && multichain?.deriveSolanaFromEvmKey) {
+    try {
+      solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress;
+    } catch (_) { }
+  }
+  return solFeeRecipient || DEFAULT_SOLANA_FEE_RECIPIENT;
+}
+
 async function getLiveNgnOffRampRate() {
   let rate = null;
   try { const r = await dep("paj").getRates("NGN"); rate = Number(r?.offRampRate?.rate) || null; } catch (_) { }
@@ -646,7 +668,14 @@ const ACTIONS = {
       }
       return {
         amountUsd: 0, // stays inside user's own wallet
-        action: { accountType, tokenIn, tokenOut, amountIn: amountIn.toFixed(6), estimatedOut: String(quote?.amountOut || "") },
+        action: {
+          accountType,
+          tokenIn,
+          tokenOut,
+          amountIn: amountIn.toFixed(6),
+          estimatedOut: String(quote?.amountOut || ""),
+          protocolFee: String(quote?.protocolFee || (amountIn * (Number(process.env.SWAP_PROTOCOL_FEE_BPS ?? 100) / 10000)).toFixed(4)),
+        },
         summary: {
           title: `Swap ${fmt(amountIn)} ${tokenIn} → ${tokenOut}`,
           lines: [["You send", `${fmt(amountIn)} ${tokenIn}`], ["You receive", `≈ ${quote?.amountOut || "Live rate"} ${tokenOut}`], ["Fee", quote?.protocolFee ? `${quote.protocolFee} ${tokenOut}` : "1%"]],
@@ -656,13 +685,42 @@ const ACTIONS = {
     async execute(ctx, a, pin) {
       const accountType = a.accountType || "personal";
       const pk = unlockKey(ctx, pin, accountType);
-      const amountMicro = dep("walletLib").parseToMicro(Number(a.amountIn).toFixed(6));
+      const walletLib = dep("walletLib");
+      const amountMicro = walletLib.parseToMicro(Number(a.amountIn).toFixed(6));
       const res = await dep("swap").executeSwap(pk, a.tokenIn, a.tokenOut, amountMicro);
       const txHash = res?.txHash || res?.hash || res?.transactionHash || null;
       try {
         dep("db").recordTransaction(ctx.telegramId, "swap", String(amountMicro), "completed", txHash, accountType, 18, "arc", `Swap ${a.amountIn} ${a.tokenIn} -> ${a.tokenOut}`);
       } catch (_) { }
-      return { result: res, txHash, notice: `Swapped ${fmt(a.amountIn)} ${a.tokenIn} to ${a.tokenOut}` };
+
+      // Collect 1% swap protocol fee on Arc (parity with Telegram bot)
+      let feeTxHash = null;
+      const feeBps = Number(process.env.SWAP_PROTOCOL_FEE_BPS ?? 100);
+      const protocolFeeAmount = Number(a.protocolFee || 0) > 0
+        ? Number(a.protocolFee)
+        : Number((Number(a.amountIn) * (feeBps / 10000)).toFixed(4));
+      const feeRecipient = getArcFeeRecipient();
+      if (protocolFeeAmount > 0.0001 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
+        try {
+          const signer = walletLib.walletFromPrivateKey(pk);
+          if (String(signer.address || "").toLowerCase() !== feeRecipient.toLowerCase()) {
+            const feeMicro = walletLib.parseToMicro(protocolFeeAmount.toFixed(6));
+            const feeTx = await walletLib.sendSponsoredOrDirectTransaction(
+              signer,
+              feeRecipient,
+              feeMicro,
+              "0x",
+              { waitForConfirmation: true }
+            );
+            feeTxHash = feeTx?.txHash || feeTx?.hash || null;
+            console.log(`[app_api:swap] Collected $${protocolFeeAmount} swap protocol fee -> ${feeRecipient} (tx: ${feeTxHash})`);
+          }
+        } catch (feeErr) {
+          console.warn("[app_api:swap:fee_note]", feeErr.message);
+        }
+      }
+
+      return { result: res, txHash, feeUsdc: protocolFeeAmount, feeTxHash, notice: `Swapped ${fmt(a.amountIn)} ${a.tokenIn} to ${a.tokenOut}` };
     },
   },
 
@@ -750,11 +808,7 @@ const ACTIONS = {
       if (!fundingAddress) throw new ActionError(502, "provider_error", "The bank partner didn't return a funding address. Nothing was sent.");
       const offrampFeeRate = Number(process.env.OFFRAMP_PLATFORM_FEE_RATE ?? 0.01);
       const feeUsdc = Number((fundingAmount * offrampFeeRate).toFixed(4));
-      const feeRecipient =
-        process.env.APP_FEE_RECIPIENT_ADDRESS ||
-        process.env.PAYIT_DEV_FEE_ADDRESS ||
-        process.env.FEE_RECIPIENT_ADDRESS ||
-        "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
+      const feeRecipient = getArcFeeRecipient();
 
       const privateKey = unlockKey(ctx, pin, accountType);
       let txHash = null;
@@ -763,77 +817,148 @@ const ACTIONS = {
       if (multichain.isSolanaAddress(fundingAddress)) {
         rail = "solana";
         const sol = multichain.deriveSolanaFromEvmKey(privateKey);
+        const solFeeRecipient = getSolanaFeeRecipient(multichain);
+        const willChargeSolFee = feeUsdc > 0 && solFeeRecipient && multichain.isSolanaAddress(solFeeRecipient) && sol.solanaAddress !== solFeeRecipient;
+        const totalNeededSol = Number((fundingAmount + (willChargeSolFee ? feeUsdc : 0)).toFixed(6));
+
+        // Pre-verify Solana balance covers BOTH payout + 1% fee so fee is never skipped when sending max balance
+        const realMc = require("../multichain");
+        const isMockedSolSendOnly =
+          "multichain" in overrides &&
+          multichain.getSplTokenBalance === realMc.getSplTokenBalance &&
+          multichain.sendSolanaTransfer !== realMc.sendSolanaTransfer;
+        if (!isMockedSolSendOnly && typeof multichain.getSplTokenBalance === "function") {
+          try {
+            const solBal = await multichain.getSplTokenBalance(sol.solanaAddress);
+            if (solBal && Number.isFinite(Number(solBal.uiAmount)) && Number(solBal.uiAmount) + 1e-6 < totalNeededSol) {
+              const maxSend = Math.floor((Number(solBal.uiAmount) / (1 + offrampFeeRate)) * 100) / 100;
+              throw new ActionError(
+                400,
+                "insufficient_balance",
+                `You need $${fmt(totalNeededSol)} (including $${fmt(feeUsdc)} 1% fee), but your available balance is $${fmt(solBal.uiAmount)}. Max you can send is $${fmt(maxSend)}.`
+              );
+            }
+          } catch (balErr) {
+            if (balErr instanceof ActionError) throw balErr;
+          }
+        }
+
         const tx = await multichain.sendSolanaTransfer({ keypair: sol.keypair, recipientAddress: fundingAddress, amount: fundingAmount });
+        if (!tx || tx.success === false) {
+          throw new ActionError(502, "transfer_failed", tx?.error || "Solana bank payout funding failed.");
+        }
         txHash = tx?.txHash || tx?.signature || null;
 
         // Route 1% platform fee on Solana
-        let solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
-        if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
-          try {
-            solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress;
-          } catch (_) { }
-        }
-        if (feeUsdc > 0 && solFeeRecipient && multichain.isSolanaAddress(solFeeRecipient) && sol.solanaAddress !== solFeeRecipient) {
-          try {
-            const feeSolTx = await multichain.sendSolanaTransfer({
-              keypair: sol.keypair,
-              recipientAddress: solFeeRecipient,
-              amount: feeUsdc,
-            });
-            if (feeSolTx && feeSolTx.success !== false) {
-              feeTxHash = feeSolTx.txHash || feeSolTx.signature || null;
-              console.log(`[app_api:payout.ngn:solana] Collected 1% fee ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
+        if (willChargeSolFee) {
+          const maxAttempts = process.env.NODE_ENV === "test" ? 1 : 2;
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+              const feeSolTx = await multichain.sendSolanaTransfer({
+                keypair: sol.keypair,
+                recipientAddress: solFeeRecipient,
+                amount: feeUsdc,
+              });
+              if (feeSolTx && feeSolTx.success !== false) {
+                feeTxHash = feeSolTx.txHash || feeSolTx.signature || null;
+                console.log(`[app_api:payout.ngn:solana] Collected 1% fee ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
+                break;
+              }
+              throw new Error(feeSolTx?.error || "Solana fee transfer failed");
+            } catch (feeErr) {
+              console.warn(`[app_api:payout.ngn:solana_fee_note] attempt ${attempt}/${maxAttempts}:`, feeErr.message);
+              if (attempt < maxAttempts) await new Promise((r) => setTimeout(r, 1500));
             }
-          } catch (feeErr) {
-            console.warn("[app_api:payout.ngn:solana_fee_note]", feeErr.message);
           }
         }
       } else if (walletLib.isValidAddress(fundingAddress)) {
         const signer = walletLib.walletFromPrivateKey(privateKey);
-        let baseNonce = null;
-        try {
-          if (typeof signer.getNonce === "function") baseNonce = await signer.getNonce("pending");
-        } catch (_) { }
+        const fundingMicro = walletLib.parseToMicro(fundingAmount.toFixed(6));
+        const feeMicro = feeUsdc > 0 ? walletLib.parseToMicro(feeUsdc.toFixed(6)) : 0n;
+        const willChargeArcFee = feeMicro > 0n && feeRecipient && walletLib.isValidAddress(feeRecipient) && String(signer.address || "").toLowerCase() !== feeRecipient.toLowerCase();
+        const totalRequiredMicro = fundingMicro + (willChargeArcFee ? feeMicro : 0n);
+
+        // Pre-verify Arc balance covers BOTH payout + 1% fee (auto-liquidating Auto-Earn if needed)
+        const realWalletLib = require("../wallet");
+        const isMockedSendOnly =
+          "walletLib" in overrides &&
+          walletLib.getNativeBalanceMicro === realWalletLib.getNativeBalanceMicro &&
+          walletLib.sendSponsoredOrDirectTransaction !== realWalletLib.sendSponsoredOrDirectTransaction;
+        if (!isMockedSendOnly && typeof walletLib.getNativeBalanceMicro === "function") {
+          let arcBal = null;
+          try {
+            arcBal = await walletLib.getNativeBalanceMicro(signer.address);
+          } catch (_) {
+            arcBal = null;
+          }
+          if (arcBal !== null && arcBal < totalRequiredMicro) {
+            try {
+              const autoEarn = dep("autoEarn");
+              if (autoEarn && typeof autoEarn.ensureLiquidBalance === "function") {
+                const liq = await autoEarn.ensureLiquidBalance({
+                  userWallet: signer,
+                  telegramId: ctx.telegramId,
+                  requiredAmountMicro: totalRequiredMicro,
+                  accountType,
+                });
+                if (liq?.liquidated) {
+                  arcBal = await walletLib.getNativeBalanceMicro(signer.address).catch(() => arcBal);
+                }
+              }
+            } catch (_) { }
+          }
+          if (arcBal !== null && arcBal < totalRequiredMicro) {
+            const availUsd = parseFloat(walletLib.formatMicro(arcBal));
+            const maxSend = Math.floor((availUsd / (1 + offrampFeeRate)) * 100) / 100;
+            throw new ActionError(
+              400,
+              "insufficient_balance",
+              `You need $${fmt(fundingAmount + feeUsdc)} ($${fmt(fundingAmount)} + $${fmt(feeUsdc)} 1% fee), but your available balance is $${fmt(availUsd)}. Max you can send is $${fmt(maxSend)}.`
+            );
+          }
+        }
+
+        // Wait for confirmation on payout tx BEFORE sending fee tx so nonces & post-tx balances never race on Arc!
         const tx = await walletLib.sendSponsoredOrDirectTransaction(
           signer,
           fundingAddress,
-          walletLib.parseToMicro(fundingAmount.toFixed(6)),
+          fundingMicro,
           "0x",
-          { nonce: baseNonce != null ? baseNonce : undefined }
+          { waitForConfirmation: true }
         );
-        txHash = tx?.txHash || null;
+        txHash = tx?.txHash || tx?.hash || null;
 
-        // Route 1% platform fee directly to dev fee wallet on Arc
-        if (feeUsdc > 0 && feeRecipient && walletLib.isValidAddress(feeRecipient) && String(signer.address || "").toLowerCase() !== feeRecipient.toLowerCase()) {
-          try {
-            let feeMicro = walletLib.parseToMicro(feeUsdc.toFixed(6));
-            const realWalletLib = require("../wallet");
-            const isMockedSendOnly =
-              "walletLib" in overrides &&
-              walletLib.getNativeBalanceMicro === realWalletLib.getNativeBalanceMicro &&
-              walletLib.sendSponsoredOrDirectTransaction !== realWalletLib.sendSponsoredOrDirectTransaction;
-            if (!isMockedSendOnly && typeof walletLib.getNativeBalanceMicro === "function") {
-              try {
-                const currentBalMicro = await walletLib.getNativeBalanceMicro(signer.address);
-                const minGasBufferMicro = walletLib.parseToMicro("0.002");
-                if (currentBalMicro < feeMicro + minGasBufferMicro) {
-                  feeMicro = currentBalMicro > minGasBufferMicro ? currentBalMicro - minGasBufferMicro : 0n;
-                }
-              } catch (_) { }
+        // Route 1% platform fee directly to fee wallet on Arc with fresh confirmed nonce
+        if (willChargeArcFee) {
+          const maxAttempts = process.env.NODE_ENV === "test" ? 1 : 2;
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+              let actualFeeMicro = feeMicro;
+              if (!isMockedSendOnly && typeof walletLib.getNativeBalanceMicro === "function") {
+                try {
+                  const currentBalMicro = await walletLib.getNativeBalanceMicro(signer.address);
+                  const minGasBufferMicro = walletLib.parseToMicro("0.002");
+                  if (currentBalMicro < actualFeeMicro + minGasBufferMicro) {
+                    actualFeeMicro = currentBalMicro > minGasBufferMicro ? currentBalMicro - minGasBufferMicro : 0n;
+                  }
+                } catch (_) { }
+              }
+              if (actualFeeMicro > 0n) {
+                const feeTx = await walletLib.sendSponsoredOrDirectTransaction(
+                  signer,
+                  feeRecipient,
+                  actualFeeMicro,
+                  "0x",
+                  { waitForConfirmation: true }
+                );
+                feeTxHash = feeTx?.txHash || feeTx?.hash || null;
+                console.log(`[app_api:payout.ngn] Collected 1% fee ($${feeUsdc} USDC) -> ${feeRecipient} (tx: ${feeTxHash})`);
+              }
+              break;
+            } catch (feeErr) {
+              console.warn(`[app_api:payout.ngn:arc_fee_note] attempt ${attempt}/${maxAttempts}:`, feeErr.message);
+              if (attempt < maxAttempts) await new Promise((r) => setTimeout(r, 1500));
             }
-            if (feeMicro > 0n) {
-              const feeTx = await walletLib.sendSponsoredOrDirectTransaction(
-                signer,
-                feeRecipient,
-                feeMicro,
-                "0x",
-                { nonce: baseNonce != null ? baseNonce + 1 : undefined }
-              );
-              feeTxHash = feeTx?.txHash || feeTx?.hash || null;
-              console.log(`[app_api:payout.ngn] Collected 1% fee ($${feeUsdc} USDC) -> ${feeRecipient} (tx: ${feeTxHash})`);
-            }
-          } catch (feeErr) {
-            console.warn("[app_api:payout.ngn:arc_fee_note]", feeErr.message);
           }
         }
       } else {
@@ -1629,7 +1754,7 @@ const ACTIONS = {
         const storeMod = require("./store");
         const devs = storeMod.listDevices(ctx.telegramId) || [];
         for (const d of devs) storeMod.revokeDevice(ctx.telegramId, d.device_id);
-      } catch (_) {}
+      } catch (_) { }
       return { frozen: true, notice: "Your account has been frozen for security" };
     },
   },
@@ -1661,13 +1786,13 @@ const ACTIONS = {
       } catch (_) {
         db.blockUser(ctx.telegramId, "Account deleted by user");
       }
-      try { require("./avatars").deleteAvatar(ctx.telegramId); } catch (_) {}
+      try { require("./avatars").deleteAvatar(ctx.telegramId); } catch (_) { }
       try {
         const storeMod = require("./store");
         const devs = storeMod.listDevices(ctx.telegramId) || [];
         for (const d of devs) storeMod.revokeDevice(ctx.telegramId, d.device_id);
         db.db.prepare("DELETE FROM app_passkeys WHERE telegram_id = ?").run(Number(ctx.telegramId));
-      } catch (_) {}
+      } catch (_) { }
       return { deleted: true, notice: "Your Proxim account has been permanently deleted" };
     },
   },

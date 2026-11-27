@@ -410,7 +410,8 @@ test("money actions: transfer.user, payout.ngn, payout.global, bill.pay, savings
   });
   assert.equal(ngnSol.confirm.status, 200, JSON.stringify(ngnSol.confirm.body));
   assert.equal(ngnSol.confirm.body.rail, "solana");
-  assert.equal(calls.sentSolana.length, 1);
+  assert.equal(calls.sentSolana.length, 2); // payout ($10) + 1% platform fee ($0.10)
+  assert.equal(calls.sentSolana[1].amount, 0.1);
 
   // 3) payout.global
   const gp = await approveAction(aliceAuth, token, "payout.global", {
