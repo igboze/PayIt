@@ -1157,6 +1157,128 @@ test("Local-Currency Hold, User Settlement Toggle, Auto-Save OFF Default, Tiered
   }
 });
 
+test("Verified Transaction Alert Emails & Monthly ₦200 Maintenance Fee Worker", async () => {
+  const emailMod = require("../src/email");
+  const nuvion = require("../src/nuvion");
+  const orchestrator = require("../src/nuvion_orchestrator");
+  const monthlyFee = require("../src/monthly_fee_worker");
+  const store = require("../src/app_api/store");
+  const { ethers } = require("ethers");
+
+  // 1. Month-end UTC calendar detection across 28-, 29-, 30-, and 31-day months
+  assert.equal(monthlyFee.isLastDayOfMonthUtc(new Date("2026-02-28T22:00:00Z")), true);
+  assert.equal(monthlyFee.isLastDayOfMonthUtc(new Date("2026-02-27T22:00:00Z")), false);
+  assert.equal(monthlyFee.isLastDayOfMonthUtc(new Date("2028-02-28T22:00:00Z")), false); // leap year
+  assert.equal(monthlyFee.isLastDayOfMonthUtc(new Date("2028-02-29T22:00:00Z")), true);
+  assert.equal(monthlyFee.isLastDayOfMonthUtc(new Date("2026-11-30T22:00:00Z")), true);
+  assert.equal(monthlyFee.isLastDayOfMonthUtc(new Date("2026-11-29T22:00:00Z")), false);
+  assert.equal(monthlyFee.isLastDayOfMonthUtc(new Date("2026-12-31T22:00:00Z")), true);
+
+  // 2. Unverified user does NOT get transaction alert emails; verified user DOES (and duplicates are suppressed)
+  const unvTg = -995501;
+  const verTg = -995502;
+  const w1 = ethers.Wallet.createRandom();
+  const w2 = ethers.Wallet.createRandom();
+  db.createUserWithWallet(unvTg, "unv_alert_user", w1.address, w1.privateKey, "4927", null, null, null);
+  db.createUserWithWallet(verTg, "ver_alert_user", w2.address, w2.privateKey, "4927", null, null, null);
+  store.setUserPhone(unvTg, "email:unv@example.com");
+  store.setUserPhone(verTg, "email:ver@example.com");
+
+  const unvRes = await emailMod.dispatchVerifiedTransactionEmail({
+    telegramId: unvTg,
+    type: "deposit_naira",
+    amountMicro: "50000000000000000000",
+    status: "confirmed",
+    txHash: "tx_unv_1",
+    sourceCurrency: "NGN",
+    sourceAmount: 75000,
+  });
+  assert.equal(unvRes.skipped, true);
+  assert.equal(unvRes.reason, "user_not_verified");
+
+  db.upsertNuvionEntity({
+    telegramId: verTg,
+    accountType: "personal",
+    entityId: "ent_monthly_ver_1",
+    entityType: "individual",
+    status: "approved",
+    legalName: "Verified Alert User",
+    email: "ver@example.com",
+  });
+
+  const verRes1 = await emailMod.dispatchVerifiedTransactionEmail({
+    telegramId: verTg,
+    type: "deposit_naira",
+    amountMicro: "50000000000000000000",
+    status: "confirmed",
+    txHash: "tx_ver_unique_1",
+    sourceCurrency: "NGN",
+    sourceAmount: 75000,
+  });
+  assert.equal(verRes1.skipped, undefined, "Verified user must trigger sendTransactionAlertEmail");
+  assert.equal(verRes1.reason, "no_provider_configured");
+
+  const verRes2 = await emailMod.dispatchVerifiedTransactionEmail({
+    telegramId: verTg,
+    type: "deposit_naira",
+    amountMicro: "50000000000000000000",
+    status: "confirmed",
+    txHash: "tx_ver_unique_1",
+    sourceCurrency: "NGN",
+    sourceAmount: 75000,
+  });
+  assert.equal(verRes2.duplicate, true, "Duplicate txHash must never send a second alert email");
+
+  // 3. End-of-month ₦200 fee charges verified user from held NGN once and is 100% idempotent
+  const origListAccounts = nuvion.listAccounts;
+  const origCreateTransfer = nuvion.createTransfer;
+  const origEnsureTarget = orchestrator.ensureChildToParentMarginTarget;
+  const origKey = process.env.NUVION_API_KEY;
+  process.env.NUVION_API_KEY = "test_monthly_fee_key";
+
+  const bookTransfers = [];
+  try {
+    orchestrator._clearParentAccountCache();
+    nuvion.listAccounts = async ({ entityId }) => ({
+      data: entityId === "ent_monthly_ver_1"
+        ? [{ id: "acct_ngn_mf_1", currency: "NGN", status: "active", balance: { available: 1000_00, pending: 0 } }]
+        : [{ id: "acct_ngn_empty", currency: "NGN", status: "active", balance: { available: 50_00, pending: 0 } }],
+    });
+    orchestrator.ensureChildToParentMarginTarget = async () => ({
+      counterpartyId: "cp_parent_ngn",
+      paymentDetailId: "pd_parent_ngn",
+    });
+    nuvion.createTransfer = async (args) => {
+      bookTransfers.push(args);
+      return { id: `tr_mf_${bookTransfers.length}`, status: "successful", amount: args.amountMinor };
+    };
+
+    const single = await monthlyFee.collectMonthlyFeeForUser({
+      user: db.getUser(verTg),
+      billingMonth: "2026-11",
+      feeNgn: 200,
+      ngnPerUsd: 1500,
+    });
+    assert.equal(single.status, "charged");
+    assert.equal(single.fundingSource, "nuvion_ngn");
+    assert.equal(single.feeNgn, 200);
+    assert.equal(bookTransfers.length, 1);
+    assert.equal(bookTransfers[0].amountMinor, 200_00, "Must collect exact ₦200 (20000 kobo)");
+    assert.equal(bookTransfers[0].paymentType, "book-transfer");
+
+    // Re-running for the same billingMonth must NOT include verTg again
+    const eligibleAgain = db.getVerifiedUsersForMonthlyFee("2026-11");
+    assert.equal(eligibleAgain.some((u) => Number(u.telegram_id) === verTg), false, "Already-charged user must be skipped for same month");
+  } finally {
+    nuvion.listAccounts = origListAccounts;
+    nuvion.createTransfer = origCreateTransfer;
+    orchestrator.ensureChildToParentMarginTarget = origEnsureTarget;
+    if (origKey === undefined) delete process.env.NUVION_API_KEY;
+    else process.env.NUVION_API_KEY = origKey;
+    orchestrator._clearParentAccountCache();
+  }
+});
+
 test.after(() => {
   try {
     if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);

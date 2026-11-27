@@ -396,6 +396,201 @@ async function sendGlobalAccountCreatedEmail({ to, name, currency, accountType =
   return sendTransactionalEmail({ to, subject, html, text });
 }
 
+const TX_ALERT_LABELS = {
+  deposit_naira: { label: "Naira Bank Deposit", credit: true },
+  deposit_fiat: { label: "International Bank Deposit", credit: true },
+  deposit_crosschain: { label: "Crypto Deposit", credit: true },
+  deposit_crypto: { label: "Crypto Deposit", credit: true },
+  crypto_deposit: { label: "Crypto Deposit", credit: true },
+  onramp: { label: "Naira Deposit", credit: true },
+  paj_onramp: { label: "Naira Deposit", credit: true },
+  p2p_receive: { label: "Money Received", credit: true },
+  p2p_refund: { label: "Gift Link Refund", credit: true },
+  invoice_payment: { label: "Invoice Payment Received", credit: true },
+  yield_withdraw: { label: "Savings Withdrawal", credit: true },
+  auto_earn_liquidate: { label: "Auto-Save Returned to Balance", credit: true },
+  offramp: { label: "Bank Transfer", credit: false },
+  offramp_request: { label: "Bank Transfer", credit: false },
+  withdraw_naira: { label: "Naira Bank Transfer", credit: false },
+  payout: { label: "Bank Payout", credit: false },
+  payout_global: { label: "International Transfer", credit: false },
+  global_payout: { label: "International Transfer", credit: false },
+  card_load: { label: "Virtual USD Card Funding", credit: false },
+  card_spend: { label: "Virtual USD Card Spend", credit: false },
+  send_usdc: { label: "USD Transfer Sent", credit: false },
+  send_eurc: { label: "EUR Transfer Sent", credit: false },
+  transfer: { label: "Transfer Sent", credit: false },
+  p2p_send: { label: "Proxim Transfer Sent", credit: false },
+  p2p_escrow: { label: "Gift Link Sent", credit: false },
+  scheduled_transfer: { label: "Scheduled Transfer", credit: false },
+  yield_deposit: { label: "Dollar Savings Deposit", credit: false },
+  savings_deposit: { label: "Dollar Savings Deposit", credit: false },
+  auto_earn_deposit: { label: "Auto-Save Deposit", credit: false },
+  swap: { label: "FX Currency Swap", credit: false },
+  swap_usdc_eurc: { label: "FX Swap (USD → EUR)", credit: false },
+  swap_eurc_usdc: { label: "FX Swap (EUR → USD)", credit: false },
+  stock_buy: { label: "US Stock Purchase", credit: false },
+  stock_sell: { label: "US Stock Sale", credit: true },
+  monthly_maintenance_fee: { label: "Monthly Account & Alert Fee", credit: false },
+};
+
+function _formatAlertAmount({ sourceCurrency, sourceAmount, amountUsd }) {
+  const cur = sourceCurrency ? String(sourceCurrency).toUpperCase() : null;
+  const srcAmt = Number(sourceAmount);
+  if (cur && Number.isFinite(srcAmt) && srcAmt > 0) {
+    if (cur === "NGN") return `₦${Math.round(srcAmt).toLocaleString("en-NG")}`;
+    const syms = { USD: "$", GBP: "£", EUR: "€", CAD: "CA$", AED: "AED ", GHS: "GH₵", KES: "KSh ", TZS: "TSh ", MXN: "MX$" };
+    const sym = syms[cur] || `${cur} `;
+    return `${sym}${srcAmt.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+  const usd = Number(amountUsd || 0);
+  return `$${usd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD`;
+}
+
+async function sendTransactionAlertEmail({
+  to,
+  name,
+  type,
+  amountUsd = 0,
+  sourceCurrency = null,
+  sourceAmount = null,
+  accountType = "personal",
+  status = "confirmed",
+  narration = null,
+  txHash = null,
+  timestamp = null,
+} = {}) {
+  const rawType = String(type || "transaction").toLowerCase();
+  const meta = TX_ALERT_LABELS[rawType] || (rawType.startsWith("bill_")
+    ? { label: `Bill Payment (${rawType.slice(5).toUpperCase()})`, credit: false }
+    : { label: rawType.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()), credit: false });
+
+  const safe = (v) => String(v || "").replace(/[<>&]/g, "");
+  const sign = meta.credit ? "+" : "-";
+  const amtText = _formatAlertAmount({ sourceCurrency, sourceAmount, amountUsd });
+  const badgeBg = meta.credit ? "#007840" : "#002018";
+  const badgeColor = meta.credit ? "#FFFFFF" : "#E0A82E";
+  const badgeLabel = meta.credit ? "CREDIT ALERT" : "DEBIT ALERT";
+  const acctLabel = accountType === "business" ? "Business Account" : "Personal Account";
+  const whenStr = new Date(timestamp || Date.now()).toUTCString();
+  const greeting = name ? `Hello ${safe(name)},` : "Hello,";
+
+  const rows = [
+    ["Transaction Type", meta.label],
+    ["Amount", `${sign}${amtText}`],
+    ["Account", acctLabel],
+    ["Status", String(status || "confirmed").toUpperCase()],
+    ["Date (UTC)", whenStr],
+  ];
+  if (narration) rows.push(["Description", String(narration).slice(0, 120)]);
+  if (txHash) rows.push(["Reference", String(txHash).slice(0, 48)]);
+
+  const htmlRows = rows
+    .map(
+      ([k, v]) =>
+        `<tr><td style="padding:7px 0;color:#5C5546;font-size:13.5px;border-bottom:1px solid #EFE9DC;">${safe(k)}</td>` +
+        `<td style="padding:7px 0;color:#13110C;font-weight:700;font-size:13.5px;text-align:right;border-bottom:1px solid #EFE9DC;">${safe(v)}</td></tr>`
+    )
+    .join("");
+  const textRows = rows.map(([k, v]) => `- ${k}: ${v}`).join("\n");
+
+  const subject = `Proxim ${meta.credit ? "Credit" : "Debit"} Alert: ${sign}${amtText} — ${meta.label}`;
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; background-color: #F5F1E8; color: #13110C;">
+      <div style="background-color: #FFFFFF; border: 1px solid #DCD3C1; border-radius: 18px; padding: 26px;">
+        <div style="display: inline-block; background-color: ${badgeBg}; color: ${badgeColor}; font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; padding: 5px 12px; border-radius: 999px; margin-bottom: 12px;">
+          ${badgeLabel}
+        </div>
+        <h2 style="color: #002018; margin: 0 0 6px 0; font-size: 24px;">${safe(sign + amtText)}</h2>
+        <p style="font-size: 14.5px; line-height: 1.5; color: #5C5546; margin: 0 0 16px 0;">${greeting} Here are the details of your recent ${safe(acctLabel.toLowerCase())} transaction:</p>
+        <div style="background-color: #FAF7F0; border: 1px solid #E6DEC9; border-radius: 14px; padding: 14px 18px; margin: 14px 0;">
+          <table style="width:100%;border-collapse:collapse;">${htmlRows}</table>
+        </div>
+        <p style="font-size: 12.5px; line-height: 1.5; color: #776F5F; margin: 14px 0 0 0;">
+          If you did not authorize this transaction, freeze your account immediately in Proxim or reply to this email.
+        </p>
+        <hr style="border: none; border-top: 1px solid #E6DEC9; margin: 18px 0;" />
+        <p style="font-size: 12px; color: #8A8170; margin: 0;">
+          Igboze from Proxim · Automated Transaction Alert · <a href="https://t.me/payeetbot" style="color:#002018;">https://t.me/payeetbot</a>
+        </p>
+      </div>
+    </div>
+  `;
+  const text = [
+    greeting,
+    "",
+    `${badgeLabel}: ${sign}${amtText} (${meta.label})`,
+    "",
+    textRows,
+    "",
+    "If you did not authorize this transaction, freeze your account in Proxim or reply to this email immediately.",
+  ].join("\n");
+
+  return sendTransactionalEmail({ to, subject, html, text });
+}
+
+/**
+ * Send a transaction alert email ONLY for verified (approved KYC/KYB) users.
+ * Idempotent per (telegramId, txHash || txId) so status updates never duplicate alerts.
+ */
+async function dispatchVerifiedTransactionEmail({
+  telegramId,
+  txId = null,
+  type,
+  amountMicro = "0",
+  decimals = 18,
+  status = "confirmed",
+  txHash = null,
+  accountType = "personal",
+  narration = null,
+  sourceCurrency = null,
+  sourceAmount = null,
+} = {}) {
+  try {
+    if (!telegramId) return { skipped: true, reason: "no_user" };
+    const cleanStatus = String(status || "").toLowerCase();
+    if (!["confirmed", "completed", "submitted", "success"].includes(cleanStatus)) {
+      return { skipped: true, reason: `status_${cleanStatus}` };
+    }
+    const db = require("./db");
+    if (typeof db.isUserAnyKycApproved === "function" && !db.isUserAnyKycApproved(telegramId)) {
+      return { skipped: true, reason: "user_not_verified" };
+    }
+    const to = resolveUserEmail(telegramId);
+    if (!to) return { skipped: true, reason: "no_email" };
+
+    const dedupRef = txHash ? String(txHash).trim() : (txId ? `txid_${txId}` : null);
+    if (dedupRef) {
+      const idempotency = require("./idempotency");
+      const claimKey = `tx_alert_email:${telegramId}:${dedupRef}`;
+      if (!idempotency.tryClaimWebhookEvent(claimKey, "tx_alert_email", dedupRef)) {
+        return { skipped: true, duplicate: true };
+      }
+    }
+
+    const dec = Number(decimals ?? 18);
+    const amountUsd = Number(String(amountMicro || "0")) / 10 ** dec;
+    const user = db.getUser?.(telegramId);
+    const name = user?.sender_name || user?.username || null;
+
+    return await sendTransactionAlertEmail({
+      to,
+      name,
+      type,
+      amountUsd: Number.isFinite(amountUsd) ? amountUsd : 0,
+      sourceCurrency,
+      sourceAmount,
+      accountType,
+      status: cleanStatus,
+      narration,
+      txHash,
+    });
+  } catch (err) {
+    console.warn("[email:tx_alert] dispatch note:", err?.message || err);
+    return { sent: false, reason: "dispatch_error", error: err?.message };
+  }
+}
+
 module.exports = {
   resolveUserEmail,
   getEmailConfigDiagnostics,
@@ -403,4 +598,6 @@ module.exports = {
   sendKycStatusEmail,
   sendWelcomeEmail,
   sendGlobalAccountCreatedEmail,
+  sendTransactionAlertEmail,
+  dispatchVerifiedTransactionEmail,
 };

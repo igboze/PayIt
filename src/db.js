@@ -1222,7 +1222,30 @@ function recordTransaction(telegramId, type, amountMicro, status, txHash, accoun
     sourceAmount,
     depositChannel
   );
-  return result.lastInsertRowid;
+  const insertedId = result.lastInsertRowid;
+
+  // Send transaction alert email asynchronously for every settled transaction on verified KYC/KYB accounts
+  if (process.env.NODE_ENV !== "test" || process.env.ENABLE_TX_EMAIL_IN_TEST === "true") {
+    setImmediate(() => {
+      try {
+        require("./email").dispatchVerifiedTransactionEmail({
+          telegramId,
+          txId: insertedId,
+          type,
+          amountMicro: amountStr,
+          decimals,
+          status,
+          txHash: cleanHash,
+          accountType: cleanAcct,
+          narration: narration || null,
+          sourceCurrency,
+          sourceAmount,
+        }).catch(() => { });
+      } catch (_) { }
+    });
+  }
+
+  return insertedId;
 }
 
 function updateTransactionStatus(txId, status, txHash = null) {
@@ -3274,6 +3297,22 @@ function ensureNuvionSchema() {
       CREATE INDEX IF NOT EXISTS idx_nuvion_entities_entity ON nuvion_entities(entity_id);
       CREATE INDEX IF NOT EXISTS idx_nuvion_entities_tg ON nuvion_entities(telegram_id, account_type);
 
+      CREATE TABLE IF NOT EXISTS monthly_maintenance_fees (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id     INTEGER NOT NULL,
+        account_type    TEXT NOT NULL DEFAULT 'personal',
+        billing_month   TEXT NOT NULL,
+        amount_ngn      REAL NOT NULL DEFAULT 200,
+        amount_usd      REAL DEFAULT 0,
+        funding_source  TEXT,
+        tx_ref          TEXT,
+        status          TEXT NOT NULL DEFAULT 'charged',
+        error_message   TEXT,
+        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(telegram_id, billing_month)
+      );
+      CREATE INDEX IF NOT EXISTS idx_monthly_fees_month ON monthly_maintenance_fees(billing_month, status);
+
       CREATE TABLE IF NOT EXISTS nuvion_kyc_drafts (
         telegram_id  INTEGER NOT NULL,
         account_type TEXT NOT NULL DEFAULT 'personal',
@@ -3449,6 +3488,76 @@ function getNuvionEntityByUser(telegramId, accountType = "personal") {
 function getNuvionEntityByEntityId(entityId) {
   ensureNuvionSchema();
   return db.prepare("SELECT * FROM nuvion_entities WHERE entity_id = ?").get(String(entityId)) || null;
+}
+
+function isUserAnyKycApproved(telegramId) {
+  if (!telegramId) return false;
+  ensureNuvionSchema();
+  const row = db.prepare(
+    "SELECT 1 AS ok FROM nuvion_entities WHERE telegram_id = ? AND LOWER(status) = 'approved' LIMIT 1"
+  ).get(Number(telegramId));
+  return Boolean(row?.ok);
+}
+
+function getVerifiedUsersForMonthlyFee(billingMonth) {
+  ensureNuvionSchema();
+  return db.prepare(`
+    SELECT u.*
+    FROM users u
+    WHERE COALESCE(u.is_blocked, 0) = 0
+      AND EXISTS (
+        SELECT 1 FROM nuvion_entities ne
+        WHERE ne.telegram_id = u.telegram_id AND LOWER(ne.status) = 'approved'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM monthly_maintenance_fees mf
+        WHERE mf.telegram_id = u.telegram_id
+          AND mf.billing_month = ?
+          AND mf.status = 'charged'
+      )
+    ORDER BY u.telegram_id ASC
+  `).all(String(billingMonth));
+}
+
+function recordMonthlyMaintenanceFee({
+  telegramId,
+  accountType = "personal",
+  billingMonth,
+  amountNgn = 200,
+  amountUsd = 0,
+  fundingSource = null,
+  txRef = null,
+  status = "charged",
+  errorMessage = null,
+}) {
+  ensureNuvionSchema();
+  db.prepare(`
+    INSERT INTO monthly_maintenance_fees
+      (telegram_id, account_type, billing_month, amount_ngn, amount_usd, funding_source, tx_ref, status, error_message)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(telegram_id, billing_month) DO UPDATE SET
+      account_type   = excluded.account_type,
+      amount_ngn     = excluded.amount_ngn,
+      amount_usd     = excluded.amount_usd,
+      funding_source = COALESCE(excluded.funding_source, monthly_maintenance_fees.funding_source),
+      tx_ref         = COALESCE(excluded.tx_ref, monthly_maintenance_fees.tx_ref),
+      status         = excluded.status,
+      error_message  = excluded.error_message,
+      created_at     = datetime('now')
+  `).run(
+    Number(telegramId),
+    accountType,
+    String(billingMonth),
+    Number(amountNgn),
+    Number(amountUsd || 0),
+    fundingSource,
+    txRef,
+    status,
+    errorMessage
+  );
+  return db.prepare(
+    "SELECT * FROM monthly_maintenance_fees WHERE telegram_id = ? AND billing_month = ? LIMIT 1"
+  ).get(Number(telegramId), String(billingMonth));
 }
 
 function updateNuvionEntity(entityId, fields = {}) {
@@ -3922,6 +4031,9 @@ module.exports = {
   upsertNuvionEntity,
   getNuvionEntityByUser,
   getNuvionEntityByEntityId,
+  isUserAnyKycApproved,
+  getVerifiedUsersForMonthlyFee,
+  recordMonthlyMaintenanceFee,
   updateNuvionEntity,
   saveNuvionKycDraft,
   getNuvionKycDraft,

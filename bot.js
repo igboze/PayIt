@@ -62,6 +62,7 @@ const flowsInvestments = require("./src/flows_investments");
 const podsStore = require("./src/pods_store");
 const { generateCryptoNetworksBannerPNG } = require("./src/chain_logo_generator");
 const autoEarn = require("./src/auto_earn");
+const monthlyFeeWorker = require("./src/monthly_fee_worker");
 const cashflow = require("./src/cashflow");
 const socialTransfers = require("./src/social_transfers");
 const fraudGuard = require("./src/fraud_guard");
@@ -7534,6 +7535,41 @@ bot.command("test_email", async (ctx) => {
   );
 });
 
+bot.command("run_monthly_fee", async (ctx) => {
+  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return;
+  const args = String(ctx.message?.text || "").trim().split(/\s+/).slice(1);
+  const dryRun = args.some((a) => /^dry/i.test(a));
+  const monthArg = args.find((a) => /^\d{4}-\d{2}$/.test(a)) || monthlyFeeWorker.getBillingMonthKey();
+  await ctx.reply(`⏳ ${dryRun ? "Previewing" : "Running"} ₦${monthlyFeeWorker.getMonthlyFeeNgn()} monthly fee for <b>${monthArg}</b>...`, { parse_mode: "HTML" });
+  try {
+    const res = await monthlyFeeWorker.runMonthlyMaintenanceFeeCycle({
+      billingMonth: monthArg,
+      dryRun,
+      bot,
+    });
+    if (dryRun) {
+      return ctx.reply(
+        `🧾 <b>Monthly Fee Preview (${res.billingMonth})</b>\n` +
+        `• Fee per verified user: <b>₦${res.feeNgn}</b>\n` +
+        `• Eligible verified users: <b>${res.eligibleCount}</b>\n` +
+        `• Max collectible: <b>₦${res.estimatedTotalNgn.toLocaleString("en-NG")}</b>\n\n` +
+        `Run <code>/run_monthly_fee ${res.billingMonth}</code> to charge now.`,
+        { parse_mode: "HTML" }
+      );
+    }
+    return ctx.reply(
+      `✅ <b>Monthly Fee Run Complete (${res.billingMonth})</b>\n` +
+      `• Eligible: ${res.eligibleCount}\n` +
+      `• Charged: <b>${res.chargedCount}</b> (₦${(res.totalCollectedNgn || 0).toLocaleString("en-NG")} / ~$${(res.totalCollectedUsd || 0).toFixed(2)})\n` +
+      `• Skipped (low balance): ${res.skippedLowBalanceCount}\n` +
+      `• Failed: ${res.failedCount}`,
+      { parse_mode: "HTML" }
+    );
+  } catch (err) {
+    return ctx.reply(`Monthly fee error: ${err.message}`);
+  }
+});
+
 // ─── Admin: CCTP Retry & Fee-Payer Status ────────────────────────────────────
 
 /**
@@ -11605,11 +11641,19 @@ async function startBot() {
   } catch (err) {
     console.warn("[bot] App schedule runner notice:", err.message);
   }
+
+  // End-of-month ₦200 maintenance & email alert fee worker for verified KYC/KYB users
+  try {
+    monthlyFeeWorker.startMonthlyFeeWorker(bot);
+  } catch (err) {
+    console.warn("[bot] Monthly fee worker notice:", err.message);
+  }
 }
 
 startBot();
 
 process.once("SIGINT", () => {
+  monthlyFeeWorker.stopMonthlyFeeWorker();
   appSchedules.stopScheduleRunner();
   nuvionPoller.stopNuvionPoller();
   settlementDaemon.stopSettlementDaemon();
@@ -11619,6 +11663,7 @@ process.once("SIGINT", () => {
   bot.stop("SIGINT");
 });
 process.once("SIGTERM", () => {
+  monthlyFeeWorker.stopMonthlyFeeWorker();
   appSchedules.stopScheduleRunner();
   nuvionPoller.stopNuvionPoller();
   settlementDaemon.stopSettlementDaemon();
