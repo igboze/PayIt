@@ -68,13 +68,14 @@ async function sendTransactionalEmail({ to, subject, html, text }) {
     return { sent: false, reason: "invalid_recipient" };
   }
 
-  let lastError = null;
+  const errors = [];
 
   // 1. Resend (https://resend.com)
   const resendApiKey = (process.env.RESEND_API_KEY || "").trim();
   if (resendApiKey) {
     try {
-      const from = (process.env.RESEND_FROM_EMAIL || "Proxim <igboze@proximfi.xyz>").trim();
+      const rawFrom = (process.env.RESEND_FROM_EMAIL || "Proxim <igboze@proximfi.xyz>").trim();
+      const from = rawFrom.replace(/^["']+|["']+$/g, "").trim();
       const resp = await axios.post(
         "https://api.resend.com/emails",
         {
@@ -94,7 +95,8 @@ async function sendTransactionalEmail({ to, subject, html, text }) {
       );
       return { sent: true, provider: "resend", id: resp.data?.id };
     } catch (err) {
-      lastError = err.response?.data?.message || err.message;
+      const msg = err.response?.data?.message || err.message;
+      errors.push(`resend: ${msg}`);
       console.warn(`[email:resend] Failed to send email to ${to}:`, err.response?.data || err.message);
     }
   }
@@ -103,7 +105,7 @@ async function sendTransactionalEmail({ to, subject, html, text }) {
   const postmarkToken = (process.env.POSTMARK_SERVER_TOKEN || "").trim();
   if (postmarkToken) {
     try {
-      const from = (process.env.POSTMARK_FROM_EMAIL || "igboze@proximfi.xyz").trim();
+      const from = (process.env.POSTMARK_FROM_EMAIL || "igboze@proximfi.xyz").trim().replace(/^["']+|["']+$/g, "").trim();
       const resp = await axios.post(
         "https://api.postmarkapp.com/email",
         {
@@ -124,7 +126,8 @@ async function sendTransactionalEmail({ to, subject, html, text }) {
       );
       return { sent: true, provider: "postmark", id: resp.data?.MessageID };
     } catch (err) {
-      lastError = err.response?.data?.Message || err.message;
+      const msg = err.response?.data?.Message || err.message;
+      errors.push(`postmark: ${msg}`);
       console.warn(`[email:postmark] Failed to send email to ${to}:`, err.response?.data || err.message);
     }
   }
@@ -152,6 +155,7 @@ async function sendTransactionalEmail({ to, subject, html, text }) {
       attempts.push({ port: primaryPort, secure: primarySecure, from: fallbackFrom });
     }
 
+    let smtpLastErr = null;
     for (const cfg of attempts) {
       try {
         const transporter = nodemailer.createTransport({
@@ -172,16 +176,18 @@ async function sendTransactionalEmail({ to, subject, html, text }) {
         });
         return { sent: true, provider: "smtp", port: cfg.port, id: info?.messageId || null };
       } catch (err) {
-        lastError = err.message;
+        smtpLastErr = err.message;
         console.warn(`[email:smtp] Failed to send to ${to} via ${host}:${cfg.port} (from: ${cfg.from}):`, err.message);
       }
     }
+    if (smtpLastErr) errors.push(`smtp: ${smtpLastErr}`);
   }
 
   // If no email provider is configured (or all configured providers failed), log clearly for diagnostics
-  const reason = lastError ? "provider_delivery_failed" : "no_provider_configured";
-  console.warn(`[email:${reason}] To: ${to} | Subject: "${subject}"${lastError ? ` | Error: ${lastError}` : ""}`);
-  return { sent: false, reason, ...(lastError ? { error: lastError } : { simulated: true }) };
+  const combinedError = errors.length > 0 ? errors.join(" | ") : null;
+  const reason = combinedError ? "provider_delivery_failed" : "no_provider_configured";
+  console.warn(`[email:${reason}] To: ${to} | Subject: "${subject}"${combinedError ? ` | Error: ${combinedError}` : ""}`);
+  return { sent: false, reason, ...(combinedError ? { error: combinedError } : { simulated: true }) };
 }
 
 async function sendKycStatusEmail({ to, name, status, accountType = "personal" }) {
