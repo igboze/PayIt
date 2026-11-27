@@ -51,7 +51,7 @@ function getEmailConfigDiagnostics() {
   const smtpPass = (process.env.SMTP_PASS || "").trim();
   const smtpHost = (process.env.SMTP_HOST || "mail.privateemail.com").trim();
   const smtpPort = Number(process.env.SMTP_PORT || 465);
-  const smtpFrom = (process.env.SMTP_FROM_EMAIL || (smtpUser ? `Proxim <${smtpUser}>` : "")).trim();
+  const smtpFrom = (process.env.SMTP_FROM_EMAIL || (smtpUser ? `Igboze from Proxim <${smtpUser}>` : "")).trim();
   return {
     resendConfigured: Boolean((process.env.RESEND_API_KEY || "").trim()),
     postmarkConfigured: Boolean((process.env.POSTMARK_SERVER_TOKEN || "").trim()),
@@ -74,7 +74,7 @@ async function sendTransactionalEmail({ to, subject, html, text }) {
   const resendApiKey = (process.env.RESEND_API_KEY || "").trim();
   if (resendApiKey) {
     try {
-      const rawFrom = (process.env.RESEND_FROM_EMAIL || "Proxim <igboze@proximfi.xyz>").trim();
+      const rawFrom = (process.env.RESEND_FROM_EMAIL || "Igboze from Proxim <igboze@proximfi.xyz>").trim();
       const from = rawFrom.replace(/^["']+|["']+$/g, "").trim();
       const resp = await axios.post(
         "https://api.resend.com/emails",
@@ -105,7 +105,7 @@ async function sendTransactionalEmail({ to, subject, html, text }) {
   const postmarkToken = (process.env.POSTMARK_SERVER_TOKEN || "").trim();
   if (postmarkToken) {
     try {
-      const from = (process.env.POSTMARK_FROM_EMAIL || "igboze@proximfi.xyz").trim().replace(/^["']+|["']+$/g, "").trim();
+      const from = (process.env.POSTMARK_FROM_EMAIL || "Igboze from Proxim <igboze@proximfi.xyz>").trim().replace(/^["']+|["']+$/g, "").trim();
       const resp = await axios.post(
         "https://api.postmarkapp.com/email",
         {
@@ -142,9 +142,9 @@ async function sendTransactionalEmail({ to, subject, html, text }) {
     const primarySecure = process.env.SMTP_SECURE !== undefined
       ? String(process.env.SMTP_SECURE).toLowerCase() === "true"
       : primaryPort === 465;
-    const rawFrom = (process.env.SMTP_FROM_EMAIL || `Proxim <${smtpUser}>`).trim();
+    const rawFrom = (process.env.SMTP_FROM_EMAIL || `Igboze from Proxim <${smtpUser}>`).trim();
     const primaryFrom = rawFrom.replace(/^["']+|["']+$/g, "").trim();
-    const fallbackFrom = `Proxim <${smtpUser}>`;
+    const fallbackFrom = `Igboze from Proxim <${smtpUser}>`;
 
     // Try configured port first, then automatically fall back between 465 (SSL) and 587 (STARTTLS)
     const attempts = [
