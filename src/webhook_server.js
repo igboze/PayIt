@@ -909,7 +909,7 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
     // 0f. Public static email & brand assets (/assets/email/:file)
     const emailAssetMatch = req.method === "GET" && (req.url || "").split("?")[0].match(/^\/assets\/email\/([a-z0-9_.-]+\.png)$/i);
     if (emailAssetMatch) {
-      const allowedAssets = new Set(["icon_x.png", "icon_facebook.png", "icon_website.png"]);
+      const allowedAssets = new Set(["icon_x.png", "icon_facebook.png", "icon_website.png", "proxim_logo.png"]);
       const fileName = emailAssetMatch[1];
       if (allowedAssets.has(fileName)) {
         try {

@@ -302,11 +302,20 @@ function renderProximEmailShell({
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;background-color:#FFFFFF;border:1px solid #DCD3C1;border-radius:16px;overflow:hidden;">
           <!-- Brand Header -->
           <tr>
-            <td style="background-color:#002018;padding:22px 24px;">
+            <td style="background-color:#002018;padding:20px 24px;">
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
                 <tr>
                   <td align="left" valign="middle">
-                    <span style="font-size:20px;font-weight:800;letter-spacing:-0.4px;color:#FFFFFF;">Proxim</span>
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td valign="middle" style="padding-right:10px;">
+                          <img src="${getEmailAssetBaseUrl()}/assets/email/proxim_logo.png" alt="Proxim" width="32" height="32" style="display:block;width:32px;height:32px;border-radius:8px;border:1px solid #1E4D3B;outline:none;text-decoration:none;" />
+                        </td>
+                        <td valign="middle">
+                          <span style="font-size:20px;font-weight:800;letter-spacing:-0.4px;color:#FFFFFF;line-height:24px;">Proxim</span>
+                        </td>
+                      </tr>
+                    </table>
                   </td>
                   <td align="right" valign="middle">
                     <span style="display:inline-block;background-color:${badgeBg};color:${badgeColor};font-size:11px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;padding:4px 10px;border-radius:999px;">${escapeEmailHtml(badge)}</span>
