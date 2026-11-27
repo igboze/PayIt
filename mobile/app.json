@@ -80,7 +80,8 @@
       ]
     ],
     "extra": {
-      "apiBaseUrl": "https://payit-production.up.railway.app/api/app/v1"
+      "apiBaseUrl": "https://payit-production.up.railway.app/api/app/v1",
+      "googleWebClientId": "1084886093811-mvapmf55gto7d4kgi65llkq173ha8e9r.apps.googleusercontent.com"
     }
   }
 }

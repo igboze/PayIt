@@ -14,11 +14,15 @@ function __setTestVerifier(fn) {
   _testVerifier = typeof fn === "function" ? fn : null;
 }
 
+// Public Google OAuth Client IDs for Proxim (non-secret OIDC audience identifiers; overridable via env)
+const DEFAULT_GOOGLE_WEB_CLIENT_ID = "1084886093811-mvapmf55gto7d4kgi65llkq173ha8e9r.apps.googleusercontent.com";
+const DEFAULT_GOOGLE_ANDROID_CLIENT_ID = "1084886093811-l5fjdegkko14395runoghrmhm6duhgb2.apps.googleusercontent.com";
+
 function getAllowedGoogleClientIds() {
   const raw = [
-    process.env.GOOGLE_WEB_CLIENT_ID || "",
+    process.env.GOOGLE_WEB_CLIENT_ID || DEFAULT_GOOGLE_WEB_CLIENT_ID,
     process.env.GOOGLE_IOS_CLIENT_ID || "",
-    process.env.GOOGLE_ANDROID_CLIENT_ID || "",
+    process.env.GOOGLE_ANDROID_CLIENT_ID || DEFAULT_GOOGLE_ANDROID_CLIENT_ID,
     process.env.GOOGLE_CLIENT_IDS || "",
   ]
     .join(",")
@@ -31,8 +35,7 @@ function getAllowedGoogleClientIds() {
 function getPrimaryGoogleWebClientId() {
   const explicit = String(process.env.GOOGLE_WEB_CLIENT_ID || "").trim();
   if (explicit) return explicit;
-  const all = getAllowedGoogleClientIds();
-  return all[0] || null;
+  return DEFAULT_GOOGLE_WEB_CLIENT_ID;
 }
 
 function base64UrlToBuffer(str) {
