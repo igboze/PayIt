@@ -663,7 +663,8 @@ async function initiateHeldFiatPayout({
       accountType,
       18,
       "local_fiat",
-      jobPayload.narration
+      jobPayload.narration,
+      { sourceCurrency: q.targetCurrency, sourceAmount: q.targetAmountMajor }
     );
   } catch (_) { }
 
@@ -1426,7 +1427,8 @@ async function handleOutboundPayoutCompleted({ confirmed, entityRecord, bot = nu
         job.account_type || "personal",
         18,
         isHeldFiat ? "local_fiat" : "base",
-        p.narration || `Payout to ${p.recipientName || targetCurrency}`
+        p.narration || `Payout to ${p.recipientName || targetCurrency}`,
+        { sourceCurrency: targetCurrency, sourceAmount: targetMajor }
       );
     }
   } catch (txErr) {

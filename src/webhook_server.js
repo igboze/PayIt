@@ -342,11 +342,17 @@ async function processPajEvent(payload, bot) {
       }
 
       if (telegramId) {
-        const parsedTgId = parseInt(String(telegramId).replace(/\D/g, ""));
+        const parsedTgId = Number.isFinite(Number(telegramId)) && Number(telegramId) !== 0
+          ? Number(telegramId)
+          : parseInt(String(telegramId).replace(/\D/g, ""));
+        const resolvedFiatNgn = Number(fiatAmount || trackedOfframp?.fiat_amount || 0) ||
+          (amountUsdc > 0 && Number(data.rate || trackedOfframp?.rate) > 0
+            ? Math.round(amountUsdc * Number(data.rate || trackedOfframp?.rate))
+            : 0);
         try {
           let liveRate = data.rate || trackedOfframp?.rate;
-          if (!liveRate && fiatAmount > 0 && amountUsdc > 0) {
-            liveRate = Math.round(fiatAmount / amountUsdc);
+          if (!liveRate && resolvedFiatNgn > 0 && amountUsdc > 0) {
+            liveRate = Math.round(resolvedFiatNgn / amountUsdc);
           }
           if (amountUsdc > 0) {
             const amountMicro = walletLib.parseToMicro(amountUsdc.toFixed(6));
@@ -361,33 +367,48 @@ async function processPajEvent(payload, bot) {
               18,
               trackedOfframp?.rail || "arc",
               effectiveNarration,
-              { orderId: effectiveOrderId, onchainTxHash: trackedOfframp?.tx_hash || data.txHash || null }
+              {
+                orderId: effectiveOrderId,
+                onchainTxHash: trackedOfframp?.tx_hash || data.txHash || null,
+                ...(resolvedFiatNgn > 0 ? { sourceCurrency: "NGN", sourceAmount: resolvedFiatNgn } : {}),
+              }
             );
           }
         } catch (recErr) {
           console.warn("[webhook_server] Record offramp tx error:", recErr.message);
         }
 
-        if (botInstance?.telegram && !isNaN(parsedTgId)) {
+        const effectiveSenderName = trackedOfframp?.sender_name || data.senderName || db.resolveSenderName(parsedTgId, accountType);
+        const effectiveNarration = trackedOfframp?.narration || data.narration || data.description || null;
+        const senderLine = effectiveSenderName ? `👤 <b>Sender:</b> ${escapeHtml(effectiveSenderName)}\n` : "";
+        const narrationLine = effectiveNarration ? `💬 <b>Narration:</b> <i>${escapeHtml(effectiveNarration)}</i>\n` : "";
+        const ngnDisplay = resolvedFiatNgn > 0 ? `₦${Math.round(resolvedFiatNgn).toLocaleString("en-NG")}` : "Naira transfer";
+        const caption =
+          `✅ <b>Naira Transfer Delivered (${accountLabel})!</b>\n` +
+          `──────────────────────────\n` +
+          `💵 <b>Delivered:</b> ${ngnDisplay}\n` +
+          `🏦 <b>Destination:</b> ${bankName} <code>${accountNumber}</code>\n` +
+          senderLine +
+          narrationLine +
+          `💼 <b>Source:</b> ${accountLabel}\n` +
+          `🔖 <b>Ref:</b> <code>${effectiveOrderId || "N/A"}</code>\n\n` +
+          `<i>Funds have been delivered directly to the recipient bank account.</i>`;
+
+        // Push & in-app notification for mobile app users (Naira-only!)
+        if (!isNaN(parsedTgId)) {
+          try {
+            await require("./notify").notify(parsedTgId, {
+              title: `${ngnDisplay} Delivered`,
+              html: caption,
+              data: { type: "offramp_delivered", amountNgn: resolvedFiatNgn, orderId: effectiveOrderId },
+            });
+          } catch (_) { }
+        }
+
+        if (botInstance?.telegram && !isNaN(parsedTgId) && parsedTgId > 0) {
           try {
             const user = db.getUser(parsedTgId);
             const userAddress = user ? (accountType === "business" ? (user.business_deposit_address || user.deposit_address) : user.deposit_address) : null;
-            const effectiveSenderName = trackedOfframp?.sender_name || data.senderName || db.resolveSenderName(parsedTgId, accountType);
-            const effectiveNarration = trackedOfframp?.narration || data.narration || data.description || null;
-            const senderLine = effectiveSenderName ? `👤 <b>Sender:</b> ${escapeHtml(effectiveSenderName)}\n` : "";
-            const narrationLine = effectiveNarration ? `💬 <b>Narration:</b> <i>${escapeHtml(effectiveNarration)}</i>\n` : "";
-
-            const caption =
-              `✅ <b>Cash Out Delivered (${accountLabel})!</b>\n` +
-              `──────────────────────────\n` +
-              `💵 <b>Delivered:</b> ₦${Number(fiatAmount).toLocaleString()}\n` +
-              `🏦 <b>Destination:</b> ${bankName} <code>${accountNumber}</code>\n` +
-              senderLine +
-              narrationLine +
-              (fiatAmount > 0 ? "" : `💰 <b>Amount:</b> $${amountUsdc.toFixed(2)} USDC\n`) +
-              `💼 <b>Source:</b> ${accountLabel}\n` +
-              `🔖 <b>Ref:</b> <code>${effectiveOrderId || "N/A"}</code>\n\n` +
-              `<i>Funds have been delivered directly to your bank account.</i>`;
 
             let receiptPath = null;
             try {
@@ -399,8 +420,8 @@ async function processPajEvent(payload, bot) {
                 recipientAddress: accountNumber,
                 bankName: bankName,
                 amountUsdc: amountUsdc,
-                token: fiatAmount > 0 ? "NGN" : "USDC",
-                nairaEquiv: fiatAmount > 0 ? `₦${Number(fiatAmount).toLocaleString()}` : null,
+                token: "NGN",
+                nairaEquiv: resolvedFiatNgn > 0 ? ngnDisplay : null,
                 type: "Cash Out",
                 timestamp: new Date().toISOString(),
                 status: "Confirmed",

@@ -1091,17 +1091,29 @@ const ACTIONS = {
         throw new ActionError(502, "provider_error", "Unsupported funding address from the bank partner. Nothing was sent.");
       }
       const orderId = order.id || order.reference || txHash;
-      const resolvedFiat = order.fiatAmount || (a.amountNgn ? Number(a.amountNgn) : null);
+      const resolvedFiat = order.fiatAmount || (a.amountNgn ? Number(a.amountNgn) : (order.rate || a.quotedRate ? Math.round(fundingAmount * Number(order.rate || a.quotedRate)) : null));
       db.recordOfframpOrder({
         orderId, telegramId: ctx.telegramId, accountType, accountNumber: String(a.accountNumber), bankCode: String(a.bankCode),
         bankName: order.bankName || order.bank?.name || null, accountName: order.accountName || a.accountName || null,
         amountUsdc: fundingAmount, feeUsdc, netAmountUsdc: fundingAmount, fiatAmount: resolvedFiat, rate: order.rate || a.quotedRate || null, rail, txHash, feeTxHash,
         narration: a.narration || null, senderName: senderName || null, status: "submitted",
       });
-      db.recordTransaction(ctx.telegramId, "offramp", String(walletLib.parseToMicro(fundingAmount.toFixed(6))), "submitted", txHash || orderId, accountType, 18, rail, a.narration || null);
-      const notice = a.amountNgn
-        ? `Sending ₦${Number(a.amountNgn).toLocaleString("en-NG")} to ${order.accountName || a.accountName || "the bank account"}`
-        : `Sending $${fmt(fundingAmount)} to ${order.accountName || a.accountName || "the bank account"}`;
+      db.recordTransaction(
+        ctx.telegramId,
+        "offramp",
+        String(walletLib.parseToMicro(fundingAmount.toFixed(6))),
+        "submitted",
+        txHash || orderId,
+        accountType,
+        18,
+        rail,
+        a.narration || null,
+        resolvedFiat ? { sourceCurrency: "NGN", sourceAmount: resolvedFiat } : null
+      );
+      const displayNgn = resolvedFiat || (a.amountNgn ? Number(a.amountNgn) : null);
+      const notice = displayNgn
+        ? `Sending ₦${Math.round(displayNgn).toLocaleString("en-NG")} to ${order.accountName || a.accountName || "the bank account"}`
+        : `Sending transfer to ${order.accountName || a.accountName || "the bank account"}`;
       return { orderId, txHash, feeUsdc, feeTxHash, rail, accountType, status: "submitted", ...(resolvedFiat ? { amountNgn: resolvedFiat } : {}), amountUsdc: fundingAmount, notice };
     },
   },

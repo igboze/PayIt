@@ -53,6 +53,37 @@ function resolveUserEmail(telegramId = null, entityRecord = null, liveEntity = n
   return null;
 }
 
+function _lookupFiatAmountFromOrders(db, telegramId, rawType, txHash, amountUsd) {
+  if (!txHash || !db?.db) return null;
+  try {
+    if (/offramp|payout|withdraw_naira/.test(rawType)) {
+      const ord = db.db.prepare(
+        "SELECT fiat_amount, rate FROM paj_offramp_orders WHERE telegram_id = ? AND (tx_hash = ? OR order_id = ?) ORDER BY id DESC LIMIT 1"
+      ).get(Number(telegramId), String(txHash), String(txHash));
+      if (ord && Number(ord.fiat_amount) > 0) {
+        return { currency: "NGN", amount: Number(ord.fiat_amount) };
+      }
+      if (ord && Number(ord.rate) > 0 && amountUsd > 0) {
+        return { currency: "NGN", amount: Math.round(amountUsd * Number(ord.rate)) };
+      }
+      const nj = db.db.prepare(
+        "SELECT currency, amount_minor FROM nuvion_jobs WHERE telegram_id = ? AND (nuvion_transfer_id = ? OR unique_reference = ?) AND UPPER(currency) = 'NGN' ORDER BY id DESC LIMIT 1"
+      ).get(Number(telegramId), String(txHash), String(txHash));
+      if (nj && Number(nj.amount_minor) > 0) {
+        return { currency: "NGN", amount: Math.round(Number(nj.amount_minor) / 100) };
+      }
+    } else {
+      const ord = db.db.prepare(
+        "SELECT fiat_amount FROM paj_onramp_orders WHERE telegram_id = ? AND (tx_hash = ? OR order_id = ?) ORDER BY id DESC LIMIT 1"
+      ).get(Number(telegramId), String(txHash), String(txHash));
+      if (ord && Number(ord.fiat_amount) > 0) {
+        return { currency: "NGN", amount: Number(ord.fiat_amount) };
+      }
+    }
+  } catch (_) { }
+  return null;
+}
+
 function getEmailConfigDiagnostics() {
   const smtpUser = (process.env.SMTP_USER || "").trim();
   const smtpPass = (process.env.SMTP_PASS || "").trim();
@@ -197,210 +228,244 @@ async function sendTransactionalEmail({ to, subject, html, text }) {
   return { sent: false, reason, ...(combinedError ? { error: combinedError } : { simulated: true }) };
 }
 
+function escapeEmailHtml(val) {
+  return String(val ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * Gmail / Apple Mail / Outlook-safe responsive HTML email shell.
+ * Uses pure nested presentation tables (zero CSS flex/grid/broken emoji badges)
+ * so every Proxim email renders crisp and aligned on mobile & desktop clients.
+ */
+function renderProximEmailShell({
+  badge = "PROXIM",
+  badgeBg = "#E0A82E",
+  badgeColor = "#002018",
+  heading = "",
+  subheading = "",
+  bodyHtml = "",
+  footerNote = "Need help? Reply to this email or chat with us on Telegram at https://t.me/payeetbot",
+}) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+</head>
+<body style="margin:0;padding:0;background-color:#F5F1E8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#13110C;-webkit-text-size-adjust:100%;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F5F1E8;width:100%;">
+    <tr>
+      <td align="center" style="padding:24px 12px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;background-color:#FFFFFF;border:1px solid #DCD3C1;border-radius:16px;overflow:hidden;">
+          <!-- Brand Header -->
+          <tr>
+            <td style="background-color:#002018;padding:22px 24px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td align="left" valign="middle">
+                    <span style="font-size:20px;font-weight:800;letter-spacing:-0.4px;color:#FFFFFF;">Proxim</span>
+                  </td>
+                  <td align="right" valign="middle">
+                    <span style="display:inline-block;background-color:${badgeBg};color:${badgeColor};font-size:11px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;padding:4px 10px;border-radius:999px;">${escapeEmailHtml(badge)}</span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <!-- Main Body -->
+          <tr>
+            <td style="padding:26px 24px 20px 24px;">
+              ${heading ? `<h1 style="margin:0 0 8px 0;font-size:22px;line-height:28px;font-weight:800;color:#002018;">${heading}</h1>` : ""}
+              ${subheading ? `<p style="margin:0 0 18px 0;font-size:14.5px;line-height:22px;color:#5C5546;">${subheading}</p>` : ""}
+              ${bodyHtml}
+            </td>
+          </tr>
+          <!-- Footer -->
+          <tr>
+            <td style="background-color:#FAF7F0;border-top:1px solid #E6DEC9;padding:16px 24px;">
+              <p style="margin:0 0 6px 0;font-size:12.5px;line-height:19px;color:#5C5546;">${footerNote}</p>
+              <p style="margin:0;font-size:11.5px;line-height:17px;color:#8A8170;">Igboze from Proxim &middot; Global Banking &amp; Payments</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+}
+
+function renderKeyValueTable(rows) {
+  const trs = rows
+    .map(
+      ([k, v], idx) => `
+      <tr>
+        <td align="left" valign="top" style="padding:9px 0;font-size:13.5px;line-height:19px;color:#5C5546;${idx < rows.length - 1 ? "border-bottom:1px solid #EAE2D1;" : ""}">${escapeEmailHtml(k)}</td>
+        <td align="right" valign="top" style="padding:9px 0 9px 12px;font-size:13.5px;line-height:19px;font-weight:700;color:#13110C;${idx < rows.length - 1 ? "border-bottom:1px solid #EAE2D1;" : ""}">${escapeEmailHtml(v)}</td>
+      </tr>`
+    )
+    .join("");
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#FAF7F0;border:1px solid #E6DEC9;border-radius:12px;margin:14px 0;">
+    <tr>
+      <td style="padding:6px 16px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">${trs}</table>
+      </td>
+    </tr>
+  </table>`;
+}
+
 async function sendKycStatusEmail({ to, name, status, accountType = "personal" }) {
   const isBiz = accountType === "business";
   const label = isBiz ? "Business Account" : "Personal Account";
+  const greeting = `Hello ${escapeEmailHtml(name || "there")},`;
 
   if (status === "approved") {
+    const bodyHtml = `
+      <p style="margin:0 0 14px 0;font-size:15px;line-height:22px;color:#3A352C;">${greeting}</p>
+      <p style="margin:0 0 16px 0;font-size:15px;line-height:22px;color:#3A352C;">Great news! Your <strong>${escapeEmailHtml(label)}</strong> is now <strong>VERIFIED</strong>. Your global bank accounts and virtual USD cards are unlocked.</p>
+      ${renderKeyValueTable([
+        ["Account Status", "VERIFIED"],
+        ["Global Accounts", "USD, GBP, EUR, NGN, CAD, AED, KES, GHS, TZS"],
+        ["Deposit Fee", "0% (Hold Local Currency or Auto-USD)"],
+        ["Virtual Cards", "USD Cards for global online payments"],
+      ])}
+      <p style="margin:14px 0 0 0;font-size:14px;line-height:21px;color:#5C5546;">Open the Proxim app or Telegram bot anytime to view your account details and choose whether incoming deposits stay in their local currency or auto-convert to USD.</p>
+    `;
     return sendTransactionalEmail({
       to,
-      subject: `🎉 Your Proxim ${label} Is Now VERIFIED!`,
-      html: `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #111;">
-          <h2 style="color: #0052FF; margin-bottom: 8px;">Your Proxim Account Is VERIFIED!</h2>
-          <p style="font-size: 16px; line-height: 1.5; color: #333;">
-            Hello ${name || "there"},
-          </p>
-          <p style="font-size: 16px; line-height: 1.5; color: #333;">
-            Great news! Your <b>${label}</b> is now <b>VERIFIED</b>. Your global accounts and virtual cards are now active.
-          </p>
-          <div style="background-color: #F4F6F8; border-radius: 8px; padding: 16px; margin: 20px 0;">
-            <p style="margin: 0 0 8px 0; font-weight: 600;">What's unlocked on your Proxim account:</p>
-            <ul style="margin: 0; padding-left: 20px; line-height: 1.6; color: #444;">
-              <li>🏦 <b>Named Global Accounts:</b> USD, GBP, EUR, NGN, CAD, AED, KES, GHS, TZS</li>
-              <li>💳 <b>Virtual USD Cards:</b> Pay for subscriptions, AWS, Apple, Google, and online shopping</li>
-              <li>✈️ <b>Global Transfers:</b> Send directly to bank accounts and mobile money wallets across 27 currencies</li>
-            </ul>
-          </div>
-          <p style="font-size: 14px; color: #666; margin-top: 24px;">
-            Open your Proxim Mobile App or Telegram bot anytime to view your account coordinates and start transacting.
-          </p>
-          <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 24px 0;" />
-          <p style="font-size: 12px; color: #999;">
-            Proxim Platform · Regulated Global Banking Infrastructure
-          </p>
-        </div>
-      `,
+      subject: `Your Proxim ${label} Is Now VERIFIED!`,
+      html: renderProximEmailShell({
+        badge: "VERIFIED",
+        badgeBg: "#007840",
+        badgeColor: "#FFFFFF",
+        heading: `Your Proxim ${escapeEmailHtml(label)} is verified`,
+        bodyHtml,
+      }),
     });
   } else if (status === "pending") {
+    const bodyHtml = `
+      <p style="margin:0 0 14px 0;font-size:15px;line-height:22px;color:#3A352C;">${greeting}</p>
+      <p style="margin:0 0 14px 0;font-size:15px;line-height:22px;color:#3A352C;">We received your ${isBiz ? "Business Verification (KYB)" : "Identity Verification (KYC)"} for your <strong>${escapeEmailHtml(label)}</strong>. Our compliance team is reviewing your submission now.</p>
+      <p style="margin:0;font-size:14px;line-height:21px;color:#5C5546;">We will email you as soon as your Global Accounts (USD, GBP, EUR, NGN, CAD, AED, GHS, KES, TZS) and Virtual USD Cards are active.</p>
+    `;
     return sendTransactionalEmail({
       to,
       subject: `Verification Received — Your Proxim ${label} Is Under Review`,
-      html: `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #111;">
-          <h2 style="color: #002018; margin-bottom: 8px;">We Received Your Verification</h2>
-          <p style="font-size: 16px; line-height: 1.5; color: #333;">
-            Hello ${name || "there"},
-          </p>
-          <p style="font-size: 16px; line-height: 1.5; color: #333;">
-            Thank you for submitting your ${isBiz ? "Business Verification (KYB)" : "Identity Verification (KYC)"} for your <b>${label}</b>. Our compliance team is reviewing your documents now.
-          </p>
-          <p style="font-size: 14px; color: #555; line-height: 1.5;">
-            We'll email you and notify you in the Proxim app and Telegram bot as soon as your Global Accounts (USD, GBP, EUR, NGN, CAD, AED, GHS, KES, TZS) and Virtual USD Cards are unlocked.
-          </p>
-          <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 24px 0;" />
-          <p style="font-size: 12px; color: #999;">
-            Proxim Platform · Regulated Global Banking Infrastructure
-          </p>
-        </div>
-      `,
+      html: renderProximEmailShell({
+        badge: "UNDER REVIEW",
+        badgeBg: "#E0A82E",
+        badgeColor: "#002018",
+        heading: "We received your verification",
+        bodyHtml,
+      }),
     });
   } else if (status === "failed" || status === "rejected" || status === "action_required") {
+    const bodyHtml = `
+      <p style="margin:0 0 14px 0;font-size:15px;line-height:22px;color:#3A352C;">${greeting}</p>
+      <p style="margin:0 0 14px 0;font-size:15px;line-height:22px;color:#3A352C;">Additional information or a clearer document is needed to finish verifying your <strong>${escapeEmailHtml(label)}</strong>.</p>
+      <p style="margin:0;font-size:14px;line-height:21px;color:#5C5546;">Open Proxim and head to <strong>Profile &rarr; Verify ID</strong> to review and resubmit. Your standard wallet remains active.</p>
+    `;
     return sendTransactionalEmail({
       to,
-      subject: `Action Required: Proxim Verification Update`,
-      html: `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #111;">
-          <h2 style="color: #E11D48; margin-bottom: 8px;">Verification Update Needed</h2>
-          <p style="font-size: 16px; line-height: 1.5; color: #333;">
-            Hello ${name || "there"},
-          </p>
-          <p style="font-size: 16px; line-height: 1.5; color: #333;">
-            We reviewed your verification submission for your <b>${label}</b> and additional information or a clearer document is required to complete verification.
-          </p>
-          <p style="font-size: 16px; line-height: 1.5; color: #333;">
-            Please open the Proxim app or bot to review your documents and re-submit. Your regular Proxim wallet and local transfers remain 100% active.
-          </p>
-          <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 24px 0;" />
-          <p style="font-size: 12px; color: #999;">
-            Proxim Platform · Support Team
-          </p>
-        </div>
-      `,
+      subject: "Action Required: Proxim Verification Update",
+      html: renderProximEmailShell({
+        badge: "ACTION NEEDED",
+        badgeBg: "#E11D48",
+        badgeColor: "#FFFFFF",
+        heading: "Verification update needed",
+        bodyHtml,
+      }),
     });
   }
 }
 
 async function sendWelcomeEmail({ to, name } = {}) {
-  const greeting = name ? `Hello ${String(name).replace(/[<>&]/g, "")},` : "Welcome to Proxim,";
-  const subject = "Welcome to Proxim — Your Global Dollar & Naira Account Is Ready";
-  const html = `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; background-color: #F5F1E8; color: #13110C;">
-      <div style="background-color: #FFFFFF; border: 1px solid #DCD3C1; border-radius: 18px; padding: 28px;">
-        <div style="display: inline-block; background-color: #002018; color: #E0A82E; font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; padding: 5px 12px; border-radius: 999px; margin-bottom: 14px;">
-          Welcome to Proxim
-        </div>
-        <h2 style="color: #002018; margin: 0 0 10px 0; font-size: 22px;">Your passkey &amp; self-custodial wallet are live!</h2>
-        <p style="font-size: 15px; line-height: 1.6; color: #3A352C; margin: 0 0 14px 0;">
-          ${greeting}
-        </p>
-        <p style="font-size: 15px; line-height: 1.6; color: #3A352C; margin: 0 0 18px 0;">
-          Thanks for joining <b>Proxim</b>. Your account is secured with your device passkey and 4-digit transaction PIN. Here is a quick look at what you can do right from the app:
-        </p>
-        <div style="background-color: #FAF7F0; border: 1px solid #E6DEC9; border-radius: 14px; padding: 18px; margin: 18px 0;">
-          <p style="margin: 0 0 10px 0; font-weight: 700; color: #002018; font-size: 14px;">What you can do on Proxim:</p>
-          <ul style="margin: 0; padding-left: 20px; line-height: 1.7; color: #3A352C; font-size: 14px;">
-            <li><b>💰 Fund Instantly:</b> Add money via Nigerian bank transfer (NGN), card, or crypto deposits across multiple chains.</li>
-            <li><b>💸 Send Locally &amp; Globally:</b> Pay any Nigerian bank account in seconds, send free to Proxim <code>@usernames</code> or gift links, and transfer internationally across 27+ currencies.</li>
-            <li><b>🏦 Global Bank Accounts &amp; Virtual USD Cards:</b> Complete quick ID verification in <b>Profile → Verify ID</b> to unlock named USD, GBP, EUR, CAD, AED, GHS, KES, and TZS accounts plus Virtual USD Cards for online spending.</li>
-            <li><b>📈 Dollar Savings, FX Swap &amp; Bills:</b> Earn yield on idle dollars with Auto-Earn, swap USDC ↔ EURC, and pay airtime, data, electricity, and cable TV bills.</li>
-            <li><b>💼 Business Mode:</b> Create a separate Business Account for client invoices, payment links, expense tracking, and multi-currency payroll.</li>
-          </ul>
-        </div>
-        <p style="font-size: 14px; line-height: 1.6; color: #5C5546; margin: 0 0 16px 0;">
-          <b>Quick tip:</b> Head to <b>Profile</b> in the app to claim your personal <code>@username</code> so friends and clients can pay you for free.
-        </p>
-        <p style="font-size: 13px; line-height: 1.5; color: #776F5F; margin: 0;">
-          Need help anytime? Reply to this email, contact <a href="mailto:igboze@proximfi.xyz" style="color: #002018; font-weight: 600;">igboze@proximfi.xyz</a>, or chat with us on Telegram at <a href="https://t.me/payeetbot" style="color: #002018; font-weight: 600;">https://t.me/payeetbot</a>.
-        </p>
-        <hr style="border: none; border-top: 1px solid #E6DEC9; margin: 22px 0;" />
-        <p style="font-size: 12px; color: #8A8170; margin: 0;">
-          Proxim Platform · Self-Custodial Global Banking &amp; Payments
-        </p>
-      </div>
-    </div>
+  const greeting = name ? `Hello ${escapeEmailHtml(name)},` : "Welcome to Proxim,";
+  const subject = "Welcome to Proxim — Your Global Account Is Ready";
+  const featureRows = [
+    ["Instant Deposits", "Fund via Nigerian bank transfer (NGN), card, or crypto"],
+    ["Send Locally & Abroad", "Pay Nigerian banks in seconds, free @username transfers, and 27+ currencies"],
+    ["Global Bank Accounts", "Verify ID in Profile to unlock USD, GBP, EUR, NGN, CAD, AED & Virtual USD Cards"],
+    ["Dollar Savings & Bills", "Earn yield with Dollar Savings, swap USD/EUR, and pay airtime, data & utilities"],
+    ["Business Mode", "Dedicated Business Account for invoices, payment links, expenses & payroll"],
+  ];
+  const bodyHtml = `
+    <p style="margin:0 0 14px 0;font-size:15px;line-height:22px;color:#3A352C;">${greeting}</p>
+    <p style="margin:0 0 16px 0;font-size:15px;line-height:22px;color:#3A352C;">Thanks for joining <strong>Proxim</strong>. Your account is secured with your device passkey and 4-digit PIN. Here is what you can do right away:</p>
+    ${renderKeyValueTable(featureRows)}
+    <p style="margin:14px 0 0 0;font-size:14px;line-height:21px;color:#5C5546;"><strong>Quick tip:</strong> Open <strong>Profile</strong> in the app to claim your <strong>@username</strong> so friends and clients can pay you for free.</p>
   `;
   const text = [
-    greeting,
+    name ? `Hello ${name},` : "Welcome to Proxim,",
     "",
     "Welcome to Proxim! Your passkey and self-custodial wallet are ready.",
     "",
-    "Here is what you can do on the app:",
-    "- Fund Instantly: Deposit via Nigerian bank transfer (NGN), card, or crypto.",
-    "- Send Locally & Globally: Pay Nigerian banks in seconds, send free to @usernames or gift links, and send across 27+ currencies.",
-    "- Global Bank Accounts & Virtual USD Cards: Verify your ID in Profile -> Verify ID to unlock named USD, GBP, EUR, CAD, AED, GHS, KES, and TZS accounts and Virtual USD Cards.",
-    "- Dollar Savings, FX Swap & Bills: Earn yield with Auto-Earn, swap USDC <-> EURC, and pay airtime, data, electricity, and cable bills.",
-    "- Business Mode: Create a dedicated Business Account for invoices, payment links, expenses, and global payroll.",
+    ...featureRows.map(([k, v]) => `- ${k}: ${v}`),
     "",
-    "Quick tip: Visit Profile in the app to claim your @username so people can pay you for free.",
-    "Need help? Email igboze@proximfi.xyz or reach us on Telegram at https://t.me/payeetbot.",
+    "Need help? Reply to this email or reach us on Telegram at https://t.me/payeetbot.",
   ].join("\n");
 
-  return sendTransactionalEmail({ to, subject, html, text });
+  return sendTransactionalEmail({
+    to,
+    subject,
+    html: renderProximEmailShell({
+      badge: "WELCOME",
+      badgeBg: "#E0A82E",
+      badgeColor: "#002018",
+      heading: "Your Proxim account is ready",
+      bodyHtml,
+    }),
+    text,
+  });
 }
 
 async function sendGlobalAccountCreatedEmail({ to, name, currency, accountType = "personal", detail = {} } = {}) {
   const code = String(currency || detail?.currency || "USD").toUpperCase();
   const isBiz = accountType === "business";
   const acctLabel = isBiz ? "Business Account" : "Personal Account";
-  const safe = (v) => String(v || "").replace(/[<>&]/g, "");
-  const greeting = name ? `Hello ${safe(name)},` : "Hello,";
+  const greeting = name ? `Hello ${escapeEmailHtml(name)},` : "Hello,";
 
-  const rows = [];
-  const benName = detail?.beneficiary_name || name || acctLabel;
-  rows.push(["Account Name", benName]);
+  const rows = [["Account Name", detail?.beneficiary_name || name || acctLabel]];
   if (detail?.bank_name) rows.push(["Bank Name", detail.bank_name]);
   if (detail?.account_number) rows.push(["Account Number", detail.account_number]);
   if (detail?.iban) rows.push(["IBAN", detail.iban]);
   if (detail?.routing_number) rows.push(["Routing Number", detail.routing_number]);
   if (detail?.sort_code) rows.push(["Sort Code", detail.sort_code]);
   if (detail?.swift_code) rows.push(["SWIFT / BIC", detail.swift_code]);
+  rows.push(["Deposit Fee", "0%"]);
 
-  const htmlRows = rows
-    .map(
-      ([k, v]) =>
-        `<tr><td style="padding:6px 0;color:#5C5546;font-size:14px;">${safe(k)}</td>` +
-        `<td style="padding:6px 0;color:#002018;font-weight:700;font-size:14px;text-align:right;font-family:monospace;">${safe(v)}</td></tr>`
-    )
-    .join("");
-  const textRows = rows.map(([k, v]) => `- ${k}: ${v}`).join("\n");
-
-  const subject = `Your Proxim ${code} Bank Account Is Ready`;
-  const html = `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; background-color: #F5F1E8; color: #13110C;">
-      <div style="background-color: #FFFFFF; border: 1px solid #DCD3C1; border-radius: 18px; padding: 28px;">
-        <div style="display: inline-block; background-color: #002018; color: #E0A82E; font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; padding: 5px 12px; border-radius: 999px; margin-bottom: 14px;">
-          ${safe(code)} Global Account Ready
-        </div>
-        <h2 style="color: #002018; margin: 0 0 10px 0; font-size: 21px;">Your named ${safe(code)} receiving account is live!</h2>
-        <p style="font-size: 15px; line-height: 1.6; color: #3A352C; margin: 0 0 14px 0;">${greeting}</p>
-        <p style="font-size: 15px; line-height: 1.6; color: #3A352C; margin: 0 0 16px 0;">
-          Your new <b>${safe(code)}</b> bank account on your Proxim <b>${safe(acctLabel)}</b> is active and ready to receive payments with <b>0% deposit fee</b>.
-        </p>
-        <div style="background-color: #FAF7F0; border: 1px solid #E6DEC9; border-radius: 14px; padding: 16px 18px; margin: 16px 0;">
-          <table style="width:100%;border-collapse:collapse;">${htmlRows}</table>
-        </div>
-        <p style="font-size: 13.5px; line-height: 1.6; color: #5C5546; margin: 0 0 16px 0;">
-          Open Proxim anytime to copy or share your details, or choose in <b>Profile</b> whether incoming deposits stay in ${safe(code)} or auto-convert to USD.
-        </p>
-        <hr style="border: none; border-top: 1px solid #E6DEC9; margin: 20px 0;" />
-        <p style="font-size: 12px; color: #8A8170; margin: 0;">
-          Proxim Platform · Regulated Global Banking Infrastructure · <a href="mailto:igboze@proximfi.xyz" style="color:#002018;">igboze@proximfi.xyz</a>
-        </p>
-      </div>
-    </div>
+  const bodyHtml = `
+    <p style="margin:0 0 14px 0;font-size:15px;line-height:22px;color:#3A352C;">${greeting}</p>
+    <p style="margin:0 0 14px 0;font-size:15px;line-height:22px;color:#3A352C;">Your new <strong>${escapeEmailHtml(code)}</strong> receiving account on your Proxim <strong>${escapeEmailHtml(acctLabel)}</strong> is live and ready to receive bank transfers with <strong>0% deposit fee</strong>.</p>
+    ${renderKeyValueTable(rows)}
+    <p style="margin:14px 0 0 0;font-size:13.5px;line-height:20px;color:#5C5546;">Open Proxim anytime to copy or share these details, or choose in <strong>Profile</strong> whether deposits remain in ${escapeEmailHtml(code)} or auto-convert to USD.</p>
   `;
   const text = [
-    greeting,
+    name ? `Hello ${name},` : "Hello,",
     "",
     `Your new ${code} receiving account on your Proxim ${acctLabel} is active (0% deposit fee).`,
     "",
-    textRows,
+    ...rows.map(([k, v]) => `- ${k}: ${v}`),
     "",
     "Open the Proxim app or Telegram bot (https://t.me/payeetbot) anytime to view or share your details.",
   ].join("\n");
 
-  return sendTransactionalEmail({ to, subject, html, text });
+  return sendTransactionalEmail({
+    to,
+    subject: `Your Proxim ${code} Bank Account Is Ready`,
+    html: renderProximEmailShell({
+      badge: `${code} ACCOUNT`,
+      badgeBg: "#E0A82E",
+      badgeColor: "#002018",
+      heading: `Your ${escapeEmailHtml(code)} bank account is live`,
+      bodyHtml,
+    }),
+    text,
+  });
 }
 
 const TX_ALERT_LABELS = {
@@ -492,39 +557,24 @@ async function sendTransactionAlertEmail({
   if (narration) rows.push(["Description", String(narration).slice(0, 120)]);
   if (txHash) rows.push(["Reference", String(txHash).slice(0, 48)]);
 
-  const htmlRows = rows
-    .map(
-      ([k, v]) =>
-        `<tr><td style="padding:7px 0;color:#5C5546;font-size:13.5px;border-bottom:1px solid #EFE9DC;">${safe(k)}</td>` +
-        `<td style="padding:7px 0;color:#13110C;font-weight:700;font-size:13.5px;text-align:right;border-bottom:1px solid #EFE9DC;">${safe(v)}</td></tr>`
-    )
-    .join("");
   const textRows = rows.map(([k, v]) => `- ${k}: ${v}`).join("\n");
-
   const subject = `Proxim ${meta.credit ? "Credit" : "Debit"} Alert: ${sign}${amtText} — ${meta.label}`;
-  const html = `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; background-color: #F5F1E8; color: #13110C;">
-      <div style="background-color: #FFFFFF; border: 1px solid #DCD3C1; border-radius: 18px; padding: 26px;">
-        <div style="display: inline-block; background-color: ${badgeBg}; color: ${badgeColor}; font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; padding: 5px 12px; border-radius: 999px; margin-bottom: 12px;">
-          ${badgeLabel}
-        </div>
-        <h2 style="color: #002018; margin: 0 0 6px 0; font-size: 24px;">${safe(sign + amtText)}</h2>
-        <p style="font-size: 14.5px; line-height: 1.5; color: #5C5546; margin: 0 0 16px 0;">${greeting} Here are the details of your recent ${safe(acctLabel.toLowerCase())} transaction:</p>
-        <div style="background-color: #FAF7F0; border: 1px solid #E6DEC9; border-radius: 14px; padding: 14px 18px; margin: 14px 0;">
-          <table style="width:100%;border-collapse:collapse;">${htmlRows}</table>
-        </div>
-        <p style="font-size: 12.5px; line-height: 1.5; color: #776F5F; margin: 14px 0 0 0;">
-          If you did not authorize this transaction, freeze your account immediately in Proxim or reply to this email.
-        </p>
-        <hr style="border: none; border-top: 1px solid #E6DEC9; margin: 18px 0;" />
-        <p style="font-size: 12px; color: #8A8170; margin: 0;">
-          Igboze from Proxim · Automated Transaction Alert · <a href="https://t.me/payeetbot" style="color:#002018;">https://t.me/payeetbot</a>
-        </p>
-      </div>
-    </div>
+  const bodyHtml = `
+    <p style="margin:0 0 14px 0;font-size:15px;line-height:22px;color:#3A352C;">${greeting} Here are the details of your recent ${escapeEmailHtml(acctLabel.toLowerCase())} transaction:</p>
+    ${renderKeyValueTable(rows)}
+    <p style="margin:14px 0 0 0;font-size:13px;line-height:20px;color:#776F5F;">If you did not authorize this transaction, freeze your account immediately in Proxim or reply to this email.</p>
   `;
+  const html = renderProximEmailShell({
+    badge: badgeLabel,
+    badgeBg,
+    badgeColor,
+    heading: escapeEmailHtml(`${sign}${amtText}`),
+    subheading: escapeEmailHtml(meta.label),
+    bodyHtml,
+    footerNote: "Automated Proxim Transaction Alert &middot; Reply if you need assistance.",
+  });
   const text = [
-    greeting,
+    name ? `Hello ${name},` : "Hello,",
     "",
     `${badgeLabel}: ${sign}${amtText} (${meta.label})`,
     "",
@@ -591,33 +641,32 @@ async function dispatchVerifiedTransactionEmail({
       }
     }
 
-    // Enrich Paj transactions with exact NGN fiat_amount from paj_offramp_orders / paj_onramp_orders if not passed
+    // Outbound Naira transfers MUST always display in Naira (₦), never USD!
+    const isOutboundNgnTx = ["offramp", "offramp_request", "payout", "withdraw_naira"].includes(rawType);
     let finalSourceCur = sourceCurrency;
     let finalSourceAmt = sourceAmount;
-    if (isPajTx && (!finalSourceAmt || Number(finalSourceAmt) <= 0) && txHash && db.db) {
-      try {
-        if (/offramp|payout/.test(rawType)) {
-          const ord = db.db.prepare(
-            "SELECT fiat_amount FROM paj_offramp_orders WHERE telegram_id = ? AND (tx_hash = ? OR order_id = ?) ORDER BY id DESC LIMIT 1"
-          ).get(Number(telegramId), String(txHash), String(txHash));
-          if (ord && Number(ord.fiat_amount) > 0) {
-            finalSourceCur = "NGN";
-            finalSourceAmt = Number(ord.fiat_amount);
-          }
-        } else {
-          const ord = db.db.prepare(
-            "SELECT fiat_amount FROM paj_onramp_orders WHERE telegram_id = ? AND (tx_hash = ? OR order_id = ?) ORDER BY id DESC LIMIT 1"
-          ).get(Number(telegramId), String(txHash), String(txHash));
-          if (ord && Number(ord.fiat_amount) > 0) {
-            finalSourceCur = "NGN";
-            finalSourceAmt = Number(ord.fiat_amount);
-          }
-        }
-      } catch (_) { }
-    }
-
     const dec = Number(decimals ?? 18);
     const amountUsd = Number(String(amountMicro || "0")) / 10 ** dec;
+
+    if ((isPajTx || isOutboundNgnTx) && (!finalSourceAmt || Number(finalSourceAmt) <= 0) && txHash && db.db) {
+      const found = _lookupFiatAmountFromOrders(db, telegramId, rawType, txHash, amountUsd);
+      if (found) {
+        finalSourceCur = found.currency;
+        finalSourceAmt = found.amount;
+      }
+    }
+
+    // Final guarantee: outbound Naira transactions ALWAYS render in Naira (₦), never USD
+    if (isOutboundNgnTx && (!finalSourceAmt || Number(finalSourceAmt) <= 0) && amountUsd > 0) {
+      let rateNgn = 1500;
+      try {
+        const live = await require("./app_api/features").getLiveUsdNgnRate();
+        if (live && Number(live) > 100) rateNgn = Number(live);
+      } catch (_) { }
+      finalSourceCur = "NGN";
+      finalSourceAmt = Math.round(amountUsd * rateNgn);
+    }
+
     const user = db.getUser?.(telegramId);
     const name = user?.sender_name || user?.username || null;
 
