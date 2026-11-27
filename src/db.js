@@ -1792,12 +1792,13 @@ function getVolumeStats() {
   const stocks = txBreakdown(["stock_buy", "stock_sell"]);
 
   // Explicit provider breakdowns (Paj vs Nuvion vs Airbills)
+  // Note: Paj always settles on Solana/Arc; Nuvion fiat deposits/sweeps settle on local_fiat or Base.
   const byProvider = {
     paj: whereBreakdown(
-      "((type IN ('deposit_naira', 'onramp', 'paj_onramp', 'offramp', 'offramp_request', 'payout')) AND COALESCE(chain, '') != 'local_fiat' AND COALESCE(deposit_channel, '') != 'international')"
+      "((type IN ('deposit_naira', 'onramp', 'paj_onramp', 'offramp', 'offramp_request', 'payout')) AND COALESCE(chain, '') NOT IN ('local_fiat', 'base') AND COALESCE(deposit_channel, '') != 'international')"
     ),
     nuvion: whereBreakdown(
-      "(type IN ('deposit_fiat', 'deposit_crypto', 'withdraw_naira', 'payout_global', 'global_payout', 'nuvion_payout', 'card_load', 'card_spend') OR COALESCE(chain, '') = 'local_fiat')"
+      "(type IN ('deposit_fiat', 'deposit_crypto', 'withdraw_naira', 'payout_global', 'global_payout', 'nuvion_payout', 'card_load', 'card_spend') OR COALESCE(chain, '') = 'local_fiat' OR (type = 'deposit_naira' AND COALESCE(chain, '') = 'base'))"
     ),
     airbills,
   };
@@ -2036,12 +2037,12 @@ function reconcileLiveProductVolume() {
       }
     } catch { }
 
-    // 8. Backfill completed Paj onramp_orders and offramp_orders missing from transactions
+    // 8. Backfill completed Paj paj_onramp_orders and paj_offramp_orders missing from transactions
     try {
-      const pajOn = db.prepare("SELECT * FROM onramp_orders WHERE LOWER(status) IN ('completed', 'confirmed', 'success', 'successful', 'settled') AND amount_usdc > 0").all();
+      const pajOn = db.prepare("SELECT * FROM paj_onramp_orders WHERE LOWER(status) IN ('completed', 'confirmed', 'success', 'successful', 'settled') AND amount_usdc > 0").all();
       for (const o of pajOn) {
-        const txHash = o.order_id;
-        const existing = db.prepare("SELECT id FROM transactions WHERE tx_hash = ?").get(txHash);
+        const txHash = o.tx_hash || o.order_id;
+        const existing = db.prepare("SELECT id FROM transactions WHERE tx_hash = ? OR tx_hash = ?").get(txHash, o.order_id);
         if (!existing) {
           const micro = BigInt(Math.round(Number(o.amount_usdc) * 1e6)) * 1_000_000_000_000n;
           db.prepare(`
@@ -2054,7 +2055,7 @@ function reconcileLiveProductVolume() {
     } catch { }
 
     try {
-      const pajOff = db.prepare("SELECT * FROM offramp_orders WHERE LOWER(status) IN ('completed', 'confirmed', 'success', 'successful', 'submitted', 'paid', 'settled') AND amount_usdc > 0").all();
+      const pajOff = db.prepare("SELECT * FROM paj_offramp_orders WHERE LOWER(status) IN ('completed', 'confirmed', 'success', 'successful', 'submitted', 'paid', 'settled') AND amount_usdc > 0").all();
       for (const o of pajOff) {
         const txHash = o.tx_hash || o.order_id;
         const existing = db.prepare("SELECT id FROM transactions WHERE tx_hash = ? OR tx_hash = ?").get(txHash, o.order_id);

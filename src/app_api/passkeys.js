@@ -65,14 +65,14 @@ async function startRegistration({ telegramId, userName, displayName, purpose, c
     purpose,
     telegramId,
     context,
-    ttlMs: 5 * 60 * 1000,
+    ttlMs: purpose === "signup" ? 15 * 60 * 1000 : 5 * 60 * 1000,
   });
   return { challengeId, options };
 }
 
 async function finishRegistration({ challengeId, purpose, response }) {
   const row = store.consumeChallenge(challengeId, purpose);
-  if (!row) throw Object.assign(new Error("Registration expired. Please start again."), { status: 400, code: "challenge_invalid" });
+  if (!row) throw Object.assign(new Error("Registration session expired. Please go back and try again."), { status: 400, code: "challenge_invalid" });
   const { rpID, origins } = getRpConfig();
   let verification;
   try {
@@ -84,11 +84,11 @@ async function finishRegistration({ challengeId, purpose, response }) {
       requireUserVerification: true,
     });
   } catch (err) {
-    console.warn("[app_api:passkey] registration verify failed:", err?.message || err);
-    throw Object.assign(new Error("Passkey could not be verified."), { status: 400, code: "passkey_invalid", cause: err });
+    console.warn("[app_api:passkey] registration verify failed:", err?.message || err, { rpID, expectedOrigins: origins });
+    throw Object.assign(new Error("Passkey could not be verified. Please try again on the latest Proxim app."), { status: 400, code: "passkey_invalid", cause: err });
   }
   if (!verification.verified || !verification.registrationInfo) {
-    throw Object.assign(new Error("Passkey could not be verified."), { status: 400, code: "passkey_invalid" });
+    throw Object.assign(new Error("Passkey could not be verified. Please try again."), { status: 400, code: "passkey_invalid" });
   }
   const cred = verification.registrationInfo.credential;
   return {
@@ -153,7 +153,12 @@ async function finishAuthentication({ challengeId, purpose, response, expectedTe
   if (!row) throw Object.assign(new Error("Approval expired. Please try again."), { status: 400, code: "challenge_invalid" });
   const credentialId = response?.id || response?.rawId;
   const passkey = credentialId ? store.getPasskey(credentialId) : null;
-  if (!passkey) throw Object.assign(new Error("Unknown passkey."), { status: 401, code: "passkey_unknown" });
+  if (!passkey) {
+    throw Object.assign(
+      new Error("That passkey isn't linked to an active Proxim account. Pick another passkey or create a new account."),
+      { status: 401, code: "passkey_unknown" }
+    );
+  }
   const ownerId = Number(passkey.telegram_id);
   if (row.telegram_id !== null && row.telegram_id !== undefined && Number(row.telegram_id) !== ownerId) {
     throw Object.assign(new Error("This passkey does not belong to this account."), { status: 403, code: "passkey_mismatch" });

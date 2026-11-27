@@ -27,6 +27,11 @@ import { PoweredBy } from "../components/PoweredBy";
 
 type Step = "welcome" | "signup_email" | "signup_otp" | "signup_passkey" | "link_telegram";
 
+const WEAK_PINS = new Set([
+  "0000", "1111", "2222", "3333", "4444", "5555", "6666", "7777", "8888", "9999",
+  "1234", "4321", "1212", "2580", "0852", "1010", "2000", "2024", "2025", "2026", "6969",
+]);
+
 export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: string }) {
   const { signInWithSession, sessionNotice, clearSessionNotice } = useApp();
   const [step, setStep] = useState<Step>(initialLinkCode ? "link_telegram" : "welcome");
@@ -128,6 +133,24 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
       const start = await api.googleAuthStart(gRes.idToken);
       if (start.mode === "existing_passkey") {
         setGoogleLoading(false);
+        if (start.loginChallengeId && start.loginOptions) {
+          setLoading(true);
+          try {
+            const assertion = await assertPasskey(start.loginOptions);
+            const finished = await api.loginFinish(start.loginChallengeId, assertion);
+            await signInWithSession(finished.user, finished.session);
+          } catch (pkErr) {
+            const msg = pkErr instanceof Error ? pkErr.message : "Could not sign in with passkey.";
+            setError(
+              /no passkey|no.?credential|not.?found/i.test(msg)
+                ? "This Google email already has a Proxim account, but its passkey isn't on this device. Sign in on your original device or contact support."
+                : msg
+            );
+          } finally {
+            setLoading(false);
+          }
+          return;
+        }
         await handlePasskeySignIn();
         return;
       }
@@ -188,6 +211,10 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
       setError("Choose a 4-digit PIN.");
       return;
     }
+    if (WEAK_PINS.has(pin)) {
+      setError("Choose a stronger 4-digit PIN (avoid 1234, 0000, repeated digits, or years).");
+      return;
+    }
     if (pin !== confirmPin) {
       setError("PINs do not match.");
       return;
@@ -209,8 +236,6 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
         pin,
         acceptTerms: true,
         response,
-        ...(signupEmail.trim() ? { email: signupEmail.trim().toLowerCase() } : {}),
-        ...(signupName ? { displayName: signupName } : {}),
       });
       await signInWithSession(finished.user, finished.session);
     } catch (err) {

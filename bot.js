@@ -7177,13 +7177,11 @@ bot.action("admin_reward_notify", (ctx) => {
 function formatVolRow(label, breakdown) {
   if (!breakdown) return "";
   const { today, week, month, allTime } = breakdown;
-  const fmt = (v) => `$${(v?.usdc || 0).toFixed(2)} (${v?.count || 0}tx)`;
+  const fmt = (v) => `$${(v?.usdc || 0).toFixed(2)} (${v?.count || 0})`;
   return (
     `\n<b>${label}</b>\n` +
-    `  Today:    ${fmt(today)}\n` +
-    `  7 days:   ${fmt(week)}\n` +
-    `  30 days:  ${fmt(month)}\n` +
-    `  All-time: ${fmt(allTime)}`
+    `  24h: ${fmt(today)} · 7d: ${fmt(week)}\n` +
+    `  30d: ${fmt(month)} · All: ${fmt(allTime)}`
   );
 }
 
@@ -7329,7 +7327,10 @@ bot.command("scan_volume", async (ctx) => {
     `• Backfilled paid invoices: ${res.backfilledInvoices}\n` +
     `• Backfilled completed payments: ${res.backfilledPayments}\n` +
     `• Backfilled savings positions: ${res.backfilledYield}\n` +
-    `• Backfilled onramp deposits: ${res.backfilledOnramp || 0}`,
+    `• Backfilled Paj orders: ${res.backfilledPaj || 0}\n` +
+    `• Backfilled Nuvion jobs: ${res.backfilledNuvion || 0}\n` +
+    `• Backfilled Airbills payments: ${res.backfilledAirbills || 0}\n` +
+    `• Backfilled onramp events: ${res.backfilledOnramp || 0}`,
     { parse_mode: "HTML" }
   );
   try {
@@ -7459,7 +7460,7 @@ bot.action("admin_volume_csv", async (ctx) => {
              THEN 'mobile_app' ELSE 'telegram_bot' END AS channel,
         CASE
           WHEN type LIKE 'bill_%' OR type IN ('airbills', 'airtime', 'data', 'electricity', 'cable') THEN 'airbills'
-          WHEN type IN ('deposit_fiat', 'deposit_crypto', 'withdraw_naira', 'payout_global', 'global_payout', 'nuvion_payout', 'card_load', 'card_spend') OR COALESCE(chain, '') = 'local_fiat' THEN 'nuvion'
+          WHEN type IN ('deposit_fiat', 'deposit_crypto', 'withdraw_naira', 'payout_global', 'global_payout', 'nuvion_payout', 'card_load', 'card_spend') OR COALESCE(chain, '') = 'local_fiat' OR (type = 'deposit_naira' AND COALESCE(chain, '') = 'base') THEN 'nuvion'
           WHEN type IN ('deposit_naira', 'onramp', 'paj_onramp', 'offramp', 'offramp_request', 'payout') THEN 'paj'
           ELSE 'onchain_other'
         END AS provider,

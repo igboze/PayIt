@@ -260,7 +260,13 @@ async function presentPayoutQuoteAndAskPin(ctx, userId, draft) {
       ? ""
       : `• <b>Exchange Rate:</b> 1 USD = ${q.effectiveRate.toFixed(4)} ${draft.currency}\n`;
     const principalUsd = Number(q.nuvionPrincipalUsd ?? q.nuvionCostUsd ?? 0);
-    const totalFeeUsd = Number(q.nuvionRailFeeUsd ?? 0) + Number(q.marginUsd ?? 0);
+    const railFeeUsd = Number(q.nuvionRailFeeUsd ?? 0);
+    const proximFeeUsd = Number(q.proximFeeUsd ?? q.marginUsd ?? 0);
+    const totalFeeUsd = railFeeUsd + proximFeeUsd;
+    const feeBreakdownLines =
+      (railFeeUsd > 0 ? `• <b>Partner / Network Fee:</b> +$${railFeeUsd.toFixed(2)}\n` : "") +
+      `• <b>Proxim Fee:</b> +$${proximFeeUsd.toFixed(2)}\n` +
+      `• <b>Total Fees:</b> +$${totalFeeUsd.toFixed(2)}\n`;
 
     return ctx.reply(
       `📋 <b>Confirm International Transfer</b>\n` +
@@ -270,7 +276,7 @@ async function presentPayoutQuoteAndAskPin(ctx, userId, draft) {
       `• <b>Recipient Gets:</b> <b>${destDisplay}</b>\n` +
       rateLine +
       `• <b>Transfer Amount:</b> $${principalUsd.toFixed(2)}\n` +
-      `• <b>Transfer Fee:</b> +$${totalFeeUsd.toFixed(2)}\n` +
+      feeBreakdownLines +
       `• <b>Total From Your Balance:</b> <b>$${q.userTotalUsd.toFixed(2)}</b>\n` +
       (draft.narration ? `• <b>Note:</b> <i>${escapeHtml(draft.narration)}</i>\n` : "") +
       `──────────────────────────\n` +

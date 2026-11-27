@@ -604,18 +604,36 @@ async function initiateHeldFiatPayout({
     try {
       const marginTarget = await orchestrator.ensureChildToParentMarginTarget(entity.entity_id, q.sourceCurrency);
       if (marginTarget) {
-        const feeTransfer = await nuvion.createTransfer({
-          entityId: entity.entity_id,
-          accountId: q.sourceAccountId,
-          counterpartyId: marginTarget.counterpartyId,
-          paymentDetailId: marginTarget.paymentDetailId,
-          amountMinor: q.proximFeeMinor,
-          currency: q.sourceCurrency,
-          narration: `Proxim withdrawal fee ${uniqueReference}`,
-          paymentType: "book-transfer",
-          uniqueReference: `fee-${uniqueReference}`,
-        });
-        feeTransferId = feeTransfer?.id || null;
+        let feeToCollectMinor = q.proximFeeMinor;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const feeRef = attempt === 0 ? `fee-${uniqueReference}` : `fee-${uniqueReference}-r${attempt}`;
+          try {
+            const feeTransfer = await nuvion.createTransfer({
+              entityId: entity.entity_id,
+              accountId: q.sourceAccountId,
+              counterpartyId: marginTarget.counterpartyId,
+              paymentDetailId: marginTarget.paymentDetailId,
+              amountMinor: feeToCollectMinor,
+              currency: q.sourceCurrency,
+              narration: `Proxim withdrawal fee ${uniqueReference}`,
+              paymentType: "book-transfer",
+              uniqueReference: feeRef,
+            });
+            feeTransferId = feeTransfer?.id || null;
+            break;
+          } catch (attemptErr) {
+            // If partner deducted a small rail fee from the remaining balance, collect whatever remains up to proximFeeMinor
+            if (attempt === 0 && attemptErr instanceof nuvion.NuvionError && attemptErr.type === "error_transfer_insufficient_funds") {
+              const liveAcc = await nuvion.getAccount(q.sourceAccountId, entity.entity_id).catch(() => null);
+              const availMinor = Math.max(0, Math.round(Number(liveAcc?.balance?.available || 0)));
+              if (availMinor >= 1 && availMinor < feeToCollectMinor) {
+                feeToCollectMinor = availMinor;
+                continue;
+              }
+            }
+            throw attemptErr;
+          }
+        }
       }
     } catch (feeErr) {
       console.warn(`[nuvion_payouts] Held-fiat fee book-transfer note for ${uniqueReference}:`, feeErr.message);

@@ -304,7 +304,15 @@ export const api = {
   async googleAuthStart(idToken: string) {
     const dev = await getDeviceInfo();
     return request<
-      | { mode: "existing_passkey"; email: string; name: string | null; message: string }
+      | {
+          mode: "existing_passkey";
+          email: string;
+          name: string | null;
+          message: string;
+          hasActivePasskey?: boolean;
+          loginChallengeId?: string;
+          loginOptions?: Record<string, unknown>;
+        }
       | {
         mode: "signup";
         signupId: string;

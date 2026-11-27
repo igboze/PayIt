@@ -501,12 +501,21 @@ async function googleAuthStart(req, body) {
   const emailKey = `email:${identity.email}`;
   const existing = store.findUserByPhone(emailKey);
   if (existing) {
+    if (dep("db").isBlocked(existing.telegram_id)) {
+      throw new HttpError(403, "account_frozen", "This account is frozen or closed. Contact support if you need help.");
+    }
+    const existingPasskeys = store.listPasskeys(existing.telegram_id);
+    const scopedLogin = existingPasskeys.length > 0
+      ? await passkeys.startAuthentication({ purpose: "login", telegramId: Number(existing.telegram_id) })
+      : null;
     return {
       status: 200,
       data: {
         mode: "existing_passkey",
         email: identity.email,
         name: identity.name,
+        hasActivePasskey: existingPasskeys.length > 0,
+        ...(scopedLogin ? { loginChallengeId: scopedLogin.challengeId, loginOptions: scopedLogin.options } : {}),
         message: "You already have a Proxim account with this email. Sign in with your passkey.",
       },
     };

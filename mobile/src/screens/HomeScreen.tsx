@@ -263,6 +263,9 @@ export function HomeScreen({
       else setLoading(true);
       setError(null);
       try {
+        if (isRefresh) {
+          refreshMe().catch(() => {});
+        }
         const [balRes, txRes, rateRes, bizRes] = await Promise.all([
           api.getBalances(activeAccount),
           api.getTransactions(40, activeAccount),
@@ -281,7 +284,7 @@ export function HomeScreen({
         setRefreshing(false);
       }
     },
-    [activeAccount]
+    [activeAccount, refreshMe]
   );
 
   // Immediately clear stale account data when switching between Personal & Business
