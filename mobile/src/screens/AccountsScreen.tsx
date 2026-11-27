@@ -631,7 +631,18 @@ export function AccountsScreen({
                     <Text style={styles.ngnCode}>USD</Text>
                   </View>
                 </View>
-                <KeyValueRow label="Verification" value={`${a.kycStatus} (Tier ${a.kycTier})`} />
+                <KeyValueRow
+                  label="Verification"
+                  value={
+                    a.kycTier >= 1 || a.kycStatus === "approved"
+                      ? "VERIFIED ✅"
+                      : a.kycStatus === "pending" || a.kycStatus === "incomplete"
+                        ? "Under Review ⏳"
+                        : biz
+                          ? "Verify KYB"
+                          : "Verify KYC"
+                  }
+                />
                 <KeyValueRow
                   label="Your dollar deposit address"
                   value={shortAddr(a.depositAddress, 8, 6)}

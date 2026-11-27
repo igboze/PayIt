@@ -519,47 +519,36 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     }
   }
 
-  if (!isNuvionSettled && !userPrivateKey && !user.system_encrypted_key && bot && targetTelegramId) {
-    try {
-      // First-time user: needs to authorize PIN once to enable auto-sweep
-      const { Markup } = require("telegraf");
-      await bot.telegram.sendMessage(
-        targetTelegramId,
-        `🔔 <b>Deposit Received!</b>\n` +
-        `──────────────────────────\n` +
-        `We detected an incoming deposit of <b>${rawAmount} ${token}</b> on <b>${chainName}</b>.\n\n` +
-        `Tap below to authorize the sweep and credit your Proxim balance:`,
-        {
-          parse_mode: "HTML",
-          reply_markup: Markup.inlineKeyboard([
-            [Markup.button.callback("🔄 Scan & Sweep Deposits", "action_sweep_deposits")],
-            [Markup.button.callback("💰 Check Balance", "action_balance")],
-          ]).reply_markup,
-        }
-      );
-    } catch (msgErr) {
-      console.warn(`[evm_sweeper] Failed to notify user TG:${targetTelegramId}:`, msgErr.message);
+  const _nowMs = Date.now();
+  const authPromptKey = `auth_prompt_${effectiveChainId}_${toAddress.toLowerCase()}`;
+  const lastAuthPrompt = _progressNotified.get(authPromptKey) || 0;
+
+  if (!userPrivateKey) {
+    if (!isNuvionSettled && bot && targetTelegramId && _nowMs - lastAuthPrompt > 6 * 3600 * 1000) {
+      _progressNotified.set(authPromptKey, _nowMs);
+      try {
+        const { Markup } = require("telegraf");
+        await bot.telegram.sendMessage(
+          targetTelegramId,
+          `🔔 <b>Deposit Received on ${chainName}!</b>\n` +
+          `──────────────────────────\n` +
+          `We detected <b>${rawAmount} ${token}</b> on <b>${chainName}</b>.\n\n` +
+          `Tap below to authorize the sweep into your Proxim balance:`,
+          {
+            parse_mode: "HTML",
+            reply_markup: Markup.inlineKeyboard([
+              [Markup.button.callback("🔄 Scan & Sweep Deposits", "action_sweep_deposits")],
+              [Markup.button.callback("💰 Check Balance", "action_balance")],
+            ]).reply_markup,
+          }
+        );
+      } catch (msgErr) {
+        console.warn(`[evm_sweeper] Failed to notify user TG:${targetTelegramId}:`, msgErr.message);
+      }
     }
-  } else if (!isNuvionSettled && !userPrivateKey && user.system_encrypted_key && bot && targetTelegramId) {
-    // User is authorized but key could not be decrypted at runtime — prompt manual sweep
-    try {
-      const { Markup } = require("telegraf");
-      await bot.telegram.sendMessage(
-        targetTelegramId,
-        `🔔 <b>Deposit Detected!</b>\n` +
-        `──────────────────────────\n` +
-        `We detected <b>${rawAmount} ${token}</b> on <b>${chainName}</b>.\n\n` +
-        `Tap below to scan and sweep it into your Proxim balance:`,
-        {
-          parse_mode: "HTML",
-          reply_markup: Markup.inlineKeyboard([
-            [Markup.button.callback("🔄 Scan & Sweep Deposits", "action_sweep_deposits")],
-            [Markup.button.callback("💰 Check Balance", "action_balance")],
-          ]).reply_markup,
-        }
-      );
-    } catch (msgErr) {
-      console.warn(`[evm_sweeper] Failed to notify user TG:${targetTelegramId}:`, msgErr.message);
+    const enableRelayerFronting = process.env.ENABLE_RELAYER_FRONTING === "true" || process.env.NODE_ENV === "test";
+    if (!enableRelayerFronting) {
+      return { success: false, needsAuthorization: true, error: `Wallet authorization needed to sweep ${chainName} deposit` };
     }
   }
 
@@ -595,8 +584,24 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
   let effectiveAmountUsdc = 0;
   let swapTxHash = null;
 
-  // Intermediate notification: Notify user that deposit is in progress (suppressed for silent/Nuvion settlements!)
-  if (!isNuvionSettled && bot && targetTelegramId) {
+  // Pre-flight minimum check BEFORE sending any "Transaction in Progress..." notification!
+  // Base/L2 networks support sweeping down to $0.50 USDC (Ethereum L1 stays $1.50 due to L1 gas).
+  const minTokenDepositUsd = Number(effectiveChainId) === 1 ? 1.50 : 0.50;
+  if (!isNativeEarly && process.env.NODE_ENV !== "test") {
+    const grossEarly = parseFloat(rawAmount.toString() || "0");
+    if (grossEarly > 0 && grossEarly < minTokenDepositUsd) {
+      console.warn(`[evm_sweeper] Deposit amount too low ($${grossEarly}) on ${chainName}, minimum $${minTokenDepositUsd.toFixed(2)}.`);
+      return { success: false, error: `Amount below minimum threshold ($${minTokenDepositUsd.toFixed(2)} for gas-free bridging)` };
+    }
+  }
+
+  // Intermediate notification: throttled to once per 30 min per (chain, address, amount) so a temporary RPC/gas retry NEVER spams the user!
+  const progressNoticeKey = `prog_${effectiveChainId}_${toAddress.toLowerCase()}_${Number(rawAmount || 0).toFixed(2)}`;
+  const sendProgressNoticeOnce = async () => {
+    if (isNuvionSettled || !bot || !targetTelegramId) return;
+    const prevTs = _progressNotified.get(progressNoticeKey) || 0;
+    if (Date.now() - prevTs < 30 * 60 * 1000) return;
+    _progressNotified.set(progressNoticeKey, Date.now());
     try {
       await bot.telegram.sendMessage(
         targetTelegramId,
@@ -608,7 +613,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
         { parse_mode: "HTML" }
       ).catch(() => {});
     } catch (_) {}
-  }
+  };
 
   // 4. Handle Robinhood Chain Relay Intent Bridge OR Standard CCTP Bridge
   if (isRelayChain) {
@@ -645,43 +650,51 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
         }
       }
 
-      // Check minimum deposit threshold for token deposits
+      // Check minimum deposit threshold for token deposits (aligned with scanner: $0.50 on Base/L2, $1.50 on Ethereum L1)
       const grossTokenAmount = parseFloat(rawAmount.toString() || "0");
-      if (grossTokenAmount < 1.0 && process.env.NODE_ENV !== "test") {
-        console.warn(`[evm_sweeper] Deposit amount too low ($${grossTokenAmount}), minimum $1.00.`);
-        return { success: false, error: "Amount below minimum threshold ($1.00 for gas-free bridging)" };
+      if (grossTokenAmount < minTokenDepositUsd && process.env.NODE_ENV !== "test") {
+        console.warn(`[evm_sweeper] Deposit amount too low ($${grossTokenAmount}), minimum $${minTokenDepositUsd.toFixed(2)}.`);
+        return { success: false, error: `Amount below minimum threshold ($${minTokenDepositUsd.toFixed(2)} for gas-free bridging)` };
       }
 
-      // Ensure signer has micro-gas to broadcast Relay approve and deposit transactions
+      // Ensure signer has micro-gas to broadcast Relay/CCTP approve and deposit transactions
       // CRITICAL: Always sponsor from RELAYER_PRIVATE_KEY (never from user's overridePrivateKey!)
-      try {
-        const gasBal = await provider.getBalance(signer.address);
-        const isBase = Number(effectiveChainId) === 8453;
-        const isL2 = isBase || Number(effectiveChainId) === 42161 || Number(effectiveChainId) === 10 || Number(effectiveChainId) === 137;
-        const minGasThreshold = isBase ? parseUnits("0.000015", 18) : (isL2 ? parseUnits("0.00005", 18) : parseUnits("0.0002", 18));
-        if (gasBal < minGasThreshold) {
-          const relayerKey = options?.relayerPrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
-          if (relayerKey) {
-            const relayer = new Wallet(relayerKey, provider);
-            // Right-sized Base L2 micro-drip: 0.000025 ETH (~$0.07) covers ~10+ Base Relay txs without stranding ETH dust
-            const dripAmount = isBase ? parseUnits("0.000025", 18) : (isL2 ? parseUnits("0.00008", 18) : parseUnits("0.0003", 18));
-            const relayerBal = await provider.getBalance(relayer.address).catch(() => 0n);
-            if (relayerBal >= dripAmount && relayer.address.toLowerCase() !== signer.address.toLowerCase()) {
-              console.log(`[evm_sweeper:relay] Sponsoring micro-gas (${formatUnits(dripAmount, 18)} ETH) for ${signer.address} on ${chainName}...`);
-              const sponsorTx = await relayer.sendTransaction({
-                to: signer.address,
-                value: dripAmount,
-              });
-              await sponsorTx.wait(1);
-            } else if (relayerBal < dripAmount) {
-              console.warn(`[evm_sweeper:relay] Relayer ${relayer.address} has insufficient ${chainName} gas (${formatUnits(relayerBal, 18)} ETH) to sponsor micro-gas for deposit sweep.`);
+      if (process.env.NODE_ENV !== "test") {
+        try {
+          let gasBal = await provider.getBalance(signer.address);
+          const isBase = Number(effectiveChainId) === 8453;
+          const isL2 = isBase || Number(effectiveChainId) === 42161 || Number(effectiveChainId) === 10 || Number(effectiveChainId) === 137;
+          const minGasThreshold = isBase ? parseUnits("0.00002", 18) : (isL2 ? parseUnits("0.00005", 18) : parseUnits("0.0002", 18));
+          if (gasBal < minGasThreshold) {
+            const relayerKey = options?.relayerPrivateKey || process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
+            if (relayerKey) {
+              const relayer = new Wallet(relayerKey, provider);
+              const dripAmount = isBase ? parseUnits("0.00005", 18) : (isL2 ? parseUnits("0.00008", 18) : parseUnits("0.0003", 18));
+              const relayerBal = await provider.getBalance(relayer.address).catch(() => 0n);
+              if (relayerBal >= dripAmount && relayer.address.toLowerCase() !== signer.address.toLowerCase()) {
+                console.log(`[evm_sweeper:relay] Sponsoring micro-gas (${formatUnits(dripAmount, 18)} ETH) for ${signer.address} on ${chainName}...`);
+                const sponsorTx = await relayer.sendTransaction({
+                  to: signer.address,
+                  value: dripAmount,
+                });
+                await sponsorTx.wait(1);
+                gasBal = await provider.getBalance(signer.address).catch(() => dripAmount);
+              } else if (relayerBal < dripAmount) {
+                console.error(`[evm_sweeper:CRITICAL_NO_GAS] Relayer ${relayer.address} has insufficient ${chainName} gas (${formatUnits(relayerBal, 18)} ETH, needs ${formatUnits(dripAmount, 18)} ETH) to sweep ${signer.address}!`);
+                return { success: false, error: `Relayer gas temporarily low on ${chainName}. Top up relayer ${relayer.address} with ETH on ${chainName}.` };
+              }
             }
           }
+          if (gasBal === 0n) {
+            return { success: false, error: `No gas available on ${chainName} to execute sweep (check RELAYER_PRIVATE_KEY gas balance on ${chainName}).` };
+          }
+        } catch (gasDripErr) {
+          console.warn(`[evm_sweeper:relay_gas_note] Gas drip note on ${chainName}:`, gasDripErr.message);
         }
-      } catch (gasDripErr) {
-        console.warn(`[evm_sweeper:relay_gas_note] Gas drip note on ${chainName}:`, gasDripErr.message);
       }
     }
+
+    await sendProgressNoticeOnce();
 
     let relayResult;
     let fallbackToCctp = false;
@@ -883,9 +896,9 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
       grossAmountUsdc = parseFloat(formatUnits(rawBal, 6));
     }
 
-    if (grossAmountUsdc < 1.0 && process.env.NODE_ENV !== "test") {
-      console.warn(`[evm_sweeper] Deposit amount too low ($${grossAmountUsdc}), minimum $1.00 USDC.`);
-      return { success: false, error: "Amount below minimum threshold ($1.00 USDC for gas-free bridging)" };
+    if (grossAmountUsdc < minTokenDepositUsd && process.env.NODE_ENV !== "test") {
+      console.warn(`[evm_sweeper] Deposit amount too low ($${grossAmountUsdc}), minimum $${minTokenDepositUsd.toFixed(2)} USDC.`);
+      return { success: false, error: `Amount below minimum threshold ($${minTokenDepositUsd.toFixed(2)} USDC for gas-free bridging)` };
     }
 
     // Deduct only the flat network bridging fee (covers relayer gas advance).
@@ -896,11 +909,12 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     effectiveAmountUsdc = parseFloat(Math.max(0, grossAmountUsdc - networkFee - protocolDepositFee).toFixed(6));
   }
 
-  if (effectiveAmountUsdc < 0.5) {
-    console.warn(`[evm_sweeper] Effective USDC amount too low ($${effectiveAmountUsdc}), minimum $0.50.`);
-    return { success: false, error: "Amount below minimum threshold ($0.50 USDC)" };
+  if (effectiveAmountUsdc < 0.4) {
+    console.warn(`[evm_sweeper] Effective USDC amount too low ($${effectiveAmountUsdc}), minimum $0.40.`);
+    return { success: false, error: "Amount below minimum threshold ($0.40 USDC)" };
   }
 
+  await sendProgressNoticeOnce();
   console.log(`[evm_sweeper] Ready to bridge USDC from ${effectiveCctpConfig.name} to Arc for user ${user.telegram_id}... (Net credit: $${effectiveAmountUsdc})`);
 
   // Reimburse relayer gas fee + protocol deposit fee from deposit address if direct token deposit
@@ -1075,6 +1089,9 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
 }
 
 const _recentSweeps = new Map();
+const _progressNotified = new Map();
+const _failedSweepCooldown = new Map();
+const FAILED_SWEEP_COOLDOWN_MS = Number(process.env.EVM_FAILED_SWEEP_COOLDOWN_MS || 5 * 60 * 1000);
 
 /**
  * Scan all supported EVM chains for a user's addresses and sweep any detected deposits.
@@ -1187,7 +1204,10 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
             const sweepLockKey = `sweep_usdc_${cfg.chainId}_${address.toLowerCase()}_${usdcBalUnits.toString()}`;
             const lastSweep = _recentSweeps.get(sweepLockKey);
             if (!options?.force && lastSweep && Date.now() - lastSweep < 3600000) {
-              // Already swept this exact balance recently, skip to prevent duplicate monitor spam
+              continue;
+            }
+            const lastFail = _failedSweepCooldown.get(sweepLockKey);
+            if (!options?.force && lastFail && Date.now() - lastFail < FAILED_SWEEP_COOLDOWN_MS) {
               continue;
             }
 
@@ -1202,12 +1222,15 @@ async function sweepUserDeposits(telegramId, bot = null, options = {}) {
               }, bot, options);
               if (res && res.success) {
                 _recentSweeps.set(sweepLockKey, Date.now());
+                _failedSweepCooldown.delete(sweepLockKey);
               } else {
                 _recentSweeps.delete(sweepLockKey);
+                _failedSweepCooldown.set(sweepLockKey, Date.now());
               }
               results.push(res);
             } catch (sweepErr) {
               _recentSweeps.delete(sweepLockKey);
+              _failedSweepCooldown.set(sweepLockKey, Date.now());
               throw sweepErr;
             }
           }

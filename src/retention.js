@@ -66,10 +66,10 @@ function getBotTelegram(bot) {
 
 function _formatTierStatusBadge(st, kind = "KYC") {
   const s = String(st || "").toLowerCase();
-  if (s === "approved") return `Tier 1 ${kind} Verified ✅`;
-  if (s === "pending" || s === "incomplete") return `Tier 0 Active · ⏳ ${kind} Under Review`;
+  if (s === "approved") return `${kind} VERIFIED ✅`;
+  if (s === "pending" || s === "incomplete") return `⏳ ${kind} Under Review`;
   if (s === "rejected" || s === "failed" || s === "blocked") return `❌ ${kind} Action Needed`;
-  return `Tier 0 — Active Now (No ${kind} Needed)`;
+  return `Not Verified — Verify ${kind}`;
 }
 
 function buildTierComparisonHtml(isBusiness = false, nuvionStatus = "", extra = {}) {
@@ -79,30 +79,30 @@ function buildTierComparisonHtml(isBusiness = false, nuvionStatus = "", extra = 
   const hasSeparateStatuses = extra && (extra.personalStatus !== undefined || extra.businessStatus !== undefined);
   const statusSection = hasSeparateStatuses
     ? `• <b>Personal KYC:</b> ${_formatTierStatusBadge(extra.personalStatus, "KYC")}\n` +
-      (extra.hasBusiness
-        ? `• <b>Business KYB:</b> ${_formatTierStatusBadge(extra.businessStatus, "KYB")}\n`
-        : `• <b>Business KYB:</b> <i>No Business account set up yet</i>\n`) +
-      `• <b>Active Account:</b> ${isBusiness ? "Business 💼" : "Personal 👤"}\n\n`
+    (extra.hasBusiness
+      ? `• <b>Business KYB:</b> ${_formatTierStatusBadge(extra.businessStatus, "KYB")}\n`
+      : `• <b>Business KYB:</b> <i>No Business account set up yet</i>\n`) +
+    `• <b>Active Account:</b> ${isBusiness ? "Business 💼" : "Personal 👤"}\n\n`
     : `<b>Your Status (${isBusiness ? "Business KYB" : "Personal KYC"}):</b> ${statusBadge}\n\n`;
 
-  const tier1Label = isBusiness ? "Tier 1 — Business KYB" : "Tier 1 — Personal KYC";
-  const tier1Limit = isBusiness ? "$50,000/hr · $100,000/day" : "$10,000/hr · $25,000/day";
-  const tier1Extras = isBusiness
+  const verifiedLabel = isBusiness ? "VERIFIED — Business KYB" : "VERIFIED — Personal KYC";
+  const verifiedLimit = isBusiness ? "$50,000/hr · $100,000/day" : "$10,000/hr · $25,000/day";
+  const verifiedExtras = isBusiness
     ? "• Named Company Bank Accounts (USD, GBP, EUR, CAD, AED)\n• Business &amp; Team USD Cards\n• Send Abroad &amp; CSV Payroll (27+ Currencies)"
     : "• Named Global Bank Accounts (USD, GBP, EUR, CAD, AED)\n• Virtual &amp; Disposable USD Cards\n• Send Abroad to 27+ Currencies";
 
   return (
-    `🏷️ <b>Proxim Account Tiers &amp; Limits</b>\n` +
+    `🏷️ <b>Proxim Verification &amp; Limits</b>\n` +
     `──────────────────────────\n` +
     statusSection +
-    `✅ <b>Tier 0 — Ready Now (No ${activeKind} Needed)</b>\n` +
+    `✅ <b>Standard Account — Active Now (Before ${activeKind})</b>\n` +
     `• Nigerian Naira (NGN) deposits &amp; bank transfers\n` +
     `• Crypto deposits &amp; transfers (11 chains) + instant @username sends\n` +
     `• Dollar Savings (auto-yield), Bills &amp; Airtime, Crypto Invoices\n` +
     `• <i>Limits: up to $300/hr · $500/day</i>\n\n` +
-    `🌍 <b>${tier1Label} (2-Min Verification)</b>\n` +
-    `${tier1Extras}\n` +
-    `• <i>Limits: up to ${tier1Limit}</i>`
+    `🌍 <b>${verifiedLabel} (2-Min Verification)</b>\n` +
+    `${verifiedExtras}\n` +
+    `• <i>Limits: up to ${verifiedLimit}</i>`
   );
 }
 
@@ -157,7 +157,7 @@ async function handleFirstQualifyingTransaction({
     const buttons = isApproved
       ? [[Markup.button.callback("🏅 View Rewards", "action_rewards")]]
       : [
-          [Markup.button.callback(isBiz ? "💼 Unlock Tier 1 (Business KYB)" : "🪪 Unlock Tier 1 (Global Accounts & Cards)", isBiz ? "biz_nuvion_portal" : "action_nuvion_portal")],
+          [Markup.button.callback(isBiz ? "💼 Verify Business (KYB)" : "🪪 Verify KYC (Global Accounts & Cards)", isBiz ? "biz_nuvion_portal" : "action_nuvion_portal")],
           [Markup.button.callback("🏅 View Rewards ($1.00 Credit)", "action_rewards")],
         ];
 
@@ -165,12 +165,12 @@ async function handleFirstQualifyingTransaction({
       .sendMessage(
         Number(telegramId),
         `🎉 <b>First Transaction Bonus Unlocked!</b>\n` +
-          `──────────────────────────\n` +
-          `You earned <b>+${FIRST_TX_BONUS_POINTS} points ($1.00 credit)</b> — redeem anytime for airtime or bills in <b>Settings → Rewards</b>.` +
-          upgradeBlock,
+        `──────────────────────────\n` +
+        `You earned <b>+${FIRST_TX_BONUS_POINTS} points ($1.00 credit)</b> — redeem anytime for airtime or bills in <b>Settings → Rewards</b>.` +
+        upgradeBlock,
         { parse_mode: "HTML", ...Markup.inlineKeyboard(buttons) }
       )
-      .catch(() => {});
+      .catch(() => { });
   }
 
   return { awarded: true, points: FIRST_TX_BONUS_POINTS };
@@ -215,9 +215,9 @@ async function processDueBillReminders(bot = null) {
         .sendMessage(
           r.telegram_id,
           `🔔 <b>Monthly Bill Reminder</b>\n` +
-            `──────────────────────────\n` +
-            `Your <b>${escapeHtml(r.provider_name)}</b> bill (₦${Number(r.amount_ngn || 0).toLocaleString("en-NG")} for <code>${escapeHtml(r.recipient)}</code>) is due.\n\n` +
-            `Tap below to renew in seconds:`,
+          `──────────────────────────\n` +
+          `Your <b>${escapeHtml(r.provider_name)}</b> bill (₦${Number(r.amount_ngn || 0).toLocaleString("en-NG")} for <code>${escapeHtml(r.recipient)}</code>) is due.\n\n` +
+          `Tap below to renew in seconds:`,
           {
             parse_mode: "HTML",
             ...Markup.inlineKeyboard([
@@ -226,7 +226,7 @@ async function processDueBillReminders(bot = null) {
             ]),
           }
         )
-        .catch(() => {});
+        .catch(() => { });
       sent++;
     }
   }
@@ -272,10 +272,10 @@ async function sendWeeklyYieldNudges(bot = null) {
       .sendMessage(
         pos.telegram_id,
         `📈 <b>Your Dollars Earned +$${netProfit.toFixed(4)}!</b>\n` +
-          `──────────────────────────\n` +
-          `• <b>Saved Principal:</b> $${Number(pos.amount_usdc).toFixed(2)} USDC\n` +
-          `• <b>Live APY:</b> ${Number(pos.apy || 0).toFixed(1)}%\n\n` +
-          `<i>Your balance compounds automatically — withdraw anytime with zero lockup.</i>`,
+        `──────────────────────────\n` +
+        `• <b>Saved Principal:</b> $${Number(pos.amount_usdc).toFixed(2)} USDC\n` +
+        `• <b>Live APY:</b> ${Number(pos.apy || 0).toFixed(1)}%\n\n` +
+        `<i>Your balance compounds automatically — withdraw anytime with zero lockup.</i>`,
         {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
@@ -283,7 +283,7 @@ async function sendWeeklyYieldNudges(bot = null) {
           ]),
         }
       )
-      .catch(() => {});
+      .catch(() => { });
     sent++;
   }
   return { sent };

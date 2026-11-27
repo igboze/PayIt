@@ -214,7 +214,7 @@ test("Email SMTP Support: nodemailer is installed and email footer has no Nuvion
   assert.ok(!/powered by nuvion/i.test(emailSrc), "User emails must not expose Nuvion branding");
 });
 
-test("Telegram Bot KYC vs KYB Separation: retention tier card renders distinct Personal KYC and Business KYB statuses", () => {
+test("Telegram Bot KYC vs KYB Separation: retention card renders VERIFIED and Verify KYB labels without Tier 0/1", () => {
   const retention = require("../src/retention");
   const html = retention.buildTierComparisonHtml(true, "not_started", {
     personalStatus: "approved",
@@ -222,9 +222,10 @@ test("Telegram Bot KYC vs KYB Separation: retention tier card renders distinct P
     hasBusiness: true,
   });
   assert.ok(html.includes("Personal KYC"), "Must explicitly label Personal KYC");
-  assert.ok(html.includes("Tier 1 KYC Verified"), "Personal KYC approved must show verified");
+  assert.ok(html.includes("KYC VERIFIED"), "Personal KYC approved must show VERIFIED");
   assert.ok(html.includes("Business KYB"), "Must explicitly label Business KYB");
-  assert.ok(html.includes("No KYB Needed"), "Business KYB not started must remain Tier 0 even when Personal KYC is approved");
+  assert.ok(html.includes("Verify KYB"), "Business KYB not started must prompt Verify KYB even when Personal KYC is approved");
+  assert.ok(!/Tier\s*[01]/i.test(html), "Verification card must not use Tier 0 or Tier 1 naming");
 });
 
 test("Mobile KYB Canonical Schema & 5 Required Docs: validates Nuvion 2026-02-06 payload and uploads all 5 docs", async () => {
@@ -711,6 +712,61 @@ test("Hardened Proxim AI Assistant: blocks DB/private-key/cross-account attacks,
   assert.ok(!scrubbed.includes("sk-proj-"));
   assert.ok(!scrubbed.includes("app_passkeys"));
   assert.ok(!/nuvion/i.test(scrubbed));
+});
+
+test("NEAR Intents / Base Deposit Sweeper: avoids infinite 'Processing' spam on missing signer, aligns $0.50 L2 minimum & right-sizes Base ETH gas", async () => {
+  const evmSweeper = require("../src/evm_deposit_sweeper");
+  const { ethers } = require("ethers");
+  const sweeperSrc = fs.readFileSync(path.join(__dirname, "../src/evm_deposit_sweeper.js"), "utf8");
+  const cctpSrc = fs.readFileSync(path.join(__dirname, "../src/cctp_bridge.js"), "utf8");
+
+  // Source guards: L2 minimum aligned to $0.50, throttled progress notice, failure cooldown, and right-sized Base gas
+  assert.ok(sweeperSrc.includes("const minTokenDepositUsd = Number(effectiveChainId) === 1 ? 1.50 : 0.50"), "Base/L2 minimum must match $0.50 scan threshold");
+  assert.ok(sweeperSrc.includes("_progressNotified"), "Must throttle repeated 'Transaction in Progress' messages");
+  assert.ok(sweeperSrc.includes("_failedSweepCooldown"), "Must apply failure cooldown to prevent 90-second retry spam");
+  assert.ok(cctpSrc.includes('minGas = parseUnits("0.00002", 18)'), "Base CCTP minGas must be right-sized to 0.00002 ETH");
+
+  // Missing system_encrypted_key (legacy wallet) must NOT send 'Transaction in Progress' when relayer fronting is disabled
+  const legacyWallet = ethers.Wallet.createRandom();
+  const legacyTg = 777666555;
+  db.createUserWithWallet(legacyTg, "legacy_base_user", legacyWallet.address, legacyWallet.privateKey, "4927", null, null, null);
+  db.db.prepare("UPDATE users SET system_encrypted_key = NULL WHERE telegram_id = ?").run(legacyTg);
+
+  const sentMessages = [];
+  const fakeBot = {
+    telegram: {
+      async sendMessage(chatId, text) {
+        sentMessages.push({ chatId, text });
+      },
+    },
+  };
+  const prevFronting = process.env.ENABLE_RELAYER_FRONTING;
+  const prevNodeEnv = process.env.NODE_ENV;
+  process.env.ENABLE_RELAYER_FRONTING = "false";
+  process.env.NODE_ENV = "production";
+  try {
+    const res = await evmSweeper.processEvmDeposit(
+      {
+        chainId: 8453,
+        to: legacyWallet.address,
+        token: "USDC",
+        amount: 10,
+        txHash: `test_base_sweep_${Date.now()}`,
+      },
+      fakeBot
+    );
+    assert.equal(res.success, false);
+    assert.equal(res.needsAuthorization, true);
+    assert.ok(
+      !sentMessages.some((m) => /Transaction in Progress/i.test(m.text)),
+      "Must never send 'Transaction in Progress' when user signer key is unavailable"
+    );
+  } finally {
+    if (prevFronting === undefined) delete process.env.ENABLE_RELAYER_FRONTING;
+    else process.env.ENABLE_RELAYER_FRONTING = prevFronting;
+    if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prevNodeEnv;
+  }
 });
 
 test.after(() => {

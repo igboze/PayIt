@@ -1,11 +1,15 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
+  ScrollView,
   SectionList,
   RefreshControl,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
@@ -54,6 +58,81 @@ export type HomeModalTarget =
 
 // Home shows only the newest few; "See all" opens the full Activity screen.
 const HOME_ACTIVITY_COUNT = 5;
+const BANNER_GAP = 10;
+
+type PromoBannerItem = {
+  key: "abroad" | "business" | "cards" | "savings";
+  badge: string;
+  title: string;
+  subtitle: string;
+  cta: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  bg: string;
+  border: string;
+  badgeBg: string;
+  badgeColor: string;
+  iconBg: string;
+  iconColor: string;
+};
+
+const PROMO_BANNERS: PromoBannerItem[] = [
+  {
+    key: "abroad",
+    badge: "NEW · 27+ CURRENCIES",
+    title: "Send money abroad in minutes",
+    subtitle: "Transfer to UK, US, Europe, Ghana, Kenya & more via bank or mobile money.",
+    cta: "Send abroad",
+    icon: "earth-outline",
+    bg: "#002B20",
+    border: "#0F513D",
+    badgeBg: "rgba(212,175,55,0.20)",
+    badgeColor: "#F2D272",
+    iconBg: "rgba(212,175,55,0.16)",
+    iconColor: "#F2D272",
+  },
+  {
+    key: "business",
+    badge: "PROXIM BUSINESS",
+    title: "Run your business on Proxim",
+    subtitle: "Dedicated company wallet, client invoices, payment links & 27-currency payroll.",
+    cta: "Explore Business",
+    icon: "briefcase-outline",
+    bg: "#1E170B",
+    border: "#59441A",
+    badgeBg: "rgba(212,175,55,0.22)",
+    badgeColor: "#F2D272",
+    iconBg: "rgba(212,175,55,0.18)",
+    iconColor: "#F2D272",
+  },
+  {
+    key: "cards",
+    badge: "GLOBAL SPEND",
+    title: "Virtual USD Cards",
+    subtitle: "Pay seamlessly on Netflix, AWS, Meta Ads, Apple & global online stores.",
+    cta: "Get a card",
+    icon: "card-outline",
+    bg: "#0E2439",
+    border: "#214C74",
+    badgeBg: "rgba(56,189,248,0.18)",
+    badgeColor: "#7DD3FC",
+    iconBg: "rgba(56,189,248,0.16)",
+    iconColor: "#7DD3FC",
+  },
+  {
+    key: "savings",
+    badge: "AUTO-EARN",
+    title: "Dollar Savings · Daily Yield",
+    subtitle: "Put idle dollars to work automatically and withdraw back anytime.",
+    cta: "Start saving",
+    icon: "trending-up-outline",
+    bg: "#0A3422",
+    border: "#1A6143",
+    badgeBg: "rgba(52,211,153,0.18)",
+    badgeColor: "#6EE7B7",
+    iconBg: "rgba(52,211,153,0.16)",
+    iconColor: "#6EE7B7",
+  },
+];
 
 function greeting(): string {
   const h = new Date().getHours();
@@ -98,6 +177,29 @@ export function HomeScreen({
   const [copiedMsg, setCopiedMsg] = useState<string | null>(null);
   const [selectedTx, setSelectedTx] = useState<TransactionItem | null>(null);
   const [fallbackNgnRate, setFallbackNgnRate] = useState<number | null>(null);
+  const { width: windowWidth } = useWindowDimensions();
+  const bannerWidth = Math.max(250, Math.min(360, windowWidth - SPACING.md * 2 - 20));
+  const bannerScrollRef = useRef<React.ComponentRef<typeof ScrollView> | null>(null);
+  const [activeBanner, setActiveBanner] = useState(0);
+  const bannerDraggingRef = useRef(false);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (bannerDraggingRef.current) return;
+      setActiveBanner((prev) => {
+        const next = (prev + 1) % PROMO_BANNERS.length;
+        bannerScrollRef.current?.scrollTo({ x: next * (bannerWidth + BANNER_GAP), animated: true });
+        return next;
+      });
+    }, 6000);
+    return () => clearInterval(timer);
+  }, [bannerWidth]);
+
+  const handleBannerScrollEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const x = e.nativeEvent.contentOffset.x;
+    const idx = Math.max(0, Math.min(PROMO_BANNERS.length - 1, Math.round(x / (bannerWidth + BANNER_GAP))));
+    setActiveBanner(idx);
+  };
 
   const loadData = useCallback(
     async (isRefresh = false) => {
@@ -202,13 +304,101 @@ export function HomeScreen({
   const whole = dot > 0 ? mainText.slice(0, dot) : mainText;
   const cents = dot > 0 ? mainText.slice(dot) : "";
 
+  const handleBannerPress = (key: PromoBannerItem["key"]) => {
+    if (key === "abroad") {
+      onNavigate("send");
+    } else if (key === "business") {
+      if (isBiz) onNavigate("business_profile");
+      else handleSelectAccount("business");
+    } else if (key === "cards") {
+      onNavigate("cards");
+    } else if (key === "savings") {
+      onNavigate("savings");
+    }
+  };
+
+  const promoBannerSection = (
+    <View style={styles.promoSection}>
+      <ScrollView
+        ref={bannerScrollRef}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        snapToInterval={bannerWidth + BANNER_GAP}
+        snapToAlignment="start"
+        decelerationRate="fast"
+        contentContainerStyle={styles.promoTrack}
+        onScrollBeginDrag={() => {
+          bannerDraggingRef.current = true;
+        }}
+        onScrollEndDrag={() => {
+          bannerDraggingRef.current = false;
+        }}
+        onMomentumScrollEnd={(e) => {
+          bannerDraggingRef.current = false;
+          handleBannerScrollEnd(e);
+        }}
+      >
+        {PROMO_BANNERS.map((b) => {
+          const ctaLabel =
+            b.key === "business"
+              ? isBiz
+                ? "Company profile"
+                : user?.hasBusinessAccount
+                  ? "Switch to Business"
+                  : "Open Business"
+              : b.cta;
+          return (
+            <PressableScale
+              key={b.key}
+              onPress={() => handleBannerPress(b.key)}
+              depth={0.97}
+              style={[
+                styles.promoCard,
+                { width: bannerWidth, backgroundColor: b.bg, borderColor: b.border },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={`${b.title}. ${ctaLabel}`}
+            >
+              <View style={styles.promoTopRow}>
+                <View style={[styles.promoBadge, { backgroundColor: b.badgeBg }]}>
+                  <Text style={[styles.promoBadgeText, { color: b.badgeColor }]}>{b.badge}</Text>
+                </View>
+                <View style={[styles.promoIconWrap, { backgroundColor: b.iconBg }]}>
+                  <Ionicons name={b.icon} size={18} color={b.iconColor} />
+                </View>
+              </View>
+              <Text style={styles.promoTitle} numberOfLines={1}>
+                {b.title}
+              </Text>
+              <Text style={styles.promoSub} numberOfLines={2}>
+                {b.subtitle}
+              </Text>
+              <View style={styles.promoCtaRow}>
+                <Text style={[styles.promoCtaText, { color: b.badgeColor }]}>{ctaLabel}</Text>
+                <Ionicons name="arrow-forward" size={14} color={b.badgeColor} />
+              </View>
+            </PressableScale>
+          );
+        })}
+      </ScrollView>
+      <View style={styles.promoDots}>
+        {PROMO_BANNERS.map((b, i) => (
+          <View
+            key={b.key}
+            style={[styles.promoDot, i === activeBanner && styles.promoDotActive]}
+          />
+        ))}
+      </View>
+    </View>
+  );
+
   const header = (
     <View style={styles.topSection}>
       <View style={[styles.hero, isBiz && styles.heroBiz]}>
         {/* Greeting row */}
         <View style={styles.greetRow}>
           <PressableScale onPress={onOpenProfile} depth={0.94} accessibilityLabel="Open profile">
-            <UserAvatar size={42} name={isBiz ? displayName : null} />
+            <UserAvatar size={34} name={isBiz ? displayName : null} />
           </PressableScale>
           <View style={{ flex: 1 }}>
             <Text style={styles.greetSub}>
@@ -219,7 +409,7 @@ export function HomeScreen({
             </Text>
           </View>
           <PressableScale onPress={() => onNavigate("assistant")} depth={0.92} style={[styles.iconBtn, isBiz && styles.iconBtnBiz]} accessibilityLabel="Ask Proxim">
-            <Ionicons name="sparkles" size={20} color={HERO.accent} />
+            <Ionicons name="sparkles" size={17} color={HERO.accent} />
           </PressableScale>
           <PressableScale
             onPress={() => onNavigate("notifications")}
@@ -227,7 +417,7 @@ export function HomeScreen({
             style={[styles.iconBtn, isBiz && styles.iconBtnBiz]}
             accessibilityLabel={unread ? `Notifications, ${unread} unread` : "Notifications"}
           >
-            <Ionicons name="notifications-outline" size={20} color={HERO.text} />
+            <Ionicons name="notifications-outline" size={17} color={HERO.text} />
             {unread > 0 ? <View style={styles.unreadDot} /> : null}
           </PressableScale>
         </View>
@@ -241,7 +431,7 @@ export function HomeScreen({
               style={[styles.heroSegBtn, !isBiz && styles.heroSegBtnOn]}
               accessibilityLabel="Switch to Personal account"
             >
-              <Ionicons name="person" size={12} color={!isBiz ? COLORS.primary : HERO.textSecondary} />
+              <Ionicons name="person" size={11} color={!isBiz ? COLORS.primary : HERO.textSecondary} />
               <Text style={[styles.heroSegText, !isBiz && styles.heroSegTextOn]}>Personal</Text>
             </PressableScale>
             <PressableScale
@@ -250,7 +440,7 @@ export function HomeScreen({
               style={[styles.heroSegBtn, isBiz && styles.heroSegBtnBizOn]}
               accessibilityLabel="Switch to Business account"
             >
-              <Ionicons name="briefcase" size={12} color={isBiz ? COLORS.onGold : HERO.textSecondary} />
+              <Ionicons name="briefcase" size={11} color={isBiz ? COLORS.onGold : HERO.textSecondary} />
               <Text style={[styles.heroSegText, isBiz && styles.heroSegTextBizOn]}>
                 {user?.hasBusinessAccount ? "Business" : "+ Business"}
               </Text>
@@ -270,7 +460,7 @@ export function HomeScreen({
                 accessibilityState={{ selected: on }}
                 accessibilityLabel={`Show balance in ${code}`}
               >
-                <CurrencyLogo code={code} size={18} />
+                <CurrencyLogo code={code} size={15} />
                 <Text style={[styles.curChipText, on && styles.curChipTextOn]}>{code}</Text>
               </PressableScale>
             );
@@ -294,7 +484,7 @@ export function HomeScreen({
               style={styles.eyeBtn}
               accessibilityLabel={hidden ? "Show balance" : "Hide balance"}
             >
-              <Ionicons name={hidden ? "eye-off-outline" : "eye-outline"} size={20} color={HERO.textSecondary} />
+              <Ionicons name={hidden ? "eye-off-outline" : "eye-outline"} size={18} color={HERO.textSecondary} />
             </PressableScale>
           </View>
         )}
@@ -315,7 +505,7 @@ export function HomeScreen({
         {/* Naira receiving account */}
         {ngnAccount?.accountNumber ? (
           <View style={styles.ngnRow}>
-            <CurrencyLogo code="NGN" size={22} />
+            <CurrencyLogo code="NGN" size={18} />
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={styles.ngnLabel} numberOfLines={1}>
                 Naira account{ngnAccount.bankName ? ` · ${ngnAccount.bankName}` : ""}
@@ -329,27 +519,27 @@ export function HomeScreen({
               accessibilityRole="button"
               accessibilityLabel="Copy account number"
             >
-              <Ionicons name="copy-outline" size={14} color={COLORS.onGold} />
+              <Ionicons name="copy-outline" size={13} color={COLORS.onGold} />
               <Text style={styles.copyPillText}>Copy</Text>
             </PressableScale>
           </View>
         ) : (
           <PressableScale onPress={() => onNavigate(isVerified ? "global" : isBiz ? "kyb" : "kyc")} depth={0.98} style={[styles.ngnRow, isBiz && styles.ngnRowBiz]}>
-            <CurrencyLogo code="NGN" size={22} />
-            <Text style={[styles.ngnCta, { flex: 1 }]}>
+            <CurrencyLogo code="NGN" size={18} />
+            <Text style={[styles.ngnCta, { flex: 1 }]} numberOfLines={1}>
               {isVerified
                 ? isBiz
                   ? "Open your company global bank accounts"
                   : "Get your naira account number"
                 : isBiz
-                  ? "Verify your business (KYB) for company accounts"
-                  : "Verify your ID (KYC) to get a naira account"}
+                  ? "Verify KYB to unlock company global accounts"
+                  : "Verify KYC to unlock global accounts & cards"}
             </Text>
-            <Ionicons name="chevron-forward" size={16} color={HERO.accent} />
+            <Ionicons name="chevron-forward" size={15} color={HERO.accent} />
           </PressableScale>
         )}
 
-        {/* The two main actions live on the header, where the thumb is */}
+        {/* Compact Add money + Send action buttons */}
         <View style={styles.qaRow}>
           <PressableScale
             onPress={() => onNavigate("add")}
@@ -359,7 +549,7 @@ export function HomeScreen({
             accessibilityRole="button"
             accessibilityLabel="Add money"
           >
-            <Ionicons name="add" size={22} color={COLORS.onGold} />
+            <Ionicons name="add" size={18} color={COLORS.onGold} />
             <Text style={[styles.qaWideLabel, { color: COLORS.onGold }]}>Add money</Text>
           </PressableScale>
           <PressableScale
@@ -370,7 +560,7 @@ export function HomeScreen({
             accessibilityRole="button"
             accessibilityLabel="Send"
           >
-            <Ionicons name="arrow-up" size={22} color={COLORS.primary} style={{ transform: [{ rotate: "45deg" }] }} />
+            <Ionicons name="arrow-up" size={18} color={COLORS.primary} style={{ transform: [{ rotate: "45deg" }] }} />
             <Text style={styles.qaWideLabel}>Send</Text>
           </PressableScale>
         </View>
@@ -382,7 +572,7 @@ export function HomeScreen({
 
         {isBiz ? (
           <>
-            {/* Business Cash Flow & Unpaid Invoices summary (matching Telegram bot Business menu) */}
+            {/* Business Cash Flow & Unpaid Invoices summary */}
             <View style={styles.bizSummaryCard}>
               <View style={styles.bizSummaryHead}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
@@ -390,7 +580,7 @@ export function HomeScreen({
                   <Text style={styles.bizSummaryTitle}>This Month · Cash Flow</Text>
                 </View>
                 <PressableScale onPress={() => onNavigate(isVerified ? "global" : "kyb")} style={styles.bizTierBadge}>
-                  <Text style={styles.bizTierBadgeText}>{isVerified ? "KYB Tier 1 ✅" : "Verify KYB →"}</Text>
+                  <Text style={styles.bizTierBadgeText}>{isVerified ? "VERIFIED ✅" : "Verify KYB →"}</Text>
                 </PressableScale>
               </View>
               <View style={styles.bizMetricsRow}>
@@ -415,7 +605,10 @@ export function HomeScreen({
               </View>
             </View>
 
-            {/* Dedicated Business Operations Grid (mirrors Telegram Bot Business Menu — each tile jumps straight to its tool) */}
+            {/* Floating feature & announcement banner carousel */}
+            {promoBannerSection}
+
+            {/* Dedicated Business Operations Grid */}
             <Text style={styles.activityTitle}>Business tools</Text>
             <View style={styles.bizGrid}>
               <PressableScale onPress={() => onNavigate("business_invoices")} depth={0.97} style={styles.bizTile}>
@@ -472,24 +665,26 @@ export function HomeScreen({
           </>
         ) : (
           <>
-            {/* Grow your money (Personal) */}
-            <Text style={styles.activityTitle}>Grow your money</Text>
+            {/* Savings & US Stocks moved directly up below the compact balance box */}
             <View style={styles.growRow}>
               <PressableScale onPress={() => onNavigate("savings")} depth={0.97} style={styles.featureCard}>
-                <SavingsLogoMerger size={26} showBadge={false} />
-                <View style={{ gap: 2 }}>
+                <SavingsLogoMerger size={24} showBadge={false} />
+                <View style={{ gap: 1 }}>
                   <Text style={styles.rowTitle}>Savings</Text>
                   <Text style={styles.rowSub}>Earn daily, withdraw anytime</Text>
                 </View>
               </PressableScale>
               <PressableScale onPress={() => onNavigate("stocks")} depth={0.97} style={styles.featureCard}>
-                <StockLogoMerger size={26} />
-                <View style={{ gap: 2 }}>
-                  <Text style={styles.rowTitle}>US Stocks & ETFs</Text>
+                <StockLogoMerger size={24} />
+                <View style={{ gap: 1 }}>
+                  <Text style={styles.rowTitle}>US Stocks &amp; ETFs</Text>
                   <Text style={styles.rowSub}>Start from $1</Text>
                 </View>
               </PressableScale>
             </View>
+
+            {/* Floating feature & announcement banner carousel */}
+            {promoBannerSection}
 
             {/* Instant Currency Swap */}
             <PressableScale onPress={() => onNavigate("swap")} depth={0.98} style={styles.swapRowCard}>
@@ -578,16 +773,16 @@ const styles = StyleSheet.create({
   topSection: {
     marginBottom: 8,
   },
-  // Edge-to-edge Proxim Forest header: the balance owns the top of the screen.
+  // Compact edge-to-edge Proxim Forest header so Savings, Stocks & Banners sit higher above the fold.
   hero: {
     marginHorizontal: -SPACING.md,
-    paddingHorizontal: SPACING.md + 4,
-    paddingTop: 8,
-    paddingBottom: 22,
+    paddingHorizontal: SPACING.md + 2,
+    paddingTop: 4,
+    paddingBottom: 12,
     backgroundColor: COLORS.forest,
-    borderBottomLeftRadius: RADIUS.xl,
-    borderBottomRightRadius: RADIUS.xl,
-    gap: 6,
+    borderBottomLeftRadius: RADIUS.lg,
+    borderBottomRightRadius: RADIUS.lg,
+    gap: 4,
     ...DEPTH.forest,
   },
   heroBiz: {
@@ -734,27 +929,29 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   below: {
-    gap: 14,
-    paddingTop: 18,
+    gap: 12,
+    paddingTop: 12,
   },
   greetRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    marginBottom: 10,
+    gap: 8,
+    marginBottom: 4,
   },
   greetSub: {
     ...TYPE.label,
+    fontSize: 11,
     color: HERO.textSecondary,
   },
   greetName: {
-    ...TYPE.headline,
+    ...TYPE.bodyStrong,
+    fontSize: 15,
     color: HERO.text,
   },
   iconBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: HERO.chip,
     borderWidth: 1,
     borderColor: HERO.border,
@@ -763,11 +960,11 @@ const styles = StyleSheet.create({
   },
   unreadDot: {
     position: "absolute",
-    top: 9,
-    right: 10,
-    width: 9,
-    height: 9,
-    borderRadius: 5,
+    top: 6,
+    right: 7,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
     backgroundColor: COLORS.danger,
     borderWidth: 1.5,
     borderColor: COLORS.forest,
@@ -781,9 +978,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 5,
-    paddingVertical: 6,
+    paddingVertical: 4,
     paddingRight: 6,
-    minHeight: 36,
+    minHeight: 30,
   },
   acctLabel: {
     ...TYPE.overline,
@@ -792,10 +989,10 @@ const styles = StyleSheet.create({
   curChip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingLeft: 5,
-    paddingRight: 11,
-    height: 32,
+    gap: 5,
+    paddingLeft: 4,
+    paddingRight: 9,
+    height: 28,
     borderRadius: RADIUS.pill,
     backgroundColor: HERO.chip,
     borderWidth: 1,
@@ -807,6 +1004,7 @@ const styles = StyleSheet.create({
   },
   curChipText: {
     ...TYPE.label,
+    fontSize: 11,
     fontFamily: TYPE.overline.fontFamily,
     color: HERO.textSecondary,
   },
@@ -817,7 +1015,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    height: 56,
+    height: 38,
   },
   balLoadingText: {
     ...TYPE.label,
@@ -826,96 +1024,104 @@ const styles = StyleSheet.create({
   amountRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    marginTop: 4,
+    gap: 6,
+    marginTop: 2,
   },
   totalAmount: {
     ...TYPE.xl,
+    fontSize: 28,
+    lineHeight: 34,
     color: HERO.text,
     flexShrink: 1,
   },
   totalCents: {
-    fontSize: 26,
+    fontSize: 18,
     color: HERO.textSecondary,
   },
   subLine: {
     ...TYPE.label,
+    fontSize: 12,
     color: HERO.textSecondary,
   },
   eyeBtn: {
-    padding: 8,
+    padding: 4,
   },
   extraLine: {
     ...TYPE.label,
+    fontSize: 11.5,
     color: HERO.textSecondary,
   },
   ngnRow: {
-    marginTop: 12,
+    marginTop: 6,
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 8,
     backgroundColor: HERO.inset,
     borderWidth: 1,
     borderColor: HERO.border,
     borderRadius: RADIUS.md,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
   },
   ngnLabel: {
     ...TYPE.label,
+    fontSize: 11,
     color: HERO.textSecondary,
   },
   ngnNumber: {
     ...TYPE.bodyStrong,
+    fontSize: 13.5,
     color: HERO.text,
-    letterSpacing: 1,
+    letterSpacing: 0.8,
   },
   ngnCta: {
     ...TYPE.label,
+    fontSize: 12,
     color: HERO.accent,
   },
   copyPill: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
-    height: 34,
-    paddingHorizontal: 12,
+    gap: 4,
+    height: 28,
+    paddingHorizontal: 10,
     borderRadius: RADIUS.pill,
     backgroundColor: COLORS.gold,
   },
   copyPillText: {
     ...TYPE.label,
+    fontSize: 11.5,
     fontFamily: TYPE.title.fontFamily,
     color: COLORS.onGold,
   },
   qaRow: {
     flexDirection: "row",
-    gap: 12,
-    marginTop: 16,
+    gap: 10,
+    marginTop: 8,
   },
   qaWide: {
     flex: 1,
-    minHeight: 56,
+    minHeight: 40,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
+    gap: 6,
     borderRadius: RADIUS.md,
   },
   qaGold: {
     backgroundColor: COLORS.gold,
-    borderBottomWidth: 3,
+    borderBottomWidth: 2,
     borderBottomColor: COLORS.goldDark,
   },
   qaWhite: {
     backgroundColor: COLORS.white,
-    borderBottomWidth: 3,
+    borderBottomWidth: 2,
     borderBottomColor: "#C9D3CE",
   },
   qaWideLabel: {
     ...TYPE.bodyStrong,
     fontFamily: TYPE.xl.fontFamily,
-    fontSize: 16,
+    fontSize: 14,
     color: COLORS.primary,
   },
   growRow: {
@@ -924,11 +1130,91 @@ const styles = StyleSheet.create({
   },
   featureCard: {
     flex: 1,
-    gap: 12,
-    padding: 14,
+    gap: 8,
+    padding: 12,
     borderRadius: RADIUS.lg,
     backgroundColor: COLORS.surface,
     ...DEPTH.card,
+  },
+  promoSection: {
+    gap: 8,
+  },
+  promoTrack: {
+    gap: BANNER_GAP,
+    paddingVertical: 2,
+    paddingRight: 4,
+  },
+  promoCard: {
+    borderRadius: RADIUS.lg,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 5,
+    shadowColor: "#000000",
+    shadowOpacity: 0.14,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  promoTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 2,
+  },
+  promoBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: RADIUS.pill,
+  },
+  promoBadgeText: {
+    ...TYPE.overline,
+    fontSize: 10,
+    letterSpacing: 0.6,
+  },
+  promoIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  promoTitle: {
+    ...TYPE.bodyStrong,
+    fontSize: 15.5,
+    color: "#FFFFFF",
+  },
+  promoSub: {
+    ...TYPE.label,
+    fontSize: 12,
+    lineHeight: 16.5,
+    color: "rgba(255,255,255,0.78)",
+  },
+  promoCtaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: 4,
+  },
+  promoCtaText: {
+    ...TYPE.bodyStrong,
+    fontSize: 12.5,
+  },
+  promoDots: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  promoDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: COLORS.border,
+  },
+  promoDotActive: {
+    width: 18,
+    backgroundColor: COLORS.primary,
   },
   rowTitle: {
     ...TYPE.bodyStrong,

@@ -115,15 +115,15 @@ async function sendKycStatusEmail({ to, name, status, accountType = "personal" }
   if (status === "approved") {
     return sendTransactionalEmail({
       to,
-      subject: `🎉 Your Proxim Tier-1 Verification is Approved!`,
+      subject: `🎉 Your Proxim ${label} Is Now VERIFIED!`,
       html: `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #111;">
-          <h2 style="color: #0052FF; margin-bottom: 8px;">Tier-1 Global Banking Approved!</h2>
+          <h2 style="color: #0052FF; margin-bottom: 8px;">Your Proxim Account Is VERIFIED!</h2>
           <p style="font-size: 16px; line-height: 1.5; color: #333;">
             Hello ${name || "there"},
           </p>
           <p style="font-size: 16px; line-height: 1.5; color: #333;">
-            Great news! Your <b>${label}</b> has successfully completed Tier-1 verification. Your global accounts and virtual cards are now active.
+            Great news! Your <b>${label}</b> is now <b>VERIFIED</b>. Your global accounts and virtual cards are now active.
           </p>
           <div style="background-color: #F4F6F8; border-radius: 8px; padding: 16px; margin: 20px 0;">
             <p style="margin: 0 0 8px 0; font-weight: 600;">What's unlocked on your Proxim account:</p>
@@ -149,7 +149,7 @@ async function sendKycStatusEmail({ to, name, status, accountType = "personal" }
       subject: `Verification Received — Your Proxim ${label} Is Under Review`,
       html: `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #111;">
-          <h2 style="color: #002018; margin-bottom: 8px;">We Received Your Tier-1 Verification</h2>
+          <h2 style="color: #002018; margin-bottom: 8px;">We Received Your Verification</h2>
           <p style="font-size: 16px; line-height: 1.5; color: #333;">
             Hello ${name || "there"},
           </p>
@@ -169,7 +169,7 @@ async function sendKycStatusEmail({ to, name, status, accountType = "personal" }
   } else if (status === "failed" || status === "rejected" || status === "action_required") {
     return sendTransactionalEmail({
       to,
-      subject: `Action Required: Proxim Tier-1 Verification Update`,
+      subject: `Action Required: Proxim Verification Update`,
       html: `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #111;">
           <h2 style="color: #E11D48; margin-bottom: 8px;">Verification Update Needed</h2>
@@ -177,7 +177,7 @@ async function sendKycStatusEmail({ to, name, status, accountType = "personal" }
             Hello ${name || "there"},
           </p>
           <p style="font-size: 16px; line-height: 1.5; color: #333;">
-            We reviewed your Tier-1 verification submission for your <b>${label}</b> and additional information or a clearer document is required to complete verification.
+            We reviewed your verification submission for your <b>${label}</b> and additional information or a clearer document is required to complete verification.
           </p>
           <p style="font-size: 16px; line-height: 1.5; color: #333;">
             Please open the Proxim app or bot to review your documents and re-submit. Your regular Proxim wallet and local transfers remain 100% active.

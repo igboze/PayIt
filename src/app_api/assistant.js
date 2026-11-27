@@ -283,9 +283,9 @@ You are friendly, clear, concise (under 140 words unless diagnosing a multi-step
    - Cross-chain crypto withdrawals: $0.30 bridge fee.
    - New devices have a 24-hour $100 transfer security limit (visible in Profile -> Security -> Signed-in Devices).
 3. VERIFICATION (KYC vs KYB):
-   - Tier 0 (unverified): NGN deposits/payouts, P2P transfers, bills, savings, swaps, crypto deposits/withdrawals work immediately.
-   - Tier 1 Personal KYC (Profile -> Verify ID): unlocks named Personal Global Bank Accounts (USD, GBP, EUR, CAD, AED, GHS, KES, TZS), Virtual & Disposable USD Cards, and 27-currency Global Transfers. Requires Government ID (front + optional back) + Proof of Address (<3 months) + BVN & NIN (for NG) or SSN (for US).
-   - Tier 1 Business KYB (strictly separate from Personal KYC): unlocks Business Global Accounts, Team USD Cards, and 27-currency Payroll. Requires all 5 documents: Certificate of Incorporation (PDF or clear photo — auto-converted to PDF), Memorandum & Articles of Association (PDF/DOC/DOCX or photo), Business Proof of Address, Officer Government ID, and Officer Proof of Address.
+   - Before KYC/KYB (unverified): NGN deposits/payouts, P2P transfers, bills, savings, swaps, crypto deposits/withdrawals work immediately. Users who have not verified see "Verify KYC" (or "Verify KYB" for Business).
+   - VERIFIED Personal KYC (Profile -> Verify ID): unlocks named Personal Global Bank Accounts (USD, GBP, EUR, CAD, AED, GHS, KES, TZS), Virtual & Disposable USD Cards, and 27-currency Global Transfers. Requires Government ID (front + optional back) + Proof of Address (<3 months) + BVN & NIN (for NG) or SSN (for US).
+   - VERIFIED Business KYB (strictly separate from Personal KYC): unlocks Business Global Accounts, Team USD Cards, and 27-currency Payroll. Requires all 5 documents: Certificate of Incorporation (PDF or clear photo — auto-converted to PDF), Memorandum & Articles of Association (PDF/DOC/DOCX or photo), Business Proof of Address, Officer Government ID, and Officer Proof of Address.
    - Document Upload Tips: Users can tap Upload (native file/photo picker) OR tap the "Web" button next to any document row for Proxim's secure browser uploader, which auto-compresses large photos and converts COI photos to PDF.
 4. SECURITY & RECOVERY:
    - Money movements ALWAYS require WebAuthn Passkey + 4-digit Transaction PIN.
@@ -332,7 +332,7 @@ function buildLocalSystemAnswer(message, snapshot) {
       reasons.push(`• New-device security limit: transfers on this device are capped at $100 until ${snapshot.deviceRestrictedUntil}.`);
     }
     if (snapshot.kyc.personal !== "approved" && /\b(card|global|abroad|usd\s+account|gbp|eur)\b/i.test(low)) {
-      reasons.push(`• Global Accounts, Virtual USD Cards, and international transfers require Tier-1 Verification (currently ${snapshot.kyc.personal.toUpperCase()}).`);
+      reasons.push(`• Global Accounts, Virtual USD Cards, and international transfers require KYC Verification (currently ${snapshot.kyc.personal === "approved" ? "VERIFIED" : snapshot.kyc.personal === "pending" || snapshot.kyc.personal === "incomplete" ? "UNDER REVIEW" : "Verify KYC needed"}).`);
     }
     if (bal != null && bal < 1.05) {
       reasons.push(`• Low balance: your ${snapshot.activeWorkspace} balance is ${balStr}. Remember Nigerian bank payouts require a 1% fee on top of the send amount (e.g., max sendable ≈ $${(bal / 1.01).toFixed(2)}).`);
@@ -360,7 +360,8 @@ function buildLocalSystemAnswer(message, snapshot) {
 
   // Cards / Global Accounts
   if (/\b(card|virtual\s+card|usd\s+account|gbp|eur|global\s+account|receive\s+usd)\b/i.test(low)) {
-    return `Named Global Bank Accounts (USD, GBP, EUR, CAD, AED, GHS, KES, TZS) and Virtual USD Cards unlock once Tier-1 verification is approved (your Personal KYC is currently ${snapshot.kyc.personal.toUpperCase()}). Open Accounts or Cards after completing Profile → Verify ID.`;
+    const kycState = snapshot.kyc.personal === "approved" ? "VERIFIED" : snapshot.kyc.personal === "pending" || snapshot.kyc.personal === "incomplete" ? "UNDER REVIEW" : "not yet verified (Verify KYC needed)";
+    return `Named Global Bank Accounts (USD, GBP, EUR, CAD, AED, GHS, KES, TZS) and Virtual USD Cards unlock once your KYC verification is approved (your Personal KYC is currently ${kycState}). Open Accounts or Cards after completing Profile → Verify ID.`;
   }
 
   // Default helpful greeting / overview

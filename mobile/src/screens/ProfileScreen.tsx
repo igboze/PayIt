@@ -1381,13 +1381,27 @@ export function ProfileScreen({
               <>
                 <KeyValueRow
                   label="Personal KYC Status"
-                  value={`${kyc.personal.status.toUpperCase()} (Tier ${kyc.personal.tier})`}
+                  value={
+                    kyc.personal.status === "approved" || kyc.personal.tier >= 1
+                      ? "VERIFIED ✅"
+                      : kyc.personal.status === "pending" || kyc.personal.status === "incomplete"
+                        ? "UNDER REVIEW ⏳"
+                        : kyc.personal.status === "rejected" || kyc.personal.status === "failed"
+                          ? "ACTION NEEDED · Verify KYC"
+                          : "Verify KYC"
+                  }
                 />
                 <KeyValueRow
                   label="Business KYB Status"
                   value={
                     user?.hasBusinessAccount
-                      ? `${kyc.business.status.toUpperCase()} (Tier ${kyc.business.tier})`
+                      ? kyc.business.status === "approved" || kyc.business.tier >= 1
+                        ? "VERIFIED ✅"
+                        : kyc.business.status === "pending" || kyc.business.status === "incomplete"
+                          ? "UNDER REVIEW ⏳"
+                          : kyc.business.status === "rejected" || kyc.business.status === "failed"
+                            ? "ACTION NEEDED · Verify KYB"
+                            : "Verify KYB"
                       : "No Business Account"
                   }
                 />
@@ -1426,7 +1440,13 @@ export function ProfileScreen({
                 title="Business Verification (KYB)"
                 right={
                   <Text style={[styles.rowSub, { color: COLORS.business, fontFamily: FONTS.bold }]}>
-                    {kyc ? `Tier ${kyc.business.tier} · ${kyc.business.status}` : ""}
+                    {kyc
+                      ? kyc.business.status === "approved" || kyc.business.tier >= 1
+                        ? "VERIFIED ✅"
+                        : kyc.business.status === "pending" || kyc.business.status === "incomplete"
+                          ? "Under Review ⏳"
+                          : "Verify KYB"
+                      : ""}
                   </Text>
                 }
               />
@@ -1556,7 +1576,13 @@ export function ProfileScreen({
               title="Personal Identity Verification (KYC)"
               right={
                 <Text style={[styles.rowSub, { color: COLORS.primary, fontFamily: FONTS.bold }]}>
-                  {kyc ? `Tier ${kyc.personal.tier} · ${kyc.personal.status}` : ""}
+                  {kyc
+                    ? kyc.personal.status === "approved" || kyc.personal.tier >= 1
+                      ? "VERIFIED ✅"
+                      : kyc.personal.status === "pending" || kyc.personal.status === "incomplete"
+                        ? "Under Review ⏳"
+                        : "Verify KYC"
+                    : ""}
                 </Text>
               }
             />
@@ -1650,7 +1676,13 @@ export function ProfileScreen({
                 title="Business Verification (KYB)"
                 right={
                   <Text style={[styles.rowSub, { color: COLORS.business, fontFamily: FONTS.bold }]}>
-                    {kyc ? `Tier ${kyc.business.tier} · ${kyc.business.status}` : ""}
+                    {kyc
+                      ? kyc.business.status === "approved" || kyc.business.tier >= 1
+                        ? "VERIFIED ✅"
+                        : kyc.business.status === "pending" || kyc.business.status === "incomplete"
+                          ? "Under Review ⏳"
+                          : "Verify KYB"
+                      : ""}
                   </Text>
                 }
               />

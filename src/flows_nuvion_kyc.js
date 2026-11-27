@@ -374,10 +374,10 @@ async function showGlobalPortal(ctx, forcedContext = null) {
   const otherEntity = (otherType === "personal" || hasBiz) ? db.getNuvionEntityByUser(ctx.from.id, otherType) : null;
   const otherStatus = String(otherEntity?.status || "not_started").toLowerCase();
   const otherStatusSummary = otherStatus === "approved"
-    ? "Tier 1 Approved ✅"
+    ? "VERIFIED ✅"
     : otherStatus === "pending" || otherStatus === "incomplete"
       ? "Under Review ⏳"
-      : "Not Verified";
+      : `Verify ${otherType === "business" ? "KYB" : "KYC"}`;
   const otherStatusLine = (otherType === "personal" || hasBiz)
     ? `• <b>${isBiz ? "Personal KYC" : "Business KYB"} Status:</b> ${otherStatusSummary} <i>(tracked separately)</i>\n`
     : "";
@@ -406,12 +406,12 @@ async function showGlobalPortal(ctx, forcedContext = null) {
     buttons.push([Markup.button.callback("🏠 Main Menu", "main_menu")]);
 
     return ctx.reply(
-      `🌍 <b>${label} — Upgrade from Tier 0 to Tier 1</b>\n──────────────────────────\n` +
-      `🏷️ <b>${isBiz ? "Business KYB" : "Personal KYC"} Status:</b> Tier 0 (Standard — NGN Accounts Only)\n` +
+      `🌍 <b>${label} — Get Verified</b>\n──────────────────────────\n` +
+      `🏷️ <b>${isBiz ? "Business KYB" : "Personal KYC"} Status:</b> Not Verified — Please verify ${isBiz ? "KYB" : "KYC"}\n` +
       otherStatusLine +
       `\n` +
-      `On <b>Tier 0</b>, your ${isBiz ? "Business" : "Personal"} account only has access to <b>Nigerian Naira (NGN)</b> accounts and local transfers.\n` +
-      `Getting <b>Global Bank Accounts</b> and <b>Virtual USD Cards</b> requires <b>Tier 1</b>, which unlocks automatically once you complete ${isBiz ? "Business Verification (KYB)" : "ID Verification (KYC)"}:\n\n` +
+      `Before verification, your ${isBiz ? "Business" : "Personal"} account only has access to <b>Nigerian Naira (NGN)</b> accounts and local transfers.\n` +
+      `Getting <b>Global Bank Accounts</b> and <b>Virtual USD Cards</b> requires <b>VERIFIED</b> status, which unlocks automatically once you complete ${isBiz ? "Business Verification (KYB)" : "ID Verification (KYC)"}:\n\n` +
       `• 🏦 <b>Named Global Bank Accounts</b> (USD, GBP, EUR, NGN, CAD, AED, KES, GHS)\n` +
       `• 💳 <b>${isBiz ? "Business &amp; Team" : "Virtual &amp; Disposable"} USD Cards</b> (Netflix, AWS, Ads, Online Shopping)\n` +
       `• ✈️ <b>Global Transfers</b> (27+ currencies via bank &amp; mobile money rails)\n` +
@@ -439,7 +439,7 @@ async function showGlobalPortal(ctx, forcedContext = null) {
     return ctx.reply(
       `🌍 <b>${label}</b>  ✅ <b>Verified</b>\n──────────────────────────\n` +
       `• <b>Account Name:</b> ${escapeHtml(entity.legal_name || "Verified Account")}\n` +
-      `• <b>${isBiz ? "Business KYB" : "Personal KYC"} Status:</b> Tier-1 Approved ✅\n` +
+      `• <b>${isBiz ? "Business KYB" : "Personal KYC"} Status:</b> VERIFIED ✅\n` +
       otherStatusLine +
       `• <b>Instant Settlement Bridge:</b> ${bridgeReady ? "✅ Active" : "⏳ Provisioning..."}\n` +
       `• <b>Global Receiving Accounts:</b> ${fiatDetails.length} active\n\n` +
@@ -695,7 +695,7 @@ async function promptPersonalKycStep(ctx, userId, step, data = {}) {
     case "nuvion_kyc_review": {
       const fullName = [data.first_name, data.middle_name, data.last_name].filter(Boolean).join(" ");
       return ctx.reply(
-        `✅ <b>Review Your Tier-1 Verification</b>\n──────────────────────────\n` +
+        `✅ <b>Review Your Identity Verification</b>\n──────────────────────────\n` +
         `• <b>Name:</b> ${escapeHtml(fullName)}\n` +
         `• <b>Email:</b> ${escapeHtml(data.email)}\n` +
         `• <b>Phone:</b> <code>${escapeHtml(maskSecret(data.phonenumber, 4))}</code>\n` +
@@ -967,7 +967,7 @@ async function executePersonalKycSubmission(ctx, userId) {
     // Pre-flight schema check BEFORE hitting live https://api.nuvion.co!
     nuvion.validateIndividualEntityPayload(entityPayload);
 
-    await ctx.reply("⏳ <b>Submitting your Tier-1 verification securely...</b>", { parse_mode: "HTML" });
+    await ctx.reply("⏳ <b>Submitting your verification securely...</b>", { parse_mode: "HTML" });
 
     // Check existing local entity first to avoid duplicate POST /individual-entities on retry
     const existingLocal = db.getNuvionEntityByUser(userId, "personal");
@@ -1071,7 +1071,7 @@ async function executePersonalKycSubmission(ctx, userId) {
 
     return ctx.reply(
       `🎉 <b>Verification Submitted!</b>\n──────────────────────────\n` +
-      `Your Tier-1 verification is now being reviewed by our regulated <b>Global Banking Compliance Partner</b>.\n\n` +
+      `Your identity verification is now being reviewed by our regulated <b>Global Banking Compliance Partner</b>.\n\n` +
       `🛡️ <b>Privacy Confirmed:</b> Your application is 100% compliant and confidential, will never be shared with anyone, and your local chat inputs &amp; draft have been erased.\n\n` +
       `We'll notify you automatically right here as soon as your Global Bank Accounts, Virtual USD Cards, and International Transfers are active!`,
       {

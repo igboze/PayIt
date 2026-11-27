@@ -1623,7 +1623,11 @@ async function executeEvmCctpBurn({
     let dripGas = parseUnits("0.00015", 18);
     const chainIdNum = Number(chainConfig.chainId);
 
-    if (chainIdNum === 137) {
+    if (chainIdNum === 8453) {
+      // Base L2 gas is very low (~0.000005-0.000015 ETH for approve + depositForBurn)
+      minGas = parseUnits("0.00002", 18);
+      dripGas = parseUnits("0.00005", 18);
+    } else if (chainIdNum === 137) {
       // Polygon (POL/MATIC)
       minGas = parseUnits("0.15", 18);
       dripGas = parseUnits("0.30", 18);
