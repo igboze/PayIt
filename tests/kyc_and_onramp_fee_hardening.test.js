@@ -619,6 +619,37 @@ test("KYC/KYB Upload Hardening: detects octet-stream PDFs/DOCX, auto-wraps JPEG 
   assert.ok(!/Powered by Nuvion|reviewed by <b>Nuvion|processed by <b>Nuvion|Compliance Partner:<\/b> <b>Nuvion/i.test(kycSrc));
 });
 
+test("Welcome Email on New Mobile Signup: formats Proxim overview without Nuvion branding and dispatches in signupFinish", async () => {
+  const emailMod = require("../src/email");
+  assert.equal(typeof emailMod.sendWelcomeEmail, "function");
+
+  const origResend = process.env.RESEND_API_KEY;
+  const origPostmark = process.env.POSTMARK_SERVER_TOKEN;
+  const origSmtpUser = process.env.SMTP_USER;
+  const origSmtpPass = process.env.SMTP_PASS;
+  delete process.env.RESEND_API_KEY;
+  delete process.env.POSTMARK_SERVER_TOKEN;
+  delete process.env.SMTP_USER;
+  delete process.env.SMTP_PASS;
+
+  try {
+    const res = await emailMod.sendWelcomeEmail({ to: "newuser@example.com", name: "Ada" });
+    assert.equal(res.simulated, true);
+    const emailSrc = fs.readFileSync(path.join(__dirname, "../src/email.js"), "utf8");
+    assert.ok(emailSrc.includes("Welcome to Proxim"), "Welcome email must greet user");
+    assert.ok(emailSrc.includes("Virtual USD Cards"), "Welcome email must highlight key app features");
+    assert.ok(!/nuvion/i.test(emailSrc.slice(emailSrc.indexOf("async function sendWelcomeEmail"))), "Welcome email must never mention Nuvion");
+
+    const routesSrc = fs.readFileSync(path.join(__dirname, "../src/app_api/routes.js"), "utf8");
+    assert.ok(routesSrc.includes("emailMod.sendWelcomeEmail"), "signupFinish must trigger sendWelcomeEmail for email signups");
+  } finally {
+    if (origResend) process.env.RESEND_API_KEY = origResend;
+    if (origPostmark) process.env.POSTMARK_SERVER_TOKEN = origPostmark;
+    if (origSmtpUser) process.env.SMTP_USER = origSmtpUser;
+    if (origSmtpPass) process.env.SMTP_PASS = origSmtpPass;
+  }
+});
+
 test.after(() => {
   try {
     if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);

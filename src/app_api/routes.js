@@ -442,6 +442,22 @@ async function signupFinish(req, body) {
   const { device } = store.upsertDevice({ deviceId: signup.device_id, telegramId: userId, platform: signup.platform, deviceName });
   store.updateSignup(signupId, { completed: 1 });
 
+  // Send welcome email asynchronously if the new user signed up with an email address
+  const rawContact = String(signup.phone_number || "");
+  const signupEmail = rawContact.startsWith("email:")
+    ? rawContact.slice("email:".length).trim().toLowerCase()
+    : (typeof body.email === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(body.email.trim()) ? body.email.trim().toLowerCase() : null);
+  if (signupEmail) {
+    try {
+      const emailMod = require("../email");
+      if (typeof emailMod.sendWelcomeEmail === "function") {
+        emailMod.sendWelcomeEmail({ to: signupEmail }).catch((err) => {
+          console.warn("[app_api:signup_welcome_email]", err?.message || err);
+        });
+      }
+    } catch (_) { }
+  }
+
   const session = tokens.issueSession({ telegramId: userId, deviceId: signup.device_id });
   return { status: 201, data: { user: publicUser(db.getUser(userId), device), session } };
 }

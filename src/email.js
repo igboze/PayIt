@@ -192,7 +192,66 @@ async function sendKycStatusEmail({ to, name, status, accountType = "personal" }
   }
 }
 
+async function sendWelcomeEmail({ to, name } = {}) {
+  const greeting = name ? `Hello ${String(name).replace(/[<>&]/g, "")},` : "Welcome to Proxim,";
+  const subject = "Welcome to Proxim — Your Global Dollar & Naira Account Is Ready";
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; background-color: #F5F1E8; color: #13110C;">
+      <div style="background-color: #FFFFFF; border: 1px solid #DCD3C1; border-radius: 18px; padding: 28px;">
+        <div style="display: inline-block; background-color: #002018; color: #E0A82E; font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; padding: 5px 12px; border-radius: 999px; margin-bottom: 14px;">
+          Welcome to Proxim
+        </div>
+        <h2 style="color: #002018; margin: 0 0 10px 0; font-size: 22px;">Your passkey &amp; self-custodial wallet are live!</h2>
+        <p style="font-size: 15px; line-height: 1.6; color: #3A352C; margin: 0 0 14px 0;">
+          ${greeting}
+        </p>
+        <p style="font-size: 15px; line-height: 1.6; color: #3A352C; margin: 0 0 18px 0;">
+          Thanks for joining <b>Proxim</b>. Your account is secured with your device passkey and 4-digit transaction PIN. Here is a quick look at what you can do right from the app:
+        </p>
+        <div style="background-color: #FAF7F0; border: 1px solid #E6DEC9; border-radius: 14px; padding: 18px; margin: 18px 0;">
+          <p style="margin: 0 0 10px 0; font-weight: 700; color: #002018; font-size: 14px;">What you can do on Proxim:</p>
+          <ul style="margin: 0; padding-left: 20px; line-height: 1.7; color: #3A352C; font-size: 14px;">
+            <li><b>💰 Fund Instantly:</b> Add money via Nigerian bank transfer (NGN), card, or crypto deposits across multiple chains.</li>
+            <li><b>💸 Send Locally &amp; Globally:</b> Pay any Nigerian bank account in seconds, send free to Proxim <code>@usernames</code> or gift links, and transfer internationally across 27+ currencies.</li>
+            <li><b>🏦 Global Bank Accounts &amp; Virtual USD Cards:</b> Complete quick ID verification in <b>Profile → Verify ID</b> to unlock named USD, GBP, EUR, CAD, AED, GHS, KES, and TZS accounts plus Virtual USD Cards for online spending.</li>
+            <li><b>📈 Dollar Savings, FX Swap &amp; Bills:</b> Earn yield on idle dollars with Auto-Earn, swap USDC ↔ EURC, and pay airtime, data, electricity, and cable TV bills.</li>
+            <li><b>💼 Business Mode:</b> Create a separate Business Account for client invoices, payment links, expense tracking, and multi-currency payroll.</li>
+          </ul>
+        </div>
+        <p style="font-size: 14px; line-height: 1.6; color: #5C5546; margin: 0 0 16px 0;">
+          <b>Quick tip:</b> Head to <b>Profile</b> in the app to claim your personal <code>@username</code> so friends and clients can pay you for free.
+        </p>
+        <p style="font-size: 13px; line-height: 1.5; color: #776F5F; margin: 0;">
+          Need help anytime? Reply to this email, contact <a href="mailto:igboze@proximfi.xyz" style="color: #002018; font-weight: 600;">igboze@proximfi.xyz</a>, or chat with us on Telegram at <a href="https://t.me/payeetbot" style="color: #002018; font-weight: 600;">@payeetbot</a>.
+        </p>
+        <hr style="border: none; border-top: 1px solid #E6DEC9; margin: 22px 0;" />
+        <p style="font-size: 12px; color: #8A8170; margin: 0;">
+          Proxim Platform · Self-Custodial Global Banking &amp; Payments
+        </p>
+      </div>
+    </div>
+  `;
+  const text = [
+    greeting,
+    "",
+    "Welcome to Proxim! Your passkey and self-custodial wallet are ready.",
+    "",
+    "Here is what you can do on the app:",
+    "- Fund Instantly: Deposit via Nigerian bank transfer (NGN), card, or crypto.",
+    "- Send Locally & Globally: Pay Nigerian banks in seconds, send free to @usernames or gift links, and send across 27+ currencies.",
+    "- Global Bank Accounts & Virtual USD Cards: Verify your ID in Profile -> Verify ID to unlock named USD, GBP, EUR, CAD, AED, GHS, KES, and TZS accounts and Virtual USD Cards.",
+    "- Dollar Savings, FX Swap & Bills: Earn yield with Auto-Earn, swap USDC <-> EURC, and pay airtime, data, electricity, and cable bills.",
+    "- Business Mode: Create a dedicated Business Account for invoices, payment links, expenses, and global payroll.",
+    "",
+    "Quick tip: Visit Profile in the app to claim your @username so people can pay you for free.",
+    "Need help? Email igboze@proximfi.xyz or reach us on Telegram at https://t.me/payeetbot.",
+  ].join("\n");
+
+  return sendTransactionalEmail({ to, subject, html, text });
+}
+
 module.exports = {
   sendTransactionalEmail,
   sendKycStatusEmail,
+  sendWelcomeEmail,
 };
