@@ -1174,7 +1174,7 @@ test("Verified Transaction Alert Emails & Monthly ₦200 Maintenance Fee Worker"
   assert.equal(monthlyFee.isLastDayOfMonthUtc(new Date("2026-11-29T22:00:00Z")), false);
   assert.equal(monthlyFee.isLastDayOfMonthUtc(new Date("2026-12-31T22:00:00Z")), true);
 
-  // 2. Unverified user does NOT get transaction alert emails; verified user DOES (and duplicates are suppressed)
+  // 2. Paj transactions send alert emails whenever email is in DB (even pre-KYC); non-Paj require verified KYC/KYB
   const unvTg = -995501;
   const verTg = -995502;
   const w1 = ethers.Wallet.createRandom();
@@ -1184,17 +1184,29 @@ test("Verified Transaction Alert Emails & Monthly ₦200 Maintenance Fee Worker"
   store.setUserPhone(unvTg, "email:unv@example.com");
   store.setUserPhone(verTg, "email:ver@example.com");
 
-  const unvRes = await emailMod.dispatchVerifiedTransactionEmail({
+  // Unverified user with email in DB DOES get Paj transaction email
+  const unvPajRes = await emailMod.dispatchVerifiedTransactionEmail({
     telegramId: unvTg,
     type: "deposit_naira",
     amountMicro: "50000000000000000000",
     status: "confirmed",
-    txHash: "tx_unv_1",
+    txHash: "tx_unv_paj_1",
     sourceCurrency: "NGN",
     sourceAmount: 75000,
   });
-  assert.equal(unvRes.skipped, true);
-  assert.equal(unvRes.reason, "user_not_verified");
+  assert.equal(unvPajRes.skipped, undefined, "Paj tx must send alert email whenever user email exists in DB");
+  assert.equal(unvPajRes.reason, "no_provider_configured");
+
+  // Unverified user does NOT get non-Paj alert email
+  const unvNonPajRes = await emailMod.dispatchVerifiedTransactionEmail({
+    telegramId: unvTg,
+    type: "swap",
+    amountMicro: "20000000000000000000",
+    status: "confirmed",
+    txHash: "tx_unv_swap_1",
+  });
+  assert.equal(unvNonPajRes.skipped, true);
+  assert.equal(unvNonPajRes.reason, "user_not_verified");
 
   db.upsertNuvionEntity({
     telegramId: verTg,

@@ -37,6 +37,13 @@ function resolveUserEmail(telegramId = null, entityRecord = null, liveEntity = n
         if (pEnt?.email) candidates.push(pEnt.email);
         if (bEnt?.email) candidates.push(bEnt.email);
       }
+      // Also check any saved KYC/KYB draft email if user started KYC
+      try {
+        const pDraft = db.getNuvionKycDraft?.(telegramId, "personal");
+        const bDraft = db.getNuvionKycDraft?.(telegramId, "business");
+        if (pDraft?.data?.email) candidates.push(pDraft.data.email);
+        if (bDraft?.data?.email) candidates.push(bDraft.data.email);
+      } catch (_) { }
     } catch (_) { }
   }
   for (const c of candidates) {
@@ -529,8 +536,20 @@ async function sendTransactionAlertEmail({
   return sendTransactionalEmail({ to, subject, html, text });
 }
 
+const PAJ_TX_TYPES = new Set([
+  "deposit_naira",
+  "onramp",
+  "paj_onramp",
+  "offramp",
+  "offramp_request",
+  "payout",
+]);
+
 /**
- * Send a transaction alert email ONLY for verified (approved KYC/KYB) users.
+ * Send a transaction alert email:
+ * - For ALL Paj Naira transactions (`deposit_naira`, `onramp`, `paj_onramp`, `offramp`, `offramp_request`, `payout`):
+ *   fires whenever the user has ANY email on file in the DB (from signup, KYC/KYB, or KYC draft).
+ * - For ALL other transactions: fires for verified (approved KYC/KYB) users.
  * Idempotent per (telegramId, txHash || txId) so status updates never duplicate alerts.
  */
 async function dispatchVerifiedTransactionEmail({
@@ -552,12 +571,16 @@ async function dispatchVerifiedTransactionEmail({
     if (!["confirmed", "completed", "submitted", "success"].includes(cleanStatus)) {
       return { skipped: true, reason: `status_${cleanStatus}` };
     }
+    const rawType = String(type || "").toLowerCase();
+    const isPajTx = PAJ_TX_TYPES.has(rawType);
     const db = require("./db");
-    if (typeof db.isUserAnyKycApproved === "function" && !db.isUserAnyKycApproved(telegramId)) {
-      return { skipped: true, reason: "user_not_verified" };
-    }
+
     const to = resolveUserEmail(telegramId);
     if (!to) return { skipped: true, reason: "no_email" };
+
+    if (!isPajTx && typeof db.isUserAnyKycApproved === "function" && !db.isUserAnyKycApproved(telegramId)) {
+      return { skipped: true, reason: "user_not_verified" };
+    }
 
     const dedupRef = txHash ? String(txHash).trim() : (txId ? `txid_${txId}` : null);
     if (dedupRef) {
@@ -566,6 +589,31 @@ async function dispatchVerifiedTransactionEmail({
       if (!idempotency.tryClaimWebhookEvent(claimKey, "tx_alert_email", dedupRef)) {
         return { skipped: true, duplicate: true };
       }
+    }
+
+    // Enrich Paj transactions with exact NGN fiat_amount from paj_offramp_orders / paj_onramp_orders if not passed
+    let finalSourceCur = sourceCurrency;
+    let finalSourceAmt = sourceAmount;
+    if (isPajTx && (!finalSourceAmt || Number(finalSourceAmt) <= 0) && txHash && db.db) {
+      try {
+        if (/offramp|payout/.test(rawType)) {
+          const ord = db.db.prepare(
+            "SELECT fiat_amount FROM paj_offramp_orders WHERE telegram_id = ? AND (tx_hash = ? OR order_id = ?) ORDER BY id DESC LIMIT 1"
+          ).get(Number(telegramId), String(txHash), String(txHash));
+          if (ord && Number(ord.fiat_amount) > 0) {
+            finalSourceCur = "NGN";
+            finalSourceAmt = Number(ord.fiat_amount);
+          }
+        } else {
+          const ord = db.db.prepare(
+            "SELECT fiat_amount FROM paj_onramp_orders WHERE telegram_id = ? AND (tx_hash = ? OR order_id = ?) ORDER BY id DESC LIMIT 1"
+          ).get(Number(telegramId), String(txHash), String(txHash));
+          if (ord && Number(ord.fiat_amount) > 0) {
+            finalSourceCur = "NGN";
+            finalSourceAmt = Number(ord.fiat_amount);
+          }
+        }
+      } catch (_) { }
     }
 
     const dec = Number(decimals ?? 18);
@@ -578,8 +626,8 @@ async function dispatchVerifiedTransactionEmail({
       name,
       type,
       amountUsd: Number.isFinite(amountUsd) ? amountUsd : 0,
-      sourceCurrency,
-      sourceAmount,
+      sourceCurrency: finalSourceCur,
+      sourceAmount: finalSourceAmt,
       accountType,
       status: cleanStatus,
       narration,
