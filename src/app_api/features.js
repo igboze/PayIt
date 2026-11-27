@@ -824,7 +824,7 @@ async function getNgnDepositStatus(auth, orderId) {
               const solData = mc.deriveSolanaFromEvmKey(rawKey);
               let solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
               if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
-                try { solFeeRecipient = mc.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress; } catch (_) {}
+                try { solFeeRecipient = mc.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress; } catch (_) { }
               }
               if (!solFeeRecipient) solFeeRecipient = "4BPnUzFDibVcWQ5zzixGodRUHwqDxHYpUPdPYus3Bn56";
               if (mc.isSolanaAddress(solFeeRecipient) && solData.solanaAddress !== solFeeRecipient) {
@@ -1897,172 +1897,26 @@ async function deactivateBusinessPaymentLink(auth, rawLinkId) {
 // ─── 14. The assistant (read-only + action proposals, never moves money) ──────
 
 async function assistantChat(auth, body) {
-  const message = reqStr(body, "message", { max: 1000 });
-  const accountType = resolveAccountType(auth, body?.accountType);
-  const router = dep("intentRouter");
-  const classified = await router.classifyIntent(message, auth.telegramId, {
-    address: getStrictAccountArcAddress(auth.user, accountType),
-    active_context: accountType,
-  });
-
-  const intent = classified?.intent || "unknown";
-  const params = classified?.params || {};
-  const missingQuestion = typeof router.getMissingQuestion === "function" ? router.getMissingQuestion(classified) : null;
-  const confirmationText = typeof router.buildConfirmationText === "function"
-    ? router.buildConfirmationText(classified, params.recipients || [])
-    : null;
-
-  let reply = classified?.raw_summary || "I can help check balances, contacts, bills, savings, invoices, or prepare a payment for your approval.";
-  let data = null;
-  let suggestedAction = null;
-
-  // Read-only intents can be answered directly
-  if (intent === "balance") {
-    try {
-      const u = await dep("chains").getUnifiedBalance(auth.user, accountType, { strictBusiness: accountType === "business" });
-      data = { accountType, totalUsdc: u.total, arc: u.arc, base: u.base || { usdc: 0 }, gateway: u.gateway || { usdc: 0 }, solana: u.solana, pendingBridgeUsdc: u.pendingNear };
-      reply = `Your ${accountType} balance is $${Number(u.total || 0).toFixed(2)}.`;
-    } catch (_) {
-      reply = "Could not load your live balance right now.";
-    }
-  } else if (intent === "history") {
-    const rows = dep("db").getTransactions(auth.telegramId, 5, accountType);
-    data = { accountType, count: rows.length, transactions: rows.map((t) => ({ id: t.id, type: t.type, status: t.status, createdAt: t.created_at })) };
-    reply = rows.length ? `Found ${rows.length} recent transaction${rows.length === 1 ? "" : "s"}.` : "You have no transactions yet.";
-  } else if (intent === "list_payees") {
-    const pb = dep("payeeBook");
-    if (typeof pb.initPayeeTable === "function") pb.initPayeeTable();
-    const rows = pb.getAllPayees(auth.telegramId);
-    data = { contacts: rows.map(formatContact) };
-    reply = rows.length ? `You have ${rows.length} saved contact${rows.length === 1 ? "" : "s"}.` : "You have no saved contacts yet.";
-  } else if (intent === "invoice_list") {
-    const rows = dep("bizDb").getBizInvoices(auth.telegramId, 10);
-    data = { invoices: rows.map(formatBizInvoice) };
-    reply = rows.length ? `You have ${rows.length} business invoice${rows.length === 1 ? "" : "s"}.` : "You have no invoices yet.";
-  } else if (intent === "savings_view") {
-    const open = dep("db").getOpenYieldPosition(auth.telegramId, accountType);
-    const accrued = open && typeof dep("savings").calcAccruedYield === "function" ? Number(dep("savings").calcAccruedYield(open) || 0) : 0;
-    data = open ? { principalUsdc: Number(open.amount_usdc || 0), accruedYieldUsdc: accrued, apy: Number(open.apy || 0) } : null;
-    reply = open
-      ? `You have $${Number(open.amount_usdc || 0).toFixed(2)} in savings (+$${accrued.toFixed(4)} earned).`
-      : "You don't have an active savings deposit yet.";
-  } else if (intent === "referral") {
-    const points = dep("db").getPointsBalance(auth.telegramId);
-    const code = auth.user.referral_code || `ref${auth.telegramId}`;
-    data = { pointsBalance: points, referralCode: code };
-    reply = `You have ${points} reward points. Share code ${code} to earn more.`;
-  } else if (intent === "cash_flow") {
-    const inc = Number(dep("bizDb").getMonthIncome(auth.telegramId) || 0);
-    const exp = Number(dep("bizDb").getMonthExpenses(auth.telegramId) || 0);
-    data = { monthIncomeUsd: inc, monthExpensesUsd: exp, netCashFlowUsd: Number((inc - exp).toFixed(2)) };
-    reply = `This month: $${inc.toFixed(2)} in, $${exp.toFixed(2)} out (net $${(inc - exp).toFixed(2)}).`;
-  } else if (intent === "help") {
-    reply = "Ask me to check your balance, view recent transactions, list contacts or invoices, save to yield, cash out to Naira, or send USDC to a contact or wallet.";
-  }
-
-  // Actionable money intents ONLY produce a suggestedAction for the passkey + PIN approval flow
-  let r0 = params?.recipients?.[0] || null;
-  if (r0 && r0.name_or_address && !r0.wallet_address && !r0.account_number) {
-    try {
-      const pb = dep("payeeBook");
-      if (typeof pb.initPayeeTable === "function") pb.initPayeeTable();
-      const matched = pb.resolvePayee(auth.telegramId, r0.name_or_address);
-      if (matched && !Array.isArray(matched)) {
-        r0 = {
-          ...r0,
-          name_or_address: matched.name || r0.name_or_address,
-          wallet_address: matched.wallet_address || null,
-          bank_name: r0.bank_name || matched.bank_name || null,
-          account_number: r0.account_number || matched.account_number || null,
-          account_name: r0.account_name || matched.account_name || null,
-        };
-      }
-    } catch (_) { }
-  }
-  if (intent === "transfer" && r0 && Number(r0.amount) > 0) {
-    const addr = r0.wallet_address || (/^0x[0-9a-fA-F]{40}$/.test(String(r0.name_or_address || "")) ? r0.name_or_address : null);
-    if (addr) {
-      suggestedAction = {
-        type: "transfer.wallet",
-        payload: { accountType, toAddress: addr.toLowerCase(), amountUsdc: Number(r0.amount), narration: r0.description || "" },
-      };
-      reply = `Ready to send $${Number(r0.amount).toFixed(2)} to ${r0.name_or_address || addr}. Review and approve with your passkey and PIN.`;
-    } else if (r0.name_or_address) {
-      const userMatch = dep("actions").findRecipientUser(r0.name_or_address);
-      if (userMatch && userMatch.deposit_address) {
-        suggestedAction = {
-          type: "transfer.user",
-          payload: { accountType, recipient: r0.name_or_address, amountUsdc: Number(r0.amount), narration: r0.description || "" },
-        };
-        reply = `Ready to send $${Number(r0.amount).toFixed(2)} to ${userMatch.username ? `@${userMatch.username}` : "Proxim user"}. Review and approve with your passkey and PIN.`;
-      }
-    }
-  } else if (intent === "offramp" && r0 && Number(r0.amount) > 0 && r0.account_number && r0.bank_name) {
-    let bankCode = null;
-    try {
-      const b = await dep("bankResolver").resolveBankCode(r0.bank_name);
-      bankCode = b?.bankCode || null;
-    } catch (_) { }
-    if (bankCode && (!r0.currency || String(r0.currency).toUpperCase() === "USDC" || String(r0.currency).toUpperCase() === "USD")) {
-      suggestedAction = {
-        type: "payout.ngn",
-        payload: {
-          accountType,
-          amountUsdc: Number(r0.amount),
-          bankCode,
-          accountNumber: r0.account_number,
-          accountName: r0.account_name || "",
-          narration: r0.narration || r0.description || "",
-        },
-      };
-      reply = `Ready to send $${Number(r0.amount).toFixed(2)} to ${r0.bank_name} ${r0.account_number}. Review and approve with your passkey and PIN.`;
-    }
-  } else if (intent === "savings_deposit" && r0 && Number(r0.amount) > 0) {
-    suggestedAction = {
-      type: "savings.deposit",
-      payload: { accountType, amountUsdc: Number(r0.amount) },
-    };
-    reply = `Ready to deposit $${Number(r0.amount).toFixed(2)} into savings. Approve with your passkey and PIN.`;
-  } else if (intent === "savings_withdraw") {
-    suggestedAction = { type: "savings.withdraw", payload: { accountType } };
-    reply = "Ready to withdraw your savings back to your balance. Approve with your passkey and PIN.";
-  } else if (intent === "scheduled" && r0 && Number(r0.amount) > 0 && params?.schedule?.frequency) {
-    const addr = r0.wallet_address || (/^0x[0-9a-fA-F]{40}$/.test(String(r0.name_or_address || "")) ? r0.name_or_address : null);
-    if (addr && /^(daily|weekly|monthly)$/.test(String(params.schedule.frequency).toLowerCase())) {
-      suggestedAction = {
-        type: "schedule.create",
-        payload: {
-          accountType,
-          kind: "transfer.wallet",
-          toAddress: addr.toLowerCase(),
-          amountUsdc: Number(r0.amount),
-          frequency: String(params.schedule.frequency).toLowerCase(),
-          day: params.schedule.day || undefined,
-          time: params.schedule.time || "09:00",
-        },
-      };
-      reply = "Ready to set up your recurring payment. Approve with your passkey and PIN.";
-    }
-  }
-
-  if (missingQuestion && !suggestedAction) {
-    reply = missingQuestion;
-  }
-
-  return {
-    status: 200,
-    data: {
-      intent,
-      confidence: classified?.confidence || "low",
-      summary: classified?.raw_summary || null,
-      reply,
-      missingQuestion,
-      confirmationText,
-      suggestedAction,
-      params,
-      data,
+  const assistant = require("./assistant");
+  return assistant.handleAssistantChat(auth, body, {
+    db: dep("db"),
+    chains: dep("chains"),
+    savings: dep("savings"),
+    payeeBook: dep("payeeBook"),
+    bizDb: dep("bizDb"),
+    intentRouter: dep("intentRouter"),
+    actions: dep("actions"),
+    bankResolver: dep("bankResolver"),
+    fraudGuard: dep("fraudGuard") || require("../fraud_guard"),
+    aiProvider: dep("aiProvider") || require("../../agent/ai_provider"),
+    helpers: {
+      reqStr,
+      resolveAccountType,
+      getStrictAccountArcAddress,
+      formatContact,
+      formatBizInvoice,
     },
-  };
+  });
 }
 
 // ─── 15. Statement CSV export ─────────────────────────────────────────────────

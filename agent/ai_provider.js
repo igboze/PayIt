@@ -38,7 +38,10 @@ async function callGroq(systemPrompt, userMessage) {
     apiKey: process.env.GROQ_API_KEY,
     baseURL: "https://api.groq.com/openai/v1",
   });
-  const model = process.env.GROQ_MODEL || "llama3-70b-8192";
+  let model = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+  if (model === "llama3-70b-8192" || model === "llama3-8b-8192") {
+    model = "llama-3.3-70b-versatile";
+  }
 
   const response = await client.chat.completions.create({
     model,
@@ -64,9 +67,9 @@ async function callOpenAI(systemPrompt, userMessage) {
     clientOptions.baseURL = process.env.OPENAI_BASE_URL;
   }
   const client = new OpenAI(clientOptions);
-  let model  = process.env.OPENAI_MODEL || (process.env.OPENAI_BASE_URL ? "meta/llama-3.1-70b-instruct" : "gpt-4o-mini");
-  if (model === "nvidia/llama-3.1-70b-instruct") {
-    model = "meta/llama-3.1-70b-instruct";
+  let model = process.env.OPENAI_MODEL || (process.env.OPENAI_BASE_URL ? "meta/llama-3.3-70b-instruct" : "gpt-4o-mini");
+  if (model === "nvidia/llama-3.1-70b-instruct" || model === "meta/llama-3.1-70b-instruct") {
+    model = "meta/llama-3.3-70b-instruct";
   }
 
   const response = await client.chat.completions.create({
@@ -217,6 +220,14 @@ function runHeuristicFallback(systemPrompt, userMessage) {
   return {};
 }
 
+function getConfiguredProviders() {
+  const list = [];
+  if (isSet(process.env.OPENAI_API_KEY)) list.push("openai");
+  if (isSet(process.env.GROQ_API_KEY)) list.push("groq");
+  if (isSet(process.env.GEMINI_API_KEY)) list.push("gemini");
+  return list;
+}
+
 /**
  * @param {string} systemPrompt - instructions + desired JSON shape
  * @param {string} userMessage  - the actual user input to parse
@@ -227,19 +238,107 @@ async function getJSONCompletion(systemPrompt, userMessage) {
     return runHeuristicFallback(systemPrompt, userMessage);
   }
 
-  const provider = getActiveProvider();
-  if (!provider) {
+  const providers = getConfiguredProviders();
+  if (!providers.length) {
     return runHeuristicFallback(systemPrompt, userMessage);
   }
 
-  try {
-    if (provider === "groq") return await callGroq(systemPrompt, userMessage);
-    if (provider === "openai") return await callOpenAI(systemPrompt, userMessage);
-    if (provider === "gemini") return await callGemini(systemPrompt, userMessage);
-  } catch (err) {
-    console.warn(`[ai_provider] Remote ${provider} call failed (${err.message}); falling back to local heuristic parser.`);
-    return runHeuristicFallback(systemPrompt, userMessage);
+  for (const provider of providers) {
+    try {
+      if (provider === "groq") return await callGroq(systemPrompt, userMessage);
+      if (provider === "openai") return await callOpenAI(systemPrompt, userMessage);
+      if (provider === "gemini") return await callGemini(systemPrompt, userMessage);
+    } catch (err) {
+      console.warn(`[ai_provider] Remote ${provider} call failed (${err.message}); trying next provider.`);
+    }
   }
+  return runHeuristicFallback(systemPrompt, userMessage);
 }
 
-module.exports = { getJSONCompletion, getActiveProvider };
+async function callGroqText(systemPrompt, messages, { maxTokens = 450, temperature = 0.25 } = {}) {
+  const OpenAI = require("openai");
+  const client = new OpenAI({
+    apiKey: process.env.GROQ_API_KEY,
+    baseURL: "https://api.groq.com/openai/v1",
+  });
+  let model = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+  if (model === "llama3-70b-8192" || model === "llama3-8b-8192") {
+    model = "llama-3.3-70b-versatile";
+  }
+  const response = await client.chat.completions.create({
+    model,
+    max_tokens: maxTokens,
+    temperature,
+    messages: [{ role: "system", content: systemPrompt }, ...messages],
+  });
+  return String(response.choices?.[0]?.message?.content || "").trim();
+}
+
+async function callOpenAIText(systemPrompt, messages, { maxTokens = 450, temperature = 0.25 } = {}) {
+  const OpenAI = require("openai");
+  const clientOptions = { apiKey: process.env.OPENAI_API_KEY };
+  if (process.env.OPENAI_BASE_URL) {
+    clientOptions.baseURL = process.env.OPENAI_BASE_URL;
+  }
+  const client = new OpenAI(clientOptions);
+  let model = process.env.OPENAI_MODEL || (process.env.OPENAI_BASE_URL ? "meta/llama-3.3-70b-instruct" : "gpt-4o-mini");
+  if (model === "nvidia/llama-3.1-70b-instruct" || model === "meta/llama-3.1-70b-instruct") {
+    model = "meta/llama-3.3-70b-instruct";
+  }
+  const response = await client.chat.completions.create({
+    model,
+    max_tokens: maxTokens,
+    temperature,
+    messages: [{ role: "system", content: systemPrompt }, ...messages],
+  });
+  return String(response.choices?.[0]?.message?.content || "").trim();
+}
+
+async function callGeminiText(systemPrompt, messages, { maxTokens = 450, temperature = 0.25 } = {}) {
+  const { GoogleGenerativeAI } = require("@google/generative-ai");
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  const modelName = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+  const model = genAI.getGenerativeModel({
+    model: modelName,
+    generationConfig: { maxOutputTokens: maxTokens, temperature },
+  });
+  const transcript = messages
+    .map((m) => `${m.role === "assistant" ? "Assistant" : "User"}: ${m.content}`)
+    .join("\n\n");
+  const fullPrompt = `${systemPrompt}\n\n${transcript}\n\nAssistant:`;
+  const result = await model.generateContent(fullPrompt);
+  return String(result.response?.text?.() || "").trim();
+}
+
+/**
+ * Conversational text completion for the Proxim Assistant.
+ * Cascades across all configured providers (openai -> groq -> gemini); returns null if all fail.
+ */
+async function getTextCompletion(systemPrompt, messages, options = {}) {
+  if (process.env.USE_MOCK_AI === "1") return null;
+  const providers = getConfiguredProviders();
+  if (!providers.length) return null;
+
+  const cleanMsgs = (Array.isArray(messages) ? messages : [{ role: "user", content: String(messages || "") }])
+    .filter((m) => m && m.content)
+    .map((m) => ({
+      role: m.role === "assistant" ? "assistant" : "user",
+      content: String(m.content).slice(0, 1500),
+    }));
+  if (!cleanMsgs.length) return null;
+
+  for (const provider of providers) {
+    try {
+      let text = null;
+      if (provider === "groq") text = await callGroqText(systemPrompt, cleanMsgs, options);
+      else if (provider === "openai") text = await callOpenAIText(systemPrompt, cleanMsgs, options);
+      else if (provider === "gemini") text = await callGeminiText(systemPrompt, cleanMsgs, options);
+      if (text) return text;
+    } catch (err) {
+      console.warn(`[ai_provider:text] Remote ${provider} call failed (${err.message}); trying next provider.`);
+    }
+  }
+  return null;
+}
+
+module.exports = { getJSONCompletion, getTextCompletion, getActiveProvider, getConfiguredProviders };

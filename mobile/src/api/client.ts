@@ -808,10 +808,18 @@ export const api = {
   },
 
   // Assistant
-  assistantChat(message: string, accountType?: AccountType) {
+  assistantChat(
+    message: string,
+    accountType?: AccountType,
+    history?: Array<{ role: "user" | "assistant"; text: string }>
+  ) {
     return request<AssistantResponse>("/assistant", {
       method: "POST",
-      body: { message, ...(accountType ? { accountType } : {}) },
+      body: {
+        message,
+        ...(accountType ? { accountType } : {}),
+        ...(history && history.length ? { history: history.slice(-6) } : {}),
+      },
     });
   },
 };
