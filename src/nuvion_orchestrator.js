@@ -7,6 +7,7 @@
 //   -> stablecoin-transfer on BASE_MAINNET straight to User's 0x Wallet -> HD Receipt PNG!
 
 const crypto = require("node:crypto");
+const fs = require("node:fs");
 const nuvion = require("./nuvion");
 const nuvionWebhooks = require("./nuvion_webhooks");
 const db = require("./db");
@@ -752,7 +753,7 @@ async function handleInboundFiatDeposit({ confirmed, entityRecord, bot = null })
     const caption = captionLines.join("\n");
 
     const telegram = getBotTelegram(bot);
-    if (telegram && entity.telegram_id) {
+    if (telegram && entity.telegram_id && Number(entity.telegram_id) > 0) {
       let receiptPath = null;
       try {
         receiptPath = await generateReceiptPNG({
@@ -760,24 +761,27 @@ async function handleInboundFiatDeposit({ confirmed, entityRecord, bot = null })
           senderName: currency === "NGN" ? "Nigerian Bank Transfer" : `${currency} Bank Transfer`,
           recipientName: entity.legal_name || acctLabel,
           amountUsdc: currency === "USD" ? netFiatMajor : 0,
+          displayCurrency: currency === "NGN" ? "NGN" : "USD",
           fiatAmountDisplay: fiatStr,
-          status: "CONFIRMED",
-          date: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
-          chain: `${currency} Balance`,
+          type: "Deposit",
+          timestamp: new Date().toISOString(),
+          status: "Confirmed",
           txHash: confirmed.id,
-          type: "deposit",
           narration: confirmed.narration || `Held in ${currency} · 0% deposit fee`,
         });
       } catch (_) { }
       try {
-        if (receiptPath && fs.existsSync(receiptPath)) {
+        if (receiptPath && fs.existsSync(receiptPath) && typeof telegram.sendPhoto === "function") {
           await telegram.sendPhoto(entity.telegram_id, { source: receiptPath }, { caption, parse_mode: "HTML" });
           fs.unlink(receiptPath, () => { });
         } else {
           await telegram.sendMessage(entity.telegram_id, caption, { parse_mode: "HTML" });
         }
-      } catch (_) { }
-    } else if (entity.telegram_id) {
+      } catch (_) {
+        await telegram.sendMessage(entity.telegram_id, caption, { parse_mode: "HTML" }).catch(() => { });
+      }
+    }
+    if (entity.telegram_id) {
       try {
         await require("./notify").notify(entity.telegram_id, {
           title: `${fiatStr} received`,
@@ -932,12 +936,16 @@ async function releaseHeldFiatForAutoSave({ user, accountType = "personal", bot 
     }
   }
 
-  if (releases.length > 0) {
+  if (releases.length > 0 && process.env.NODE_ENV !== "test") {
     try {
       const evmSweeper = require("./evm_deposit_sweeper");
       if (typeof evmSweeper?.sweepUserDeposits === "function") {
         setTimeout(() => {
-          evmSweeper.sweepUserDeposits(user, accountType).catch(() => { });
+          evmSweeper.sweepUserDeposits(user.telegram_id, bot, {
+            silent: true,
+            onlyChain: "BASE",
+            onlyAccountType: accountType || "personal",
+          }).catch(() => { });
         }, 12_000).unref?.();
       }
     } catch (_) { }

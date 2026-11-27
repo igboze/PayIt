@@ -979,7 +979,7 @@ bot.action("action_switch_account", async (ctx) => {
   const context = user.active_context || "personal";
   return ctx.reply("Switch active account:", accountToggle(context));
 });
-bot.action("main_menu", (ctx) => {
+bot.action("main_menu", async (ctx) => {
   ctx.answerCbQuery();
   const context = getContext(ctx.from?.id);
   const nuvionAllowed = nuvion.isUserAllowedNuvion(ctx.from?.id);
@@ -990,7 +990,26 @@ bot.action("main_menu", (ctx) => {
     : isApproved
       ? "\n\n🌍 Tap '🌍 Global & Cards' below for your USD/GBP/EUR accounts, 27-currency transfers & USD cards."
       : "\n\n🪪 Tap '🌍 Global & Cards' below (or /verify) to complete KYC/KYB verification and unlock USD/GBP/EUR bank accounts, Virtual USD Cards & international transfers.";
-  return ctx.reply(`What would you like to do?${hint}`, mainMenu(context));
+  await ctx.reply(`What would you like to do?${hint}`, mainMenu(context));
+
+  if (isApproved && ctx.from?.id) {
+    const u = db.getUser(ctx.from.id);
+    if (u && !u.deposit_settlement_chosen) {
+      await ctx.reply(
+        `💱 <b>New for Verified Accounts — Choose Your Deposit Settlement</b>\n` +
+        `──────────────────────────\n` +
+        `Would you like incoming verified bank deposits (NGN, GBP, EUR, USD, etc.) to stay in their <b>local currency</b> or <b>auto-convert to USD</b>?\n` +
+        `<i>0% deposit fee either way. You can change this anytime.</i>`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([
+            [btnSuccess("🏦 Hold in Local Currency (0% fee)", "choose_settlement_local")],
+            [btnPrimary("💵 Auto-Convert Deposits to USD", "choose_settlement_usdc")],
+          ]),
+        }
+      ).catch(() => {});
+    }
+  }
 });
 
 bot.hears("🌍 Global & Cards", async (ctx) => {
@@ -2050,6 +2069,32 @@ bot.action("confirm_auto_earn_on", async (ctx) => {
     { parse_mode: "HTML" }
   );
   return showYields(ctx);
+});
+
+bot.action("choose_settlement_local", async (ctx) => {
+  ctx.answerCbQuery("Saved: Hold Local Currencies");
+  const user = requireUser(ctx);
+  if (!user) return;
+  db.updateDepositSettlementMode(ctx.from.id, "local");
+  return ctx.reply(
+    "🏦 <b>Deposit Preference Saved: Hold Local Currencies</b>\n\n" +
+    "Incoming verified bank deposits (NGN, GBP, EUR, USD, etc.) will remain in their local currency with <b>0% deposit fee</b>.\n\n" +
+    "<i>You can switch to Auto-Convert to USD anytime from Save &amp; Earn or Mobile Profile.</i>",
+    { parse_mode: "HTML", ...Markup.inlineKeyboard([[btnDefault("🏠 Main Menu", "main_menu")]]) }
+  );
+});
+
+bot.action("choose_settlement_usdc", async (ctx) => {
+  ctx.answerCbQuery("Saved: Auto-Convert to USD");
+  const user = requireUser(ctx);
+  if (!user) return;
+  db.updateDepositSettlementMode(ctx.from.id, "usdc");
+  return ctx.reply(
+    "💵 <b>Deposit Preference Saved: Auto-Convert to USD</b>\n\n" +
+    "Incoming verified bank deposits will automatically convert and settle into USD (USDC) at the live FX rate with <b>0% deposit fee</b>.\n\n" +
+    "<i>You can switch back to Hold Local Currencies anytime from Save &amp; Earn or Mobile Profile.</i>",
+    { parse_mode: "HTML", ...Markup.inlineKeyboard([[btnDefault("🏠 Main Menu", "main_menu")]]) }
+  );
 });
 
 bot.action("toggle_deposit_settlement", async (ctx) => {
@@ -7144,32 +7189,71 @@ function formatVolRow(label, breakdown) {
 
 function renderVolumeDashboard() {
   const stats = db.getVolumeStats();
-  const { onramp, crypto, offramp, sends, savings, invoices, swaps, totalAll, users, topUsers } = stats;
+  const {
+    onramp,
+    nuvionDeposits,
+    crypto,
+    offramp,
+    globalPayouts,
+    cards,
+    airbills,
+    sends,
+    savings,
+    invoices,
+    swaps,
+    stocks,
+    byProvider,
+    byChannel,
+    totalAll,
+    users,
+    topUsers,
+  } = stats;
+
+  const fmtLine = (v) => `$${(v?.usdc || 0).toFixed(2)} (${v?.count || 0}tx)`;
 
   const topLine = topUsers && topUsers.length
-    ? topUsers.map((u, i) => `  ${i + 1}. ${u.username} · $${(u.usdc || 0).toFixed(2)} · ${u.tx_count}tx`).join("\n")
+    ? topUsers.map((u, i) => `  ${i + 1}. ${u.username} [${u.channel === "app" ? "📱" : "🤖"}] · $${(u.usdc || 0).toFixed(2)} · ${u.tx_count}tx`).join("\n")
     : "  No data yet";
 
   let message =
-    `📊 <b>Proxim Volume Dashboard</b>\n` +
+    `📊 <b>Proxim Unified Volume Dashboard</b>\n` +
+    `<i>Mobile App + Telegram Bot · Paj, Nuvion &amp; Airbills</i>\n` +
     `──────────────────────────\n` +
-    formatVolRow("🇳🇬 Naira Onramp", onramp) +
-    formatVolRow("🌐 Crypto Deposit", crypto) +
-    formatVolRow("💵 Cash Out (Offramp)", offramp) +
-    formatVolRow("📤 Sends & Auto-Pay", sends) +
-    formatVolRow("📈 Savings Deposits", savings);
+    `<b>📦 Total Platform Volume</b>\n` +
+    `  Today:    ${fmtLine(totalAll?.today)}\n` +
+    `  7 days:   ${fmtLine(totalAll?.week)}\n` +
+    `  30 days:  ${fmtLine(totalAll?.month)}\n` +
+    `  All-time: $${(totalAll?.usdc || 0).toFixed(2)} (${totalAll?.count || 0}tx)\n` +
+    `\n<b>📱 By Channel (All-Time / 24h)</b>\n` +
+    `  📱 Mobile App:   ${fmtLine(byChannel?.mobileApp?.allTime)} | 24h: ${fmtLine(byChannel?.mobileApp?.today)}\n` +
+    `  🤖 Telegram Bot: ${fmtLine(byChannel?.telegramBot?.allTime)} | 24h: ${fmtLine(byChannel?.telegramBot?.today)}\n` +
+    `\n<b>🏦 By Provider (All-Time / 24h)</b>\n` +
+    `  🇳🇬 Paj:      ${fmtLine(byProvider?.paj?.allTime)} | 24h: ${fmtLine(byProvider?.paj?.today)}\n` +
+    `  🌍 Nuvion:   ${fmtLine(byProvider?.nuvion?.allTime)} | 24h: ${fmtLine(byProvider?.nuvion?.today)}\n` +
+    `  💡 Airbills: ${fmtLine(byProvider?.airbills?.allTime)} | 24h: ${fmtLine(byProvider?.airbills?.today)}\n` +
+    `──────────────────────────` +
+    formatVolRow("🇳🇬 Naira & Paj Onramp", onramp) +
+    formatVolRow("🌍 Nuvion Global Deposits", nuvionDeposits) +
+    formatVolRow("🌐 Crypto Deposits", crypto) +
+    formatVolRow("💵 Cash Out (Paj & NIP)", offramp) +
+    formatVolRow("✈️ Nuvion Global Payouts", globalPayouts) +
+    formatVolRow("💳 Nuvion Virtual Cards", cards) +
+    formatVolRow("💡 Airbills & Utilities", airbills) +
+    formatVolRow("📤 Sends, P2P & Schedules", sends) +
+    formatVolRow("📈 Savings & Auto-Earn", savings);
 
   if (invoices && invoices.allTime && invoices.allTime.count > 0) {
     message += formatVolRow("🧾 Invoice Payments", invoices);
   }
   if (swaps && swaps.allTime && swaps.allTime.count > 0) {
-    message += formatVolRow("🔄 Currency Swaps", swaps);
+    message += formatVolRow("🔄 FX Swaps", swaps);
+  }
+  if (stocks && stocks.allTime && stocks.allTime.count > 0) {
+    message += formatVolRow("📊 US Stocks", stocks);
   }
 
   message +=
-    `\n\n<b>📦 Total Platform Volume</b>\n` +
-    `  All-time: $${(totalAll?.usdc || 0).toFixed(2)} (${totalAll?.count || 0} transactions)\n` +
-    `\n<b>👤 User Growth</b>\n` +
+    `\n\n<b>👤 User Growth (📱 ${users?.mobileTotal ?? 0} App · 🤖 ${users?.telegramTotal ?? 0} TG)</b>\n` +
     `  Today: +${users?.today ?? 0}  |  7d: +${users?.week ?? 0}  |  30d: +${users?.month ?? 0}  |  Total: ${users?.total ?? 0}\n` +
     `\n<b>🏆 Top 5 Users by Volume</b>\n` +
     topLine;
@@ -7214,7 +7298,10 @@ bot.action("admin_scan_volume", async (ctx) => {
     `• Backfilled paid invoices: ${res.backfilledInvoices}\n` +
     `• Backfilled completed payments: ${res.backfilledPayments}\n` +
     `• Backfilled savings positions: ${res.backfilledYield}\n` +
-    `• Backfilled onramp deposits: ${res.backfilledOnramp || 0}\n` +
+    `• Backfilled Paj orders: ${res.backfilledPaj || 0}\n` +
+    `• Backfilled Nuvion jobs: ${res.backfilledNuvion || 0}\n` +
+    `• Backfilled Airbills payments: ${res.backfilledAirbills || 0}\n` +
+    `• Backfilled onramp events: ${res.backfilledOnramp || 0}\n` +
     `• Deduplicated monitor sweeps: ${res.deduplicatedSweeps || 0}`,
     { parse_mode: "HTML" }
   );
@@ -7364,24 +7451,32 @@ bot.action("admin_volume_csv", async (ctx) => {
   if (!ADMIN_IDS.includes(String(ctx.from?.id))) return ctx.reply("Not authorised.");
 
   try {
-    // Raw per-day volume breakdown across all types with normalized amount scaling
+    // Raw per-day volume breakdown across all types, channels (Mobile App vs Telegram Bot), and providers (Paj, Nuvion, Airbills)
     const rows = db.db.prepare(`
       SELECT
         date(created_at)   AS day,
+        CASE WHEN telegram_id < 0 OR type IN ('transfer', 'p2p_send', 'p2p_escrow', 'scheduled_transfer', 'savings_deposit', 'stock_buy', 'stock_sell', 'swap')
+             THEN 'mobile_app' ELSE 'telegram_bot' END AS channel,
+        CASE
+          WHEN type LIKE 'bill_%' OR type IN ('airbills', 'airtime', 'data', 'electricity', 'cable') THEN 'airbills'
+          WHEN type IN ('deposit_fiat', 'deposit_crypto', 'withdraw_naira', 'payout_global', 'global_payout', 'nuvion_payout', 'card_load', 'card_spend') OR COALESCE(chain, '') = 'local_fiat' THEN 'nuvion'
+          WHEN type IN ('deposit_naira', 'onramp', 'paj_onramp', 'offramp', 'offramp_request', 'payout') THEN 'paj'
+          ELSE 'onchain_other'
+        END AS provider,
         type,
         COUNT(*)           AS tx_count,
         COALESCE(SUM(CASE WHEN decimals = 6 THEN CAST(amount_micro AS REAL) * 1e12 ELSE CAST(amount_micro AS REAL) END), 0) / 1e18 AS usdc_volume
       FROM transactions
-      WHERE status IN ('confirmed', 'submitted', 'success', 'completed')
-      GROUP BY day, type
-      ORDER BY day DESC, type
+      WHERE status IN ('confirmed', 'submitted', 'success', 'completed') AND type != 'p2p_receive'
+      GROUP BY day, channel, provider, type
+      ORDER BY day DESC, channel, provider, type
     `).all();
 
     if (!rows.length) return ctx.reply("No confirmed transactions to export.", Markup.inlineKeyboard([[Markup.button.callback("« Back", "admin_volume")]]));
 
     const csvLines = [
-      "date,type,tx_count,usdc_volume",
-      ...rows.map((r) => `${r.day},${r.type},${r.tx_count},${r.usdc_volume.toFixed(6)}`),
+      "date,channel,provider,type,tx_count,usdc_volume",
+      ...rows.map((r) => `${r.day},${r.channel},${r.provider},${r.type},${r.tx_count},${r.usdc_volume.toFixed(6)}`),
     ];
 
     const csv = csvLines.join("\n");

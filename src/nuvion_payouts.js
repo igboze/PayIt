@@ -1376,6 +1376,8 @@ async function handleOutboundPayoutCompleted({ confirmed, entityRecord, bot = nu
   if (job.state === "completed") return { handled: true, duplicate: true, jobId: job.id };
 
   const p = job.payload || {};
+  const isHeldFiat = p.fundingMode === "held_fiat";
+  const sourceCurrency = p.sourceCurrency || "USD";
   const targetCurrency = p.targetCurrency || job.currency || "USD";
   const targetMajor = p.dispatchedTargetMinor
     ? nuvion.fromNuvionMinor(p.dispatchedTargetMinor)
@@ -1384,22 +1386,31 @@ async function handleOutboundPayoutCompleted({ confirmed, entityRecord, bot = nu
   const isNgn = targetCurrency === "NGN";
 
   db.updateNuvionJob(job.id, { state: "completed" });
+  if (isHeldFiat) {
+    try { require("./nuvion_orchestrator").invalidateEntityFiatBalanceCache(job.entity_id); } catch (_) {}
+  }
 
-  // Record ledger transaction
+  // Record/confirm ledger transaction (update existing submitted row for held_fiat to avoid duplicates)
   try {
-    const txType = isNgn ? "withdraw_naira" : "payout_global";
-    const amountMicro = walletLib.parseToMicro(userTotalUsd.toFixed(6));
-    db.recordTransaction(
-      job.telegram_id,
-      txType,
-      String(amountMicro),
-      "confirmed",
-      confirmed.id || job.nuvion_transfer_id,
-      job.account_type || "personal",
-      18,
-      "base",
-      p.narration || `Payout to ${p.recipientName || targetCurrency}`
-    );
+    const txHashKey = confirmed.id || job.nuvion_transfer_id;
+    const updatedExisting = txHashKey
+      ? db.db.prepare("UPDATE transactions SET status = 'confirmed' WHERE telegram_id = ? AND tx_hash = ?").run(job.telegram_id, String(txHashKey))
+      : { changes: 0 };
+    if (!updatedExisting || updatedExisting.changes === 0) {
+      const txType = isNgn ? "withdraw_naira" : "payout_global";
+      const amountMicro = walletLib.parseToMicro(Math.max(0.01, userTotalUsd).toFixed(6));
+      db.recordTransaction(
+        job.telegram_id,
+        txType,
+        String(amountMicro),
+        "confirmed",
+        txHashKey,
+        job.account_type || "personal",
+        18,
+        isHeldFiat ? "local_fiat" : "base",
+        p.narration || `Payout to ${p.recipientName || targetCurrency}`
+      );
+    }
   } catch (txErr) {
     console.warn("[nuvion_payouts] recordTransaction note:", txErr.message);
   }
@@ -1492,6 +1503,54 @@ async function handleOutboundPayoutFailed({ confirmed, entityRecord, bot = null 
     db.updateNuvionJob(job.id, { state: "refund_pending", error_message: "missing_entity" });
     return { refunded: false, reason: "missing_entity" };
   }
+
+  // If this payout was funded directly from a user's held local-currency checking account,
+  // Nuvion automatically returns the local fiat straight back to that checking account (no USC Base refund needed).
+  if (job.payload?.fundingMode === "held_fiat") {
+    const p = job.payload || {};
+    const srcCode = p.sourceCurrency || job.currency || "NGN";
+    const principalMajor = nuvion.fromNuvionMinor(p.principalSourceMinor || job.amount_minor || 0);
+    const srcDisplay = corridors.formatCurrencyMajor(srcCode, principalMajor);
+    const dstDisplay = corridors.formatCurrencyMajor(p.targetCurrency || job.currency, p.targetAmountMajor || principalMajor);
+
+    db.updateNuvionJob(job.id, {
+      state: "refunded",
+      payload_json: {
+        ...p,
+        failureReason: confirmed.failure_reason || confirmed.status || "failed",
+        refundedToLocalFiat: true,
+      },
+    });
+    try { require("./nuvion_orchestrator").invalidateEntityFiatBalanceCache(entity.entity_id); } catch (_) {}
+    try {
+      const txHashKey = confirmed.id || job.nuvion_transfer_id;
+      if (txHashKey) {
+        db.db.prepare("UPDATE transactions SET status = 'failed' WHERE telegram_id = ? AND tx_hash = ?").run(job.telegram_id, String(txHashKey));
+      }
+    } catch (_) {}
+
+    const refundHtml =
+      `↩️ <b>Transfer Returned to Your ${escapeHtml(srcCode)} Balance</b>\n` +
+      `──────────────────────────\n` +
+      `Your transfer of <b>${dstDisplay}</b> to <b>${escapeHtml(p.recipientName || "recipient")}</b> could not be completed by the receiving bank.\n\n` +
+      `💰 <b>Restored:</b> ${srcDisplay} is back in your ${escapeHtml(srcCode)} balance.\n` +
+      `🔖 <b>Reference:</b> <code>${escapeHtml(confirmed.id || job.unique_reference)}</code>`;
+    const telegram = getBotTelegram(bot);
+    if (telegram && job.telegram_id && Number(job.telegram_id) > 0) {
+      await telegram.sendMessage(job.telegram_id, refundHtml, { parse_mode: "HTML" }).catch(() => {});
+    }
+    if (job.telegram_id) {
+      try {
+        await require("./notify").notify(job.telegram_id, {
+          title: `Transfer returned to ${srcCode} balance`,
+          html: refundHtml,
+          data: { type: "payout_refunded", currency: srcCode, reference: job.unique_reference },
+        });
+      } catch (_) {}
+    }
+    return { refunded: true, fundingMode: "held_fiat", sourceCurrency: srcCode, jobId: job.id };
+  }
+
   if (!entity.self_counterparty_id || !entity.self_base_payment_detail_id) {
     entity = await nuvionWebhooks.bootstrapApprovedEntity(entity);
   }

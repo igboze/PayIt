@@ -1037,6 +1037,67 @@ test("Local-Currency Hold, User Settlement Toggle, Auto-Save OFF Default, Tiered
     assert.equal(transferCalls[0].paymentType, "stablecoin-transfer");
     assert.equal(transferCalls[0].currency, "NGN");
     assert.equal(transferCalls[0].amountMinor, 50000_00);
+
+    // 7. Failed held_fiat payout restores local fiat cleanly without attempting a USC Base transfer
+    const failedJob = db.createNuvionJob({
+      entityId: entityRecord.entity_id,
+      telegramId: tg,
+      accountType: "personal",
+      jobType: "outbound_fiat_payout",
+      state: "dispatched",
+      currency: "NGN",
+      amountMinor: 10000_00,
+      marginMinor: 100_00,
+      uniqueReference: "prx-loc-fail-test-1",
+      nuvionTransferId: "tr_held_fail_1",
+      payload: {
+        fundingMode: "held_fiat",
+        sourceCurrency: "NGN",
+        targetCurrency: "NGN",
+        targetAmountMajor: 10000,
+        principalSourceMinor: 10000_00,
+        recipientName: "Ada",
+      },
+    });
+    const beforeFailTransfers = transferCalls.length;
+    const failRes = await payouts.handleOutboundPayoutFailed({
+      confirmed: { id: "tr_held_fail_1", unique_reference: "prx-loc-fail-test-1", status: "failed" },
+      entityRecord,
+    });
+    assert.equal(failRes.refunded, true);
+    assert.equal(failRes.fundingMode, "held_fiat");
+    assert.equal(transferCalls.length, beforeFailTransfers, "held_fiat failure must NOT dispatch USC Base refund");
+    assert.equal(db.getNuvionJobById(failedJob.id).state, "refunded");
+
+    // 8. deposit_settlement_chosen starts false (shows banner to old & new verified users) and flips to true on choice
+    const tgFresh = 994412;
+    const wFresh = ethers.Wallet.createRandom();
+    const freshUser = db.createUserWithWallet(tgFresh, "banner_tester", wFresh.address, wFresh.privateKey, "4927", null, null, null);
+    assert.equal(Boolean(freshUser.deposit_settlement_chosen), false);
+    db.updateDepositSettlementMode(tgFresh, "usdc");
+    assert.equal(db.getUser(tgFresh).deposit_settlement_mode, "usdc");
+    assert.equal(Boolean(db.getUser(tgFresh).deposit_settlement_chosen), true);
+
+    // 9. Admin Volume Stats captures Mobile App (-id) + Telegram Bot (+id) across Paj, Nuvion & Airbills
+    const mobileAppUid = -994413;
+    const wApp = ethers.Wallet.createRandom();
+    db.createUserWithWallet(mobileAppUid, "mobile_vol_user", wApp.address, wApp.privateKey, "4927", null, null, null);
+    const e18 = (n) => (BigInt(Math.round(n * 1e6)) * 1_000_000_000_000n).toString();
+    db.recordTransaction(mobileAppUid, "deposit_naira", e18(100), "confirmed", "vol_paj_on_1", "personal", 18, "solana", "Paj deposit");
+    db.recordTransaction(mobileAppUid, "deposit_fiat", e18(250), "confirmed", "vol_nuv_dep_1", "personal", 18, "local_fiat", "Nuvion GBP deposit");
+    db.recordTransaction(mobileAppUid, "payout_global", e18(80), "confirmed", "vol_nuv_out_1", "personal", 18, "local_fiat", "Nuvion GBP payout");
+    db.recordTransaction(mobileAppUid, "bill_airtime", e18(15), "confirmed", "vol_air_1", "personal", 18, "solana", "MTN Airtime");
+    db.recordTransaction(tgFresh, "bill_electricity", e18(40), "confirmed", "vol_air_2", "personal", 18, "solana", "EKEDC");
+    db.recordTransaction(mobileAppUid, "card_spend", e18(30), "confirmed", "vol_card_1", "personal", 18, "base", "Netflix");
+
+    const vol = db.getVolumeStats();
+    assert.ok(vol.byProvider.paj.allTime.usdc >= 100, "Admin volume must include Paj");
+    assert.ok(vol.byProvider.nuvion.allTime.usdc >= 360, "Admin volume must include Nuvion deposits, payouts & cards");
+    assert.ok(vol.byProvider.airbills.allTime.usdc >= 55, "Admin volume must include Airbills (mobile + Telegram)");
+    assert.ok(vol.byChannel.mobileApp.allTime.usdc >= 475, "Admin volume must capture Mobile App users");
+    assert.ok(vol.byChannel.telegramBot.allTime.usdc >= 40, "Admin volume must capture Telegram Bot users");
+    assert.ok(vol.airbills.allTime.count >= 2, "Airbills breakdown must include all bill_* types");
+    assert.ok(vol.cards.allTime.usdc >= 30, "Nuvion card spend must be tracked");
   } finally {
     nuvionWebhooks.bootstrapApprovedEntity = origBootstrap;
     nuvion.createFxQuote = origCreateFxQuote;

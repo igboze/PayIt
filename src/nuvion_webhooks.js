@@ -381,23 +381,31 @@ async function processNuvionEvent(payload, headers = {}, bot = null) {
       if (prevStatus !== "approved" && updatedRecord.telegram_id) {
         // Multi-channel dispatch: Telegram + Push Notification + In-App Inbox
         await notifyModule.notify(updatedRecord.telegram_id, {
-          title: "Tier-1 Verification Approved",
-          html: `🎉 <b>Tier-1 Verification Approved!</b>\nYour ${acctLabel} is now verified for Proxim Global Banking. Named accounts (USD, GBP, EUR) and USD Cards are now unlocked!`,
+          title: "Verification Approved — Choose Deposit Currency",
+          html: `🎉 <b>Your ${acctLabel} Is Now VERIFIED!</b>\nNamed accounts (USD, GBP, EUR, NGN & more) and Virtual USD Cards are now unlocked.\n\nOpen Proxim to choose whether incoming bank deposits stay in their <b>local currency</b> or <b>auto-convert to USD</b> (0% deposit fee either way).`,
           data: { type: "kyc_approved", entityId },
         }).catch(() => {});
 
-        if (telegram) {
+        if (telegram && Number(updatedRecord.telegram_id) > 0) {
           await telegram.sendMessage(
             updatedRecord.telegram_id,
-            `🎉 <b>Tier-1 Verification Approved!</b>\n` +
+            `🎉 <b>Your ${escapeHtml(acctLabel)} Is Now VERIFIED!</b>\n` +
             `──────────────────────────\n` +
-            `Your <b>${escapeHtml(acctLabel)}</b> is now verified for Proxim Global Banking.\n\n` +
             `You now have access to:\n` +
             `• 🌍 Named global bank accounts (USD, GBP, EUR, NGN &amp; more)\n` +
             `• 💳 Virtual &amp; Disposable USD Cards\n` +
             `• ✈️ International bank &amp; mobile money transfers\n\n` +
-            `<i>Type /global anytime to open Global Banking.</i>`,
-            { parse_mode: "HTML" }
+            `💱 <b>How should your incoming deposits settle?</b>\n` +
+            `Choose below (0% deposit fee either way — you can change this anytime):`,
+            {
+              parse_mode: "HTML",
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: "🏦 Hold in Local Currency (0% fee)", callback_data: "choose_settlement_local" }],
+                  [{ text: "💵 Auto-Convert Deposits to USD", callback_data: "choose_settlement_usdc" }],
+                ],
+              },
+            }
           ).catch(() => {});
         }
 

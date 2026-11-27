@@ -41,6 +41,7 @@ export interface ProximUser {
   activeContext: AccountType;
   autoEarnEnabled: boolean;
   depositSettlementMode?: DepositSettlementMode;
+  depositSettlementChosen?: boolean;
   referralCode: string;
   /** Changes when the profile photo changes; null when there is none. */
   avatarVersion?: string | null;

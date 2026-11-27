@@ -216,12 +216,14 @@ export function HomeScreen({
     user,
     activeAccount,
     dataVersion,
+    refreshMe,
     switchAccount,
     switchingAccount,
     requestApproval,
     balanceHidden: hidden,
     toggleBalanceHidden,
   } = useApp();
+  const [savingSettlement, setSavingSettlement] = useState(false);
   const [balance, setBalance] = useState<UnifiedBalance | null>(null);
   const [bizHome, setBizHome] = useState<BusinessHomeResponse | null>(null);
   const [transactions, setTransactions] = useState<TransactionItem[]>([]);
@@ -693,6 +695,93 @@ export function HomeScreen({
       <View style={styles.below}>
         <ErrorBanner message={error} onDismiss={() => setError(null)} />
         <SuccessBanner message={copiedMsg} onDismiss={() => setCopiedMsg(null)} />
+
+        {((user?.kycTier ?? 0) >= 1 || (user?.personalKycTier ?? 0) >= 1 || (user?.businessKycTier ?? 0) >= 1) &&
+        !user?.depositSettlementChosen ? (
+          <View
+            style={{
+              backgroundColor: COLORS.forest,
+              borderRadius: RADIUS.lg,
+              padding: 14,
+              borderWidth: 1,
+              borderColor: COLORS.forest700,
+              gap: 8,
+            }}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Ionicons name="checkmark-circle" size={16} color={COLORS.gold} />
+              <Text style={{ fontSize: 11, fontWeight: "800", letterSpacing: 0.7, color: COLORS.gold, textTransform: "uppercase" }}>
+                VERIFIED ACCOUNT · DEPOSIT PREFERENCE
+              </Text>
+            </View>
+            <Text style={{ fontSize: 16, fontWeight: "700", color: COLORS.white }}>
+              How should your deposits settle?
+            </Text>
+            <Text style={{ fontSize: 12.5, lineHeight: 18, color: HERO.textSecondary }}>
+              Decide whether incoming bank deposits (NGN, GBP, EUR, USD, etc.) remain in their local currency or automatically convert to USD (USDC) — 0% deposit fee either way. You can change this anytime in Profile.
+            </Text>
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 4 }}>
+              <PressableScale
+                onPress={async () => {
+                  if (savingSettlement) return;
+                  setSavingSettlement(true);
+                  setError(null);
+                  try {
+                    await api.updateProfile({ depositSettlementMode: "local" });
+                    await refreshMe();
+                    setCopiedMsg("Saved: Deposits will remain in local currencies (0% fee).");
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : "Could not save preference.");
+                  } finally {
+                    setSavingSettlement(false);
+                  }
+                }}
+                style={{
+                  flex: 1,
+                  backgroundColor: COLORS.gold,
+                  borderRadius: RADIUS.md,
+                  paddingVertical: 10,
+                  paddingHorizontal: 10,
+                  alignItems: "center",
+                }}
+              >
+                <Text style={{ fontSize: 12.5, fontWeight: "800", color: COLORS.forest }}>
+                  Hold Local Currency
+                </Text>
+              </PressableScale>
+              <PressableScale
+                onPress={async () => {
+                  if (savingSettlement) return;
+                  setSavingSettlement(true);
+                  setError(null);
+                  try {
+                    await api.updateProfile({ depositSettlementMode: "usdc" });
+                    await refreshMe();
+                    setCopiedMsg("Saved: Deposits will auto-convert to USD (0% fee).");
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : "Could not save preference.");
+                  } finally {
+                    setSavingSettlement(false);
+                  }
+                }}
+                style={{
+                  flex: 1,
+                  backgroundColor: "rgba(255,255,255,0.12)",
+                  borderWidth: 1,
+                  borderColor: "rgba(255,255,255,0.25)",
+                  borderRadius: RADIUS.md,
+                  paddingVertical: 10,
+                  paddingHorizontal: 10,
+                  alignItems: "center",
+                }}
+              >
+                <Text style={{ fontSize: 12.5, fontWeight: "700", color: COLORS.white }}>
+                  Auto-Convert to USD
+                </Text>
+              </PressableScale>
+            </View>
+          </View>
+        ) : null}
 
         {isBiz ? (
           <>

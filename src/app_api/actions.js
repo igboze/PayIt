@@ -735,12 +735,11 @@ const ACTIONS = {
       const hasUsdc = body?.amountUsdc !== undefined && body?.amountUsdc !== null && body?.amountUsdc !== "";
       const fundingSource = str(body, "fundingSource", { optional: true, max: 32 }) || "auto";
       const rate = await getLiveNgnOffRampRate();
-      let amountUsdc;
+      let amountUsdc = null;
       let amountNgn = null;
       if (hasNgn && !hasUsdc) {
         amountNgn = Math.round(money(body, "amountNgn", { min: 500, max: 50_000_000 }));
-        if (!rate) throw new ActionError(503, "rate_unavailable", "Live NGN exchange rate is unavailable right now. Please try again.");
-        amountUsdc = Number((amountNgn / rate).toFixed(6));
+        if (rate) amountUsdc = Number((amountNgn / rate).toFixed(6));
       } else {
         amountUsdc = money(body, "amountUsdc", { min: 1 });
       }
@@ -748,6 +747,7 @@ const ACTIONS = {
       // Check whether this verified user holds NGN directly in their Nuvion checking account.
       // If they hold enough NGN (or explicitly selected local NGN), execute direct NGN NIP
       // payout with Proxim's tiered fee (< ₦100,000: 1% capped at ₦500; >= ₦100,000: 1% uncapped).
+      // Works even if Paj's USD<->NGN rate endpoint is temporarily unavailable!
       // Paj users (unverified or spending USDC) stay 100% on the existing Paj Solana/Arc route.
       let heldNgnQuote = null;
       try {
@@ -756,7 +756,7 @@ const ACTIONS = {
         const nuvionPayouts = dep("nuvionPayouts");
         const ent = dep("db").getNuvionEntityByUser?.(ctx.telegramId, accountType);
         const isVerified = ent && String(ent.status || "").toLowerCase() === "approved";
-        const targetNgn = amountNgn || (rate ? Math.round(amountUsdc * rate) : 0);
+        const targetNgn = amountNgn || (rate && amountUsdc ? Math.round(amountUsdc * rate) : 0);
         if (isVerified && nuvion.isNuvionConfigured() && nuvion.isLocalFiatHoldEnabled() && targetNgn >= 500 && fundingSource !== "usdc") {
           const fiatBalances = await orchestrator.getEntityFiatBalances(ctx.telegramId, accountType);
           const ngnPocket = fiatBalances.find((b) => b.currency === "NGN" && b.availableMinor > 0);
@@ -825,6 +825,10 @@ const ACTIONS = {
             ],
           },
         };
+      }
+
+      if (hasNgn && !hasUsdc && !amountUsdc) {
+        throw new ActionError(503, "rate_unavailable", "Live NGN exchange rate is unavailable right now. Please try again.");
       }
 
       await precheck(ctx, amountUsdc, `${bankCode}:${accountNumber}`, "app_offramp_ngn", accountType);

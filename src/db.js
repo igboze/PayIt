@@ -366,6 +366,9 @@ function ensureUserSchema() {
   if (!columns.includes("deposit_settlement_mode")) {
     try { db.exec("ALTER TABLE users ADD COLUMN deposit_settlement_mode TEXT DEFAULT 'local'"); } catch (_) { }
   }
+  if (!columns.includes("deposit_settlement_chosen")) {
+    try { db.exec("ALTER TABLE users ADD COLUMN deposit_settlement_chosen INTEGER DEFAULT 0"); } catch (_) { }
+  }
   if (!columns.includes("last_activity_at")) {
     db.exec("ALTER TABLE users ADD COLUMN last_activity_at TEXT");
     db.exec("UPDATE users SET last_activity_at = datetime('now') WHERE last_activity_at IS NULL");
@@ -1451,7 +1454,7 @@ function updateAutoEarnSetting(telegramId, enabled) {
 
 function updateDepositSettlementMode(telegramId, mode) {
   const clean = String(mode || "local").trim().toLowerCase() === "usdc" ? "usdc" : "local";
-  db.prepare("UPDATE users SET deposit_settlement_mode = ? WHERE telegram_id = ?").run(clean, telegramId);
+  db.prepare("UPDATE users SET deposit_settlement_mode = ?, deposit_settlement_chosen = 1 WHERE telegram_id = ?").run(clean, telegramId);
   return clean;
 }
 
@@ -1732,17 +1735,21 @@ function getVolumeStats() {
   const VALID_STATUSES = "('confirmed', 'submitted', 'success', 'completed')";
   const NORMALIZE_AMOUNT = "CASE WHEN decimals = 6 THEN CAST(amount_micro AS REAL) * 1e12 ELSE CAST(amount_micro AS REAL) END";
 
-  function sumForTypes(types, since) {
-    const placeholders = types.map(() => "?").join(", ");
+  function sumWhere(whereSql, params, since) {
     const sinceClause = since ? `AND datetime(created_at) >= datetime('now', '${since}')` : "";
     const row = db.prepare(`
       SELECT COALESCE(SUM(${NORMALIZE_AMOUNT}), 0) AS total,
              COUNT(*) AS count
       FROM transactions
-      WHERE type IN (${placeholders}) AND status IN ${VALID_STATUSES}
+      WHERE ${whereSql} AND status IN ${VALID_STATUSES}
       ${sinceClause}
-    `).get(...types);
+    `).get(...params);
     return { count: row.count, usdc: row.total / MICRO };
+  }
+
+  function sumForTypes(types, since) {
+    const placeholders = types.map(() => "?").join(", ");
+    return sumWhere(`type IN (${placeholders})`, types, since);
   }
 
   function txBreakdown(types) {
@@ -1754,24 +1761,67 @@ function getVolumeStats() {
     };
   }
 
+  function whereBreakdown(whereSql, params = []) {
+    return {
+      today: sumWhere(whereSql, params, "-1 day"),
+      week: sumWhere(whereSql, params, "-7 days"),
+      month: sumWhere(whereSql, params, "-30 days"),
+      allTime: sumWhere(whereSql, params, null),
+    };
+  }
+
+  // Product / flow breakdowns covering BOTH Mobile App and Telegram Bot across Paj, Nuvion, Airbills & On-Chain
   const onramp = txBreakdown(["deposit_naira", "onramp", "paj_onramp"]);
-  const crypto = txBreakdown(["deposit_crosschain", "crypto_deposit"]);
-  const offramp = txBreakdown(["offramp", "offramp_request", "payout"]);
-  const sends = txBreakdown(["send_usdc", "send_eurc", "autopay", "payment"]);
-  const savings = txBreakdown(["yield_deposit", "yield_withdraw", "auto_earn_liquidate", "auto_earn_deposit"]);
-  const invoices = txBreakdown(["invoice_payment", "invoice"]);
-  const swaps = txBreakdown(["swap_usdc_eurc", "swap_eurc_usdc"]);
+  const nuvionDeposits = txBreakdown(["deposit_fiat"]);
+  const crypto = txBreakdown(["deposit_crosschain", "crypto_deposit", "deposit_crypto"]);
+  const offramp = txBreakdown(["offramp", "offramp_request", "payout", "withdraw_naira"]);
+  const globalPayouts = txBreakdown(["payout_global", "global_payout", "nuvion_payout", "payroll"]);
+  const cards = txBreakdown(["card_load", "card_spend"]);
+  const airbills = whereBreakdown("(type LIKE 'bill_%' OR type IN ('airbills', 'airtime', 'data', 'electricity', 'cable'))");
+  const sends = txBreakdown([
+    "send_usdc", "send_eurc", "autopay", "payment",
+    "transfer", "p2p_send", "p2p_escrow", "scheduled_transfer",
+    "crosschain_withdraw", "withdraw_crypto",
+  ]);
+  const savings = txBreakdown([
+    "yield_deposit", "savings_deposit", "yield_withdraw",
+    "auto_earn_liquidate", "auto_earn_deposit",
+  ]);
+  const invoices = txBreakdown(["invoice_payment", "invoice", "merchant_checkout"]);
+  const swaps = txBreakdown(["swap", "swap_usdc_eurc", "swap_eurc_usdc"]);
+  const stocks = txBreakdown(["stock_buy", "stock_sell"]);
 
-  // All-time totals across every confirmed tx (any type)
-  const totalAllRow = db.prepare(`
-    SELECT COALESCE(SUM(${NORMALIZE_AMOUNT}), 0) AS total, COUNT(*) AS count
-    FROM transactions WHERE status IN ${VALID_STATUSES}
-  `).get();
+  // Explicit provider breakdowns (Paj vs Nuvion vs Airbills)
+  const byProvider = {
+    paj: whereBreakdown(
+      "((type IN ('deposit_naira', 'onramp', 'paj_onramp', 'offramp', 'offramp_request', 'payout')) AND COALESCE(chain, '') != 'local_fiat' AND COALESCE(deposit_channel, '') != 'international')"
+    ),
+    nuvion: whereBreakdown(
+      "(type IN ('deposit_fiat', 'deposit_crypto', 'withdraw_naira', 'payout_global', 'global_payout', 'nuvion_payout', 'card_load', 'card_spend') OR COALESCE(chain, '') = 'local_fiat')"
+    ),
+    airbills,
+  };
 
-  // User growth
+  // Explicit channel breakdown: Mobile App (app-only negative IDs + app-only tx types) vs Telegram Bot
+  const byChannel = {
+    mobileApp: whereBreakdown(
+      "(telegram_id < 0 OR type IN ('transfer', 'p2p_send', 'p2p_escrow', 'scheduled_transfer', 'savings_deposit', 'stock_buy', 'stock_sell', 'swap'))"
+    ),
+    telegramBot: whereBreakdown(
+      "(telegram_id > 0 AND type NOT IN ('transfer', 'p2p_send', 'p2p_escrow', 'scheduled_transfer', 'savings_deposit', 'stock_buy', 'stock_sell', 'swap'))"
+    ),
+  };
+
+  // All-time & windowed totals across EVERY confirmed/completed transaction (excluding double-counted p2p_receive)
+  const totalAll = whereBreakdown("type != 'p2p_receive'");
+  const totalAllRow = totalAll.allTime;
+
+  // User growth (Mobile App + Telegram Bot)
   const usersRow = db.prepare(`
     SELECT
       COUNT(*) AS total,
+      COALESCE(SUM(CASE WHEN telegram_id < 0 THEN 1 ELSE 0 END), 0) AS mobile_total,
+      COALESCE(SUM(CASE WHEN telegram_id > 0 THEN 1 ELSE 0 END), 0) AS telegram_total,
       COALESCE(SUM(CASE WHEN datetime(created_at) >= datetime('now', '-1 day')  THEN 1 ELSE 0 END), 0) AS today,
       COALESCE(SUM(CASE WHEN datetime(created_at) >= datetime('now', '-7 days') THEN 1 ELSE 0 END), 0) AS week,
       COALESCE(SUM(CASE WHEN datetime(created_at) >= datetime('now', '-30 days') THEN 1 ELSE 0 END), 0) AS month
@@ -1780,38 +1830,49 @@ function getVolumeStats() {
 
   const users = {
     total: usersRow?.total ?? 0,
+    mobileTotal: usersRow?.mobile_total ?? 0,
+    telegramTotal: usersRow?.telegram_total ?? 0,
     today: usersRow?.today ?? 0,
     week: usersRow?.week ?? 0,
     month: usersRow?.month ?? 0,
   };
 
-  // Top 5 users by volume (all-time)
+  // Top 5 users by volume (all-time, Mobile + Telegram)
   const topUsers = db.prepare(`
     SELECT t.telegram_id,
            u.username,
+           u.sender_name,
            COALESCE(SUM(${NORMALIZE_AMOUNT}), 0) AS vol,
            COUNT(*) AS tx_count
     FROM transactions t
     LEFT JOIN users u ON u.telegram_id = t.telegram_id
-    WHERE t.status IN ${VALID_STATUSES}
+    WHERE t.status IN ${VALID_STATUSES} AND t.type != 'p2p_receive'
     GROUP BY t.telegram_id
     ORDER BY vol DESC LIMIT 5
   `).all().map(r => ({
     telegram_id: r.telegram_id,
-    username: r.username ? `@${r.username}` : `user_${r.telegram_id}`,
+    channel: Number(r.telegram_id) < 0 ? "app" : "tg",
+    username: r.username ? `@${r.username}` : (r.sender_name || (Number(r.telegram_id) < 0 ? `app_${Math.abs(r.telegram_id)}` : `user_${r.telegram_id}`)),
     usdc: r.vol / MICRO,
     tx_count: r.tx_count,
   }));
 
   return {
     onramp,
+    nuvionDeposits,
     crypto,
     offramp,
+    globalPayouts,
+    cards,
+    airbills,
     sends,
     savings,
     invoices,
     swaps,
-    totalAll: { count: totalAllRow.count, usdc: totalAllRow.total / MICRO },
+    stocks,
+    byProvider,
+    byChannel,
+    totalAll: { count: totalAllRow.count, usdc: totalAllRow.usdc, today: totalAll.today, week: totalAll.week, month: totalAll.month },
     users,
     topUsers,
   };
@@ -1828,6 +1889,9 @@ function reconcileLiveProductVolume() {
   let backfilledPayments = 0;
   let backfilledYield = 0;
   let backfilledOnramp = 0;
+  let backfilledAirbills = 0;
+  let backfilledPaj = 0;
+  let backfilledNuvion = 0;
   let deduplicatedSweeps = 0;
 
   try {
@@ -1947,7 +2011,97 @@ function reconcileLiveProductVolume() {
       }
     } catch { }
 
-    // 7. Deduplicate repeating synthetic sweep deposits created by background monitor loops
+    // 7. Backfill completed Airbills payments from bill_payments table
+    try {
+      const bills = db.prepare("SELECT * FROM bill_payments WHERE LOWER(status) IN ('successful', 'completed', 'confirmed', 'success') AND amount_usdc > 0").all();
+      for (const b of bills) {
+        const txHash = b.solana_tx_sig || b.arc_tx_hash || b.airbills_tx_id || `airbills_${b.id}`;
+        const existing = db.prepare("SELECT id FROM transactions WHERE tx_hash = ?").get(txHash);
+        if (!existing) {
+          const micro = BigInt(Math.round(Number(b.amount_usdc) * 1e6)) * 1_000_000_000_000n;
+          db.prepare(`
+            INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, created_at, account_type, chain, narration)
+            VALUES (?, ?, ?, 'confirmed', ?, ?, ?, 'solana', ?)
+          `).run(
+            b.telegram_id || 0,
+            `bill_${String(b.category || "airtime").toLowerCase()}`,
+            micro.toString(),
+            txHash,
+            b.created_at,
+            b.account_type || "personal",
+            `${b.provider_name || b.category || "Bill"} ₦${Math.round(Number(b.amount_ngn || 0)).toLocaleString()}`
+          );
+          backfilledAirbills++;
+        }
+      }
+    } catch { }
+
+    // 8. Backfill completed Paj onramp_orders and offramp_orders missing from transactions
+    try {
+      const pajOn = db.prepare("SELECT * FROM onramp_orders WHERE LOWER(status) IN ('completed', 'confirmed', 'success', 'successful', 'settled') AND amount_usdc > 0").all();
+      for (const o of pajOn) {
+        const txHash = o.order_id;
+        const existing = db.prepare("SELECT id FROM transactions WHERE tx_hash = ?").get(txHash);
+        if (!existing) {
+          const micro = BigInt(Math.round(Number(o.amount_usdc) * 1e6)) * 1_000_000_000_000n;
+          db.prepare(`
+            INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, created_at, account_type, chain, source_currency, source_amount, deposit_channel)
+            VALUES (?, 'deposit_naira', ?, 'confirmed', ?, ?, ?, ?, 'NGN', ?, 'naira')
+          `).run(o.telegram_id || 0, micro.toString(), txHash, o.completed_at || o.created_at, o.account_type || "personal", o.settlement_rail || "solana", o.fiat_amount || null);
+          backfilledPaj++;
+        }
+      }
+    } catch { }
+
+    try {
+      const pajOff = db.prepare("SELECT * FROM offramp_orders WHERE LOWER(status) IN ('completed', 'confirmed', 'success', 'successful', 'submitted', 'paid', 'settled') AND amount_usdc > 0").all();
+      for (const o of pajOff) {
+        const txHash = o.tx_hash || o.order_id;
+        const existing = db.prepare("SELECT id FROM transactions WHERE tx_hash = ? OR tx_hash = ?").get(txHash, o.order_id);
+        if (!existing) {
+          const micro = BigInt(Math.round(Number(o.amount_usdc) * 1e6)) * 1_000_000_000_000n;
+          db.prepare(`
+            INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, created_at, account_type, chain, narration)
+            VALUES (?, 'offramp', ?, 'confirmed', ?, ?, ?, ?, ?)
+          `).run(o.telegram_id || 0, micro.toString(), txHash, o.completed_at || o.created_at, o.account_type || "personal", o.rail || "arc", o.narration || null);
+          backfilledPaj++;
+        }
+      }
+    } catch { }
+
+    // 9. Backfill completed Nuvion jobs (inbound fiat hold/sweep & outbound payouts) missing from transactions
+    try {
+      const nJobs = db.prepare("SELECT * FROM nuvion_jobs WHERE job_type IN ('inbound_fiat_hold', 'inbound_fiat_sweep', 'outbound_fiat_payout') AND state IN ('completed', 'dispatched')").all();
+      for (const j of nJobs) {
+        const txHash = j.nuvion_transfer_id || j.unique_reference;
+        if (!txHash) continue;
+        const existing = db.prepare("SELECT id FROM transactions WHERE tx_hash = ?").get(txHash);
+        if (!existing) {
+          let payload = {};
+          try { payload = j.payload_json ? JSON.parse(j.payload_json) : {}; } catch { }
+          let estUsd = Number(payload.userTotalUsd || payload.creditedUsd || 0);
+          const cur = String(j.currency || "USD").toUpperCase();
+          if (estUsd <= 0) {
+            const major = Number(j.amount_minor || 0) / 100;
+            estUsd = cur === "NGN" ? major / 1500 : major;
+          }
+          if (estUsd > 0) {
+            const micro = BigInt(Math.round(estUsd * 1e6)) * 1_000_000_000_000n;
+            const txType = j.job_type === "outbound_fiat_payout"
+              ? (cur === "NGN" ? "withdraw_naira" : "payout_global")
+              : (cur === "NGN" ? "deposit_naira" : "deposit_fiat");
+            const chain = j.job_type === "inbound_fiat_hold" || payload.fundingMode === "held_fiat" ? "local_fiat" : "base";
+            db.prepare(`
+              INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, created_at, account_type, chain)
+              VALUES (?, ?, ?, 'confirmed', ?, ?, ?, ?)
+            `).run(j.telegram_id || 0, txType, micro.toString(), txHash, j.created_at, j.account_type || "personal", chain);
+            backfilledNuvion++;
+          }
+        }
+      }
+    } catch { }
+
+    // 10. Deduplicate repeating synthetic sweep deposits created by background monitor loops
     try {
       const dupes = db.prepare(`
         SELECT id FROM (
@@ -1971,7 +2125,17 @@ function reconcileLiveProductVolume() {
     console.warn("[db:reconcileLiveProductVolume] Error during live scan:", scanErr.message);
   }
 
-  return { fixedScale, backfilledInvoices, backfilledPayments, backfilledYield, backfilledOnramp, deduplicatedSweeps };
+  return {
+    fixedScale,
+    backfilledInvoices,
+    backfilledPayments,
+    backfilledYield,
+    backfilledOnramp,
+    backfilledAirbills,
+    backfilledPaj,
+    backfilledNuvion,
+    deduplicatedSweeps,
+  };
 }
 
 // ─── CCTP Pending Burns ────────────────────────────────────────────────────────

@@ -280,7 +280,7 @@ function publicUser(user, device) {
     businessDepositAddress: user.business_deposit_address || null,
     activeContext,
     autoEarnEnabled: Boolean(user.auto_earn_enabled),
-    depositSettlementMode: String(user.deposit_settlement_mode || "local").toLowerCase() === "usdc" ? "usdc" : "local",
+    depositSettlementChosen: Boolean(user.deposit_settlement_chosen),
     referralCode: user.referral_code || `ref${user.telegram_id}`,
     avatarVersion: require("./avatars").getAvatarVersion(user.telegram_id),
     deviceRestrictedUntil: store.isDeviceRestricted(device) ? device.restricted_until : null,
@@ -452,37 +452,18 @@ async function signupFinish(req, body) {
   const { device } = store.upsertDevice({ deviceId: signup.device_id, telegramId: userId, platform: signup.platform, deviceName });
   store.updateSignup(signupId, { completed: 1 });
 
-  // Send welcome email asynchronously if the new user signed up via Google Auth or Email
+  // Send welcome email asynchronously if the new user signed up with an email address
   const rawContact = String(signup.phone_number || "");
-  const contextEmail = typeof reg.context?.email === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(reg.context.email.trim())
-    ? reg.context.email.trim().toLowerCase()
-    : null;
-  const bodyEmail = typeof body.email === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(body.email.trim())
-    ? body.email.trim().toLowerCase()
-    : null;
   const signupEmail = rawContact.startsWith("email:")
     ? rawContact.slice("email:".length).trim().toLowerCase()
-    : (contextEmail || bodyEmail || null);
+    : (typeof body.email === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(body.email.trim()) ? body.email.trim().toLowerCase() : null);
   if (signupEmail) {
     try {
       const emailMod = require("../email");
       if (typeof emailMod.sendWelcomeEmail === "function") {
-        (async () => {
-          try {
-            let res = await emailMod.sendWelcomeEmail({ to: signupEmail, name: cleanSignupName || undefined });
-            if (!res?.sent && res?.reason === "provider_delivery_failed" && process.env.NODE_ENV !== "test") {
-              await new Promise((r) => setTimeout(r, 3000));
-              res = await emailMod.sendWelcomeEmail({ to: signupEmail, name: cleanSignupName || undefined });
-            }
-            if (res?.sent) {
-              console.log(`[app_api:signup_welcome_email] Sent to ${signupEmail} via ${res.provider || "email"}`);
-            } else {
-              console.warn(`[app_api:signup_welcome_email] Not delivered to ${signupEmail}:`, res?.reason, res?.error || "");
-            }
-          } catch (err) {
-            console.warn("[app_api:signup_welcome_email]", err?.message || err);
-          }
-        })();
+        emailMod.sendWelcomeEmail({ to: signupEmail, name: cleanSignupName || undefined }).catch((err) => {
+          console.warn("[app_api:signup_welcome_email]", err?.message || err);
+        });
       }
     } catch (_) { }
   }
@@ -545,7 +526,7 @@ async function googleAuthStart(req, body) {
     userName: identity.email,
     displayName: identity.name || "Proxim account",
     purpose: "signup",
-    context: { signupId, name: identity.name || null, email: identity.email, provider: "google" },
+    context: { signupId, name: identity.name || null, provider: "google" },
   });
 
   return {
@@ -701,13 +682,11 @@ async function me(req) {
 async function balances(req, url) {
   const auth = authenticate(req);
   const accountType = resolveAccountType(auth, url.searchParams.get("account"));
-  const nuvionOrchestrator = require("../nuvion_orchestrator");
-  const [unified, ngnRate, fiatBalances] = await Promise.all([
+  const [unified, ngnRate] = await Promise.all([
     dep("chains").getUnifiedBalance(auth.user, accountType, {
       strictBusiness: accountType === "business",
     }),
     features.getLiveUsdNgnRate(),
-    nuvionOrchestrator.getEntityFiatBalances(auth.telegramId, accountType).catch(() => []),
   ]);
   const totalNum = Number(unified.total || 0);
   return {
@@ -719,7 +698,6 @@ async function balances(req, url) {
       totalUsdc: unified.total,
       totalNgn: ngnRate && Number.isFinite(totalNum) ? Math.round(totalNum * ngnRate) : null,
       usdToNgnRate: ngnRate,
-      fiatBalances: Array.isArray(fiatBalances) ? fiatBalances : [],
       arc: unified.arc,
       base: unified.base || { usdc: 0 },
       gateway: unified.gateway || { usdc: 0 },
