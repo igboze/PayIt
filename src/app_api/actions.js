@@ -733,6 +733,7 @@ const ACTIONS = {
       const narration = str(body, "narration", { optional: true, max: 60 }) || "";
       const hasNgn = body?.amountNgn !== undefined && body?.amountNgn !== null && body?.amountNgn !== "";
       const hasUsdc = body?.amountUsdc !== undefined && body?.amountUsdc !== null && body?.amountUsdc !== "";
+      const fundingSource = str(body, "fundingSource", { optional: true, max: 32 }) || "auto";
       const rate = await getLiveNgnOffRampRate();
       let amountUsdc;
       let amountNgn = null;
@@ -743,6 +744,89 @@ const ACTIONS = {
       } else {
         amountUsdc = money(body, "amountUsdc", { min: 1 });
       }
+
+      // Check whether this verified user holds NGN directly in their Nuvion checking account.
+      // If they hold enough NGN (or explicitly selected local NGN), execute direct NGN NIP
+      // payout with Proxim's tiered fee (< ₦100,000: 1% capped at ₦500; >= ₦100,000: 1% uncapped).
+      // Paj users (unverified or spending USDC) stay 100% on the existing Paj Solana/Arc route.
+      let heldNgnQuote = null;
+      try {
+        const nuvion = require("../nuvion");
+        const orchestrator = require("../nuvion_orchestrator");
+        const nuvionPayouts = dep("nuvionPayouts");
+        const ent = dep("db").getNuvionEntityByUser?.(ctx.telegramId, accountType);
+        const isVerified = ent && String(ent.status || "").toLowerCase() === "approved";
+        const targetNgn = amountNgn || (rate ? Math.round(amountUsdc * rate) : 0);
+        if (isVerified && nuvion.isNuvionConfigured() && nuvion.isLocalFiatHoldEnabled() && targetNgn >= 500 && fundingSource !== "usdc") {
+          const fiatBalances = await orchestrator.getEntityFiatBalances(ctx.telegramId, accountType);
+          const ngnPocket = fiatBalances.find((b) => b.currency === "NGN" && b.availableMinor > 0);
+          if (ngnPocket && (fundingSource === "local_ngn" || ngnPocket.available >= targetNgn)) {
+            const q = await nuvionPayouts.quoteHeldFiatPayout({
+              telegramId: ctx.telegramId,
+              accountType,
+              railKey: "ngn_nip",
+              sourceCurrency: "NGN",
+              targetCurrency: "NGN",
+              targetAmountMajor: targetNgn,
+              usdRateHint: rate || 1500,
+            });
+            if (q.hasEnoughBalance) {
+              heldNgnQuote = q;
+            } else if (fundingSource === "local_ngn") {
+              const maxHint = q.maxSendableMajor > 0
+                ? ` Max you can send is ₦${Math.round(q.maxSendableMajor).toLocaleString("en-NG")} (plus ₦${Math.round(q.maxSendableFeeMajor).toLocaleString("en-NG")} fee).`
+                : "";
+              throw new ActionError(
+                400,
+                "insufficient_balance",
+                `Insufficient NGN balance. You need ₦${Math.round(q.totalDeductedMajor).toLocaleString("en-NG")} ` +
+                `(₦${targetNgn.toLocaleString("en-NG")} + ₦${Math.round(q.proximFeeMajor).toLocaleString("en-NG")} Proxim fee), ` +
+                `but your NGN balance is ₦${Math.round(q.availableMajor).toLocaleString("en-NG")}.${maxHint}`
+              );
+            }
+          }
+        }
+      } catch (heldErr) {
+        if (heldErr instanceof ActionError) throw heldErr;
+      }
+
+      if (heldNgnQuote) {
+        const feeNgn = Math.round(heldNgnQuote.proximFeeMajor);
+        const totalNgn = Math.round(heldNgnQuote.totalDeductedMajor);
+        const sendNgn = Math.round(heldNgnQuote.targetAmountMajor);
+        await precheck(ctx, heldNgnQuote.userTotalUsd, `${bankCode}:${accountNumber}`, "app_offramp_ngn_held", accountType);
+        const feeDesc = sendNgn < 100000 ? "Proxim fee (1%, max ₦500)" : "Proxim fee (1%)";
+        const action = {
+          accountType,
+          fundingMode: "held_fiat",
+          sourceCurrency: "NGN",
+          amountNgn: String(sendNgn),
+          amountUsdc: heldNgnQuote.userTotalUsd.toFixed(6),
+          feeNgn: String(feeNgn),
+          totalNgn: String(totalNgn),
+          bankCode,
+          bankName: str(body, "bankName", { optional: true, max: 80 }) || "",
+          accountNumber,
+          accountName,
+          narration,
+          quotedRate: rate,
+        };
+        return {
+          amountUsd: heldNgnQuote.userTotalUsd,
+          action,
+          summary: {
+            title: `Send ₦${sendNgn.toLocaleString("en-NG")} to ${accountName || accountNumber}`,
+            lines: [
+              ...accountTagLines(ctx, accountType),
+              ["To", `${accountName || "Account"} · ••${accountNumber.slice(-2)}`],
+              ["They get", `₦${sendNgn.toLocaleString("en-NG")}`],
+              [feeDesc, `₦${feeNgn.toLocaleString("en-NG")}`],
+              ["Total deducted", `₦${totalNgn.toLocaleString("en-NG")} (NGN balance)`],
+            ],
+          },
+        };
+      }
+
       await precheck(ctx, amountUsdc, `${bankCode}:${accountNumber}`, "app_offramp_ngn", accountType);
       const offrampFeeRate = Number(process.env.OFFRAMP_PLATFORM_FEE_RATE ?? 0.01);
       const estFeeUsdc = Number((amountUsdc * offrampFeeRate).toFixed(4));
@@ -787,6 +871,44 @@ const ACTIONS = {
       const walletLib = dep("walletLib");
       const multichain = dep("multichain");
       const accountType = a.accountType || "personal";
+
+      // Direct verified held-NGN NIP payout (0% deposit fee, tiered Proxim withdrawal fee, exact NGN delivery)
+      if (a.fundingMode === "held_fiat" && a.sourceCurrency === "NGN") {
+        const sendNgn = Number(a.amountNgn);
+        await recordOutbound(ctx, Number(a.amountUsdc || 0), `${a.bankCode}:${a.accountNumber}`, "app_offramp_ngn_held", accountType);
+        const res = await dep("nuvionPayouts").initiateHeldFiatPayout({
+          telegramId: ctx.telegramId,
+          pin,
+          accountType,
+          railKey: "ngn_nip",
+          sourceCurrency: "NGN",
+          targetCurrency: "NGN",
+          targetAmountMajor: sendNgn,
+          recipientDetails: {
+            account_holder_name: a.accountName || `Account ${a.accountNumber}`,
+            bank_code: String(a.bankCode),
+            account_number: String(a.accountNumber),
+            bank_name: a.bankName || "Nigerian Bank",
+          },
+          narration: a.narration || `Transfer to ${a.accountName || a.accountNumber}`,
+          bot: dep("notify").getNotifyBot(),
+          usdRateHint: a.quotedRate || 1500,
+        });
+        return {
+          orderId: res.uniqueReference,
+          transferId: res.transfer?.id || null,
+          feeTransferId: res.feeTransferId || null,
+          feeNgn: res.quote?.proximFeeMajor ?? Number(a.feeNgn || 0),
+          totalDeductedNgn: res.quote?.totalDeductedMajor ?? Number(a.totalNgn || sendNgn),
+          rail: "ngn_nip",
+          fundingMode: "held_fiat",
+          accountType,
+          status: "submitted",
+          amountNgn: sendNgn,
+          notice: `Sent ₦${sendNgn.toLocaleString("en-NG")} to ${a.accountName || "the bank account"}`,
+        };
+      }
+
       const amount = Number(a.amountUsdc);
       await recordOutbound(ctx, amount, `${a.bankCode}:${a.accountNumber}`, "app_offramp_ngn", accountType);
       const senderName = db.resolveSenderName(ctx.telegramId, accountType);
@@ -1000,14 +1122,99 @@ const ACTIONS = {
         throw bad("Recipient bank details or savedCounterpartyId is required.");
       }
       const narration = str(body, "narration", { optional: true, max: 60 }) || "";
+      const sourceCurrency = str(body, "sourceCurrency", { optional: true, max: 8 })?.toUpperCase() || null;
       const effectiveRail = railKey || (() => { try { return JSON.parse(savedCounterparty?.summary_json || "{}").railKey || null; } catch (_) { return null; } })();
+
+      // Check if user wants to spend directly from a held local currency checking account
+      let heldQuote = null;
+      try {
+        const nuvion = require("../nuvion");
+        const orchestrator = require("../nuvion_orchestrator");
+        if (nuvion.isNuvionConfigured() && nuvion.isLocalFiatHoldEnabled() && sourceCurrency !== "USD_ONCHAIN" && sourceCurrency !== "USC") {
+          const fiatBalances = await orchestrator.getEntityFiatBalances(ctx.telegramId, accountType);
+          const candidateCode = sourceCurrency || targetCurrency;
+          const matchingPocket = fiatBalances.find((b) => b.currency === candidateCode && b.availableMinor > 0);
+          if (matchingPocket) {
+            const hq = await dep("nuvionPayouts").quoteHeldFiatPayout({
+              telegramId: ctx.telegramId,
+              accountType,
+              railKey: effectiveRail,
+              sourceCurrency: matchingPocket.currency,
+              targetCurrency,
+              targetAmountMajor,
+            });
+            if (hq.hasEnoughBalance || sourceCurrency) {
+              if (!hq.hasEnoughBalance && sourceCurrency) {
+                throw new ActionError(
+                  400,
+                  "insufficient_balance",
+                  `Insufficient ${hq.sourceCurrency} balance. Need ${hq.totalDeductedMajor.toFixed(2)} ${hq.sourceCurrency} (incl. ${hq.totalFeeMajor.toFixed(2)} fees), available ${hq.availableMajor.toFixed(2)} ${hq.sourceCurrency}. Max sendable: ${hq.maxSendableMajor.toFixed(2)} ${hq.sourceCurrency}.`
+                );
+              }
+              heldQuote = hq;
+            }
+          }
+        }
+      } catch (heldErr) {
+        if (heldErr instanceof ActionError) throw heldErr;
+      }
+
+      if (heldQuote) {
+        await precheck(ctx, heldQuote.userTotalUsd, `global:${targetCurrency}`, "app_global_payout", accountType);
+        const src = heldQuote.sourceCurrency;
+        const fmtSrc = (v) => src === "NGN" ? `₦${Math.round(v).toLocaleString("en-NG")}` : `${Number(v).toFixed(2)} ${src}`;
+        const lines = [
+          ...accountTagLines(ctx, accountType),
+          ["They get", `${targetAmountMajor} ${targetCurrency}`],
+        ];
+        if (heldQuote.nuvionRailFeeMajor > 0) {
+          lines.push(["Partner / Network fee", fmtSrc(heldQuote.nuvionRailFeeMajor)]);
+        }
+        lines.push(["Proxim fee", fmtSrc(heldQuote.proximFeeMajor)]);
+        lines.push(["Total deducted", `${fmtSrc(heldQuote.totalDeductedMajor)} (${src} balance)`]);
+        return {
+          amountUsd: heldQuote.userTotalUsd,
+          action: {
+            accountType,
+            fundingMode: "held_fiat",
+            sourceCurrency: src,
+            targetCurrency,
+            targetAmountMajor: String(targetAmountMajor),
+            railKey: effectiveRail || heldQuote?.rail?.key || null,
+            savedCounterpartyId: savedCounterparty ? String(savedCounterparty.counterparty_id) : null,
+            recipientDetails: savedCounterparty ? null : recipientDetails,
+            narration,
+            quotedUsd: heldQuote.userTotalUsd.toFixed(2),
+          },
+          summary: {
+            title: `Send ${targetAmountMajor} ${targetCurrency}`,
+            lines,
+          },
+          context: savedCounterparty ? { savedCounterparty } : null,
+        };
+      }
+
       const q = await dep("nuvionPayouts").quoteGlobalPayout({ telegramId: ctx.telegramId, accountType, railKey: effectiveRail, targetCurrency, targetAmountMajor });
       const userUsd = Number(q?.userTotalUsd ?? q?.totalUsd ?? 0);
+      const railFeeUsd = Number(q?.nuvionRailFeeUsd ?? 0);
+      const proximFeeUsd = Number(q?.proximFeeUsd ?? q?.marginUsd ?? 0);
+      const principalUsd = Number(q?.nuvionPrincipalUsd ?? Math.max(0, userUsd - railFeeUsd - proximFeeUsd));
       await precheck(ctx, userUsd, `global:${targetCurrency}`, "app_global_payout", accountType);
+      const summaryLines = [
+        ...accountTagLines(ctx, accountType),
+        ["They get", `${targetAmountMajor} ${targetCurrency}`],
+        ["Transfer amount", `$${fmt(principalUsd)}`],
+      ];
+      if (railFeeUsd > 0) {
+        summaryLines.push(["Partner / Network fee", `$${fmt(railFeeUsd)}`]);
+      }
+      summaryLines.push(["Proxim fee", `$${fmt(proximFeeUsd)}`]);
+      summaryLines.push(["Total deducted", `$${fmt(userUsd)}`]);
       return {
         amountUsd: userUsd,
         action: {
           accountType,
+          fundingMode: "usc_bridge",
           targetCurrency,
           targetAmountMajor: String(targetAmountMajor),
           railKey: effectiveRail || q?.rail?.key || q?.railKey || null,
@@ -1018,7 +1225,7 @@ const ACTIONS = {
         },
         summary: {
           title: `Send ${targetAmountMajor} ${targetCurrency}`,
-          lines: [["They get", `${targetAmountMajor} ${targetCurrency}`], ["From your balance", `$${fmt(userUsd)}`]],
+          lines: summaryLines,
         },
         context: savedCounterparty ? { savedCounterparty } : null,
       };
@@ -1026,6 +1233,22 @@ const ACTIONS = {
     async execute(ctx, a, pin, context) {
       const accountType = a.accountType || "personal";
       await recordOutbound(ctx, Number(a.quotedUsd), `global:${a.targetCurrency}`, "app_global_payout", accountType);
+      if (a.fundingMode === "held_fiat" && a.sourceCurrency) {
+        const res = await dep("nuvionPayouts").initiateHeldFiatPayout({
+          telegramId: ctx.telegramId,
+          pin,
+          accountType,
+          railKey: a.railKey || undefined,
+          sourceCurrency: a.sourceCurrency,
+          targetCurrency: a.targetCurrency,
+          targetAmountMajor: Number(a.targetAmountMajor),
+          recipientDetails: a.recipientDetails || undefined,
+          savedCounterparty: context?.savedCounterparty || undefined,
+          narration: a.narration || "",
+          bot: dep("notify").getNotifyBot(),
+        });
+        return { ...res, accountType, notice: `Sent ${a.targetAmountMajor} ${a.targetCurrency}` };
+      }
       const res = await dep("nuvionPayouts").initiateGlobalPayout({
         telegramId: ctx.telegramId, pin, accountType, railKey: a.railKey || undefined,
         targetCurrency: a.targetCurrency, targetAmountMajor: Number(a.targetAmountMajor),

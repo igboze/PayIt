@@ -1927,7 +1927,8 @@ async function showYields(ctx) {
   try {
     const user = requireUser(ctx);
     const context = getContext(ctx.from.id);
-    const autoEarnEnabled = user ? Boolean(user.auto_earn_enabled !== 0) : true;
+    const autoEarnEnabled = user ? Boolean(user.auto_earn_enabled === 1) : false;
+    const settlementMode = String(user?.deposit_settlement_mode || "local").toLowerCase() === "usdc" ? "usdc" : "local";
     const pools = await savings.getYieldPools();
     let openPos = user ? db.getOpenYieldPosition(ctx.from.id, context) : null;
     let activeContext = context;
@@ -1983,12 +1984,22 @@ async function showYields(ctx) {
         btnPrimary(autoEarnEnabled ? "⏸️ Turn Off Auto-Earn" : "▶️ Turn On Auto-Earn", "toggle_auto_earn"),
       ]);
     }
+    actionButtons.push([
+      btnDefault(
+        settlementMode === "local" ? "💱 Deposits: Hold Local (Tap to Settle USDC)" : "💱 Deposits: Auto-USDC (Tap to Hold Local)",
+        "toggle_deposit_settlement"
+      ),
+    ]);
     actionButtons.push([btnDefault("🏠 Main Menu", "main_menu")]);
+
+    const settlementText = settlementMode === "local"
+      ? `🏦 <b>Verified Deposits:</b> Held in local currencies (0% deposit fee)`
+      : `💵 <b>Verified Deposits:</b> Auto-converted to USDC (live FX rate, 0% deposit fee)`;
 
     await ctx.reply(
       activeBanner +
       savings.formatYieldList(pools) +
-      `\n\n⚙️ <b>Settings (${context === "business" ? "Business" : "Personal"}):</b>\n${statusText}`,
+      `\n\n⚙️ <b>Settings (${context === "business" ? "Business" : "Personal"}):</b>\n${statusText}\n${settlementText}`,
       {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard(actionButtons),
@@ -2004,13 +2015,54 @@ bot.action("toggle_auto_earn", async (ctx) => {
   ctx.answerCbQuery();
   const user = requireUser(ctx);
   if (!user) return;
-  const current = Boolean(user.auto_earn_enabled !== 0);
-  const nextVal = !current;
-  db.updateAutoEarnSetting(ctx.from.id, nextVal);
+  const current = Boolean(user.auto_earn_enabled === 1);
+  if (!current) {
+    return ctx.reply(
+      `🌱 <b>Turn On USD Auto-Save?</b>\n` +
+      `──────────────────────────\n` +
+      `• <b>Savings is held in USD.</b>\n` +
+      `• When your savings period is due (2+ hrs idle), any idle local currency balances (NGN, GBP, EUR, etc.) will automatically convert to USD at the <b>live FX rate</b> (0% conversion fee) and earn daily yield.\n` +
+      `• You keep 90% of earned interest and can withdraw or turn Auto-Save off anytime.`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [btnSuccess("✅ I Understand, Turn On Auto-Save", "confirm_auto_earn_on")],
+          [btnDefault("Cancel", "action_yields")],
+        ]),
+      }
+    );
+  }
+  db.updateAutoEarnSetting(ctx.from.id, false);
   await ctx.reply(
-    nextVal
-      ? "🟢 <b>Auto-Earn Enabled!</b>\n\nWhen your dollars sit idle on Proxim for 2+ hours, they automatically earn interest in high-yield daily savings. You keep 90% of the interest earned upon withdrawal, and your money is always 100% available whenever you make a payment!"
-      : "⚪ <b>Auto-Earn Disabled.</b>\n\nYour funds will remain in your standard wallet balance without earning interest.",
+    "⚪ <b>Auto-Save Disabled.</b>\n\nYour funds will remain in their balances without auto-converting to USD savings.",
+    { parse_mode: "HTML" }
+  );
+  return showYields(ctx);
+});
+
+bot.action("confirm_auto_earn_on", async (ctx) => {
+  ctx.answerCbQuery();
+  const user = requireUser(ctx);
+  if (!user) return;
+  db.updateAutoEarnSetting(ctx.from.id, true);
+  await ctx.reply(
+    "🟢 <b>Auto-Save Enabled!</b>\n\nWhen your balances sit idle for 2+ hours, eligible funds (including held local currencies converted at live FX rates) automatically move into USD Dollar Savings to earn daily yield.",
+    { parse_mode: "HTML" }
+  );
+  return showYields(ctx);
+});
+
+bot.action("toggle_deposit_settlement", async (ctx) => {
+  ctx.answerCbQuery();
+  const user = requireUser(ctx);
+  if (!user) return;
+  const current = String(user.deposit_settlement_mode || "local").toLowerCase() === "usdc" ? "usdc" : "local";
+  const next = current === "local" ? "usdc" : "local";
+  db.updateDepositSettlementMode(ctx.from.id, next);
+  await ctx.reply(
+    next === "local"
+      ? "🏦 <b>Deposit Settlement: Hold Local Currencies</b>\n\nVerified fiat deposits (NGN, GBP, EUR, USD, etc.) will stay in their local currency with 0% deposit fee."
+      : "💵 <b>Deposit Settlement: Auto-Settle in USDC</b>\n\nVerified fiat deposits will automatically convert and settle into USDC at live FX rates with 0% deposit fee.",
     { parse_mode: "HTML" }
   );
   return showYields(ctx);

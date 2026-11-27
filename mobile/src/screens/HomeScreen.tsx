@@ -586,6 +586,38 @@ export function HomeScreen({
             {ngnRate ? `  ·  $1 = ₦${Math.round(ngnRate).toLocaleString("en-NG")}` : ""}
           </Text>
         ) : null}
+        {!hidden && (balance?.fiatBalances?.length ?? 0) > 0 ? (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={{ marginTop: 8 }}
+            contentContainerStyle={{ gap: 6 }}
+          >
+            {(balance?.fiatBalances || []).map((p) => (
+              <View
+                key={`${p.currency}-${p.accountId}`}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 5,
+                  paddingHorizontal: 9,
+                  paddingVertical: 4,
+                  borderRadius: 999,
+                  backgroundColor: "rgba(255,255,255,0.12)",
+                  borderWidth: 1,
+                  borderColor: "rgba(255,255,255,0.16)",
+                }}
+              >
+                <CurrencyLogo code={p.currency} size={14} />
+                <Text style={{ fontSize: 12, fontWeight: "700", color: HERO.text }}>
+                  {p.currency === "NGN"
+                    ? `₦${Math.round(p.available).toLocaleString("en-NG")}`
+                    : `${p.symbol}${p.available.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                </Text>
+              </View>
+            ))}
+          </ScrollView>
+        ) : null}
         {!hidden && (eurcBal > 0 || pendingBridge > 0) ? (
           <Text style={styles.extraLine}>
             {[eurcBal > 0 ? `Includes €${eurcBal.toFixed(2)} in EURC` : null, pendingBridge > 0 ? `${formatUsdc(pendingBridge)} arriving` : null]

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, RefreshControl, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "../api/client";
 import type { SavingsOverview } from "../api/types";
@@ -31,7 +31,7 @@ function formatCompactTvl(tvl?: number): string | null {
 }
 
 export function SavingsScreen({ onBack }: { onBack: () => void }) {
-  const { activeAccount, dataVersion, requestApproval, balanceHidden } = useApp();
+  const { activeAccount, dataVersion, refreshMe, requestApproval, balanceHidden } = useApp();
   const isBiz = activeAccount === "business";
 
   const [savings, setSavings] = useState<SavingsOverview | null>(null);
@@ -40,6 +40,7 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [togglingAutoSave, setTogglingAutoSave] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -125,6 +126,41 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
     }
   };
 
+  const applyAutoSaveToggle = async (nextVal: boolean) => {
+    setError(null);
+    setNotice(null);
+    setTogglingAutoSave(true);
+    try {
+      await api.updateProfile({ autoEarnEnabled: nextVal });
+      await refreshMe();
+      setSavings((prev) => (prev ? { ...prev, autoEarnEnabled: nextVal } : prev));
+      setNotice(
+        nextVal
+          ? "Auto-Save is now ON. Eligible idle balances will convert to USD at live FX rates and earn daily yield."
+          : "Auto-Save is now OFF. Your funds will stay in your balances without auto-converting."
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update Auto-Save right now.");
+    } finally {
+      setTogglingAutoSave(false);
+    }
+  };
+
+  const handleToggleAutoSave = (nextVal: boolean) => {
+    if (!nextVal) {
+      applyAutoSaveToggle(false);
+      return;
+    }
+    Alert.alert(
+      "Turn On USD Auto-Save?",
+      "Dollar Savings is in USD and live FX rates apply.\n\nWhen your savings period is due, any idle local currency balances (NGN, GBP, EUR, etc.) will automatically convert to USD at the live FX rate (0% conversion fee) and move into the highest-APY Dollar Savings vault. You can withdraw or turn this off anytime.",
+      [
+        { text: "Not now", style: "cancel" },
+        { text: "I Understand, Turn On", onPress: () => applyAutoSaveToggle(true) },
+      ]
+    );
+  };
+
   return (
     <View style={styles.root}>
       <ScreenHeader
@@ -196,19 +232,27 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
               )}
             </Card>
 
-            {/* Auto-Save info banner */}
+            {/* Auto-Save interactive toggle banner */}
             <View style={styles.autoSaveBanner}>
               <View style={{ paddingTop: 2 }}>
                 <SavingsLogoMerger size={24} showBadge={false} />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.autoSaveTitle}>
-                  Auto-Save {savings?.autoEarnEnabled ? "is ON" : "uses the highest APY"}
+                  Auto-Save {savings?.autoEarnEnabled ? "is ON" : "is OFF"}
                 </Text>
                 <Text style={styles.autoSaveSub}>
-                  When Auto-Save moves idle funds, it automatically picks the highest-APY USDC vault. For manual deposits, choose any vault below.
+                  {savings?.autoEarnEnabled
+                    ? "Idle balances automatically convert to USD at live FX rates and earn in the highest-APY vault."
+                    : "Dollar Savings is in USD and live FX rates apply. Turn on to automatically save idle balances."}
                 </Text>
               </View>
+              <Switch
+                value={Boolean(savings?.autoEarnEnabled)}
+                onValueChange={handleToggleAutoSave}
+                disabled={togglingAutoSave}
+                trackColor={{ true: COLORS.primary, false: COLORS.borderStrong }}
+              />
             </View>
 
             {/* Step 1: Selectable savings vault cards */}

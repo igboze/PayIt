@@ -80,6 +80,7 @@ export function SendFlow({
   // Shared data
   const [rate, setRate] = useState<number | null>(null);
   const [balanceUsd, setBalanceUsd] = useState<number | null>(null);
+  const [heldNgn, setHeldNgn] = useState<number>(0);
   const [contacts, setContacts] = useState<ContactItem[]>([]);
 
   useEffect(() => {
@@ -87,7 +88,14 @@ export function SendFlow({
     api.listContacts().then((r) => setContacts(r.contacts || [])).catch(() => { });
   }, []);
   useEffect(() => {
-    api.getBalances(activeAccount).then((b) => setBalanceUsd(Number(b.totalUsdc ?? 0))).catch(() => { });
+    api
+      .getBalances(activeAccount)
+      .then((b) => {
+        setBalanceUsd(Number(b.totalUsdc ?? 0));
+        const ngnPocket = (b.fiatBalances || []).find((f) => f.currency === "NGN");
+        setHeldNgn(Number(ngnPocket?.available ?? 0));
+      })
+      .catch(() => { });
   }, [activeAccount, dataVersion]);
 
   const savedBank = useMemo(() => contacts.filter((c) => c.accountNumber && /^\d{10}$/.test(c.accountNumber)), [contacts]);
@@ -203,13 +211,42 @@ export function SendFlow({
   const [noteOpen, setNoteOpen] = useState(false);
   const [sending, setSending] = useState(false);
 
+  const calcTieredNgnFee = (ngn: number): number => {
+    if (ngn <= 0) return 0;
+    const pct = Math.floor(ngn * 0.01);
+    return ngn < 100000 ? Math.min(pct, 500) : pct;
+  };
+
+  const calcMaxSendableNgn = (availNgn: number): number => {
+    const avail = Math.floor(Math.max(0, availNgn));
+    if (avail <= 0) return 0;
+    let lo = 0;
+    let hi = avail;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (mid + calcTieredNgnFee(mid) <= avail) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  };
+
   const amountNgn = Number(amount || 0);
   const usdCost = rate ? amountNgn / rate : null;
   const isBankSend = recipient?.kind === "bank";
-  const bankFeeUsd = isBankSend && usdCost !== null ? Number((usdCost * 0.01).toFixed(4)) : 0;
+  const usingHeldNgn = isBankSend && heldNgn > 0 && (heldNgn >= amountNgn + calcTieredNgnFee(amountNgn) || (balanceUsd ?? 0) < 1);
+  const heldNgnFee = usingHeldNgn ? calcTieredNgnFee(amountNgn) : 0;
+  const heldNgnTotal = usingHeldNgn ? amountNgn + heldNgnFee : 0;
+  const bankFeeUsd = isBankSend && !usingHeldNgn && usdCost !== null ? Number((usdCost * 0.01).toFixed(4)) : 0;
   const totalUsdDebit = usdCost !== null ? usdCost + bankFeeUsd : null;
   const minNgn = recipient?.kind === "user" ? 100 : 500;
-  const overBalance = totalUsdDebit !== null && balanceUsd !== null && totalUsdDebit > balanceUsd + 1e-9;
+  const maxSendableNgn = usingHeldNgn
+    ? calcMaxSendableNgn(heldNgn)
+    : balanceUsd !== null && rate
+      ? Math.floor((isBankSend ? balanceUsd / 1.01 : balanceUsd) * rate)
+      : 0;
+  const overBalance = usingHeldNgn
+    ? heldNgnTotal > heldNgn + 0.01
+    : totalUsdDebit !== null && balanceUsd !== null && totalUsdDebit > balanceUsd + 1e-9;
 
   const pressKey = (k: string) => {
     tap("light");
@@ -240,6 +277,7 @@ export function SendFlow({
           accountType: activeAccount,
           amountNgn: Math.round(amountNgn),
           bankCode: recipient.bankCode,
+          bankName: recipient.bankName,
           accountNumber: recipient.accountNumber,
           accountName: recipient.name,
           narration: note.trim() || undefined,
@@ -316,15 +354,23 @@ export function SendFlow({
               {fmtNgn(amountNgn)}
             </Text>
             <Text style={[styles.amountHint, overBalance && { color: COLORS.dangerText }]}>
-              {usdCost !== null && amountNgn > 0
-                ? isBankSend
-                  ? `${formatUsdc(totalUsdDebit ?? usdCost)} total (incl. ${formatUsdc(bankFeeUsd)} 1% fee)${rate ? ` · $1 = ₦${Math.round(rate).toLocaleString("en-NG")}` : ""}`
-                  : `${formatUsdc(usdCost)} from your balance (Free)${rate ? ` · $1 = ₦${Math.round(rate).toLocaleString("en-NG")}` : ""}`
+              {amountNgn > 0
+                ? usingHeldNgn
+                  ? overBalance
+                    ? `Need ${fmtNgn(heldNgnTotal)} (incl. ${fmtNgn(heldNgnFee)} fee) · Max sendable ${fmtNgn(maxSendableNgn)}`
+                    : `They get ${fmtNgn(amountNgn)} · Fee ${fmtNgn(heldNgnFee)} · Total ${fmtNgn(heldNgnTotal)} (NGN balance)`
+                  : usdCost !== null
+                    ? isBankSend
+                      ? `${formatUsdc(totalUsdDebit ?? usdCost)} total (incl. ${formatUsdc(bankFeeUsd)} 1% fee)${rate ? ` · $1 = ₦${Math.round(rate).toLocaleString("en-NG")}` : ""}`
+                      : `${formatUsdc(usdCost)} from your balance (Free)${rate ? ` · $1 = ₦${Math.round(rate).toLocaleString("en-NG")}` : ""}`
+                    : " "
                 : balanceHidden
                   ? "Balance hidden"
-                  : balanceUsd !== null
-                    ? `Balance ${formatUsdc(balanceUsd)}${rate ? ` ≈ ${fmtNgn(balanceUsd * rate)}` : ""}`
-                    : " "}
+                  : heldNgn > 0 && isBankSend
+                    ? `NGN balance ${fmtNgn(heldNgn)} · Max sendable ${fmtNgn(calcMaxSendableNgn(heldNgn))}`
+                    : balanceUsd !== null
+                      ? `Balance ${formatUsdc(balanceUsd)}${rate ? ` ≈ ${fmtNgn(balanceUsd * rate)}` : ""}`
+                      : " "}
             </Text>
           </View>
 
@@ -346,6 +392,19 @@ export function SendFlow({
                 </PressableScale>
               );
             })}
+            {maxSendableNgn >= minNgn ? (
+              <PressableScale
+                onPress={() => {
+                  setAmount(String(maxSendableNgn));
+                  setError(null);
+                }}
+                haptic="selection"
+                depth={0.94}
+                style={[styles.quick, amountNgn === maxSendableNgn && styles.quickOn]}
+              >
+                <Text style={[styles.quickText, amountNgn === maxSendableNgn && { color: COLORS.primaryDark }]}>Max</Text>
+              </PressableScale>
+            ) : null}
           </View>
 
           <PressableScale

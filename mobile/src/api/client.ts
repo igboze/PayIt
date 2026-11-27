@@ -306,13 +306,13 @@ export const api = {
     return request<
       | { mode: "existing_passkey"; email: string; name: string | null; message: string }
       | {
-          mode: "signup";
-          signupId: string;
-          email: string;
-          name: string | null;
-          challengeId: string;
-          options: Record<string, unknown>;
-        }
+        mode: "signup";
+        signupId: string;
+        email: string;
+        name: string | null;
+        challengeId: string;
+        options: Record<string, unknown>;
+      }
     >("/auth/google/start", {
       method: "POST",
       auth: false,
@@ -342,6 +342,8 @@ export const api = {
     pin: string;
     acceptTerms: boolean;
     response: Record<string, unknown>;
+    email?: string;
+    displayName?: string;
   }) {
     const dev = await getDeviceInfo();
     return request<{ user: ProximUser; session: AuthSession }>("/auth/signup/finish", {
@@ -400,6 +402,7 @@ export const api = {
     bizSenderName?: string;
     username?: string;
     autoEarnEnabled?: boolean;
+    depositSettlementMode?: "local" | "usdc";
     accountType?: AccountType;
   }) {
     return request<{ user: ProximUser }>("/me", { method: "PATCH", body });

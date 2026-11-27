@@ -209,6 +209,8 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
         pin,
         acceptTerms: true,
         response,
+        ...(signupEmail.trim() ? { email: signupEmail.trim().toLowerCase() } : {}),
+        ...(signupName ? { displayName: signupName } : {}),
       });
       await signInWithSession(finished.user, finished.session);
     } catch (err) {

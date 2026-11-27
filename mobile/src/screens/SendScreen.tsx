@@ -1061,6 +1061,9 @@ export function SendScreen({
               onChangeText={(v) => setGlobalAmount(v.replace(/[^\d.]/g, ""))}
               keyboardType="decimal-pad"
             />
+            <Text style={[styles.fieldHint, { marginTop: -4, marginBottom: 10 }]}>
+              Recipient receives this exact amount. Proxim's fee (1%, capped at $0.50 under $100; 1% for $100+) and the partner network fee are calculated together on the confirmation screen.
+            </Text>
 
             {!selectedCounterpartyId && selectedRail ? (
               <>

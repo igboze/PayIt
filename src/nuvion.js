@@ -97,6 +97,130 @@ function getFxMarginBps(direction = "default") {
 }
 
 /**
+ * Whether verified (Nuvion) inbound fiat deposits default to being held in their
+ * local currency checking account (0% inbound fee) rather than auto-converting to USDC.
+ * Can be globally disabled via NUVION_HOLD_LOCAL_FIAT=false; per-user preference
+ * `users.deposit_settlement_mode` ('local' | 'usdc') lets each user choose.
+ */
+function isLocalFiatHoldEnabled() {
+  return String(process.env.NUVION_HOLD_LOCAL_FIAT ?? "true").trim().toLowerCase() !== "false";
+}
+
+function shouldHoldInboundFiatForUser(user) {
+  if (!isLocalFiatHoldEnabled()) return false;
+  const mode = String(user?.deposit_settlement_mode || "local").trim().toLowerCase();
+  return mode !== "usdc";
+}
+
+function getTieredFeeConfig() {
+  const ngnSmallThresholdMajor = Math.max(0, Number(process.env.PROXIM_NGN_SMALL_THRESHOLD ?? 100000));
+  const ngnSmallCapMajor = Math.max(0, Number(process.env.PROXIM_NGN_SMALL_CAP ?? 500));
+  const intlSmallThresholdUsd = Math.max(0, Number(process.env.PROXIM_INTL_SMALL_THRESHOLD_USD ?? 100));
+  const intlSmallCapUsd = Math.max(0, Number(process.env.PROXIM_INTL_SMALL_CAP_USD ?? 0.5));
+  return {
+    feeBps: getFxMarginBps("outbound"),
+    ngnSmallThresholdMajor,
+    ngnSmallThresholdMinor: toNuvionMinor(ngnSmallThresholdMajor),
+    ngnSmallCapMajor,
+    ngnSmallCapMinor: toNuvionMinor(ngnSmallCapMajor),
+    intlSmallThresholdUsd,
+    intlSmallCapUsd,
+  };
+}
+
+/**
+ * Tiered Proxim outbound withdrawal/transfer fee in integer minor units (2 decimals):
+ * - NGN:
+ *     - Small (< ₦100,000): 1% capped at ₦500
+ *     - Large (>= ₦100,000): 1% uncapped
+ * - International / Foreign currencies (USD, GBP, EUR, CAD, etc.):
+ *     - Small (< $100 equivalent): 1% capped at $0.50 equivalent
+ *     - Large (>= $100 equivalent): 1% uncapped
+ *
+ * `usdRate` = units of `currency` per 1 USD (e.g. 0.79 for GBP, 1500 for NGN, 1 for USD).
+ */
+function calcTieredProximFeeMinor(currency, principalMinor, { usdEquivalent = null, usdRate = null, marginBps = null } = {}) {
+  const code = String(currency || "USD").trim().toUpperCase();
+  const amt = Math.max(0, Math.round(Number(principalMinor) || 0));
+  const cfg = getTieredFeeConfig();
+  const bps = marginBps != null ? Math.max(0, Number(marginBps)) : cfg.feeBps;
+  if (amt <= 0 || bps <= 0) return 0;
+
+  const rawPctMinor = Math.floor((amt * bps) / 10000);
+  if (rawPctMinor <= 0) return 0;
+
+  if (code === "NGN") {
+    if (amt < cfg.ngnSmallThresholdMinor) {
+      return Math.min(rawPctMinor, cfg.ngnSmallCapMinor);
+    }
+    return rawPctMinor;
+  }
+
+  const rate = Number(usdRate);
+  let usdEq = Number(usdEquivalent);
+  if (!Number.isFinite(usdEq) || usdEq <= 0) {
+    if (code === "USD" || code === "USC" || code === "UST") {
+      usdEq = fromNuvionMinor(amt);
+    } else if (Number.isFinite(rate) && rate > 0) {
+      usdEq = fromNuvionMinor(amt) / rate;
+    } else {
+      usdEq = fromNuvionMinor(amt);
+    }
+  }
+
+  if (usdEq < cfg.intlSmallThresholdUsd) {
+    const capMinor =
+      code === "USD" || code === "USC" || code === "UST"
+        ? toNuvionMinor(cfg.intlSmallCapUsd)
+        : Number.isFinite(rate) && rate > 0
+          ? toNuvionMinor(cfg.intlSmallCapUsd * rate)
+          : toNuvionMinor(cfg.intlSmallCapUsd);
+    return Math.min(rawPctMinor, Math.max(0, capMinor));
+  }
+
+  return rawPctMinor;
+}
+
+/**
+ * Compute the exact maximum sendable principal (in minor units) given an available
+ * balance and fixed partner rail fee so that:
+ *   maxSendableMinor + railFeeMinor + calcTieredProximFeeMinor(currency, maxSendableMinor) <= availableMinor
+ */
+function calcMaxSendableMinor({ availableMinor, railFeeMinor = 0, currency = "USD", usdRate = null, marginBps = null }) {
+  const avail = Math.max(0, Math.round(Number(availableMinor) || 0));
+  const rail = Math.max(0, Math.round(Number(railFeeMinor) || 0));
+  if (avail <= rail) {
+    return {
+      maxSendableMinor: 0,
+      proximFeeMinor: 0,
+      railFeeMinor: rail,
+      totalFeeMinor: rail,
+      totalDeductedMinor: 0,
+    };
+  }
+  let lo = 0;
+  let hi = avail - rail;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    const fee = calcTieredProximFeeMinor(currency, mid, { usdRate, marginBps });
+    if (mid + rail + fee <= avail) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  const proximFeeMinor = calcTieredProximFeeMinor(currency, lo, { usdRate, marginBps });
+  const totalFeeMinor = rail + proximFeeMinor;
+  return {
+    maxSendableMinor: lo,
+    proximFeeMinor,
+    railFeeMinor: rail,
+    totalFeeMinor,
+    totalDeductedMinor: lo + totalFeeMinor,
+  };
+}
+
+/**
  * Whether Tier-1 Global Banking / KYC / Cards is open to all general users.
  * Defaults to PUBLIC (`true`) in production now that live verification is complete
  * (even if legacy `NUVION_PUBLIC_LAUNCH=false` was set during initial Railway setup),
@@ -1270,6 +1394,11 @@ module.exports = {
   isPublicLaunchEnabled,
   isUserAllowedNuvion,
   getFxMarginBps,
+  isLocalFiatHoldEnabled,
+  shouldHoldInboundFiatForUser,
+  getTieredFeeConfig,
+  calcTieredProximFeeMinor,
+  calcMaxSendableMinor,
   toNuvionMinor,
   fromNuvionMinor,
   calcMarginMinor,

@@ -685,13 +685,44 @@ export function ProfileScreen({
     }
   };
 
-  const handleToggleAutoEarn = async (val: boolean) => {
+  const applyAutoEarnToggle = async (val: boolean) => {
     try {
       await api.updateProfile({ autoEarnEnabled: val });
       await refreshMe();
-      setNotice(`Auto-Earn ${val ? "enabled" : "disabled"}.`);
+      setNotice(`Auto-Save ${val ? "enabled" : "disabled"}.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update Auto-Earn.");
+      setError(err instanceof Error ? err.message : "Could not update Auto-Save.");
+    }
+  };
+
+  const handleToggleAutoEarn = (val: boolean) => {
+    if (!val) {
+      applyAutoEarnToggle(false);
+      return;
+    }
+    Alert.alert(
+      "Enable USD Auto-Save?",
+      "Dollar Savings is held in USD. When your savings period is due, idle local currency balances (NGN, GBP, EUR, etc.) will automatically convert into USD at the live FX rate (0% conversion fee) and earn daily yield. You can turn this off anytime.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Turn On Auto-Save", onPress: () => applyAutoEarnToggle(true) },
+      ]
+    );
+  };
+
+  const handleChangeSettlementMode = async (mode: "local" | "usdc") => {
+    if ((user?.depositSettlementMode || "local") === mode) return;
+    setError(null);
+    try {
+      await api.updateProfile({ depositSettlementMode: mode });
+      await refreshMe();
+      setNotice(
+        mode === "local"
+          ? "Deposits will remain in their local currencies (0% deposit fee)."
+          : "Verified deposits will automatically settle in USDC (live FX rate, 0% deposit fee)."
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update deposit preference.");
     }
   };
 
@@ -1233,14 +1264,33 @@ export function ProfileScreen({
 
             <View style={styles.switchRow}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.rowTitle}>Auto-Earn Yield</Text>
-                <Text style={styles.rowSub}>Automatically put idle money to work in savings</Text>
+                <Text style={styles.rowTitle}>Auto-Save (USD Yield)</Text>
+                <Text style={styles.rowSub}>Savings is in USD · Live FX rates apply when converting idle local currencies</Text>
               </View>
               <Switch
                 value={Boolean(user?.autoEarnEnabled)}
                 onValueChange={handleToggleAutoEarn}
                 trackColor={{ true: COLORS.primary, false: COLORS.borderStrong }}
               />
+            </View>
+
+            <View style={{ marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: COLORS.border }}>
+              <Text style={styles.rowTitle}>Verified Deposit Settlement</Text>
+              <Text style={[styles.rowSub, { marginBottom: 8 }]}>
+                Choose whether verified local currency deposits stay in their currency or auto-convert to USDC (0% deposit fee).
+              </Text>
+              <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+                <Pill
+                  label="Hold local currencies"
+                  active={(user?.depositSettlementMode || "local") === "local"}
+                  onPress={() => handleChangeSettlementMode("local")}
+                />
+                <Pill
+                  label="Auto-settle in USDC"
+                  active={user?.depositSettlementMode === "usdc"}
+                  onPress={() => handleChangeSettlementMode("usdc")}
+                />
+              </View>
             </View>
           </Card>
 

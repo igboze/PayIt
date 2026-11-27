@@ -73,6 +73,29 @@ async function checkAndRunAutoEarn(options = {}) {
   let allocatedCount = 0;
 
   for (const user of idleUsers) {
+    // 0. If user holds verified local-currency balances on Nuvion and has Auto-Save ON,
+    //    release them through the crypto bridge route into their wallet so they flow into USD savings.
+    try {
+      const nuvion = require("./nuvion");
+      if (nuvion.isNuvionConfigured() && nuvion.isLocalFiatHoldEnabled()) {
+        const orchestrator = require("./nuvion_orchestrator");
+        await orchestrator.releaseHeldFiatForAutoSave({
+          user,
+          accountType: "personal",
+          minUsdEquivalent: MIN_AUTO_EARN_BALANCE,
+        });
+        if (user.business_deposit_address) {
+          await orchestrator.releaseHeldFiatForAutoSave({
+            user,
+            accountType: "business",
+            minUsdEquivalent: MIN_AUTO_EARN_BALANCE,
+          });
+        }
+      }
+    } catch (relErr) {
+      console.warn(`[auto_earn] Nuvion held-fiat release note for user ${user.telegram_id}:`, relErr.message);
+    }
+
     // 1. Personal Account Auto-Earn
     try {
       const personalAddress = user.deposit_address;

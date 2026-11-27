@@ -11,11 +11,13 @@ async function sendTransactionalEmail({ to, subject, html, text }) {
     return { sent: false, reason: "invalid_recipient" };
   }
 
+  let lastError = null;
+
   // 1. Resend (https://resend.com)
-  const resendApiKey = process.env.RESEND_API_KEY;
+  const resendApiKey = (process.env.RESEND_API_KEY || "").trim();
   if (resendApiKey) {
     try {
-      const from = process.env.RESEND_FROM_EMAIL || "Proxim Global Banking <support@proxim.app>";
+      const from = (process.env.RESEND_FROM_EMAIL || "Proxim <igboze@proximfi.xyz>").trim();
       const resp = await axios.post(
         "https://api.resend.com/emails",
         {
@@ -35,15 +37,16 @@ async function sendTransactionalEmail({ to, subject, html, text }) {
       );
       return { sent: true, provider: "resend", id: resp.data?.id };
     } catch (err) {
+      lastError = err.response?.data?.message || err.message;
       console.warn(`[email:resend] Failed to send email to ${to}:`, err.response?.data || err.message);
     }
   }
 
   // 2. Postmark (https://postmarkapp.com)
-  const postmarkToken = process.env.POSTMARK_SERVER_TOKEN;
+  const postmarkToken = (process.env.POSTMARK_SERVER_TOKEN || "").trim();
   if (postmarkToken) {
     try {
-      const from = process.env.POSTMARK_FROM_EMAIL || "support@proxim.app";
+      const from = (process.env.POSTMARK_FROM_EMAIL || "igboze@proximfi.xyz").trim();
       const resp = await axios.post(
         "https://api.postmarkapp.com/email",
         {
@@ -64,6 +67,7 @@ async function sendTransactionalEmail({ to, subject, html, text }) {
       );
       return { sent: true, provider: "postmark", id: resp.data?.MessageID };
     } catch (err) {
+      lastError = err.response?.data?.Message || err.message;
       console.warn(`[email:postmark] Failed to send email to ${to}:`, err.response?.data || err.message);
     }
   }
@@ -72,40 +76,55 @@ async function sendTransactionalEmail({ to, subject, html, text }) {
   const smtpUser = (process.env.SMTP_USER || "").trim();
   const smtpPass = (process.env.SMTP_PASS || "").trim();
   if (smtpUser && smtpPass) {
-    try {
-      const nodemailer = require("nodemailer");
-      const host = (process.env.SMTP_HOST || "mail.privateemail.com").trim();
-      const port = Number(process.env.SMTP_PORT || 465);
-      const secure = process.env.SMTP_SECURE !== undefined
-        ? String(process.env.SMTP_SECURE).toLowerCase() === "true"
-        : port === 465;
-      const rawFrom = (process.env.SMTP_FROM_EMAIL || `Proxim <${smtpUser}>`).trim();
-      const from = rawFrom.replace(/^["']+|["']+$/g, "").trim();
-      const transporter = nodemailer.createTransport({
-        host,
-        port,
-        secure,
-        auth: { user: smtpUser, pass: smtpPass },
-        connectionTimeout: 10000,
-        greetingTimeout: 10000,
-        socketTimeout: 15000,
-      });
-      const info = await transporter.sendMail({
-        from,
-        to,
-        subject,
-        html,
-        text: text || html.replace(/<[^>]+>/g, ""),
-      });
-      return { sent: true, provider: "smtp", id: info?.messageId || null };
-    } catch (err) {
-      console.warn(`[email:smtp] Failed to send email to ${to}:`, err.message);
+    const nodemailer = require("nodemailer");
+    const host = (process.env.SMTP_HOST || "mail.privateemail.com").trim();
+    const primaryPort = Number(process.env.SMTP_PORT || 465);
+    const primarySecure = process.env.SMTP_SECURE !== undefined
+      ? String(process.env.SMTP_SECURE).toLowerCase() === "true"
+      : primaryPort === 465;
+    const rawFrom = (process.env.SMTP_FROM_EMAIL || `Proxim <${smtpUser}>`).trim();
+    const primaryFrom = rawFrom.replace(/^["']+|["']+$/g, "").trim();
+    const fallbackFrom = `Proxim <${smtpUser}>`;
+
+    // Try configured port first, then automatically fall back between 465 (SSL) and 587 (STARTTLS)
+    const attempts = [
+      { port: primaryPort, secure: primarySecure, from: primaryFrom },
+      { port: primaryPort === 465 ? 587 : 465, secure: primaryPort !== 465, from: primaryFrom },
+    ];
+    if (primaryFrom.toLowerCase() !== fallbackFrom.toLowerCase()) {
+      attempts.push({ port: primaryPort, secure: primarySecure, from: fallbackFrom });
+    }
+
+    for (const cfg of attempts) {
+      try {
+        const transporter = nodemailer.createTransport({
+          host,
+          port: cfg.port,
+          secure: cfg.secure,
+          auth: { user: smtpUser, pass: smtpPass },
+          connectionTimeout: 10000,
+          greetingTimeout: 10000,
+          socketTimeout: 15000,
+        });
+        const info = await transporter.sendMail({
+          from: cfg.from,
+          to,
+          subject,
+          html,
+          text: text || html.replace(/<[^>]+>/g, ""),
+        });
+        return { sent: true, provider: "smtp", port: cfg.port, id: info?.messageId || null };
+      } catch (err) {
+        lastError = err.message;
+        console.warn(`[email:smtp] Failed to send to ${to} via ${host}:${cfg.port} (from: ${cfg.from}):`, err.message);
+      }
     }
   }
 
-  // If no email provider is configured, log for operational observability
-  console.log(`[email:simulated] To: ${to} | Subject: "${subject}"`);
-  return { sent: false, reason: "no_provider_configured", simulated: true };
+  // If no email provider is configured (or all configured providers failed), log clearly for diagnostics
+  const reason = lastError ? "provider_delivery_failed" : "no_provider_configured";
+  console.warn(`[email:${reason}] To: ${to} | Subject: "${subject}"${lastError ? ` | Error: ${lastError}` : ""}`);
+  return { sent: false, reason, ...(lastError ? { error: lastError } : { simulated: true }) };
 }
 
 async function sendKycStatusEmail({ to, name, status, accountType = "personal" }) {

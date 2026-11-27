@@ -881,6 +881,175 @@ test("Google Sign-In Auth Flow: /auth/config & /auth/google/start create pre-ver
   }
 });
 
+test("Local-Currency Hold, User Settlement Toggle, Auto-Save OFF Default, Tiered Outbound Fees & Direct Held-Fiat Payout", async () => {
+  const nuvion = require("../src/nuvion");
+  const orchestrator = require("../src/nuvion_orchestrator");
+  const payouts = require("../src/nuvion_payouts");
+  const { ethers } = require("ethers");
+
+  // 1. Every new user defaults to auto_earn_enabled = 0 (OFF) and deposit_settlement_mode = 'local'
+  const w = ethers.Wallet.createRandom();
+  const tg = 994411;
+  const created = db.createUserWithWallet(tg, "local_hold_tester", w.address, w.privateKey, "4927", null, null, null);
+  assert.equal(created.auto_earn_enabled, 0, "New user must have Auto-Save OFF by default");
+  assert.equal(created.deposit_settlement_mode, "local", "New user must default to holding local currencies");
+  assert.equal(nuvion.shouldHoldInboundFiatForUser(created), true);
+
+  // User can switch deposit settlement preference to 'usdc' and back to 'local'
+  db.updateDepositSettlementMode(tg, "usdc");
+  assert.equal(nuvion.shouldHoldInboundFiatForUser(db.getUser(tg)), false);
+  db.updateDepositSettlementMode(tg, "local");
+  assert.equal(nuvion.shouldHoldInboundFiatForUser(db.getUser(tg)), true);
+
+  // 2. Tiered outbound Proxim fee engine:
+  //    - NGN < ₦100,000: 1% capped at ₦500
+  //    - NGN >= ₦100,000: 1% uncapped
+  assert.equal(nuvion.calcTieredProximFeeMinor("NGN", 10000_00), 100_00, "₦10,000 -> ₦100 (1%)");
+  assert.equal(nuvion.calcTieredProximFeeMinor("NGN", 80000_00), 500_00, "₦80,000 -> ₦500 cap (small tier)");
+  assert.equal(nuvion.calcTieredProximFeeMinor("NGN", 100000_00), 1000_00, "₦100,000 -> ₦1,000 (1% uncapped)");
+  assert.equal(nuvion.calcTieredProximFeeMinor("NGN", 500000_00), 5000_00, "₦500,000 -> ₦5,000 (1% uncapped)");
+
+  //    - Foreign / International < $100: 1% capped at $0.50
+  //    - Foreign / International >= $100: 1% uncapped
+  assert.equal(nuvion.calcTieredProximFeeMinor("USD", 20_00), 20, "$20 -> $0.20 (1%)");
+  assert.equal(nuvion.calcTieredProximFeeMinor("USD", 80_00), 50, "$80 -> $0.50 cap (small tier)");
+  assert.equal(nuvion.calcTieredProximFeeMinor("USD", 100_00), 100, "$100 -> $1.00 (1% uncapped)");
+  assert.equal(nuvion.calcTieredProximFeeMinor("USD", 500_00), 500, "$500 -> $5.00 (1% uncapped)");
+
+  // 3. Exact Max-Sendable solver: user withdrawing all of ₦10,000 balance
+  const max10k = nuvion.calcMaxSendableMinor({ availableMinor: 10000_00, railFeeMinor: 0, currency: "NGN" });
+  assert.ok(max10k.maxSendableMinor + max10k.totalFeeMinor <= 10000_00);
+  assert.ok(max10k.maxSendableMinor >= 9900_00 && max10k.maxSendableMinor <= 9901_00);
+  // Large balance (₦200,000) max sendable leaves exact 1% uncapped fee
+  const max200k = nuvion.calcMaxSendableMinor({ availableMinor: 200000_00, railFeeMinor: 0, currency: "NGN" });
+  assert.ok(max200k.maxSendableMinor + max200k.totalFeeMinor <= 200000_00);
+  assert.equal(max200k.proximFeeMinor, Math.floor((max200k.maxSendableMinor * 100) / 10000));
+
+  // 4. Verified Nuvion inbound deposit stays held locally with 0% inbound fee (no FX quote or sweep)
+  db.upsertNuvionEntity({
+    telegramId: tg,
+    accountType: "personal",
+    entityId: "ent_local_hold_1",
+    entityType: "individual",
+    status: "approved",
+    legalName: "Local Hold User",
+    uscAccountId: "acct_usc_lh1",
+    uscBaseAddress: "0x4444444444444444444444444444444444444444",
+    selfCounterpartyId: "cp_self_lh1",
+    selfBasePaymentDetailId: "pd_self_lh1",
+  });
+  const entityRecord = db.getNuvionEntityByUser(tg, "personal");
+
+  const nuvionWebhooks = require("../src/nuvion_webhooks");
+  const origBootstrap = nuvionWebhooks.bootstrapApprovedEntity;
+  const origCreateFxQuote = nuvion.createFxQuote;
+  const origCreateTransfer = nuvion.createTransfer;
+  const origListAccounts = nuvion.listAccounts;
+  const origCreateCounterparty = nuvion.createCounterparty;
+  const origCreatePaymentDetail = nuvion.createPaymentDetail;
+  const origNuvionKey = process.env.NUVION_API_KEY;
+  process.env.NUVION_API_KEY = "test_nuvion_key_local_hold";
+
+  let fxCalls = 0;
+  const transferCalls = [];
+  try {
+    nuvionWebhooks.bootstrapApprovedEntity = async () => ({
+      ...entityRecord,
+      self_counterparty_id: "cp_self_lh1",
+      self_base_payment_detail_id: "pd_self_lh1",
+    });
+    nuvion.createFxQuote = async (args) => {
+      fxCalls++;
+      return { id: `fx_lh_${fxCalls}`, from: args.fromCurrency, to: args.toCurrency, amount_from: args.amountFrom || 10000_00, amount_to: 3333, rate: 1500 };
+    };
+    nuvion.createTransfer = async (args) => {
+      transferCalls.push(args);
+      return { id: `tr_lh_${transferCalls.length}`, status: "processing", amount: args.amountMinor };
+    };
+    nuvion.listAccounts = async () => ({
+      data: [
+        { id: "acct_ngn_lh1", currency: "NGN", status: "active", balance: { available: 50000_00, pending: 0 } },
+        { id: "acct_usc_lh1", currency: "USC", status: "active", balance: { available: 0, pending: 0 } },
+      ],
+    });
+    nuvion.createCounterparty = async () => ({ id: "cp_rec_lh1" });
+    nuvion.createPaymentDetail = async () => ({ id: "pd_rec_lh1" });
+
+    // Inbound ₦50,000 deposit held in NGN with 0% fee and 0 FX conversions
+    const holdRes = await orchestrator.handleInboundFiatDeposit({
+      confirmed: {
+        id: "inflow_ngn_50k",
+        account_id: "acct_ngn_lh1",
+        currency: "NGN",
+        amount: 50000_00,
+        applicable_fee: 0,
+        status: "successful",
+        payment_type: "bank-transfer",
+        narration: "Salary",
+      },
+      entityRecord,
+    });
+    assert.equal(holdRes.held, true);
+    assert.equal(holdRes.swept, false);
+    assert.equal(holdRes.feeMinor, 0);
+    assert.equal(fxCalls, 0, "Holding local currency must NOT auto-convert to USDC");
+    assert.equal(transferCalls.length, 0, "Holding local currency must NOT sweep or charge inbound fee");
+
+    // 5. Direct held-NGN payout of ₦10,000 delivers exact ₦10,000 and charges ₦100 Proxim fee
+    const q10k = await payouts.quoteHeldFiatPayout({
+      telegramId: tg,
+      accountType: "personal",
+      railKey: "ngn_nip",
+      sourceCurrency: "NGN",
+      targetCurrency: "NGN",
+      targetAmountMajor: 10000,
+    });
+    assert.equal(q10k.hasEnoughBalance, true);
+    assert.equal(q10k.targetAmountMajor, 10000);
+    assert.equal(q10k.proximFeeMajor, 100);
+    assert.equal(q10k.totalDeductedMajor, 10100);
+
+    // Rejects with helpful max-sendable message when user tries to send all ₦50,000 without fee headroom
+    await assert.rejects(
+      () =>
+        payouts.initiateHeldFiatPayout({
+          telegramId: tg,
+          pin: "4927",
+          accountType: "personal",
+          railKey: "ngn_nip",
+          sourceCurrency: "NGN",
+          targetCurrency: "NGN",
+          targetAmountMajor: 50000,
+          recipientDetails: { account_holder_name: "Ada", bank_code: "044", account_number: "0123456789", bank_name: "Access Bank" },
+        }),
+      /Insufficient NGN balance.*Max you can send/i
+    );
+
+    // 6. Auto-Save trigger releases held NGN via Nuvion crypto route (0% spread) when due
+    const rel = await orchestrator.releaseHeldFiatForAutoSave({
+      user: db.getUser(tg),
+      accountType: "personal",
+      minUsdEquivalent: 5,
+    });
+    assert.equal(rel.released, true);
+    assert.equal(rel.count, 1);
+    assert.equal(transferCalls.length, 1);
+    assert.equal(transferCalls[0].paymentType, "stablecoin-transfer");
+    assert.equal(transferCalls[0].currency, "NGN");
+    assert.equal(transferCalls[0].amountMinor, 50000_00);
+  } finally {
+    nuvionWebhooks.bootstrapApprovedEntity = origBootstrap;
+    nuvion.createFxQuote = origCreateFxQuote;
+    nuvion.createTransfer = origCreateTransfer;
+    nuvion.listAccounts = origListAccounts;
+    nuvion.createCounterparty = origCreateCounterparty;
+    nuvion.createPaymentDetail = origCreatePaymentDetail;
+    if (origNuvionKey === undefined) delete process.env.NUVION_API_KEY;
+    else process.env.NUVION_API_KEY = origNuvionKey;
+    orchestrator._clearParentAccountCache();
+  }
+});
+
 test.after(() => {
   try {
     if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);

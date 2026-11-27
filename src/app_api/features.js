@@ -235,10 +235,11 @@ async function updateProfile(auth, body, publicUserFn) {
   const rawUsername = typeof body?.username === "string" ? body.username.trim().replace(/^@+/, "") : "";
   const accountType = resolveAccountType(auth, body?.accountType);
   const hasAutoEarn = typeof body?.autoEarnEnabled === "boolean";
+  const depositSettlementMode = optStr(body, "depositSettlementMode", { pattern: /^(local|usdc)$/i });
   const activeContext = optStr(body, "activeContext", { pattern: /^(personal|business)$/ });
 
-  if (!senderName && !bizSenderName && !rawUsername && !hasAutoEarn && !activeContext) {
-    throw bad("Provide senderName, bizSenderName, username, autoEarnEnabled, or activeContext to update.");
+  if (!senderName && !bizSenderName && !rawUsername && !hasAutoEarn && !depositSettlementMode && !activeContext) {
+    throw bad("Provide senderName, bizSenderName, username, autoEarnEnabled, depositSettlementMode, or activeContext to update.");
   }
   try {
     if (rawUsername) {
@@ -256,6 +257,7 @@ async function updateProfile(auth, body, publicUserFn) {
     if (senderName) db.setUserSenderName(auth.telegramId, senderName, accountType);
     if (bizSenderName) db.setUserSenderName(auth.telegramId, bizSenderName, "business");
     if (hasAutoEarn) db.updateAutoEarnSetting(auth.telegramId, body.autoEarnEnabled);
+    if (depositSettlementMode) db.updateDepositSettlementMode(auth.telegramId, depositSettlementMode.toLowerCase());
     if (activeContext) {
       if (activeContext === "business" && !auth.user.business_deposit_address) {
         throw new FeatureError(404, "no_business_account", "Set up a business account before switching to it.");

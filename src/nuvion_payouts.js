@@ -250,20 +250,28 @@ async function quoteGlobalPayout({
   const nuvionCostMinor = nuvionPrincipalMinor + nuvionRailFeeMinor;
   const nuvionCostUsd = nuvion.fromNuvionMinor(nuvionCostMinor);
 
-  // Proxim platform fee: enforced strictly (default 1.00% with $0.50 minimum on international payouts)
+  // Tiered Proxim platform fee:
+  // - Small (< $100 USD eq): 1% capped at $0.50
+  // - Large (>= $100 USD eq): 1% uncapped
+  // Combined transparently with Nuvion's partner rail fee.
   const marginBps = nuvion.getFxMarginBps("outbound");
-  const minProximFeeMinor = Math.max(0, Math.round(Number(process.env.PROXIM_MIN_PAYOUT_FEE_USD ?? 0.5) * 100));
-  const rawMarginMinor = marginBps > 0 ? nuvion.calcMarginMinor(nuvionPrincipalMinor, marginBps) : 0;
-  const marginMinor = marginBps > 0 ? Math.max(minProximFeeMinor, rawMarginMinor) : 0;
-  const userTotalMinor = nuvionCostMinor + marginMinor;
+  const marginMinor = nuvion.calcTieredProximFeeMinor("USD", nuvionPrincipalMinor, {
+    usdEquivalent: nuvionPrincipalUsd,
+    marginBps,
+  });
+  const totalFeeMinor = nuvionRailFeeMinor + marginMinor;
+  const userTotalMinor = nuvionPrincipalMinor + totalFeeMinor;
 
   const marginUsd = nuvion.fromNuvionMinor(marginMinor);
+  const totalFeeUsd = nuvion.fromNuvionMinor(totalFeeMinor);
   const userTotalUsd = nuvion.fromNuvionMinor(userTotalMinor);
   const effectiveRate = userTotalUsd > 0 ? (Number(targetAmountMajor) / userTotalUsd) : Number(quote.rate || 0);
 
   return {
     entity,
     rail,
+    fundingMode: "usc_bridge",
+    sourceCurrency: "USD",
     targetCurrency: code,
     targetAmountMajor: Number(targetAmountMajor),
     targetAmountMinor,
@@ -279,11 +287,375 @@ async function quoteGlobalPayout({
     marginBps,
     marginMinor,
     marginUsd,
+    proximFeeMinor: marginMinor,
+    proximFeeUsd: marginUsd,
+    totalFeeMinor,
+    totalFeeUsd,
     userTotalMinor,
     userTotalUsd,
     effectiveRate,
     expiresAt: quote.quote?.expires_at || (Date.now() + 180000),
     validForSec: quote.quote?.valid_for || 180,
+  };
+}
+
+/**
+ * Quote a direct payout funded directly from a user's held local-currency checking account on Nuvion
+ * (e.g. held NGN -> NGN NIP, held GBP -> GBP FPS, or held NGN -> GBP/USD cross-currency).
+ *
+ * Fee rules:
+ * - Local NGN -> NGN: Proxim tiered fee only (1% capped at ₦500 under ₦100,000; 1% uncapped for ₦100,000+).
+ * - International / foreign-currency or cross-currency: Nuvion partner rail fee + Proxim tiered fee
+ *   (1% capped at $0.50 equiv under $100; 1% uncapped $100+).
+ * - Exact recipient delivery: recipient always receives `targetAmountMajor`; fees are added on top,
+ *   and `maxSendableMajor` shows the exact max the user can send if withdrawing all their balance.
+ */
+async function quoteHeldFiatPayout({
+  telegramId,
+  accountType = "personal",
+  railKey,
+  sourceCurrency,
+  targetCurrency,
+  targetAmountMajor,
+  usdRateHint = null,
+}) {
+  const orchestrator = require("./nuvion_orchestrator");
+  const srcCode = String(sourceCurrency || "").toUpperCase();
+  const dstCode = String(targetCurrency || "").toUpperCase();
+  if (!corridors.isSupportedFiatCurrency(dstCode)) {
+    throw new Error(`Currency ${dstCode} is not supported for payouts.`);
+  }
+  const rail = corridors.getRailByKey(railKey, dstCode);
+  if (!rail) {
+    throw new Error(`Unsupported payout rail: ${railKey}`);
+  }
+  const limitCheck = corridors.validateCorridorAmount(rail.key, targetAmountMajor, dstCode);
+  if (!limitCheck.valid) {
+    throw new Error(limitCheck.error);
+  }
+
+  const entity = db.getNuvionEntityByUser(telegramId, accountType);
+  if (!entity || String(entity.status || "").toLowerCase() !== "approved") {
+    throw new Error("Account verification must be approved before sending local or international bank payouts.");
+  }
+  const heldBalances = await orchestrator.getEntityFiatBalances(telegramId, accountType, { forceRefresh: true });
+  const pocket = heldBalances.find((b) => b.currency === srcCode);
+  const availableMinor = pocket ? pocket.availableMinor : 0;
+  const availableMajor = nuvion.fromNuvionMinor(availableMinor);
+  const targetAmountMinor = nuvion.toNuvionMinor(targetAmountMajor);
+
+  const isSameCurrency = srcCode === dstCode;
+  const isLocalNgn = srcCode === "NGN" && dstCode === "NGN";
+
+  let fxQuote = null;
+  let principalSourceMinor = targetAmountMinor;
+  let fxRate = 1;
+
+  if (!isSameCurrency) {
+    fxQuote = await nuvion.createFxQuote({
+      entityId: entity.entity_id,
+      fromCurrency: srcCode,
+      toCurrency: dstCode,
+      amountTo: targetAmountMinor,
+      accountId: pocket?.accountId || undefined,
+    });
+    principalSourceMinor = Math.round(Number(fxQuote.amount_from) || 0);
+    fxRate = Number(fxQuote.rate || 0);
+    if (principalSourceMinor <= 0) {
+      throw new Error(`Unable to retrieve live ${srcCode} → ${dstCode} rate right now.`);
+    }
+  }
+
+  // Approximate USD rate (units of sourceCurrency per 1 USD) for international tier threshold & rail fee conversion
+  let srcPerUsd = Number(usdRateHint || 0);
+  if (srcCode === "USD") {
+    srcPerUsd = 1;
+  } else if (!Number.isFinite(srcPerUsd) || srcPerUsd <= 0) {
+    if (srcCode === "NGN") srcPerUsd = 1500;
+    else if (srcCode === "GBP") srcPerUsd = 0.79;
+    else if (srcCode === "EUR") srcPerUsd = 0.92;
+    else if (srcCode === "CAD") srcPerUsd = 1.38;
+    else if (srcCode === "AED") srcPerUsd = 3.67;
+    else if (srcCode === "GHS") srcPerUsd = 15.0;
+    else if (srcCode === "KES") srcPerUsd = 129.0;
+    else if (srcCode === "TZS") srcPerUsd = 2650.0;
+    else if (srcCode === "MXN") srcPerUsd = 18.5;
+    else srcPerUsd = 1;
+  }
+
+  const principalSourceMajor = nuvion.fromNuvionMinor(principalSourceMinor);
+  const principalUsdEst = srcPerUsd > 0 ? principalSourceMajor / srcPerUsd : principalSourceMajor;
+
+  let nuvionRailFeeSourceMinor = 0;
+  let nuvionRailFeeUsd = 0;
+  let nuvionFeeLabel = "₦0 (Local NIP)";
+  if (!isLocalNgn) {
+    const railFeeInfo = corridors.estimateNuvionRailFeeUsd(
+      rail.key,
+      dstCode,
+      principalUsdEst,
+      targetAmountMajor,
+      dstCode === "USD" ? 1 : null
+    );
+    nuvionRailFeeUsd = railFeeInfo.nuvionRailFeeUsd;
+    nuvionRailFeeSourceMinor = nuvion.toNuvionMinor(nuvionRailFeeUsd * srcPerUsd);
+    nuvionFeeLabel = railFeeInfo.feeLabel;
+  }
+
+  const marginBps = nuvion.getFxMarginBps("outbound");
+  const proximFeeSourceMinor = nuvion.calcTieredProximFeeMinor(srcCode, principalSourceMinor, {
+    usdEquivalent: principalUsdEst,
+    usdRate: srcPerUsd,
+    marginBps,
+  });
+  const totalFeeSourceMinor = nuvionRailFeeSourceMinor + proximFeeSourceMinor;
+  const totalDeductedSourceMinor = principalSourceMinor + totalFeeSourceMinor;
+
+  const maxInfo = nuvion.calcMaxSendableMinor({
+    availableMinor,
+    railFeeMinor: nuvionRailFeeSourceMinor,
+    currency: srcCode,
+    usdRate: srcPerUsd,
+    marginBps,
+  });
+
+  const hasEnoughBalance = Boolean(pocket?.accountId) && availableMinor >= totalDeductedSourceMinor;
+
+  return {
+    entity,
+    rail,
+    fundingMode: "held_fiat",
+    sourceCurrency: srcCode,
+    sourceAccountId: pocket?.accountId || null,
+    targetCurrency: dstCode,
+    targetAmountMajor: Number(targetAmountMajor),
+    targetAmountMinor,
+    isSameCurrency,
+    isLocalNgn,
+    nuvionQuoteId: fxQuote?.id || null,
+    nuvionRawRate: fxRate,
+    principalSourceMinor,
+    principalSourceMajor,
+    nuvionRailFeeMinor: nuvionRailFeeSourceMinor,
+    nuvionRailFeeMajor: nuvion.fromNuvionMinor(nuvionRailFeeSourceMinor),
+    nuvionRailFeeUsd,
+    nuvionFeeLabel,
+    marginBps,
+    proximFeeMinor: proximFeeSourceMinor,
+    proximFeeMajor: nuvion.fromNuvionMinor(proximFeeSourceMinor),
+    totalFeeMinor: totalFeeSourceMinor,
+    totalFeeMajor: nuvion.fromNuvionMinor(totalFeeSourceMinor),
+    totalDeductedMinor: totalDeductedSourceMinor,
+    totalDeductedMajor: nuvion.fromNuvionMinor(totalDeductedSourceMinor),
+    availableMinor,
+    availableMajor,
+    hasEnoughBalance,
+    maxSendableMinor: maxInfo.maxSendableMinor,
+    maxSendableMajor: nuvion.fromNuvionMinor(maxInfo.maxSendableMinor),
+    maxSendableFeeMinor: maxInfo.totalFeeMinor,
+    maxSendableFeeMajor: nuvion.fromNuvionMinor(maxInfo.totalFeeMinor),
+    userTotalUsd: round2(nuvion.fromNuvionMinor(totalDeductedSourceMinor) / (srcPerUsd || 1)),
+    expiresAt: fxQuote?.quote?.expires_at || (Date.now() + 180000),
+  };
+}
+
+/**
+ * Execute an outbound bank/MoMo transfer directly from a verified user's held local-currency
+ * checking account on Nuvion. Delivers the exact `targetAmountMajor` to the recipient bank
+ * and collects Proxim's tiered fee via an internal book-transfer to Parent.
+ */
+async function initiateHeldFiatPayout({
+  telegramId,
+  pin,
+  accountType = "personal",
+  railKey,
+  sourceCurrency,
+  targetCurrency,
+  targetAmountMajor,
+  recipientDetails = null,
+  savedCounterparty = null,
+  narration = "",
+  bot = null,
+  usdRateHint = null,
+}) {
+  const orchestrator = require("./nuvion_orchestrator");
+  const user = db.getUser(telegramId);
+  if (!user) throw new Error("User account not found.");
+  if (!db.verifyPin(telegramId, pin)) throw new Error("Incorrect PIN.");
+
+  const q = await quoteHeldFiatPayout({
+    telegramId,
+    accountType,
+    railKey,
+    sourceCurrency,
+    targetCurrency,
+    targetAmountMajor,
+    usdRateHint,
+  });
+
+  if (!q.hasEnoughBalance || !q.sourceAccountId) {
+    const srcSym = orchestrator.CURRENCY_META[q.sourceCurrency]?.symbol || `${q.sourceCurrency} `;
+    const fmtSrc = (n) =>
+      q.sourceCurrency === "NGN"
+        ? `₦${Math.round(n).toLocaleString("en-NG")}`
+        : `${srcSym}${Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const maxHint =
+      q.maxSendableMajor > 0
+        ? ` Max you can send is ${fmtSrc(q.maxSendableMajor)} (plus ${fmtSrc(q.maxSendableFeeMajor)} fees).`
+        : "";
+    throw new Error(
+      `Insufficient ${q.sourceCurrency} balance. You need ${fmtSrc(q.totalDeductedMajor)} ` +
+      `(${fmtSrc(q.principalSourceMajor)} + ${fmtSrc(q.totalFeeMajor)} fees), ` +
+      `but your available balance is ${fmtSrc(q.availableMajor)}.${maxHint}`
+    );
+  }
+
+  await fraudGuard.assertOutboundAllowed({
+    telegramId,
+    accountType,
+    action: `nuvion_held_payout_${q.sourceCurrency}_${q.targetCurrency}`,
+    amountUsd: q.userTotalUsd,
+    reference: q.rail.key,
+    bot,
+  });
+
+  const { entity, rail } = q;
+  let counterpartyId;
+  let paymentDetailId;
+  let recipientName;
+  let recipientSummary;
+
+  if (savedCounterparty && savedCounterparty.counterparty_id && savedCounterparty.payment_detail_id) {
+    counterpartyId = savedCounterparty.counterparty_id;
+    paymentDetailId = savedCounterparty.payment_detail_id;
+    recipientName = savedCounterparty.account_holder_name || savedCounterparty.label;
+    recipientSummary = savedCounterparty.label;
+  } else {
+    if (!recipientDetails) throw new Error("Recipient banking details are required.");
+    const registered = await ensurePayoutRecipient(entity.entity_id, rail, recipientDetails);
+    counterpartyId = registered.counterpartyId;
+    paymentDetailId = registered.paymentDetailId;
+    recipientName = recipientDetails.account_holder_name;
+    recipientSummary = `${recipientName} (${q.targetCurrency})`;
+  }
+
+  const refSuffix = crypto.randomBytes(4).toString("hex");
+  const uniqueReference = `prx-loc-${Date.now()}-${refSuffix}`;
+
+  const jobPayload = {
+    fundingMode: "held_fiat",
+    sourceCurrency: q.sourceCurrency,
+    sourceAccountId: q.sourceAccountId,
+    railKey: rail.key,
+    paymentMethod: rail.paymentMethod,
+    railLabel: rail.label,
+    targetCurrency: q.targetCurrency,
+    targetAmountMajor: q.targetAmountMajor,
+    targetAmountMinor: q.targetAmountMinor,
+    principalSourceMinor: q.principalSourceMinor,
+    nuvionRailFeeMinor: q.nuvionRailFeeMinor,
+    proximFeeMinor: q.proximFeeMinor,
+    totalFeeMinor: q.totalFeeMinor,
+    totalDeductedMinor: q.totalDeductedMinor,
+    userTotalUsd: q.userTotalUsd,
+    counterpartyId,
+    paymentDetailId,
+    recipientName,
+    recipientSummary,
+    narration: narration || `Payment to ${recipientName}`,
+  };
+
+  let job = db.createNuvionJob({
+    entityId: entity.entity_id,
+    telegramId,
+    accountType,
+    jobType: "outbound_fiat_payout",
+    state: "processing",
+    currency: q.targetCurrency,
+    amountMinor: q.targetAmountMinor,
+    marginMinor: q.proximFeeMinor,
+    uniqueReference,
+    fxQuoteId: q.nuvionQuoteId,
+    payload: jobPayload,
+  });
+
+  let transfer;
+  try {
+    transfer = await nuvion.createTransfer({
+      entityId: entity.entity_id,
+      accountId: q.sourceAccountId,
+      counterpartyId,
+      paymentDetailId,
+      amountMinor: q.isSameCurrency ? q.targetAmountMinor : q.principalSourceMinor,
+      currency: q.sourceCurrency,
+      narration: jobPayload.narration,
+      paymentType: rail.paymentMethod,
+      fxQuoteId: q.isSameCurrency ? null : q.nuvionQuoteId,
+      uniqueReference,
+    });
+  } catch (err) {
+    db.updateNuvionJob(job.id, { state: "failed", error_message: err.message });
+    throw err;
+  }
+
+  // Collect Proxim tiered fee via instant internal book-transfer (Child -> Parent)
+  let feeTransferId = null;
+  if (q.proximFeeMinor >= 1) {
+    try {
+      const marginTarget = await orchestrator.ensureChildToParentMarginTarget(entity.entity_id, q.sourceCurrency);
+      if (marginTarget) {
+        const feeTransfer = await nuvion.createTransfer({
+          entityId: entity.entity_id,
+          accountId: q.sourceAccountId,
+          counterpartyId: marginTarget.counterpartyId,
+          paymentDetailId: marginTarget.paymentDetailId,
+          amountMinor: q.proximFeeMinor,
+          currency: q.sourceCurrency,
+          narration: `Proxim withdrawal fee ${uniqueReference}`,
+          paymentType: "book-transfer",
+          uniqueReference: `fee-${uniqueReference}`,
+        });
+        feeTransferId = feeTransfer?.id || null;
+      }
+    } catch (feeErr) {
+      console.warn(`[nuvion_payouts] Held-fiat fee book-transfer note for ${uniqueReference}:`, feeErr.message);
+    }
+  }
+
+  orchestrator.invalidateEntityFiatBalanceCache(entity.entity_id);
+
+  job = db.updateNuvionJob(job.id, {
+    state: "dispatched",
+    nuvion_transfer_id: transfer.id,
+    payload_json: {
+      ...jobPayload,
+      nuvionTransferId: transfer.id,
+      feeTransferId,
+    },
+  });
+
+  try {
+    const amountMicro = walletLib.parseToMicro(Math.max(0.01, q.userTotalUsd).toFixed(6));
+    db.recordTransaction(
+      telegramId,
+      q.targetCurrency === "NGN" ? "offramp" : "global_payout",
+      String(amountMicro),
+      "submitted",
+      transfer.id || uniqueReference,
+      accountType,
+      18,
+      "local_fiat",
+      jobPayload.narration
+    );
+  } catch (_) { }
+
+  return {
+    job,
+    quote: q,
+    transfer,
+    feeTransferId,
+    uniqueReference,
+    fundingMode: "held_fiat",
   };
 }
 
@@ -1459,9 +1831,11 @@ module.exports = {
   shouldUseNuvionForNgnPayout,
   ensureApprovedBridgeEntity,
   quoteGlobalPayout,
+  quoteHeldFiatPayout,
   ensurePayoutRecipient,
   fundNuvionBaseBridge,
   initiateGlobalPayout,
+  initiateHeldFiatPayout,
   handleUscInflowForPendingPayout,
   handleOutboundPayoutCompleted,
   handleOutboundPayoutFailed,

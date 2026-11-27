@@ -1,6 +1,19 @@
 // Strict API contracts matching src/app_api/routes.js, features.js, and actions.js
 
 export type AccountType = "personal" | "business";
+export type DepositSettlementMode = "local" | "usdc";
+
+export interface FiatPocketBalance {
+  currency: string;
+  accountId: string;
+  availableMinor: number;
+  available: number;
+  pendingMinor: number;
+  pending: number;
+  symbol: string;
+  flag: string;
+  name: string;
+}
 
 export interface NgnReceivingAccount {
   bankName: string | null;
@@ -27,6 +40,7 @@ export interface ProximUser {
   businessDepositAddress: string | null;
   activeContext: AccountType;
   autoEarnEnabled: boolean;
+  depositSettlementMode?: DepositSettlementMode;
   referralCode: string;
   /** Changes when the profile photo changes; null when there is none. */
   avatarVersion?: string | null;
@@ -46,6 +60,7 @@ export interface UnifiedBalance {
   totalUsdc: number;
   totalNgn?: number | null;
   usdToNgnRate?: number | null;
+  fiatBalances?: FiatPocketBalance[];
   arc?: { usdc?: number; eurc?: number; [k: string]: unknown };
   base?: { usdc?: number; [k: string]: unknown };
   gateway?: { usdc?: number; [k: string]: unknown };

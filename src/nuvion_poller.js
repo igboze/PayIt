@@ -71,7 +71,12 @@ async function pollInteracSessionsOnce(bot = null) {
           );
           if (inflow && inflow.status === "successful") {
             const entityRecord = db.getNuvionEntityByEntityId(job.entity_id);
-            await orchestrator.handleInboundFiatSweep({ confirmed: inflow, entityRecord, bot });
+            const user = entityRecord?.telegram_id ? db.getUser(entityRecord.telegram_id) : null;
+            if (nuvion.shouldHoldInboundFiatForUser(user)) {
+              await orchestrator.handleInboundFiatDeposit({ confirmed: inflow, entityRecord, bot });
+            } else {
+              await orchestrator.handleInboundFiatSweep({ confirmed: inflow, entityRecord, bot, collectMargin: false });
+            }
           }
         } catch (recErr) {
           console.warn(`[nuvion_poller] Interac settled reconcile note for job ${job.id}:`, recErr.message);

@@ -35,7 +35,78 @@ const STABLECOIN_CODES = new Set(["USC", "UST", "RLD"]);
 
 // Cache of Root Parent operational accounts per currency so we don't query Nuvion on every deposit
 const _parentOpAccounts = new Map();
+const _fiatBalanceCache = new Map(); // entityId -> { fetchedAt, balances }
+const FIAT_BALANCE_CACHE_TTL_MS = 15_000;
 let _hooksRegistered = false;
+
+function invalidateEntityFiatBalanceCache(entityId) {
+  if (!entityId) return;
+  _fiatBalanceCache.delete(String(entityId));
+}
+
+/**
+ * Fetch live non-zero local fiat balances held inside a verified user's Nuvion checking accounts.
+ * Excludes stablecoins (USC/UST/RLD). Safe against network hiccups (never throws).
+ */
+async function getEntityFiatBalances(telegramId, accountType = "personal", { forceRefresh = false } = {}) {
+  try {
+    if (!nuvion.isNuvionConfigured()) return [];
+    const entity = db.getNuvionEntityByUser(telegramId, accountType);
+    if (!entity || String(entity.status || "").toLowerCase() !== "approved") return [];
+
+    const cacheKey = String(entity.entity_id);
+    if (!forceRefresh) {
+      const cached = _fiatBalanceCache.get(cacheKey);
+      if (cached && Date.now() - cached.fetchedAt < FIAT_BALANCE_CACHE_TTL_MS) {
+        return cached.balances;
+      }
+    }
+
+    const listed = await Promise.race([
+      nuvion.listAccounts({ entityId: entity.entity_id, limit: 50 }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("fiat_balance_timeout")), 5000)),
+    ]);
+    const rows = Array.isArray(listed) ? listed : Array.isArray(listed?.data) ? listed.data : [];
+    const byCurrency = new Map();
+
+    for (const acc of rows) {
+      const code = String(acc?.currency || "").toUpperCase();
+      if (!code || STABLECOIN_CODES.has(code)) continue;
+      if (acc?.status && String(acc.status).toLowerCase() === "closed") continue;
+      const availableMinor = Math.max(0, Math.round(Number(acc?.balance?.available ?? 0)));
+      const pendingMinor = Math.max(0, Math.round(Number(acc?.balance?.pending ?? 0)));
+      const meta = CURRENCY_META[code] || { symbol: `${code} `, flag: "🌍", label: code };
+      const existing = byCurrency.get(code);
+      if (!existing || availableMinor > existing.availableMinor) {
+        byCurrency.set(code, {
+          currency: code,
+          accountId: acc.id,
+          availableMinor,
+          available: nuvion.fromNuvionMinor(availableMinor),
+          pendingMinor,
+          pending: nuvion.fromNuvionMinor(pendingMinor),
+          symbol: meta.symbol,
+          flag: meta.flag,
+          name: meta.label || code,
+        });
+      }
+    }
+
+    const balances = [...byCurrency.values()]
+      .filter((b) => b.availableMinor > 0 || b.pendingMinor > 0)
+      .sort((a, b) => {
+        if (a.currency === "NGN") return -1;
+        if (b.currency === "NGN") return 1;
+        return b.availableMinor - a.availableMinor;
+      });
+
+    _fiatBalanceCache.set(cacheKey, { fetchedAt: Date.now(), balances });
+    return balances;
+  } catch (err) {
+    console.warn(`[nuvion_orchestrator] getEntityFiatBalances(${telegramId}, ${accountType}) note:`, err.message);
+    return [];
+  }
+}
 
 function escapeHtml(str) {
   if (!str) return "";
@@ -147,7 +218,7 @@ async function provisionGlobalReceivingAccount(telegramId, accountType = "person
       const listed = await nuvion.listAccounts({ entityId, currency: code, limit: 20 });
       const rows = listed?.data || [];
       remoteAcc = rows.find((a) => a.currency === code && a.type === "checking" && a.meta?.purpose !== "card") || null;
-    } catch (_) {}
+    } catch (_) { }
 
     if (!remoteAcc) {
       remoteAcc = await nuvion.createAccount({
@@ -177,7 +248,7 @@ async function provisionGlobalReceivingAccount(telegramId, accountType = "person
     const listedDet = await nuvion.listAccountDetails({ accountId: account.account_id, entityId, limit: 100 });
     const rows = listedDet?.data || [];
     remoteDetail = rows[0] || null;
-  } catch (_) {}
+  } catch (_) { }
 
   if (!remoteDetail) {
     remoteDetail = await nuvion.createAccountDetails({
@@ -296,7 +367,7 @@ async function createHostedPaymentLink({
     try {
       const listed = await nuvion.listAccounts({ entityId, currency: code, limit: 20 });
       remoteAcc = (listed?.data || []).find((a) => a.currency === code && a.type === "checking") || null;
-    } catch (_) {}
+    } catch (_) { }
     if (!remoteAcc) {
       remoteAcc = await nuvion.createAccount({
         entityId,
@@ -402,7 +473,7 @@ async function ensureChildToParentMarginTarget(entityId, currency) {
       const listed = await nuvion.listAccounts({ currency: code, limit: 25 });
       const rows = listed?.data || [];
       parentAcc = rows.find((a) => a.currency === code && a.nuvion_ban && (a.type === "operational" || a.type === "checking")) || null;
-    } catch (_) {}
+    } catch (_) { }
 
     if (!parentAcc) {
       try {
@@ -474,12 +545,420 @@ async function ensureChildToParentMarginTarget(entityId, currency) {
 // ── 4. Inbound Fiat Auto-Sweep Engine (Zero Idle Custody in Nuvion) ───────────
 
 /**
+ * Hold a verified user's settled inbound fiat deposit in its local currency checking account
+ * (0% Proxim inbound fee, no auto-conversion to USDC).
+ * Fraud-screens the inflow, records it in SQLite, settles linked invoices/merchant checkouts,
+ * and delivers an instant local-currency confirmation + HD Receipt PNG.
+ */
+async function handleInboundFiatDeposit({ confirmed, entityRecord, bot = null }) {
+  if (!confirmed || !confirmed.id || !entityRecord) {
+    return { held: false, swept: false, reason: "missing_context" };
+  }
+
+  const currency = String(confirmed.currency || "").toUpperCase();
+  const status = String(confirmed.status || "").toLowerCase();
+  const paymentType = String(confirmed.payment_type || "").toLowerCase();
+
+  if (status !== "successful") return { held: false, swept: false, reason: `status_${status}` };
+  if (STABLECOIN_CODES.has(currency)) return { held: false, swept: false, reason: "stablecoin_inflow_ignored" };
+  if (paymentType === "book-transfer") return { held: false, swept: false, reason: "internal_book_transfer_ignored" };
+
+  const grossMinor = Math.round(Number(confirmed.amount) || 0);
+  const railFeeMinor = Math.round(Number(confirmed.applicable_fee) || 0);
+  const netMinor = grossMinor - railFeeMinor;
+  if (netMinor <= 0) return { held: false, swept: false, reason: "zero_net_amount" };
+
+  const holdJobRef = `hold-in-${confirmed.id}`;
+  const holdLockKey = `nuvion_in_hold:${confirmed.id}`;
+  const existingRow = db.prepare("SELECT * FROM nuvion_jobs WHERE unique_reference = ?").get(holdJobRef);
+  if (existingRow && (existingRow.state === "completed" || existingRow.state === "processing")) {
+    return { held: true, swept: false, duplicate: true, jobId: existingRow.id };
+  }
+
+  const lock = idempotency.tryAcquireOperationLock(holdLockKey, {
+    scope: "nuvion_inbound_hold",
+    telegramId: entityRecord.telegram_id,
+    accountType: entityRecord.account_type || "personal",
+    amount: nuvion.fromNuvionMinor(netMinor),
+    lockTtlSeconds: 120,
+  });
+  if (!lock.acquired) {
+    return { held: false, swept: false, duplicate: true, reason: lock.reason };
+  }
+
+  let job = null;
+  try {
+    const lockedExisting = db.prepare("SELECT * FROM nuvion_jobs WHERE unique_reference = ?").get(holdJobRef);
+    if (lockedExisting && (lockedExisting.state === "completed" || lockedExisting.state === "processing")) {
+      idempotency.completeOperationIdempotency(holdLockKey, { txHash: lockedExisting.nuvion_transfer_id || holdJobRef });
+      return { held: true, swept: false, duplicate: true, jobId: lockedExisting.id };
+    }
+
+    const entity = entityRecord;
+    const entityId = entity.entity_id;
+    const accountId = confirmed.account_id;
+    const grossMajor = nuvion.fromNuvionMinor(grossMinor);
+    const netFiatMajor = nuvion.fromNuvionMinor(netMinor);
+
+    job = db.createNuvionJob({
+      entityId,
+      telegramId: entity.telegram_id,
+      accountType: entity.account_type || "personal",
+      jobType: "inbound_fiat_hold",
+      state: "processing",
+      currency,
+      amountMinor: netMinor,
+      marginMinor: 0,
+      uniqueReference: holdJobRef,
+      nuvionTransferId: confirmed.id,
+      payload: {
+        inflowId: confirmed.id,
+        accountId,
+        grossMinor,
+        railFeeMinor,
+        netMinor,
+        narration: confirmed.narration || null,
+        fundingSessionId: confirmed.meta?.funding_session_id || null,
+        settlementMode: "local",
+      },
+    });
+
+    const screenRes = await fraudGuard.screenInboundFiatInflow({
+      entityRecord: entity,
+      confirmed,
+      netMajor: netFiatMajor,
+      isPaymentLink: Boolean(confirmed.meta?.funding_session_id),
+      bot,
+    });
+    if (screenRes.hold) {
+      db.updateNuvionJob(job.id, {
+        state: "held_fraud_review",
+        error_message: screenRes.reason,
+        payload_json: {
+          ...(job.payload || {}),
+          heldForReview: true,
+          holdReason: screenRes.reason,
+          estUsd: screenRes.estUsd,
+        },
+      });
+      idempotency.completeOperationIdempotency(holdLockKey, { txHash: `held_${confirmed.id}` });
+      return { held: true, swept: false, fraudHold: true, reason: screenRes.reason, jobId: job.id };
+    }
+
+    db.updateNuvionJob(job.id, {
+      state: "completed",
+      margin_minor: 0,
+      nuvion_transfer_id: confirmed.id,
+      payload_json: {
+        ...(job.payload || {}),
+        heldLocally: true,
+        feeMinor: 0,
+      },
+    });
+    invalidateEntityFiatBalanceCache(entityId);
+    idempotency.completeOperationIdempotency(holdLockKey, { txHash: confirmed.id });
+
+    // Auto-settle any matching Merchant Checkout Session
+    try {
+      const merchantCheckout = require("./merchant_checkout");
+      await merchantCheckout.trySettleSessionByGlobalBank({
+        merchantTelegramId: entity.telegram_id,
+        accountType: entity.account_type || "business",
+        currency,
+        amountMajor: grossMajor,
+        txHash: confirmed.id,
+      });
+    } catch (_) { }
+
+    // Record ledger transaction with exact local source currency & 0% inbound fee
+    try {
+      const txType = currency === "NGN" ? "deposit_naira" : "deposit_fiat";
+      const depositChannel = currency === "NGN" ? "naira" : "international";
+      let estUsd = currency === "USD" ? netFiatMajor : (Number(screenRes?.estUsd) || 0);
+      if (estUsd <= 0 && currency === "NGN") {
+        estUsd = Number((netFiatMajor / 1500).toFixed(6));
+      } else if (estUsd <= 0) {
+        estUsd = netFiatMajor;
+      }
+      const amountMicro = walletLib.parseToMicro(estUsd.toFixed(6));
+      db.recordTransaction(
+        entity.telegram_id,
+        txType,
+        String(amountMicro),
+        "confirmed",
+        confirmed.id,
+        entity.account_type || "personal",
+        18,
+        "local_fiat",
+        confirmed.narration || `${currency} deposit (held in ${currency})`,
+        {
+          sourceCurrency: currency,
+          sourceAmount: Number.isFinite(netFiatMajor) && netFiatMajor > 0 ? netFiatMajor : null,
+          depositChannel,
+        }
+      );
+    } catch (txErr) {
+      console.warn("[nuvion_orchestrator] hold recordTransaction note:", txErr.message);
+    }
+
+    // Auto-mark any linked invoice paid
+    let paidInvoiceNumber = null;
+    try {
+      const fsId = confirmed.meta?.funding_session_id;
+      let invId = null;
+      if (fsId) {
+        const fsJob = db.prepare("SELECT * FROM nuvion_jobs WHERE session_id = ?").get(String(fsId));
+        if (fsJob) {
+          const fsPayload = fsJob.payload_json ? JSON.parse(fsJob.payload_json) : {};
+          invId = fsPayload.invoiceId || null;
+          db.updateNuvionJob(fsJob.id, { state: "settled" });
+        }
+      }
+      if (invId) {
+        const inv = invoiceDb.getInvoice(Number(invId));
+        if (inv && inv.status !== "paid") {
+          invoiceDb.markInvoicePaidWithTxHash(inv.id, confirmed.id);
+          paidInvoiceNumber = inv.invoice_number;
+        }
+      } else if (confirmed.narration) {
+        const m = String(confirmed.narration).match(/\b(INV-[A-Z0-9-]+)\b/i);
+        if (m) {
+          const inv = invoiceDb.getInvoiceByNumber(m[1].toUpperCase());
+          if (inv && Number(inv.telegram_id || inv.owner_telegram_id) === Number(entity.telegram_id) && inv.status !== "paid") {
+            invoiceDb.markInvoicePaidWithTxHash(inv.id, confirmed.id);
+            paidInvoiceNumber = inv.invoice_number;
+          }
+        }
+      }
+    } catch (_) { }
+
+    const fiatStr = formatFiatAmount(currency, netFiatMajor);
+    const acctLabel = entity.account_type === "business" ? "Business Account" : "Personal Account";
+    const captionLines = [
+      `🎉 <b>${currency} Deposit Received!</b>`,
+      `──────────────────────────`,
+      `💵 <b>Amount Credited:</b> ${fiatStr}`,
+      `🏷️ <b>Deposit Fee:</b> 0% (Held in ${currency})`,
+      `💼 <b>Account:</b> ${acctLabel}`,
+    ];
+    if (paidInvoiceNumber) {
+      captionLines.push(`🧾 <b>Invoice Paid:</b> <code>${escapeHtml(paidInvoiceNumber)}</code>`);
+    }
+    if (confirmed.narration) {
+      captionLines.push(`💬 <b>Note:</b> <i>${escapeHtml(confirmed.narration)}</i>`);
+    }
+    captionLines.push(`🔖 <b>Reference:</b> <code>${escapeHtml(confirmed.id)}</code>`);
+    captionLines.push(`──────────────────────────\n<i>Held safely in your ${currency} balance with zero conversion fees.</i>`);
+    const caption = captionLines.join("\n");
+
+    const telegram = getBotTelegram(bot);
+    if (telegram && entity.telegram_id) {
+      let receiptPath = null;
+      try {
+        receiptPath = await generateReceiptPNG({
+          receiptId: `DEP-${String(confirmed.id).slice(-10)}`,
+          senderName: currency === "NGN" ? "Nigerian Bank Transfer" : `${currency} Bank Transfer`,
+          recipientName: entity.legal_name || acctLabel,
+          amountUsdc: currency === "USD" ? netFiatMajor : 0,
+          fiatAmountDisplay: fiatStr,
+          status: "CONFIRMED",
+          date: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+          chain: `${currency} Balance`,
+          txHash: confirmed.id,
+          type: "deposit",
+          narration: confirmed.narration || `Held in ${currency} · 0% deposit fee`,
+        });
+      } catch (_) { }
+      try {
+        if (receiptPath && fs.existsSync(receiptPath)) {
+          await telegram.sendPhoto(entity.telegram_id, { source: receiptPath }, { caption, parse_mode: "HTML" });
+          fs.unlink(receiptPath, () => { });
+        } else {
+          await telegram.sendMessage(entity.telegram_id, caption, { parse_mode: "HTML" });
+        }
+      } catch (_) { }
+    } else if (entity.telegram_id) {
+      try {
+        await require("./notify").notify(entity.telegram_id, {
+          title: `${fiatStr} received`,
+          html: caption,
+          data: { type: "deposit_fiat", currency, amount: netFiatMajor },
+        });
+      } catch (_) { }
+    }
+
+    return {
+      held: true,
+      swept: false,
+      jobId: job.id,
+      currency,
+      grossMajor,
+      netMajor: netFiatMajor,
+      feeMinor: 0,
+      paidInvoiceNumber,
+    };
+  } catch (err) {
+    idempotency.failOperationIdempotency(holdLockKey, err.message);
+    if (job) {
+      db.updateNuvionJob(job.id, { state: "failed", error_message: err.message });
+    }
+    throw err;
+  }
+}
+
+/**
+ * Triggered by Auto-Save when a verified user has turned Auto-Save ON and their idle
+ * period is due: converts eligible held local-currency balances on Nuvion -> USC (0%
+ * Proxim spread; live FX rates apply) and releases them through the Base crypto bridge
+ * route into the user's self-custodial wallet so Auto-Earn can allocate them into USD savings.
+ */
+async function releaseHeldFiatForAutoSave({ user, accountType = "personal", bot = null, minUsdEquivalent = 5.0 }) {
+  if (!user || !user.telegram_id || !nuvion.isNuvionConfigured()) {
+    return { released: false, reason: "not_configured", releases: [] };
+  }
+  let entity = db.getNuvionEntityByUser(user.telegram_id, accountType);
+  if (!entity || String(entity.status || "").toLowerCase() !== "approved") {
+    return { released: false, reason: "no_approved_entity", releases: [] };
+  }
+
+  // Throttle duplicate auto-save release triggers per entity to once every 30 minutes
+  try {
+    const recent = db.prepare(`
+      SELECT id FROM nuvion_jobs
+      WHERE entity_id = ? AND job_type = 'autosave_fiat_release'
+        AND state IN ('processing', 'completed')
+        AND datetime(created_at) >= datetime('now', '-30 minutes')
+      LIMIT 1
+    `).get(entity.entity_id);
+    if (recent) {
+      return { released: false, reason: "recent_release_in_progress", releases: [] };
+    }
+  } catch (_) { }
+
+  const heldBalances = await getEntityFiatBalances(user.telegram_id, accountType, { forceRefresh: true });
+  const nonZero = heldBalances.filter((b) => b.availableMinor > 0 && b.accountId);
+  if (nonZero.length === 0) {
+    return { released: false, reason: "no_held_fiat", releases: [] };
+  }
+
+  if (!entity.self_counterparty_id || !entity.self_base_payment_detail_id) {
+    entity = await nuvionWebhooks.bootstrapApprovedEntity(entity);
+  }
+  if (!entity?.self_counterparty_id || !entity?.self_base_payment_detail_id) {
+    return { released: false, reason: "missing_bridge_wallet", releases: [] };
+  }
+
+  const releases = [];
+  for (const pocket of nonZero) {
+    try {
+      const quote = await nuvion.createFxQuote({
+        entityId: entity.entity_id,
+        fromCurrency: pocket.currency,
+        toCurrency: "USC",
+        amountFrom: pocket.availableMinor,
+        accountId: pocket.accountId,
+      });
+      const quotedUscMinor = Math.round(Number(quote?.amount_to || 0));
+      const quotedUsd = nuvion.fromNuvionMinor(quotedUscMinor);
+      if (quotedUsd < Number(minUsdEquivalent || 5.0) || quotedUscMinor < 100) {
+        continue;
+      }
+
+      const uniqueReference = `autosave-rel-${entity.entity_id.slice(-8)}-${pocket.currency}-${Date.now()}`;
+      const job = db.createNuvionJob({
+        entityId: entity.entity_id,
+        telegramId: user.telegram_id,
+        accountType,
+        jobType: "autosave_fiat_release",
+        state: "processing",
+        currency: pocket.currency,
+        amountMinor: pocket.availableMinor,
+        marginMinor: 0,
+        uniqueReference,
+        fxQuoteId: quote.id,
+        payload: {
+          accountId: pocket.accountId,
+          sourceCurrency: pocket.currency,
+          sourceAmountMinor: pocket.availableMinor,
+          quotedUscMinor,
+          quotedUsd,
+          rate: quote.rate || null,
+        },
+      });
+
+      const outflow = await nuvion.createTransfer({
+        entityId: entity.entity_id,
+        accountId: pocket.accountId,
+        counterpartyId: entity.self_counterparty_id,
+        paymentDetailId: entity.self_base_payment_detail_id,
+        amountMinor: pocket.availableMinor,
+        currency: pocket.currency,
+        narration: `Proxim Auto-Save conversion ${pocket.currency} to USD`,
+        paymentType: "stablecoin-transfer",
+        fxQuoteId: quote.id,
+        uniqueReference,
+      });
+
+      db.updateNuvionJob(job.id, {
+        state: "completed",
+        nuvion_transfer_id: outflow.id,
+        payload_json: {
+          ...(job.payload || {}),
+          outflowId: outflow.id,
+        },
+      });
+      invalidateEntityFiatBalanceCache(entity.entity_id);
+
+      const fiatDisplay = formatFiatAmount(pocket.currency, pocket.available);
+      releases.push({
+        currency: pocket.currency,
+        amountMajor: pocket.available,
+        quotedUsd,
+        outflowId: outflow.id,
+        jobId: job.id,
+      });
+
+      try {
+        await require("./notify").notify(user.telegram_id, {
+          title: "Auto-Save: converting idle balance to USD",
+          html:
+            `🌱 <b>Auto-Save Triggered (${fiatDisplay} → ~$${quotedUsd.toFixed(2)} USD)</b>\n` +
+            `Your idle ${pocket.currency} balance was converted at the live FX rate (0% conversion fee) and is moving into your USD Dollar Savings vault.`,
+          data: { type: "autosave_fiat_release", currency: pocket.currency, quotedUsd },
+        });
+      } catch (_) { }
+    } catch (err) {
+      console.warn(`[nuvion_orchestrator] Auto-Save release failed for ${pocket.currency} (user ${user.telegram_id}):`, err.message);
+    }
+  }
+
+  if (releases.length > 0) {
+    try {
+      const evmSweeper = require("./evm_deposit_sweeper");
+      if (typeof evmSweeper?.sweepUserDeposits === "function") {
+        setTimeout(() => {
+          evmSweeper.sweepUserDeposits(user, accountType).catch(() => { });
+        }, 12_000).unref?.();
+      }
+    } catch (_) { }
+  }
+
+  return {
+    released: releases.length > 0,
+    count: releases.length,
+    releases,
+  };
+}
+
+/**
  * Automatically sweeps any settled inbound fiat deposit on a child entity:
- * 1. Collects 1% FX margin via free instant book-transfer (Child -> Proxim Parent)
+ * 1. Optionally collects FX margin via free instant book-transfer (Child -> Proxim Parent)
+ *    when `collectMargin !== false` (default for legacy/direct sweep calls; set to `false`
+ *    when a user chooses auto-settle to USDC so inbound deposits remain 0% Proxim fee).
  * 2. Quotes FIAT -> USC and fires `stablecoin-transfer` on BASE_MAINNET straight to user's 0x wallet
  * 3. Records transaction, settles linked invoices, sends HD Receipt PNG, and kicks off Base Gateway/Arc sweep
  */
-async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null }) {
+async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null, collectMargin = null }) {
   if (!confirmed || !confirmed.id || !entityRecord) {
     return { swept: false, reason: "missing_context" };
   }
@@ -539,8 +1018,8 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null }) {
     let entity = entityRecord;
     const entityId = entity.entity_id;
     const accountId = confirmed.account_id;
-    const marginBps = nuvion.getFxMarginBps("inbound");
-    const targetMarginMinor = nuvion.calcMarginMinor(netMinor, marginBps);
+    const marginBps = collectMargin === false ? 0 : nuvion.getFxMarginBps("inbound");
+    const targetMarginMinor = marginBps > 0 ? nuvion.calcMarginMinor(netMinor, marginBps) : 0;
 
     if (!job) {
       job = db.createNuvionJob({
@@ -603,7 +1082,7 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null }) {
           `• <b>Reference:</b> <code>${escapeHtml(confirmed.id)}</code>\n\n` +
           `<i>To protect your account against payment reversals, this inflow is currently held safely in your ${escapeHtml(currency)} account for standard compliance verification and will settle into your balance once cleared.</i>`,
           { parse_mode: "HTML" }
-        ).catch(() => {});
+        ).catch(() => { });
       }
 
       return {
@@ -676,7 +1155,7 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null }) {
       if (avail > liveAvailableMinor) {
         liveAvailableMinor = avail;
       }
-    } catch (_) {}
+    } catch (_) { }
 
     let sweepMinor = liveAvailableMinor - configuredFeeBuffer;
     if (sweepMinor <= 0) {
@@ -740,7 +1219,7 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null }) {
               (isNgnSub ? ` (approx. ₦1,550)` : ``) +
               `. Your <b>${accumStr}</b> is safely held in your ${currency} account and will automatically combine and sweep into your Proxim wallet on your next deposit!</i>`,
               { parse_mode: "HTML" }
-            ).catch(() => {});
+            ).catch(() => { });
           }
 
           return {
@@ -827,7 +1306,7 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null }) {
         amountMajor: grossMajor,
         txHash: outflow.id || confirmed.id,
       });
-    } catch (_) {}
+    } catch (_) { }
 
     // Step 3: Record ledger transaction with exact fiat source currency & channel
     try {
@@ -927,16 +1406,16 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null }) {
           txHash: outflow.id || confirmed.id,
           narration: confirmed.narration || null,
         });
-      } catch (_) {}
+      } catch (_) { }
 
       if (receiptPath && typeof telegram.sendPhoto === "function") {
         try {
           await telegram.sendPhoto(entity.telegram_id, { source: receiptPath }, { caption, parse_mode: "HTML" });
         } catch (_) {
-          await telegram.sendMessage(entity.telegram_id, caption, { parse_mode: "HTML" }).catch(() => {});
+          await telegram.sendMessage(entity.telegram_id, caption, { parse_mode: "HTML" }).catch(() => { });
         }
       } else {
-        await telegram.sendMessage(entity.telegram_id, caption, { parse_mode: "HTML" }).catch(() => {});
+        await telegram.sendMessage(entity.telegram_id, caption, { parse_mode: "HTML" }).catch(() => { });
       }
     }
 
@@ -949,8 +1428,8 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null }) {
             silent: true,
             onlyChain: "BASE",
             onlyAccountType: entity.account_type || "personal",
-          }).catch(() => {});
-        } catch (_) {}
+          }).catch(() => { });
+        } catch (_) { }
       }, 15000);
     }
 
@@ -1009,7 +1488,7 @@ async function handleUnallocatedUscInflowSweep({ confirmed, entityRecord, bot = 
     if (candidate) {
       return { swept: false, reason: "reserved_for_pending_job" };
     }
-  } catch (_) {}
+  } catch (_) { }
 
   // Atomically claim the USC inflow so it cannot be double-swept
   if (!idempotency.tryClaimWebhookEvent(inflowClaimKey, "usc_direct_passthrough", entityRecord.entity_id)) {
@@ -1056,7 +1535,7 @@ async function handleUnallocatedUscInflowSweep({ confirmed, entityRecord, bot = 
         depositChannel: "crypto",
       }
     );
-  } catch (_) {}
+  } catch (_) { }
 
   const telegram = getBotTelegram(bot);
   if (telegram && entity.telegram_id) {
@@ -1071,7 +1550,7 @@ async function handleUnallocatedUscInflowSweep({ confirmed, entityRecord, bot = 
       `──────────────────────────\n` +
       `<i>Automatically swept from your Nuvion Base bridge address directly into your self-custodial Proxim wallet.</i>`,
       { parse_mode: "HTML" }
-    ).catch(() => {});
+    ).catch(() => { });
   }
 
   return {
@@ -1097,7 +1576,12 @@ function registerOrchestratorHooks() {
       return;
     }
     if (STABLECOIN_CODES.has(currency)) return;
-    await handleInboundFiatSweep({ confirmed, entityRecord, bot });
+    const user = entityRecord.telegram_id ? db.getUser(entityRecord.telegram_id) : null;
+    if (nuvion.shouldHoldInboundFiatForUser(user)) {
+      await handleInboundFiatDeposit({ confirmed, entityRecord, bot });
+      return;
+    }
+    await handleInboundFiatSweep({ confirmed, entityRecord, bot, collectMargin: false });
   });
 
   nuvionWebhooks.onNuvionEvent("funding_sessions.updated", async ({ confirmed, entityRecord }) => {
@@ -1113,6 +1597,7 @@ function registerOrchestratorHooks() {
 
 function _clearParentAccountCache() {
   _parentOpAccounts.clear();
+  _fiatBalanceCache.clear();
 }
 
 module.exports = {
@@ -1121,6 +1606,10 @@ module.exports = {
   formatReceivingDetailsCard,
   createHostedPaymentLink,
   ensureChildToParentMarginTarget,
+  getEntityFiatBalances,
+  invalidateEntityFiatBalanceCache,
+  handleInboundFiatDeposit,
+  releaseHeldFiatForAutoSave,
   handleInboundFiatSweep,
   handleUnallocatedUscInflowSweep,
   registerOrchestratorHooks,

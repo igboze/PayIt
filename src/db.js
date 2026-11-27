@@ -33,7 +33,7 @@ if (!process.env.PAYIT_DB_PATH) {
   console.log("PayIT database path:", DB_PATH);
 }
 const db = new DatabaseSync(DB_PATH);
-try { db.exec("PRAGMA busy_timeout = 5000"); } catch (_) {}
+try { db.exec("PRAGMA busy_timeout = 5000"); } catch (_) { }
 installSafeIntegerReads(db);
 
 // node:sqlite throws "Value is too large to be represented as a JavaScript number" when a row
@@ -361,23 +361,26 @@ function ensureUserSchema() {
     db.exec("ALTER TABLE users ADD COLUMN biz_system_encrypted_key TEXT");
   }
   if (!columns.includes("auto_earn_enabled")) {
-    db.exec("ALTER TABLE users ADD COLUMN auto_earn_enabled INTEGER DEFAULT 1");
+    db.exec("ALTER TABLE users ADD COLUMN auto_earn_enabled INTEGER DEFAULT 0");
+  }
+  if (!columns.includes("deposit_settlement_mode")) {
+    try { db.exec("ALTER TABLE users ADD COLUMN deposit_settlement_mode TEXT DEFAULT 'local'"); } catch (_) { }
   }
   if (!columns.includes("last_activity_at")) {
     db.exec("ALTER TABLE users ADD COLUMN last_activity_at TEXT");
     db.exec("UPDATE users SET last_activity_at = datetime('now') WHERE last_activity_at IS NULL");
   }
   if (!columns.includes("sender_name")) {
-    try { db.exec("ALTER TABLE users ADD COLUMN sender_name TEXT"); } catch (_) {}
+    try { db.exec("ALTER TABLE users ADD COLUMN sender_name TEXT"); } catch (_) { }
   }
   if (!columns.includes("biz_sender_name")) {
-    try { db.exec("ALTER TABLE users ADD COLUMN biz_sender_name TEXT"); } catch (_) {}
+    try { db.exec("ALTER TABLE users ADD COLUMN biz_sender_name TEXT"); } catch (_) { }
   }
   if (!columns.includes("accepted_terms_at")) {
-    try { db.exec("ALTER TABLE users ADD COLUMN accepted_terms_at TEXT"); } catch (_) {}
+    try { db.exec("ALTER TABLE users ADD COLUMN accepted_terms_at TEXT"); } catch (_) { }
   }
   if (!columns.includes("accepted_terms_version")) {
-    try { db.exec("ALTER TABLE users ADD COLUMN accepted_terms_version TEXT"); } catch (_) {}
+    try { db.exec("ALTER TABLE users ADD COLUMN accepted_terms_version TEXT"); } catch (_) { }
   }
 
   // SQLite does not allow adding a UNIQUE constraint directly on ALTER TABLE for an existing column,
@@ -701,8 +704,9 @@ function createUserWithWallet(
       active_context,
       referrer_telegram_id, referral_code, referred_at, referred_on_first_point,
       solana_deposit_address, biz_solana_deposit_address,
-      system_encrypted_key, biz_system_encrypted_key
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      system_encrypted_key, biz_system_encrypted_key,
+      auto_earn_enabled, deposit_settlement_mode
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     telegramId, username || null,
     address, enc.encryptedKey, enc.salt, enc.iv, enc.tag,
@@ -717,7 +721,9 @@ function createUserWithWallet(
     solanaDepositAddress,
     bizSolanaDepositAddress,
     systemEncryptedKey,
-    bizSystemEncryptedKey
+    bizSystemEncryptedKey,
+    0,
+    "local"
   );
 
   return getUser(telegramId);
@@ -1128,7 +1134,7 @@ function recordTransaction(telegramId, type, amountMicro, status, txHash, accoun
           ).get(telegramId, cleanHash, cleanHash);
           if (order?.order_id) refHashes.push(String(order.order_id));
           if (order?.tx_hash) refHashes.push(String(order.tx_hash));
-        } catch (_) {}
+        } catch (_) { }
       }
       const uniqueRefs = [...new Set(refHashes.filter(Boolean))];
       for (const ref of uniqueRefs) {
@@ -1165,7 +1171,7 @@ function recordTransaction(telegramId, type, amountMicro, status, txHash, accoun
           ).get(telegramId, cleanHash, cleanHash);
           if (order?.order_id) refHashes.push(String(order.order_id));
           if (order?.tx_hash) refHashes.push(String(order.tx_hash));
-        } catch (_) {}
+        } catch (_) { }
       }
       const uniqueRefs = [...new Set(refHashes.filter(Boolean))];
       for (const ref of uniqueRefs) {
@@ -1441,6 +1447,12 @@ function updateUserLastActivity(telegramId) {
 
 function updateAutoEarnSetting(telegramId, enabled) {
   db.prepare("UPDATE users SET auto_earn_enabled = ? WHERE telegram_id = ?").run(enabled ? 1 : 0, telegramId);
+}
+
+function updateDepositSettlementMode(telegramId, mode) {
+  const clean = String(mode || "local").trim().toLowerCase() === "usdc" ? "usdc" : "local";
+  db.prepare("UPDATE users SET deposit_settlement_mode = ? WHERE telegram_id = ?").run(clean, telegramId);
+  return clean;
 }
 
 function getIdleUsersForAutoEarn(idleHours = 2) {
@@ -3003,7 +3015,7 @@ function ensureBillPaymentsSchema() {
 
 try {
   ensureBillPaymentsSchema();
-} catch (_) {}
+} catch (_) { }
 
 function createBillPayment({
   telegramId,
@@ -3205,7 +3217,7 @@ function ensureNuvionSchema() {
 
 try {
   ensureNuvionSchema();
-} catch (_) {}
+} catch (_) { }
 
 function upsertNuvionEntity({
   telegramId,
@@ -3302,7 +3314,7 @@ function getNuvionKycDraft(telegramId, accountType = "personal") {
   ).get(Number(telegramId), accountType);
   if (!row) return null;
   let parsed = {};
-  try { parsed = JSON.parse(row.data_json || "{}"); } catch (_) {}
+  try { parsed = JSON.parse(row.data_json || "{}"); } catch (_) { }
   return { ...row, data: parsed };
 }
 
@@ -3496,7 +3508,7 @@ function getNuvionJobById(id) {
   const row = db.prepare("SELECT * FROM nuvion_jobs WHERE id = ?").get(id);
   if (!row) return null;
   let payload = {};
-  try { payload = row.payload_json ? JSON.parse(row.payload_json) : {}; } catch (_) {}
+  try { payload = row.payload_json ? JSON.parse(row.payload_json) : {}; } catch (_) { }
   return { ...row, payload };
 }
 
@@ -3529,7 +3541,7 @@ function getNuvionJobsByState(jobType, state) {
   ).all(jobType, state) || [];
   return rows.map((r) => {
     let payload = {};
-    try { payload = r.payload_json ? JSON.parse(r.payload_json) : {}; } catch (_) {}
+    try { payload = r.payload_json ? JSON.parse(r.payload_json) : {}; } catch (_) { }
     return { ...r, payload };
   });
 }
@@ -3565,7 +3577,7 @@ function resolveSenderName(telegramId, accountType = "personal", tgFrom = null) 
   let user = null;
   try {
     user = telegramId ? getUser(telegramId) : null;
-  } catch (_) {}
+  } catch (_) { }
 
   const saved = _cleanSenderName(isBiz ? user?.biz_sender_name : user?.sender_name);
   if (saved) return saved;
@@ -3577,7 +3589,7 @@ function resolveSenderName(telegramId, accountType = "personal", tgFrom = null) 
       const legal = _cleanSenderName(entity?.legal_name);
       if (legal) return legal;
     }
-  } catch (_) {}
+  } catch (_) { }
 
   // Telegram live profile full name (first_name + last_name)
   if (tgFrom) {
@@ -3657,6 +3669,7 @@ module.exports = {
   updateBizSystemEncryptedKey,
   updateUserLastActivity,
   updateAutoEarnSetting,
+  updateDepositSettlementMode,
   getIdleUsersForAutoEarn,
   getVolumeStats,
   reconcileLiveProductVolume,
