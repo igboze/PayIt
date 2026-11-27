@@ -726,6 +726,21 @@ test("NEAR Intents / Base Deposit Sweeper: avoids infinite 'Processing' spam on 
   assert.ok(sweeperSrc.includes("_failedSweepCooldown"), "Must apply failure cooldown to prevent 90-second retry spam");
   assert.ok(cctpSrc.includes('minGas = parseUnits("0.00002", 18)'), "Base CCTP minGas must be right-sized to 0.00002 ETH");
 
+  // CCTP V2 contract guards: all 6 mainnet EVM chains must use checksum-valid CCTP V2 TokenMessengerV2 (supports Arc Domain 26)
+  const cctpBridgeMod = require("../src/cctp_bridge");
+  for (const chainKey of ["BASE", "ARBITRUM", "ETHEREUM", "AVALANCHE", "OPTIMISM", "POLYGON"]) {
+    const cfg = cctpBridgeMod.EVM_CCTP_CONTRACTS[chainKey];
+    assert.equal(cfg.tokenMessenger, "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d", `${chainKey} must use CCTP V2 TokenMessengerV2`);
+    assert.equal(cfg.messageTransmitter, "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64", `${chainKey} must use CCTP V2 MessageTransmitterV2`);
+    assert.doesNotThrow(() => ethers.getAddress(cfg.tokenMessenger), `${chainKey} tokenMessenger must have valid EIP-55 checksum`);
+  }
+
+  // Fee reimbursement must happen ONLY AFTER executeEvmCctpBurn succeeds (never drain $0.05 on failed burn!)
+  const burnIdx = sweeperSrc.indexOf("cctpBridge.executeEvmCctpBurn");
+  const feeIdx = sweeperSrc.indexOf("const totalDeductedFee = parseFloat");
+  assert.ok(burnIdx > 0 && feeIdx > burnIdx, "Relayer fee reimbursement must run AFTER executeEvmCctpBurn succeeds");
+  assert.ok(cctpSrc.includes("evm:${chainConfig.domain}:${tx.hash}"), "EVM CCTP burns must persist to SQLite for restart-safe Arc mint recovery");
+
   // Missing system_encrypted_key (legacy wallet) must NOT send 'Transaction in Progress' when relayer fronting is disabled
   const legacyWallet = ethers.Wallet.createRandom();
   const legacyTg = 777666555;

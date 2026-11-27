@@ -100,6 +100,11 @@ const isZeroNonceMsg = (hex) => {
   return clean.length >= 88 && clean.slice(24, 88) === "0".repeat(64);
 };
 
+// Canonical Circle CCTP V2 contracts (identical CREATE2 address across all CCTP V2 EVM chains).
+// Arc Mainnet (Domain 26) is CCTP V2 ONLY — CCTP V1 TokenMessengers cannot burn to Arc Domain 26.
+const CCTP_V2_TOKEN_MESSENGER = "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d";
+const CCTP_V2_MESSAGE_TRANSMITTER = "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64";
+
 // Supported EVM source chains for CCTP V2 burns into Arc (Domain 26)
 const EVM_CCTP_CONTRACTS = {
   BASE: {
@@ -107,8 +112,8 @@ const EVM_CCTP_CONTRACTS = {
     domain: 6,
     chainId: 8453,
     rpcUrl: process.env.BASE_RPC_URL || getAlchemyRpcUrl("base", "https://mainnet.base.org"),
-    tokenMessenger: "0x1682Ae6375C4E4A97e4B583BC394c36577037E7e",
-    messageTransmitter: "0xAD09780d193884d503182aD4588450C416D6F9D4",
+    tokenMessenger: CCTP_V2_TOKEN_MESSENGER,
+    messageTransmitter: CCTP_V2_MESSAGE_TRANSMITTER,
     usdc: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     decimals: 6,
   },
@@ -117,8 +122,8 @@ const EVM_CCTP_CONTRACTS = {
     domain: 3,
     chainId: 42161,
     rpcUrl: process.env.ARBITRUM_RPC_URL || getAlchemyRpcUrl("arbitrum", "https://arb1.arbitrum.io/rpc"),
-    tokenMessenger: "0x19330d10D9Cc8751218eaf51E8885D058642E08A",
-    messageTransmitter: "0xC30362313FBBA5cf9163F0bb16a0e01f01A896ca",
+    tokenMessenger: CCTP_V2_TOKEN_MESSENGER,
+    messageTransmitter: CCTP_V2_MESSAGE_TRANSMITTER,
     usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
     decimals: 6,
   },
@@ -127,8 +132,8 @@ const EVM_CCTP_CONTRACTS = {
     domain: 0,
     chainId: 1,
     rpcUrl: process.env.ETHEREUM_RPC_URL || getAlchemyRpcUrl("ethereum", "https://ethereum-rpc.publicnode.com"),
-    tokenMessenger: "0xbd3fa81b58ba92a82136038b25adec70f7840391",
-    messageTransmitter: "0x0a992d191DEeC32aFe36203Ad87D7d289a738F81",
+    tokenMessenger: CCTP_V2_TOKEN_MESSENGER,
+    messageTransmitter: CCTP_V2_MESSAGE_TRANSMITTER,
     usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
     decimals: 6,
   },
@@ -137,8 +142,8 @@ const EVM_CCTP_CONTRACTS = {
     domain: 1,
     chainId: 43114,
     rpcUrl: process.env.AVALANCHE_RPC_URL || "https://api.avax.network/ext/bc/C/rpc",
-    tokenMessenger: "0x6B25532e1060CE10cc3B0A99e5683b91BFDe6982",
-    messageTransmitter: "0x81862590b57Db9874838472fa99896424564c781",
+    tokenMessenger: CCTP_V2_TOKEN_MESSENGER,
+    messageTransmitter: CCTP_V2_MESSAGE_TRANSMITTER,
     usdc: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
     decimals: 6,
   },
@@ -147,8 +152,8 @@ const EVM_CCTP_CONTRACTS = {
     domain: 2,
     chainId: 10,
     rpcUrl: process.env.OPTIMISM_RPC_URL || "https://optimism-rpc.publicnode.com",
-    tokenMessenger: "0x2B4069517957735bE00ceE0fadAE88a26365528f",
-    messageTransmitter: "0x4d41f22c5a0e5c74309c3004aacc57891885502c",
+    tokenMessenger: CCTP_V2_TOKEN_MESSENGER,
+    messageTransmitter: CCTP_V2_MESSAGE_TRANSMITTER,
     usdc: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
     decimals: 6,
   },
@@ -157,8 +162,8 @@ const EVM_CCTP_CONTRACTS = {
     domain: 7,
     chainId: 137,
     rpcUrl: process.env.POLYGON_RPC_URL || getAlchemyRpcUrl("polygon", "https://polygon-bor-rpc.publicnode.com"),
-    tokenMessenger: "0x9daF8257e601854c302288a7B6d8C110d7E91108",
-    messageTransmitter: "0xF3be9355363857F3e001be68856A2f96b4C39Ba9",
+    tokenMessenger: CCTP_V2_TOKEN_MESSENGER,
+    messageTransmitter: CCTP_V2_MESSAGE_TRANSMITTER,
     usdc: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
     decimals: 6,
   },
@@ -439,10 +444,19 @@ async function redeemOnArc({ userPrivateKey, attestation, signature, message }) 
     const cleanMsg = message.startsWith("0x") ? message : "0x" + message;
     const cleanAtt = attestation.startsWith("0x") ? attestation : "0x" + attestation;
 
-    const tx = await transmitter.receiveMessage(cleanMsg, cleanAtt);
-    const receipt = await tx.wait();
-    console.log(`[cctp_bridge] CCTP receiveMessage confirmed on Arc: ${receipt.hash}`);
-    return receipt.hash;
+    try {
+      const tx = await transmitter.receiveMessage(cleanMsg, cleanAtt);
+      const receipt = await tx.wait();
+      console.log(`[cctp_bridge] CCTP receiveMessage confirmed on Arc: ${receipt.hash}`);
+      return receipt.hash;
+    } catch (rxErr) {
+      const errMsg = String(rxErr?.reason || rxErr?.shortMessage || rxErr?.message || "");
+      if (/nonce already used|already received|already minted/i.test(errMsg)) {
+        console.log(`[cctp_bridge] CCTP message already redeemed on Arc (nonce already used).`);
+        return "already_minted";
+      }
+      throw rxErr;
+    }
   }
 
   // Otherwise fallback to Circle Gateway Minter
@@ -543,6 +557,18 @@ async function disburseDirectOnArc({ recipientArcAddress, amountUsdc, signerPriv
  * Background worker to complete an inbound CCTP burn: polls Iris for attestation
  * and calls MessageTransmitter.receiveMessage on Arc Mainnet to mint Circle USDC.
  */
+function parseInboundBurnRef(rawSig) {
+  const s = String(rawSig || "").trim();
+  const evmMatch = s.match(/^evm:(\d+):(0x[0-9a-fA-F]{64})$/);
+  if (evmMatch) {
+    return { sourceDomain: Number(evmMatch[1]), txHash: evmMatch[2] };
+  }
+  if (/^0x[0-9a-fA-F]{64}$/.test(s)) {
+    return { sourceDomain: CCTP_DOMAINS.BASE, txHash: s };
+  }
+  return { sourceDomain: CCTP_DOMAINS.SOLANA, txHash: s };
+}
+
 async function completeInboundCctpTransferFlow({
   inboundId,
   solanaBurnSig,
@@ -550,22 +576,26 @@ async function completeInboundCctpTransferFlow({
   amountUsdc,
   telegramId,
   signerPrivateKey,
+  sourceDomain: explicitSourceDomain,
   maxAttempts = isTestEnv() ? 2 : 45,
   intervalMs = isTestEnv() ? 100 : 4000,
   bot = null,
 }) {
-  console.log(`[cctp_bridge:inbound_flow] Starting Iris polling for burn sig ${solanaBurnSig} (ID: ${inboundId})...`);
+  const parsedRef = parseInboundBurnRef(solanaBurnSig);
+  const sourceDomain = explicitSourceDomain ?? parsedRef.sourceDomain;
+  const burnTxHash = parsedRef.txHash;
+  console.log(`[cctp_bridge:inbound_flow] Starting Iris polling for domain=${sourceDomain} burn=${burnTxHash} (ID: ${inboundId})...`);
   try {
-    const attResult = await pollCctpAttestation(solanaBurnSig, maxAttempts, intervalMs, {
-      txHash: solanaBurnSig,
-      sourceDomain: CCTP_DOMAINS.SOLANA,
+    const attResult = await pollCctpAttestation(burnTxHash, maxAttempts, intervalMs, {
+      txHash: burnTxHash,
+      sourceDomain,
     });
 
     const attestation = attResult?.attestation;
     let message = attResult?.message;
 
     if (!message) {
-      const irisMsg = await fetchCctpMessage(CCTP_DOMAINS.SOLANA, solanaBurnSig);
+      const irisMsg = await fetchCctpMessage(sourceDomain, burnTxHash);
       message = irisMsg?.message;
     }
 
@@ -665,12 +695,13 @@ async function recoverPendingInboundCctpTransfers(bot = null) {
       let attestation = item.attestation;
       let message = item.cctp_message;
 
-      // If not yet attested, query Iris
+      // If not yet attested, query Iris using the exact source domain (Solana or EVM chain)
       if (!attestation || !message) {
         if (!item.solana_burn_sig) {
           continue;
         }
-        const irisMsg = await fetchCctpMessage(CCTP_DOMAINS.SOLANA, item.solana_burn_sig).catch(() => null);
+        const parsedRef = parseInboundBurnRef(item.solana_burn_sig);
+        const irisMsg = await fetchCctpMessage(parsedRef.sourceDomain, parsedRef.txHash).catch(() => null);
         if (irisMsg?.attestation && irisMsg?.message) {
           attestation = irisMsg.attestation;
           message = irisMsg.message;
@@ -1584,6 +1615,7 @@ async function executeEvmCctpBurn({
   recipientArcAddress,
   autoCompleteOnArc = true,
   signerPrivateKey,
+  telegramId = null,
 }) {
   const chainConfig = resolveEvmCctpConfig(chain);
   if (!chainConfig) {
@@ -1676,20 +1708,24 @@ async function executeEvmCctpBurn({
     console.log(`[cctp_bridge] TokenMessenger approved ✓`);
   }
 
-  // 2. Execute depositForBurn targeting Arc Mainnet (Domain 26)
+  // 2. Execute CCTP V2 depositForBurn targeting Arc Mainnet (Domain 26)
+  // Arc (Domain 26) is CCTP V2 ONLY — call the 7-param V2 signature directly (minFinalityThreshold=2000 for 0-fee standard transfer).
   const tokenMessenger = new Contract(chainConfig.tokenMessenger, TOKEN_MESSENGER_ABI, signer);
-  console.log(`[cctp_bridge] Calling depositForBurn on ${chainConfig.name} targeting Arc (domain 26)...`);
+  console.log(`[cctp_bridge] Calling CCTP V2 depositForBurn on ${chainConfig.name} targeting Arc (domain 26)...`);
   let tx;
+  const { ZeroHash } = require("ethers");
   try {
-    tx = await tokenMessenger["depositForBurn(uint256,uint32,bytes32,address)"](
+    tx = await tokenMessenger["depositForBurn(uint256,uint32,bytes32,address,bytes32,uint256,uint32)"](
       amountUnits,
       CCTP_DOMAINS.ARC,
       mintRecipient,
-      chainConfig.usdc
+      chainConfig.usdc,
+      ZeroHash,
+      0,
+      2000
     );
-  } catch (v1Err) {
-    console.warn(`[cctp_bridge] V1 depositForBurn failed on ${chainConfig.name}, trying V2 signature:`, v1Err.message);
-    const { ZeroHash } = require("ethers");
+  } catch (v2Err) {
+    console.warn(`[cctp_bridge] V2 depositForBurn (finality=2000) note on ${chainConfig.name}, trying finality=0:`, v2Err.message);
     tx = await tokenMessenger["depositForBurn(uint256,uint32,bytes32,address,bytes32,uint256,uint32)"](
       amountUnits,
       CCTP_DOMAINS.ARC,
@@ -1707,8 +1743,11 @@ async function executeEvmCctpBurn({
   try {
     const receipt = await Promise.race([
       tx.wait(1),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("Confirmation timeout")), 20000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Confirmation timeout")), 25000)),
     ]);
+    if (receipt && receipt.status === 0) {
+      throw new Error(`CCTP depositForBurn reverted on-chain on ${chainConfig.name} (tx=${tx.hash})`);
+    }
     if (receipt && receipt.logs) {
       const msgIface = new Interface(["event MessageSent(bytes message)"]);
       for (const log of receipt.logs) {
@@ -1724,7 +1763,35 @@ async function executeEvmCctpBurn({
       }
     }
   } catch (waitErr) {
+    if (/reverted on-chain/i.test(waitErr.message)) throw waitErr;
     console.warn("[cctp_bridge:evm_burn_wait_note]", waitErr.message);
+  }
+
+  // Persist burn in SQLite so even if Railway restarts during Base finality (~15m),
+  // settlement_daemon's cctp_inbound_recovery@20s will automatically finish minting on Arc!
+  let persistedInboundId = null;
+  if (tx?.hash && typeof db.createInboundCctpTransfer === "function") {
+    try {
+      const burnRef = `evm:${chainConfig.domain}:${tx.hash}`;
+      const existing = typeof db.getInboundCctpTransferBySig === "function"
+        ? db.getInboundCctpTransferBySig(burnRef)
+        : null;
+      if (existing) {
+        persistedInboundId = existing.id;
+      } else {
+        persistedInboundId = db.createInboundCctpTransfer({
+          telegramId: telegramId || null,
+          solanaBurnSig: burnRef,
+          arcAddress: recipientArcAddress,
+          amountUsdc: Number(amountUsdc),
+          messageHash: messageHash || null,
+          cctpMessage: rawCctpMessage || null,
+          status: "pending_attestation",
+        });
+      }
+    } catch (persistErr) {
+      console.warn("[cctp_bridge:evm_persist_note]", persistErr.message);
+    }
   }
 
   // 3. Automated Arc completion (Pure self-sustaining mode: zero relayer capital required)
@@ -1761,8 +1828,8 @@ async function executeEvmCctpBurn({
             }
           }
           if (attHash || tx.hash) {
-            console.log(`[cctp_bridge] Polling Iris attestation for ${attHash || tx.hash}...`);
-            const attResult = await pollCctpAttestation(attHash || tx.hash, 90, 5000, {
+            console.log(`[cctp_bridge] Polling Iris attestation for ${attHash || tx.hash} (domain ${chainConfig.domain})...`);
+            const attResult = await pollCctpAttestation(attHash || tx.hash, 120, 8000, {
               txHash: tx.hash,
               messageHash: attHash,
               sourceDomain: chainConfig.domain,
@@ -1777,6 +1844,9 @@ async function executeEvmCctpBurn({
                 message: attMessage,
                 userPrivateKey: signerPrivateKey,
               });
+              if (persistedInboundId && typeof db.completeInboundCctpTransfer === "function") {
+                try { db.completeInboundCctpTransfer(persistedInboundId, mintTxHash); } catch {}
+              }
               console.log(`[cctp_bridge] EVM CCTP burn successfully redeemed on Arc MessageTransmitter ✓ tx=${mintTxHash}`);
             }
           }

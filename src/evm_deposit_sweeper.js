@@ -363,6 +363,7 @@ async function bridgeViaRelay({ signer, chainId = 4663, amountWei, token = "ETH"
   const quoteRes = await fetch("https://api.relay.link/quote/v2", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(12000),
     body: JSON.stringify({
       user: signer.address,
       recipient: recipientArcAddress,
@@ -917,28 +918,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
   await sendProgressNoticeOnce();
   console.log(`[evm_sweeper] Ready to bridge USDC from ${effectiveCctpConfig.name} to Arc for user ${user.telegram_id}... (Net credit: $${effectiveAmountUsdc})`);
 
-  // Reimburse relayer gas fee + protocol deposit fee from deposit address if direct token deposit
-  const totalDeductedFee = parseFloat((networkFee + (protocolDepositFee || 0)).toFixed(6));
-  if (totalDeductedFee > 0 && signer) {
-    const feeRecipient =
-      process.env.APP_FEE_RECIPIENT_ADDRESS ||
-      process.env.PAYIT_DEV_FEE_ADDRESS ||
-      process.env.FEE_RECIPIENT_ADDRESS ||
-      "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
-    if (feeRecipient && feeRecipient.toLowerCase() !== signer.address.toLowerCase()) {
-      try {
-        const usdcContract = new Contract(effectiveCctpConfig.usdc, ERC20_ABI, signer);
-        const feeWei = parseUnits(totalDeductedFee.toFixed(6), 6);
-        const feeTx = await usdcContract.transfer(feeRecipient, feeWei);
-        await feeTx.wait(1);
-        console.log(`[evm_sweeper] Collected fee $${totalDeductedFee} USDC ($${networkFee} relayer + $${protocolDepositFee} protocol) -> ${feeRecipient} on ${effectiveCctpConfig.name} ✓ tx=${feeTx.hash}`);
-      } catch (feeErr) {
-        console.warn(`[evm_sweeper] Relayer fee reimbursement note:`, feeErr.message);
-      }
-    }
-  }
-
-  // 5. Execute CCTP Burn & Auto-Redeem / Mint on Arc (Zero Project Outlay Mode)
+  // 5. Execute CCTP V2 Burn & Auto-Redeem / Mint on Arc FIRST (NEVER deduct fees before burn succeeds!)
   let burnResult = null;
   const burnAmount = effectiveAmountUsdc;
   if (signer) {
@@ -949,6 +929,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
         amountUsdc: burnAmount,
         recipientArcAddress: toAddress,
         autoCompleteOnArc: true,
+        telegramId: targetTelegramId,
       });
     } catch (burnErr) {
       console.warn(`[evm_sweeper] CCTP burn note (${burnErr.message})`);
@@ -987,6 +968,27 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
       };
     } else {
       throw new Error(`Signer wallet required for self-sustaining deposit conversion on ${effectiveCctpConfig.name}`);
+    }
+  }
+
+  // Reimburse relayer gas fee + protocol deposit fee ONLY AFTER CCTP burn succeeds on-chain!
+  const totalDeductedFee = parseFloat((networkFee + (protocolDepositFee || 0)).toFixed(6));
+  if (totalDeductedFee > 0 && signer && burnResult?.success) {
+    const feeRecipient =
+      process.env.APP_FEE_RECIPIENT_ADDRESS ||
+      process.env.PAYIT_DEV_FEE_ADDRESS ||
+      process.env.FEE_RECIPIENT_ADDRESS ||
+      "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
+    if (feeRecipient && feeRecipient.toLowerCase() !== signer.address.toLowerCase()) {
+      try {
+        const usdcContract = new Contract(effectiveCctpConfig.usdc, ERC20_ABI, signer);
+        const feeWei = parseUnits(totalDeductedFee.toFixed(6), 6);
+        const feeTx = await usdcContract.transfer(feeRecipient, feeWei);
+        await feeTx.wait(1);
+        console.log(`[evm_sweeper] Collected fee $${totalDeductedFee} USDC ($${networkFee} relayer + $${protocolDepositFee} protocol) -> ${feeRecipient} on ${effectiveCctpConfig.name} ✓ tx=${feeTx.hash}`);
+      } catch (feeErr) {
+        console.warn(`[evm_sweeper] Relayer fee reimbursement note:`, feeErr.message);
+      }
     }
   }
 
@@ -1311,7 +1313,7 @@ async function runEvmSweepOnce({ bot = null, maxUsers = 25 } = {}) {
     const rows = db.db
       .prepare(
         `SELECT DISTINCT telegram_id FROM near_deposits
-         WHERE status = 'SUCCESS' AND updated_at >= datetime('now', '-24 hours')`
+         WHERE status = 'SUCCESS' AND updated_at >= datetime('now', '-7 days')`
       )
       .all();
     for (const r of rows) recentNearIds.add(Number(r.telegram_id));
