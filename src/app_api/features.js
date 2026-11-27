@@ -1432,11 +1432,80 @@ async function getRewards(auth, url) {
 
 // ─── 11. ID verification (KYC / KYB) status ───────────────────────────────────
 
+async function syncLiveEntityAndNotify(entity, accountType) {
+  if (!entity?.entity_id) return entity;
+  const db = dep("db");
+  const nuvion = dep("nuvion");
+  if (!nuvion || typeof nuvion.getEntity !== "function" || (typeof nuvion.isNuvionConfigured === "function" && !nuvion.isNuvionConfigured())) {
+    return entity;
+  }
+  const prevStatus = String(entity.status || "").toLowerCase();
+  try {
+    const liveWrapper = await Promise.race([
+      nuvion.getEntity(entity.entity_id),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("kyc_status_timeout")), 4000)),
+    ]);
+    const liveEntity = liveWrapper?.entity || liveWrapper || null;
+    const latestStatus = String(liveEntity?.status || "").toLowerCase();
+    if (!latestStatus) return entity;
+
+    const rejectionReason = liveEntity?.rejection_reason || liveEntity?.status_reason || null;
+    let updated = db.updateNuvionEntity(entity.entity_id, {
+      status: latestStatus,
+      risk_level: liveEntity?.risk_level || entity.risk_level || null,
+      rejection_reason: latestStatus === "approved" ? null : rejectionReason,
+    }) || entity;
+
+    if (latestStatus === "approved" && prevStatus !== "approved") {
+      try {
+        const nuvionWebhooks = require("../nuvion_webhooks");
+        updated = await nuvionWebhooks.bootstrapApprovedEntity(updated, { liveEntity: liveWrapper });
+      } catch (bootErr) {
+        console.warn(`[app_api:kyc_sync] Bootstrap note for ${entity.entity_id}:`, bootErr.message);
+      }
+
+      const idempotency = require("../idempotency");
+      const emailMod = require("../email");
+      const to = emailMod.resolveUserEmail(updated.telegram_id, updated, liveWrapper || liveEntity);
+      if (to && idempotency.tryClaimWebhookEvent(`email_kyc_approved:${updated.entity_id}`, "email_kyc_approved", updated.entity_id)) {
+        emailMod.sendKycStatusEmail({
+          to,
+          name: updated.legal_name,
+          status: "approved",
+          accountType: updated.account_type || accountType || "personal",
+        }).then((r) => {
+          if (!r?.sent) console.warn(`[app_api:kyc_approved_email] Not delivered to ${to}:`, r?.reason, r?.error || "");
+        }).catch((e) => console.warn("[app_api:kyc_approved_email]", e.message));
+      }
+      try {
+        const acctLabel = (updated.account_type || accountType) === "business" ? "Business Account" : "Personal Account";
+        await require("../notify").notify(updated.telegram_id, {
+          title: "Verification Approved — Choose Deposit Currency",
+          html: `🎉 <b>Your ${acctLabel} Is Now VERIFIED!</b>\nNamed global accounts and Virtual USD Cards are unlocked. Open Proxim to choose whether deposits stay in local currency or auto-convert to USD.`,
+          data: { type: "kyc_approved", entityId: updated.entity_id },
+        });
+      } catch (_) { }
+    }
+    return updated;
+  } catch (_) {
+    return entity;
+  }
+}
+
 async function getKycStatus(auth) {
   const db = dep("db");
   const fg = dep("fraudGuard");
-  const personal = db.getNuvionEntityByUser(auth.telegramId, "personal");
-  const business = db.getNuvionEntityByUser(auth.telegramId, "business");
+  let personal = db.getNuvionEntityByUser(auth.telegramId, "personal");
+  let business = db.getNuvionEntityByUser(auth.telegramId, "business");
+
+  // Auto-sync live status for pending/incomplete entities so Mobile KYC/KYB never stays stuck if a webhook was missed
+  if (personal && ["pending", "incomplete", "in_review", "under_review"].includes(String(personal.status || "").toLowerCase())) {
+    personal = await syncLiveEntityAndNotify(personal, "personal");
+  }
+  if (business && ["pending", "incomplete", "in_review", "under_review"].includes(String(business.status || "").toLowerCase())) {
+    business = await syncLiveEntityAndNotify(business, "business");
+  }
+
   const personalApproved = String(personal?.status || "").toLowerCase() === "approved";
   const businessApproved = String(business?.status || "").toLowerCase() === "approved";
   const cfg = fg.getVelocityConfig();
@@ -2946,8 +3015,9 @@ async function submitKyc(auth, body) {
       });
     }
     if (entityStatus === "incomplete" && typeof nuvion.submitOnboarding === "function") {
-      await nuvion.submitOnboarding(entityId);
-      entityStatus = "pending";
+      const subRes = await nuvion.submitOnboarding(entityId);
+      const subObj = subRes?.entity || subRes || {};
+      entityStatus = String(subObj.status || "pending").toLowerCase();
     }
     [resolvedFront, resolvedBack, resolvedPoa].forEach((r) => {
       if (r?.sessionIdToClear) kycUploadSessions.delete(r.sessionIdToClear);
@@ -2956,7 +3026,7 @@ async function submitKyc(auth, body) {
     throw new FeatureError(Number(err.status || err.statusCode) || 400, "kyc_error", String(err.message || "Could not submit verification.").replace(/nuvion/gi, "Global Neobank"));
   }
 
-  db.upsertNuvionEntity({
+  const savedPersonal = db.upsertNuvionEntity({
     telegramId: auth.telegramId,
     accountType: "personal",
     entityId,
@@ -2967,12 +3037,22 @@ async function submitKyc(auth, body) {
     email,
     countryCode,
   });
+  if (entityStatus === "approved") {
+    try { await require("../nuvion_webhooks").bootstrapApprovedEntity(savedPersonal); } catch (_) { }
+  }
   try {
-    require("../email").sendKycStatusEmail({
+    const emailMod = require("../email");
+    const statusToSend = entityStatus === "approved" ? "approved" : "pending";
+    if (statusToSend === "approved") {
+      require("../idempotency").tryClaimWebhookEvent(`email_kyc_approved:${entityId}`, "email_kyc_approved", entityId);
+    }
+    emailMod.sendKycStatusEmail({
       to: email,
       name: fullName,
-      status: entityStatus === "approved" ? "approved" : "pending",
+      status: statusToSend,
       accountType: "personal",
+    }).then((r) => {
+      if (!r?.sent) console.warn(`[app_api:submitKyc_email] Not delivered to ${email}:`, r?.reason, r?.error || "");
     }).catch(() => { });
   } catch (_) { }
   return { status: 201, data: { status: entityStatus || "pending", tier: entityStatus === "approved" ? 1 : 0 } };
@@ -3357,8 +3437,9 @@ async function submitKyb(auth, body) {
     }
 
     if (entityStatus === "incomplete" && typeof nuvion.submitOnboarding === "function") {
-      await nuvion.submitOnboarding(entityId);
-      entityStatus = "pending";
+      const subRes = await nuvion.submitOnboarding(entityId);
+      const subObj = subRes?.entity || subRes || {};
+      entityStatus = String(subObj.status || "pending").toLowerCase();
     }
     [resolvedCoi, resolvedMemart, resolvedBizPoa, resolvedOffIdFront, resolvedOffIdBack, resolvedOffPoa].forEach((r) => {
       if (r?.sessionIdToClear) kycUploadSessions.delete(r.sessionIdToClear);
@@ -3367,7 +3448,7 @@ async function submitKyb(auth, body) {
     throw new FeatureError(Number(err.status || err.statusCode) || 400, "kyb_error", String(err.message || "Could not submit business verification.").replace(/nuvion/gi, "Global Neobank"));
   }
 
-  db.upsertNuvionEntity({
+  const savedBiz = db.upsertNuvionEntity({
     telegramId: auth.telegramId,
     accountType: "business",
     entityId,
@@ -3379,12 +3460,22 @@ async function submitKyb(auth, body) {
     email,
     countryCode,
   });
+  if (entityStatus === "approved") {
+    try { await require("../nuvion_webhooks").bootstrapApprovedEntity(savedBiz); } catch (_) { }
+  }
   try {
-    require("../email").sendKycStatusEmail({
+    const emailMod = require("../email");
+    const statusToSend = entityStatus === "approved" ? "approved" : "pending";
+    if (statusToSend === "approved") {
+      require("../idempotency").tryClaimWebhookEvent(`email_kyc_approved:${entityId}`, "email_kyc_approved", entityId);
+    }
+    emailMod.sendKycStatusEmail({
       to: email,
       name: legalName,
-      status: entityStatus === "approved" ? "approved" : "pending",
+      status: statusToSend,
       accountType: "business",
+    }).then((r) => {
+      if (!r?.sent) console.warn(`[app_api:submitKyb_email] Not delivered to ${email}:`, r?.reason, r?.error || "");
     }).catch(() => { });
   } catch (_) { }
   return { status: 201, data: { status: entityStatus || "pending", tier: entityStatus === "approved" ? 1 : 0 } };
@@ -3395,15 +3486,7 @@ async function refreshKycStatus(auth, body) {
   const db = dep("db");
   const entity = db.getNuvionEntityByUser(auth.telegramId, accountType);
   if (!entity) return getKycStatus(auth);
-  try {
-    const live = await dep("nuvion").getEntity(entity.entity_id);
-    if (live?.status) {
-      db.updateNuvionEntity(entity.entity_id, {
-        status: live.status,
-        rejection_reason: live.rejection_reason || live.status_reason || null,
-      });
-    }
-  } catch (_) { }
+  await syncLiveEntityAndNotify(entity, accountType);
   return getKycStatus(auth);
 }
 

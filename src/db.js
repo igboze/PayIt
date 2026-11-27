@@ -3260,6 +3260,8 @@ function ensureNuvionSchema() {
         email                       TEXT,
         status                      TEXT NOT NULL DEFAULT 'incomplete',
         risk_level                  TEXT,
+        country_code                TEXT,
+        rejection_reason            TEXT,
         self_counterparty_id        TEXT,
         self_base_payment_detail_id TEXT,
         usc_account_id              TEXT,
@@ -3395,22 +3397,31 @@ function upsertNuvionEntity({
   email = null,
   status = "incomplete",
   riskLevel = null,
+  countryCode = null,
+  rejectionReason = null,
 }) {
   ensureNuvionSchema();
+  try {
+    const cols = db.prepare("PRAGMA table_info(nuvion_entities)").all().map((c) => c.name);
+    if (!cols.includes("country_code")) db.exec("ALTER TABLE nuvion_entities ADD COLUMN country_code TEXT");
+    if (!cols.includes("rejection_reason")) db.exec("ALTER TABLE nuvion_entities ADD COLUMN rejection_reason TEXT");
+  } catch (_) { }
   db.prepare(`
     INSERT INTO nuvion_entities
-      (telegram_id, account_type, entity_id, entity_type, person_id, business_id, legal_name, email, status, risk_level)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (telegram_id, account_type, entity_id, entity_type, person_id, business_id, legal_name, email, status, risk_level, country_code, rejection_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(telegram_id, account_type) DO UPDATE SET
-      entity_id   = excluded.entity_id,
-      entity_type = excluded.entity_type,
-      person_id   = COALESCE(excluded.person_id, nuvion_entities.person_id),
-      business_id = COALESCE(excluded.business_id, nuvion_entities.business_id),
-      legal_name  = COALESCE(excluded.legal_name, nuvion_entities.legal_name),
-      email       = COALESCE(excluded.email, nuvion_entities.email),
-      status      = excluded.status,
-      risk_level  = COALESCE(excluded.risk_level, nuvion_entities.risk_level),
-      updated_at  = datetime('now')
+      entity_id        = excluded.entity_id,
+      entity_type      = excluded.entity_type,
+      person_id        = COALESCE(excluded.person_id, nuvion_entities.person_id),
+      business_id      = COALESCE(excluded.business_id, nuvion_entities.business_id),
+      legal_name       = COALESCE(excluded.legal_name, nuvion_entities.legal_name),
+      email            = COALESCE(excluded.email, nuvion_entities.email),
+      status           = excluded.status,
+      risk_level       = COALESCE(excluded.risk_level, nuvion_entities.risk_level),
+      country_code     = COALESCE(excluded.country_code, nuvion_entities.country_code),
+      rejection_reason = excluded.rejection_reason,
+      updated_at       = datetime('now')
   `).run(
     Number(telegramId),
     accountType,
@@ -3421,7 +3432,9 @@ function upsertNuvionEntity({
     legalName,
     email,
     status,
-    riskLevel
+    riskLevel,
+    countryCode,
+    rejectionReason
   );
   return getNuvionEntityByUser(telegramId, accountType);
 }
@@ -3440,8 +3453,14 @@ function getNuvionEntityByEntityId(entityId) {
 
 function updateNuvionEntity(entityId, fields = {}) {
   ensureNuvionSchema();
+  try {
+    const cols = db.prepare("PRAGMA table_info(nuvion_entities)").all().map((c) => c.name);
+    if (!cols.includes("country_code")) db.exec("ALTER TABLE nuvion_entities ADD COLUMN country_code TEXT");
+    if (!cols.includes("rejection_reason")) db.exec("ALTER TABLE nuvion_entities ADD COLUMN rejection_reason TEXT");
+  } catch (_) { }
   const allowed = [
     "person_id", "business_id", "legal_name", "email", "status", "risk_level",
+    "country_code", "rejection_reason",
     "self_counterparty_id", "self_base_payment_detail_id",
     "usc_account_id", "usc_base_detail_id", "usc_base_address",
   ];

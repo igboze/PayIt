@@ -7501,6 +7501,39 @@ bot.command("volume", async (ctx) => {
   }
 });
 
+bot.command("test_email", async (ctx) => {
+  if (!ADMIN_IDS.includes(String(ctx.from?.id))) return;
+  const to = String(ctx.message?.text || "").trim().split(/\s+/)[1] || "";
+  const emailMod = require("./src/email");
+  const diag = emailMod.getEmailConfigDiagnostics();
+  if (!to || !to.includes("@")) {
+    return ctx.reply(
+      `📧 <b>Email Config Diagnostics</b>\n` +
+      `• Resend API: ${diag.resendConfigured ? "✅ Set" : "❌ Not set"}\n` +
+      `• Postmark: ${diag.postmarkConfigured ? "✅ Set" : "❌ Not set"}\n` +
+      `• SMTP: ${diag.smtpConfigured ? `✅ ${diag.smtpHost}:${diag.smtpPort} (${diag.smtpUserMasked})` : "❌ Not set"}\n` +
+      `• SMTP From: <code>${escapeHtml(diag.smtpFrom || "none")}</code>\n\n` +
+      `Usage: <code>/test_email your@email.com</code>`,
+      { parse_mode: "HTML" }
+    );
+  }
+  await ctx.reply(`⏳ Sending test email to <code>${escapeHtml(to)}</code>...`, { parse_mode: "HTML" });
+  const res = await emailMod.sendTransactionalEmail({
+    to,
+    subject: "Proxim Email Delivery Test",
+    html: `<p>Hello! This confirms Proxim transactional email delivery is working.</p>`,
+  });
+  return ctx.reply(
+    `📧 <b>Test Email Result</b>\n` +
+    `• Sent: <b>${res.sent ? "✅ YES" : "❌ NO"}</b>\n` +
+    `• Provider: <code>${escapeHtml(res.provider || res.reason || "none")}</code>\n` +
+    (res.port ? `• Port: <code>${res.port}</code>\n` : "") +
+    (res.error ? `• Error: <code>${escapeHtml(res.error)}</code>\n` : "") +
+    `• SMTP Config: <code>${escapeHtml(diag.smtpHost || "none")}:${diag.smtpPort || ""}</code> | Resend: ${diag.resendConfigured ? "ON" : "OFF"}`,
+    { parse_mode: "HTML" }
+  );
+});
+
 // ─── Admin: CCTP Retry & Fee-Payer Status ────────────────────────────────────
 
 /**

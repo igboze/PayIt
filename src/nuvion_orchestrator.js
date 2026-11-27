@@ -204,6 +204,9 @@ async function provisionGlobalReceivingAccount(telegramId, accountType = "person
         `hasNumber=${!!(live.account_number || live.iban)} reason=${nuvion.getAccountDetailStatusReason(live) || "none"}`
       );
       if (nuvion.isAccountDetailDead(live)) return deadResult({ ...updated, status_reason: live.status_reason });
+      if (nuvion.isAccountDetailReady(updated)) {
+        _dispatchGlobalAccountCreatedEmailOnce(entity, updated);
+      }
       return { entity, detail: updated, isPending: !nuvion.isAccountDetailReady(updated), cached: false };
     } catch (err) {
       console.warn(`[nuvion_orchestrator] Account detail ${first.detail_id} refresh failed:`, err.message);
@@ -259,6 +262,9 @@ async function provisionGlobalReceivingAccount(telegramId, accountType = "person
   }
 
   const saved = saveDetailFromApi(remoteDetail, entityId, account.account_id, code);
+  if (nuvion.isAccountDetailReady(saved)) {
+    _dispatchGlobalAccountCreatedEmailOnce(entity, saved);
+  }
   return {
     entity,
     account,
@@ -266,6 +272,26 @@ async function provisionGlobalReceivingAccount(telegramId, accountType = "person
     isPending: !nuvion.isAccountDetailReady(saved),
     cached: false,
   };
+}
+
+function _dispatchGlobalAccountCreatedEmailOnce(entity, detail) {
+  if (!entity || !detail || !detail.detail_id) return;
+  try {
+    const emailMod = require("./email");
+    const to = emailMod.resolveUserEmail(entity.telegram_id, entity);
+    if (!to) return;
+    const claimed = idempotency.tryClaimWebhookEvent(`email_global_acct:${detail.detail_id}`, "email_global_acct", detail.detail_id);
+    if (!claimed) return;
+    emailMod.sendGlobalAccountCreatedEmail({
+      to,
+      name: entity.legal_name,
+      currency: detail.currency,
+      accountType: entity.account_type || "personal",
+      detail,
+    }).then((r) => {
+      if (!r?.sent) console.warn(`[nuvion_orchestrator:acct_email] Not delivered to ${to}:`, r?.reason, r?.error || "");
+    }).catch((e) => console.warn("[nuvion_orchestrator:acct_email]", e.message));
+  } catch (_) { }
 }
 
 function saveDetailFromApi(raw, entityId, accountId, fallbackCurrency) {

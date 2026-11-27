@@ -409,36 +409,30 @@ async function processNuvionEvent(payload, headers = {}, bot = null) {
           ).catch(() => {});
         }
 
-        // Direct consumer transactional email dispatch to user's personal email
-        const userEmail = liveEntity?.person?.email || liveEntity?.business?.email || localRecord?.email || null;
+        // Direct consumer transactional email dispatch (idempotent across webhook + live status refresh)
+        const userEmail = emailModule.resolveUserEmail(updatedRecord.telegram_id, updatedRecord, liveWrapper || liveEntity);
         if (userEmail) {
-          emailModule.sendKycStatusEmail({
-            to: userEmail,
-            name: updatedRecord.legal_name,
-            status: "approved",
-            accountType: updatedRecord.account_type,
-          }).catch((e) => console.warn("[nuvion_webhooks:email]", e.message));
+          const emailClaim = idempotency.tryClaimWebhookEvent(`email_kyc_approved:${entityId}`, "email_kyc_approved", entityId);
+          if (emailClaim) {
+            emailModule.sendKycStatusEmail({
+              to: userEmail,
+              name: updatedRecord.legal_name,
+              status: "approved",
+              accountType: updatedRecord.account_type,
+            }).then((r) => {
+              if (!r?.sent) console.warn(`[nuvion_webhooks:kyc_email] Not delivered to ${userEmail}:`, r?.reason, r?.error || "");
+            }).catch((e) => console.warn("[nuvion_webhooks:email]", e.message));
+          }
         }
       }
     } else if ((latestStatus === "failed" || latestStatus === "blocked" || latestStatus === "action_required") && prevStatus !== latestStatus && updatedRecord.telegram_id) {
       await notifyModule.notify(updatedRecord.telegram_id, {
         title: "Verification Update",
-        html: `❌ <b>Verification Update</b>\nYour Tier-1 verification status changed to ${escapeHtml(latestStatus)}. Please check your documents or contact support.`,
+        html: `❌ <b>Verification Update</b>\nYour verification status changed to ${escapeHtml(latestStatus)}. Please check your documents or contact support.`,
         data: { type: "kyc_status_change", entityId, status: latestStatus },
       }).catch(() => {});
 
-      if (telegram) {
-        await telegram.sendMessage(
-          updatedRecord.telegram_id,
-          `❌ <b>Verification Update</b>\n` +
-          `──────────────────────────\n` +
-          `Your Tier-1 verification status changed to <b>${escapeHtml(latestStatus)}</b>.\n` +
-          `Your regular Proxim wallet remains fully active. Contact support if you need help reviewing your documents.`,
-          { parse_mode: "HTML" }
-        ).catch(() => {});
-      }
-
-      const userEmail = liveEntity?.person?.email || liveEntity?.business?.email || localRecord?.email || null;
+      const userEmail = emailModule.resolveUserEmail(updatedRecord.telegram_id, updatedRecord, liveWrapper || liveEntity);
       if (userEmail) {
         emailModule.sendKycStatusEmail({
           to: userEmail,
@@ -446,6 +440,17 @@ async function processNuvionEvent(payload, headers = {}, bot = null) {
           status: latestStatus,
           accountType: updatedRecord.account_type,
         }).catch((e) => console.warn("[nuvion_webhooks:email]", e.message));
+      }
+
+      if (telegram && Number(updatedRecord.telegram_id) > 0) {
+        await telegram.sendMessage(
+          updatedRecord.telegram_id,
+          `❌ <b>Verification Update</b>\n` +
+          `──────────────────────────\n` +
+          `Your verification status changed to <b>${escapeHtml(latestStatus)}</b>.\n` +
+          `Your regular Proxim wallet remains fully active. Contact support if you need help reviewing your documents.`,
+          { parse_mode: "HTML" }
+        ).catch(() => {});
       }
     }
 
@@ -506,7 +511,7 @@ async function processNuvionEvent(payload, headers = {}, bot = null) {
       // If this is the user's USC Base bridge address becoming active, sync it onto nuvion_entities
       if (entityRecord.usc_base_detail_id === detailId && confirmed.account_number) {
         db.updateNuvionEntity(entityId, { usc_base_address: confirmed.account_number });
-      } else if (saved.asset_type === "fiat" && nuvion.isAccountDetailReady(saved) && telegram && entityRecord.telegram_id) {
+      } else if (saved.asset_type === "fiat" && nuvion.isAccountDetailReady(saved) && entityRecord.telegram_id) {
         const lines = [
           `🏦 <b>Your ${escapeHtml(saved.currency)} Bank Account Is Ready!</b>`,
           `──────────────────────────`,
@@ -518,9 +523,34 @@ async function processNuvionEvent(payload, headers = {}, bot = null) {
         if (saved.sort_code) lines.push(`<b>Sort Code:</b> <code>${escapeHtml(saved.sort_code)}</code>`);
         if (saved.iban) lines.push(`<b>IBAN:</b> <code>${escapeHtml(saved.iban)}</code>`);
         if (saved.swift_code) lines.push(`<b>SWIFT/BIC:</b> <code>${escapeHtml(saved.swift_code)}</code>`);
-        lines.push(`\n<i>Funds received into this account automatically settle straight into your main Proxim balance.</i>`);
+        lines.push(`\n<i>Receive ${escapeHtml(saved.currency)} payments with 0% deposit fee.</i>`);
+        const htmlMsg = lines.join("\n");
 
-        await telegram.sendMessage(entityRecord.telegram_id, lines.join("\n"), { parse_mode: "HTML" }).catch(() => {});
+        if (telegram && Number(entityRecord.telegram_id) > 0) {
+          await telegram.sendMessage(entityRecord.telegram_id, htmlMsg, { parse_mode: "HTML" }).catch(() => {});
+        }
+        await notifyModule.notify(entityRecord.telegram_id, {
+          title: `Your ${saved.currency} Bank Account Is Ready`,
+          html: htmlMsg,
+          data: { type: "global_account_ready", currency: saved.currency, detailId: saved.detail_id },
+        }).catch(() => {});
+
+        // Send branded email once per provisioned international account
+        const userEmail = emailModule.resolveUserEmail(entityRecord.telegram_id, entityRecord);
+        if (userEmail) {
+          const emailClaim = idempotency.tryClaimWebhookEvent(`email_global_acct:${saved.detail_id}`, "email_global_acct", saved.detail_id);
+          if (emailClaim) {
+            emailModule.sendGlobalAccountCreatedEmail({
+              to: userEmail,
+              name: entityRecord.legal_name,
+              currency: saved.currency,
+              accountType: entityRecord.account_type || "personal",
+              detail: saved,
+            }).then((r) => {
+              if (!r?.sent) console.warn(`[nuvion_webhooks:acct_email] Not delivered to ${userEmail}:`, r?.reason, r?.error || "");
+            }).catch((e) => console.warn("[nuvion_webhooks:acct_email]", e.message));
+          }
+        }
       }
     }
 

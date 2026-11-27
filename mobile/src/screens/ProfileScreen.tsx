@@ -636,7 +636,9 @@ export function ProfileScreen({
         if (tab === "general") {
           await refreshMe();
         } else if (tab === "kyc") {
-          setKyc(await api.getKycStatus());
+          const kycRes = await api.getKycStatus();
+          setKyc(kycRes);
+          refreshMe().catch(() => {});
         } else if (tab === "security") {
           const r = await api.listDevices();
           setDevices(r.devices || []);

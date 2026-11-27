@@ -953,10 +953,10 @@ test("Local-Currency Hold, User Settlement Toggle, Auto-Save OFF Default, Tiered
   let fxCalls = 0;
   const transferCalls = [];
   try {
-    nuvionWebhooks.bootstrapApprovedEntity = async () => ({
-      ...entityRecord,
-      self_counterparty_id: "cp_self_lh1",
-      self_base_payment_detail_id: "pd_self_lh1",
+    nuvionWebhooks.bootstrapApprovedEntity = async (ent = entityRecord) => ({
+      ...ent,
+      self_counterparty_id: ent?.self_counterparty_id || "cp_self_lh1",
+      self_base_payment_detail_id: ent?.self_base_payment_detail_id || "pd_self_lh1",
     });
     nuvion.createFxQuote = async (args) => {
       fxCalls++;
@@ -1098,6 +1098,52 @@ test("Local-Currency Hold, User Settlement Toggle, Auto-Save OFF Default, Tiered
     assert.ok(vol.byChannel.telegramBot.allTime.usdc >= 40, "Admin volume must capture Telegram Bot users");
     assert.ok(vol.airbills.allTime.count >= 2, "Airbills breakdown must include all bill_* types");
     assert.ok(vol.cards.allTime.usdc >= 30, "Nuvion card spend must be tracked");
+
+    // 10. Email triggers: resolveUserEmail fallback + sendGlobalAccountCreatedEmail + getKycStatus live sync
+    const emailMod = require("../src/email");
+    const features = require("../src/app_api/features");
+    const store = require("../src/app_api/store");
+    store.setUserPhone(mobileAppUid, "email:google.verified@example.com");
+    assert.equal(emailMod.resolveUserEmail(mobileAppUid, null, null), "google.verified@example.com");
+
+    const acctEmailRes = await emailMod.sendGlobalAccountCreatedEmail({
+      to: "google.verified@example.com",
+      name: "Ada Lovelace",
+      currency: "GBP",
+      accountType: "personal",
+      detail: {
+        beneficiary_name: "Ada Lovelace",
+        bank_name: "ClearBank",
+        account_number: "12345678",
+        sort_code: "04-00-75",
+      },
+    });
+    assert.equal(acctEmailRes.sent, false); // no live provider in test env
+    assert.equal(acctEmailRes.reason, "no_provider_configured");
+
+    // Verify getKycStatus unwraps wrapped `{ entity: { status: 'approved' } }` and persists approved status + country_code
+    db.upsertNuvionEntity({
+      telegramId: mobileAppUid,
+      accountType: "personal",
+      entityId: "ent_mobile_sync_1",
+      entityType: "individual",
+      status: "pending",
+      legalName: "Ada Lovelace",
+      email: "google.verified@example.com",
+      countryCode: "NG",
+    });
+    const origGetEntity = nuvion.getEntity;
+    try {
+      nuvion.getEntity = async () => ({ entity: { id: "ent_mobile_sync_1", status: "approved", risk_level: "low" } });
+      features.__setTestDeps({ db, nuvion });
+      const kycStatusRes = await features.getKycStatus({ telegramId: mobileAppUid, user: db.getUser(mobileAppUid) });
+      assert.equal(kycStatusRes.data.personal.status, "approved", "getKycStatus must unwrap { entity: { status } } and sync pending -> approved");
+      assert.equal(kycStatusRes.data.personal.tier, 1);
+      assert.equal(kycStatusRes.data.personal.countryCode, "NG");
+    } finally {
+      nuvion.getEntity = origGetEntity;
+      features.__setTestDeps({});
+    }
   } finally {
     nuvionWebhooks.bootstrapApprovedEntity = origBootstrap;
     nuvion.createFxQuote = origCreateFxQuote;

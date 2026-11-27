@@ -6,6 +6,63 @@
 
 const axios = require("axios");
 
+/**
+ * Resolve the best available consumer email address for a user across:
+ * 1. Live provider entity payload (person/business/individual/top-level email)
+ * 2. Stored nuvion_entities.email
+ * 3. User's Google/Email signup address stored in users.phone_number (`email:...`)
+ */
+function resolveUserEmail(telegramId = null, entityRecord = null, liveEntity = null) {
+  const candidates = [
+    liveEntity?.person?.email,
+    liveEntity?.business?.email,
+    liveEntity?.individual?.email,
+    liveEntity?.entity?.person?.email,
+    liveEntity?.entity?.business?.email,
+    liveEntity?.entity?.email,
+    liveEntity?.email,
+    entityRecord?.email,
+  ];
+  if (telegramId) {
+    try {
+      const db = require("./db");
+      const user = db.getUser(telegramId);
+      const rawPhone = String(user?.phone_number || "");
+      if (rawPhone.startsWith("email:")) {
+        candidates.push(rawPhone.slice("email:".length));
+      }
+      if (!entityRecord) {
+        const pEnt = db.getNuvionEntityByUser?.(telegramId, "personal");
+        const bEnt = db.getNuvionEntityByUser?.(telegramId, "business");
+        if (pEnt?.email) candidates.push(pEnt.email);
+        if (bEnt?.email) candidates.push(bEnt.email);
+      }
+    } catch (_) { }
+  }
+  for (const c of candidates) {
+    const clean = String(c || "").trim().toLowerCase();
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(clean)) return clean;
+  }
+  return null;
+}
+
+function getEmailConfigDiagnostics() {
+  const smtpUser = (process.env.SMTP_USER || "").trim();
+  const smtpPass = (process.env.SMTP_PASS || "").trim();
+  const smtpHost = (process.env.SMTP_HOST || "mail.privateemail.com").trim();
+  const smtpPort = Number(process.env.SMTP_PORT || 465);
+  const smtpFrom = (process.env.SMTP_FROM_EMAIL || (smtpUser ? `Proxim <${smtpUser}>` : "")).trim();
+  return {
+    resendConfigured: Boolean((process.env.RESEND_API_KEY || "").trim()),
+    postmarkConfigured: Boolean((process.env.POSTMARK_SERVER_TOKEN || "").trim()),
+    smtpConfigured: Boolean(smtpUser && smtpPass),
+    smtpHost: smtpUser ? smtpHost : null,
+    smtpPort: smtpUser ? smtpPort : null,
+    smtpUserMasked: smtpUser ? smtpUser.replace(/^(..).*(@.*)$/, "$1***$2") : null,
+    smtpFrom: smtpFrom || null,
+  };
+}
+
 async function sendTransactionalEmail({ to, subject, html, text }) {
   if (!to || !to.includes("@")) {
     return { sent: false, reason: "invalid_recipient" };
@@ -269,8 +326,75 @@ async function sendWelcomeEmail({ to, name } = {}) {
   return sendTransactionalEmail({ to, subject, html, text });
 }
 
+async function sendGlobalAccountCreatedEmail({ to, name, currency, accountType = "personal", detail = {} } = {}) {
+  const code = String(currency || detail?.currency || "USD").toUpperCase();
+  const isBiz = accountType === "business";
+  const acctLabel = isBiz ? "Business Account" : "Personal Account";
+  const safe = (v) => String(v || "").replace(/[<>&]/g, "");
+  const greeting = name ? `Hello ${safe(name)},` : "Hello,";
+
+  const rows = [];
+  const benName = detail?.beneficiary_name || name || acctLabel;
+  rows.push(["Account Name", benName]);
+  if (detail?.bank_name) rows.push(["Bank Name", detail.bank_name]);
+  if (detail?.account_number) rows.push(["Account Number", detail.account_number]);
+  if (detail?.iban) rows.push(["IBAN", detail.iban]);
+  if (detail?.routing_number) rows.push(["Routing Number", detail.routing_number]);
+  if (detail?.sort_code) rows.push(["Sort Code", detail.sort_code]);
+  if (detail?.swift_code) rows.push(["SWIFT / BIC", detail.swift_code]);
+
+  const htmlRows = rows
+    .map(
+      ([k, v]) =>
+        `<tr><td style="padding:6px 0;color:#5C5546;font-size:14px;">${safe(k)}</td>` +
+        `<td style="padding:6px 0;color:#002018;font-weight:700;font-size:14px;text-align:right;font-family:monospace;">${safe(v)}</td></tr>`
+    )
+    .join("");
+  const textRows = rows.map(([k, v]) => `- ${k}: ${v}`).join("\n");
+
+  const subject = `Your Proxim ${code} Bank Account Is Ready`;
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; background-color: #F5F1E8; color: #13110C;">
+      <div style="background-color: #FFFFFF; border: 1px solid #DCD3C1; border-radius: 18px; padding: 28px;">
+        <div style="display: inline-block; background-color: #002018; color: #E0A82E; font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; padding: 5px 12px; border-radius: 999px; margin-bottom: 14px;">
+          ${safe(code)} Global Account Ready
+        </div>
+        <h2 style="color: #002018; margin: 0 0 10px 0; font-size: 21px;">Your named ${safe(code)} receiving account is live!</h2>
+        <p style="font-size: 15px; line-height: 1.6; color: #3A352C; margin: 0 0 14px 0;">${greeting}</p>
+        <p style="font-size: 15px; line-height: 1.6; color: #3A352C; margin: 0 0 16px 0;">
+          Your new <b>${safe(code)}</b> bank account on your Proxim <b>${safe(acctLabel)}</b> is active and ready to receive payments with <b>0% deposit fee</b>.
+        </p>
+        <div style="background-color: #FAF7F0; border: 1px solid #E6DEC9; border-radius: 14px; padding: 16px 18px; margin: 16px 0;">
+          <table style="width:100%;border-collapse:collapse;">${htmlRows}</table>
+        </div>
+        <p style="font-size: 13.5px; line-height: 1.6; color: #5C5546; margin: 0 0 16px 0;">
+          Open Proxim anytime to copy or share your details, or choose in <b>Profile</b> whether incoming deposits stay in ${safe(code)} or auto-convert to USD.
+        </p>
+        <hr style="border: none; border-top: 1px solid #E6DEC9; margin: 20px 0;" />
+        <p style="font-size: 12px; color: #8A8170; margin: 0;">
+          Proxim Platform · Regulated Global Banking Infrastructure · <a href="mailto:igboze@proximfi.xyz" style="color:#002018;">igboze@proximfi.xyz</a>
+        </p>
+      </div>
+    </div>
+  `;
+  const text = [
+    greeting,
+    "",
+    `Your new ${code} receiving account on your Proxim ${acctLabel} is active (0% deposit fee).`,
+    "",
+    textRows,
+    "",
+    "Open the Proxim app or Telegram bot (https://t.me/payeetbot) anytime to view or share your details.",
+  ].join("\n");
+
+  return sendTransactionalEmail({ to, subject, html, text });
+}
+
 module.exports = {
+  resolveUserEmail,
+  getEmailConfigDiagnostics,
   sendTransactionalEmail,
   sendKycStatusEmail,
   sendWelcomeEmail,
+  sendGlobalAccountCreatedEmail,
 };
