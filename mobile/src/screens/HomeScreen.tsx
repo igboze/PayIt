@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Image,
+  ImageSourcePropType,
   NativeScrollEvent,
   NativeSyntheticEvent,
   ScrollView,
@@ -28,6 +30,7 @@ import {
   SuccessBanner,
 } from "../components/UI";
 import { CurrencyLogo } from "../components/CurrencyLogo";
+import { StockLogo } from "../components/StockLogo";
 import { SavingsLogoMerger, StockLogoMerger } from "../components/AssetLogoCluster";
 import { PressableScale } from "../components/Touch";
 import { UserAvatar } from "../components/Avatar";
@@ -60,77 +63,128 @@ export type HomeModalTarget =
 const HOME_ACTIVITY_COUNT = 5;
 const BANNER_GAP = 10;
 
+const BANNER_ART_ABROAD = require("../../assets/banners/banner_abroad.png");
+const BANNER_ART_BUSINESS = require("../../assets/banners/banner_business.png");
+const BANNER_ART_CARDS = require("../../assets/banners/banner_cards.png");
+const BANNER_ART_SAVINGS = require("../../assets/banners/banner_savings.png");
+
+type BannerLogoRef =
+  | { kind: "currency"; code: string }
+  | { kind: "brand"; ticker: string; domain: string };
+
 type PromoBannerItem = {
   key: "abroad" | "business" | "cards" | "savings";
   badge: string;
   title: string;
   subtitle: string;
   cta: string;
-  icon: keyof typeof Ionicons.glyphMap;
+  artifact: ImageSourcePropType;
+  logos: BannerLogoRef[];
   bg: string;
   border: string;
+  lip: string;
+  haloBg: string;
   badgeBg: string;
   badgeColor: string;
-  iconBg: string;
-  iconColor: string;
+  titleColor: string;
+  subColor: string;
+  ctaColor: string;
 };
 
+// Each banner showcases a distinct primary color from Proxim's Forest & Gold brand palette.
 const PROMO_BANNERS: PromoBannerItem[] = [
   {
     key: "abroad",
-    badge: "NEW · 27+ CURRENCIES",
-    title: "Send money abroad in minutes",
-    subtitle: "Transfer to UK, US, Europe, Ghana, Kenya & more via bank or mobile money.",
-    cta: "Send abroad",
-    icon: "earth-outline",
-    bg: "#002B20",
-    border: "#0F513D",
-    badgeBg: "rgba(212,175,55,0.20)",
-    badgeColor: "#F2D272",
-    iconBg: "rgba(212,175,55,0.16)",
-    iconColor: "#F2D272",
+    badge: "27+ CURRENCIES",
+    title: "Send money abroad",
+    subtitle: "UK, US, EU, Ghana & Kenya",
+    cta: "Send now",
+    artifact: BANNER_ART_ABROAD,
+    logos: [
+      { kind: "currency", code: "USD" },
+      { kind: "currency", code: "GBP" },
+      { kind: "currency", code: "EUR" },
+      { kind: "currency", code: "GHS" },
+      { kind: "currency", code: "KES" },
+    ],
+    bg: COLORS.forest, // Primary: Proxim Forest (#002018)
+    border: COLORS.forest700,
+    lip: COLORS.primaryDark,
+    haloBg: "rgba(0, 176, 96, 0.18)",
+    badgeBg: "rgba(224, 168, 46, 0.22)",
+    badgeColor: COLORS.gold,
+    titleColor: COLORS.white,
+    subColor: HERO.textSecondary,
+    ctaColor: COLORS.gold,
   },
   {
     key: "business",
     badge: "PROXIM BUSINESS",
-    title: "Run your business on Proxim",
-    subtitle: "Dedicated company wallet, client invoices, payment links & 27-currency payroll.",
+    title: "Proxim Business Account",
+    subtitle: "Invoices, links & global payroll",
     cta: "Explore Business",
-    icon: "briefcase-outline",
-    bg: "#1E170B",
-    border: "#59441A",
-    badgeBg: "rgba(212,175,55,0.22)",
-    badgeColor: "#F2D272",
-    iconBg: "rgba(212,175,55,0.18)",
-    iconColor: "#F2D272",
+    artifact: BANNER_ART_BUSINESS,
+    logos: [
+      { kind: "currency", code: "USD" },
+      { kind: "currency", code: "GBP" },
+      { kind: "currency", code: "EUR" },
+      { kind: "currency", code: "NGN" },
+    ],
+    bg: COLORS.gold, // Primary: Proxim Gold (#E0A82E)
+    border: "#C9921F",
+    lip: COLORS.goldDark,
+    haloBg: "rgba(255, 255, 255, 0.26)",
+    badgeBg: "rgba(0, 32, 24, 0.14)",
+    badgeColor: COLORS.forest,
+    titleColor: COLORS.forest,
+    subColor: "#3A2C0A",
+    ctaColor: COLORS.forest,
   },
   {
     key: "cards",
-    badge: "GLOBAL SPEND",
-    title: "Virtual USD Cards",
-    subtitle: "Pay seamlessly on Netflix, AWS, Meta Ads, Apple & global online stores.",
+    badge: "VIRTUAL USD CARDS",
+    title: "Spend globally online",
+    subtitle: "Netflix, Apple, Amazon & Ads",
     cta: "Get a card",
-    icon: "card-outline",
-    bg: "#0E2439",
-    border: "#214C74",
-    badgeBg: "rgba(56,189,248,0.18)",
-    badgeColor: "#7DD3FC",
-    iconBg: "rgba(56,189,248,0.16)",
-    iconColor: "#7DD3FC",
+    artifact: BANNER_ART_CARDS,
+    logos: [
+      { kind: "brand", ticker: "NFLX", domain: "netflix.com" },
+      { kind: "brand", ticker: "AAPL", domain: "apple.com" },
+      { kind: "brand", ticker: "AMZN", domain: "amazon.com" },
+      { kind: "brand", ticker: "META", domain: "meta.com" },
+      { kind: "currency", code: "USD" },
+    ],
+    bg: COLORS.goldSoft, // Primary: Proxim Warm Champagne (#F6E7BF)
+    border: COLORS.businessBorder,
+    lip: "#C8A455",
+    haloBg: "rgba(255, 255, 255, 0.55)",
+    badgeBg: "rgba(0, 32, 24, 0.10)",
+    badgeColor: COLORS.forest,
+    titleColor: COLORS.forest,
+    subColor: COLORS.textSecondary,
+    ctaColor: COLORS.goldDark,
   },
   {
     key: "savings",
-    badge: "AUTO-EARN",
-    title: "Dollar Savings · Daily Yield",
-    subtitle: "Put idle dollars to work automatically and withdraw back anytime.",
+    badge: "AUTO-EARN YIELD",
+    title: "Grow dollars daily",
+    subtitle: "Earn on USDC & EURC anytime",
     cta: "Start saving",
-    icon: "trending-up-outline",
-    bg: "#0A3422",
-    border: "#1A6143",
-    badgeBg: "rgba(52,211,153,0.18)",
-    badgeColor: "#6EE7B7",
-    iconBg: "rgba(52,211,153,0.16)",
-    iconColor: "#6EE7B7",
+    artifact: BANNER_ART_SAVINGS,
+    logos: [
+      { kind: "currency", code: "USDC" },
+      { kind: "currency", code: "EURC" },
+      { kind: "currency", code: "MORPHO" },
+    ],
+    bg: COLORS.success, // Primary: Proxim Emerald (#007840)
+    border: COLORS.brandGreen,
+    lip: "#004D29",
+    haloBg: "rgba(246, 231, 191, 0.20)",
+    badgeBg: "rgba(0, 32, 24, 0.26)",
+    badgeColor: COLORS.goldSoft,
+    titleColor: COLORS.white,
+    subColor: "#D3F3E2",
+    ctaColor: COLORS.goldSoft,
   },
 ];
 
@@ -354,28 +408,66 @@ export function HomeScreen({
               depth={0.97}
               style={[
                 styles.promoCard,
-                { width: bannerWidth, backgroundColor: b.bg, borderColor: b.border },
+                {
+                  width: bannerWidth,
+                  backgroundColor: b.bg,
+                  borderColor: b.border,
+                  borderBottomColor: b.lip,
+                },
               ]}
               accessibilityRole="button"
               accessibilityLabel={`${b.title}. ${ctaLabel}`}
             >
-              <View style={styles.promoTopRow}>
-                <View style={[styles.promoBadge, { backgroundColor: b.badgeBg }]}>
-                  <Text style={[styles.promoBadgeText, { color: b.badgeColor }]}>{b.badge}</Text>
+              <View style={styles.promoLeft}>
+                <View style={styles.promoMetaRow}>
+                  <View style={[styles.promoBadge, { backgroundColor: b.badgeBg }]}>
+                    <Text style={[styles.promoBadgeText, { color: b.badgeColor }]}>{b.badge}</Text>
+                  </View>
+                  <View style={styles.promoLogoCluster}>
+                    {b.logos.map((logo, idx) => (
+                      <View
+                        key={logo.kind === "currency" ? logo.code : logo.ticker}
+                        style={[
+                          styles.promoLogoRing,
+                          {
+                            borderColor: b.bg,
+                            marginLeft: idx === 0 ? 0 : -5,
+                            zIndex: b.logos.length - idx,
+                          },
+                        ]}
+                      >
+                        {logo.kind === "currency" ? (
+                          <CurrencyLogo code={logo.code} size={15} />
+                        ) : (
+                          <StockLogo
+                            ticker={logo.ticker}
+                            logoUrl={`https://assets.parqet.com/logos/symbol/${logo.ticker}?format=png`}
+                            fallbackLogoUrl={`https://www.google.com/s2/favicons?domain=${logo.domain}&sz=128`}
+                            size={15}
+                          />
+                        )}
+                      </View>
+                    ))}
+                  </View>
                 </View>
-                <View style={[styles.promoIconWrap, { backgroundColor: b.iconBg }]}>
-                  <Ionicons name={b.icon} size={18} color={b.iconColor} />
+
+                <Text style={[styles.promoTitle, { color: b.titleColor }]} numberOfLines={1}>
+                  {b.title}
+                </Text>
+                <View style={styles.promoBottomRow}>
+                  <Text style={[styles.promoSub, { color: b.subColor }]} numberOfLines={1}>
+                    {b.subtitle}
+                  </Text>
+                  <View style={styles.promoCtaRow}>
+                    <Text style={[styles.promoCtaText, { color: b.ctaColor }]}>{ctaLabel}</Text>
+                    <Ionicons name="arrow-forward" size={12} color={b.ctaColor} />
+                  </View>
                 </View>
               </View>
-              <Text style={styles.promoTitle} numberOfLines={1}>
-                {b.title}
-              </Text>
-              <Text style={styles.promoSub} numberOfLines={2}>
-                {b.subtitle}
-              </Text>
-              <View style={styles.promoCtaRow}>
-                <Text style={[styles.promoCtaText, { color: b.badgeColor }]}>{ctaLabel}</Text>
-                <Ionicons name="arrow-forward" size={14} color={b.badgeColor} />
+
+              <View style={styles.promoArtWrap}>
+                <View style={[styles.promoArtHalo, { backgroundColor: b.haloBg }]} />
+                <Image source={b.artifact} style={styles.promoArtImg} resizeMode="contain" />
               </View>
             </PressableScale>
           );
@@ -665,20 +757,26 @@ export function HomeScreen({
           </>
         ) : (
           <>
-            {/* Savings & US Stocks moved directly up below the compact balance box */}
+            {/* Compact Savings & US Stocks tiles right below the balance box */}
             <View style={styles.growRow}>
               <PressableScale onPress={() => onNavigate("savings")} depth={0.97} style={styles.featureCard}>
-                <SavingsLogoMerger size={24} showBadge={false} />
-                <View style={{ gap: 1 }}>
-                  <Text style={styles.rowTitle}>Savings</Text>
-                  <Text style={styles.rowSub}>Earn daily, withdraw anytime</Text>
+                <View style={styles.featureCardTop}>
+                  <SavingsLogoMerger size={18} showBadge={false} />
+                  <Ionicons name="chevron-forward" size={14} color={COLORS.textMuted} />
+                </View>
+                <View style={{ gap: 0 }}>
+                  <Text style={styles.featureTitle} numberOfLines={1}>Savings</Text>
+                  <Text style={styles.featureSub} numberOfLines={1}>Daily yield · anytime</Text>
                 </View>
               </PressableScale>
               <PressableScale onPress={() => onNavigate("stocks")} depth={0.97} style={styles.featureCard}>
-                <StockLogoMerger size={24} />
-                <View style={{ gap: 1 }}>
-                  <Text style={styles.rowTitle}>US Stocks &amp; ETFs</Text>
-                  <Text style={styles.rowSub}>Start from $1</Text>
+                <View style={styles.featureCardTop}>
+                  <StockLogoMerger size={18} showCount={false} />
+                  <Ionicons name="chevron-forward" size={14} color={COLORS.textMuted} />
+                </View>
+                <View style={{ gap: 0 }}>
+                  <Text style={styles.featureTitle} numberOfLines={1}>US Stocks &amp; ETFs</Text>
+                  <Text style={styles.featureSub} numberOfLines={1}>470+ stocks from $1</Text>
                 </View>
               </PressableScale>
             </View>
@@ -914,23 +1012,24 @@ const styles = StyleSheet.create({
   swapRowCard: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    padding: 13,
-    borderRadius: RADIUS.lg,
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: RADIUS.md,
     backgroundColor: COLORS.surface,
     ...DEPTH.card,
   },
   swapIconTile: {
-    width: 38,
-    height: 38,
-    borderRadius: RADIUS.md,
+    width: 34,
+    height: 34,
+    borderRadius: RADIUS.sm,
     backgroundColor: COLORS.primaryMuted,
     alignItems: "center",
     justifyContent: "center",
   },
   below: {
-    gap: 12,
-    paddingTop: 12,
+    gap: 10,
+    paddingTop: 10,
   },
   greetRow: {
     flexDirection: "row",
@@ -1126,18 +1225,36 @@ const styles = StyleSheet.create({
   },
   growRow: {
     flexDirection: "row",
-    gap: 10,
+    gap: 8,
   },
   featureCard: {
     flex: 1,
-    gap: 8,
-    padding: 12,
-    borderRadius: RADIUS.lg,
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: RADIUS.md,
     backgroundColor: COLORS.surface,
     ...DEPTH.card,
   },
+  featureCardTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  featureTitle: {
+    ...TYPE.bodyStrong,
+    fontSize: 13,
+    lineHeight: 16,
+    color: COLORS.text,
+  },
+  featureSub: {
+    ...TYPE.label,
+    fontSize: 11,
+    lineHeight: 14,
+    color: COLORS.textSecondary,
+  },
   promoSection: {
-    gap: 8,
+    gap: 6,
   },
   promoTrack: {
     gap: BANNER_GAP,
@@ -1145,75 +1262,107 @@ const styles = StyleSheet.create({
     paddingRight: 4,
   },
   promoCard: {
-    borderRadius: RADIUS.lg,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: RADIUS.md,
     borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    gap: 5,
-    shadowColor: "#000000",
+    borderBottomWidth: 3,
+    paddingLeft: 12,
+    paddingRight: 8,
+    paddingVertical: 9,
+    minHeight: 84,
+    shadowColor: "#13110C",
     shadowOpacity: 0.14,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 4 },
     elevation: 4,
   },
-  promoTopRow: {
+  promoLeft: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  promoMetaRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 2,
+    gap: 6,
   },
   promoBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
     borderRadius: RADIUS.pill,
   },
   promoBadgeText: {
     ...TYPE.overline,
-    fontSize: 10,
-    letterSpacing: 0.6,
+    fontSize: 9,
+    lineHeight: 12,
+    letterSpacing: 0.5,
   },
-  promoIconWrap: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+  promoLogoCluster: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+  },
+  promoLogoRing: {
+    borderRadius: 999,
+    borderWidth: 1.5,
+    backgroundColor: COLORS.white,
+    overflow: "hidden",
   },
   promoTitle: {
     ...TYPE.bodyStrong,
-    fontSize: 15.5,
-    color: "#FFFFFF",
+    fontSize: 14,
+    lineHeight: 17,
+  },
+  promoBottomRow: {
+    gap: 2,
   },
   promoSub: {
     ...TYPE.label,
-    fontSize: 12,
-    lineHeight: 16.5,
-    color: "rgba(255,255,255,0.78)",
+    fontSize: 11,
+    lineHeight: 14,
   },
   promoCtaRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
-    marginTop: 4,
+    gap: 4,
+    marginTop: 1,
   },
   promoCtaText: {
     ...TYPE.bodyStrong,
-    fontSize: 12.5,
+    fontSize: 11.5,
+    lineHeight: 14,
+  },
+  promoArtWrap: {
+    width: 68,
+    height: 68,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  promoArtHalo: {
+    position: "absolute",
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+  },
+  promoArtImg: {
+    width: 68,
+    height: 68,
   },
   promoDots: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
+    gap: 5,
   },
   promoDot: {
-    width: 6,
-    height: 6,
+    width: 5,
+    height: 5,
     borderRadius: 3,
     backgroundColor: COLORS.border,
   },
   promoDotActive: {
-    width: 18,
+    width: 16,
     backgroundColor: COLORS.primary,
   },
   rowTitle: {
