@@ -1,52 +1,185 @@
 // src/app_api/google_auth.js
-// OAuth access tokens for a Google service account (used by Play Integrity and FCM),
-// signed with Node's crypto. Credentials come from GOOGLE_SERVICE_ACCOUNT_JSON
-// (the full JSON key file contents) — never committed to the repo.
+// Zero-dependency cryptographic Google ID Token (OIDC / RS256) verifier using Node's native crypto
+// and Google's live JWKS endpoint (https://www.googleapis.com/oauth2/v3/certs).
 
 const crypto = require("crypto");
-const axios = require("axios");
 
-const _cache = new Map(); // scope -> { token, expiresAt }
+const GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs";
+const VALID_ISSUERS = new Set(["https://accounts.google.com", "accounts.google.com"]);
 
-function getServiceAccount() {
-  const raw = (process.env.GOOGLE_SERVICE_ACCOUNT_JSON || "").trim();
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed.client_email || !parsed.private_key) return null;
-    return parsed;
-  } catch (_) {
-    return null;
+let _jwksCache = { keys: null, expiresAt: 0 };
+let _testVerifier = null;
+
+function __setTestVerifier(fn) {
+  _testVerifier = typeof fn === "function" ? fn : null;
+}
+
+function getAllowedGoogleClientIds() {
+  const raw = [
+    process.env.GOOGLE_WEB_CLIENT_ID || "",
+    process.env.GOOGLE_IOS_CLIENT_ID || "",
+    process.env.GOOGLE_ANDROID_CLIENT_ID || "",
+    process.env.GOOGLE_CLIENT_IDS || "",
+  ]
+    .join(",")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...new Set(raw)];
+}
+
+function getPrimaryGoogleWebClientId() {
+  const explicit = String(process.env.GOOGLE_WEB_CLIENT_ID || "").trim();
+  if (explicit) return explicit;
+  const all = getAllowedGoogleClientIds();
+  return all[0] || null;
+}
+
+function base64UrlToBuffer(str) {
+  const normalized = String(str || "").replace(/-/g, "+").replace(/_/g, "/");
+  const pad = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
+  return Buffer.from(normalized + pad, "base64");
+}
+
+async function fetchGoogleJwks(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && _jwksCache.keys && now < _jwksCache.expiresAt) {
+    return _jwksCache.keys;
   }
+  const res = await fetch(GOOGLE_JWKS_URL, {
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) {
+    throw new Error(`Google JWKS fetch failed (HTTP ${res.status})`);
+  }
+  const body = await res.json();
+  const keys = Array.isArray(body?.keys) ? body.keys : [];
+  if (!keys.length) {
+    throw new Error("Google JWKS returned no signing keys");
+  }
+  const cacheControl = String(res.headers.get("cache-control") || "");
+  const maxAgeMatch = cacheControl.match(/max-age=(\d+)/i);
+  const ttlMs = maxAgeMatch ? Math.max(60, Math.min(86400, Number(maxAgeMatch[1]))) * 1000 : 3600 * 1000;
+  _jwksCache = { keys, expiresAt: now + ttlMs };
+  return keys;
 }
 
-async function getGoogleAccessToken(scope) {
-  const sa = getServiceAccount();
-  if (!sa) throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON is not configured");
-  const cached = _cache.get(scope);
-  if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token;
+/**
+ * Cryptographically verifies a Google OIDC ID Token and returns normalized identity fields.
+ * Throws an Error with `.code` if invalid, expired, unverified email, or wrong audience.
+ */
+async function verifyGoogleIdToken(idToken, { allowedClientIds = null } = {}) {
+  if (_testVerifier) {
+    return _testVerifier(idToken, { allowedClientIds });
+  }
 
-  const now = Math.floor(Date.now() / 1000);
-  const enc = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
-  const unsigned = `${enc({ alg: "RS256", typ: "JWT" })}.${enc({
-    iss: sa.client_email,
-    scope,
-    aud: "https://oauth2.googleapis.com/token",
-    iat: now,
-    exp: now + 3600,
-  })}`;
-  const signature = crypto.sign("RSA-SHA256", Buffer.from(unsigned), sa.private_key).toString("base64url");
-  const res = await axios.post(
-    "https://oauth2.googleapis.com/token",
-    new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-      assertion: `${unsigned}.${signature}`,
-    }).toString(),
-    { headers: { "Content-Type": "application/x-www-form-urlencoded" }, timeout: 10000 }
-  );
-  const token = res.data.access_token;
-  _cache.set(scope, { token, expiresAt: Date.now() + Number(res.data.expires_in || 3600) * 1000 });
-  return token;
+  const raw = String(idToken || "").trim();
+  const parts = raw.split(".");
+  if (parts.length !== 3) {
+    const err = new Error("Invalid Google sign-in token format.");
+    err.code = "google_token_invalid";
+    throw err;
+  }
+
+  const audiences = Array.isArray(allowedClientIds) && allowedClientIds.length
+    ? allowedClientIds
+    : getAllowedGoogleClientIds();
+  if (!audiences.length) {
+    const err = new Error("Google Sign-In is not configured on this server yet.");
+    err.code = "google_not_configured";
+    throw err;
+  }
+
+  let header;
+  let payload;
+  try {
+    header = JSON.parse(base64UrlToBuffer(parts[0]).toString("utf8"));
+    payload = JSON.parse(base64UrlToBuffer(parts[1]).toString("utf8"));
+  } catch (_) {
+    const err = new Error("Malformed Google sign-in token.");
+    err.code = "google_token_invalid";
+    throw err;
+  }
+
+  if (header?.alg !== "RS256" || !header?.kid) {
+    const err = new Error("Unsupported Google token algorithm.");
+    err.code = "google_token_invalid";
+    throw err;
+  }
+
+  // Lookup Google signing key by kid (refresh cache once on miss for key rotation)
+  let keys = await fetchGoogleJwks(false);
+  let jwk = keys.find((k) => k.kid === header.kid);
+  if (!jwk) {
+    keys = await fetchGoogleJwks(true);
+    jwk = keys.find((k) => k.kid === header.kid);
+  }
+  if (!jwk) {
+    const err = new Error("Google signing key not found.");
+    err.code = "google_token_invalid";
+    throw err;
+  }
+
+  // Verify RS256 cryptographic signature
+  const publicKey = crypto.createPublicKey({ key: jwk, format: "jwk" });
+  const signingInput = Buffer.from(`${parts[0]}.${parts[1]}`, "utf8");
+  const signature = base64UrlToBuffer(parts[2]);
+  const sigOk = crypto.verify("RSA-SHA256", signingInput, publicKey, signature);
+  if (!sigOk) {
+    const err = new Error("Google token signature verification failed.");
+    err.code = "google_token_invalid";
+    throw err;
+  }
+
+  // Validate claims
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (!VALID_ISSUERS.has(String(payload.iss || ""))) {
+    const err = new Error("Invalid Google token issuer.");
+    err.code = "google_token_invalid";
+    throw err;
+  }
+  if (!audiences.includes(String(payload.aud || ""))) {
+    const err = new Error("Google token audience does not match this app.");
+    err.code = "google_token_invalid";
+    throw err;
+  }
+  if (!Number.isFinite(Number(payload.exp)) || Number(payload.exp) < nowSec - 60) {
+    const err = new Error("Google sign-in session expired. Please try again.");
+    err.code = "google_token_expired";
+    throw err;
+  }
+
+  const email = String(payload.email || "").trim().toLowerCase();
+  const emailVerified = payload.email_verified === true || payload.email_verified === "true";
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email) || !emailVerified) {
+    const err = new Error("Your Google account must have a verified email address.");
+    err.code = "google_email_unverified";
+    throw err;
+  }
+
+  const sub = String(payload.sub || "").trim();
+  if (!sub) {
+    const err = new Error("Google token missing subject identifier.");
+    err.code = "google_token_invalid";
+    throw err;
+  }
+
+  const name = typeof payload.name === "string"
+    ? payload.name.replace(/[<>&]/g, "").trim().slice(0, 80)
+    : null;
+
+  return {
+    sub,
+    email,
+    name: name || null,
+    picture: typeof payload.picture === "string" ? payload.picture : null,
+  };
 }
 
-module.exports = { getServiceAccount, getGoogleAccessToken };
+module.exports = {
+  verifyGoogleIdToken,
+  getAllowedGoogleClientIds,
+  getPrimaryGoogleWebClientId,
+  __setTestVerifier,
+};

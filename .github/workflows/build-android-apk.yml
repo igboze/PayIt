@@ -63,6 +63,7 @@ jobs:
       - name: Build Android Release APK & Play Store AAB
         env:
           EXPO_PUBLIC_API_BASE_URL: https://payit-production.up.railway.app/api/app/v1
+          EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID: ${{ secrets.GOOGLE_WEB_CLIENT_ID }}
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           PROXIM_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           PROXIM_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}

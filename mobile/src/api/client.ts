@@ -141,8 +141,8 @@ export async function clearSessionTokens(): Promise<void> {
   _accessToken = null;
   _refreshToken = null;
   await Promise.all([
-    SecureStore.deleteItemAsync(KEY_ACCESS_TOKEN).catch(() => {}),
-    SecureStore.deleteItemAsync(KEY_REFRESH_TOKEN).catch(() => {}),
+    SecureStore.deleteItemAsync(KEY_ACCESS_TOKEN).catch(() => { }),
+    SecureStore.deleteItemAsync(KEY_REFRESH_TOKEN).catch(() => { }),
   ]);
 }
 
@@ -295,6 +295,30 @@ export const api = {
     return request<{ success: boolean }>("/push/register", { method: "POST", body: { pushToken } });
   },
   // Auth
+  async authConfig() {
+    return request<{ googleSignInEnabled: boolean; googleWebClientId: string | null }>("/auth/config", {
+      method: "GET",
+      auth: false,
+    });
+  },
+  async googleAuthStart(idToken: string) {
+    const dev = await getDeviceInfo();
+    return request<
+      | { mode: "existing_passkey"; email: string; name: string | null; message: string }
+      | {
+          mode: "signup";
+          signupId: string;
+          email: string;
+          name: string | null;
+          challengeId: string;
+          options: Record<string, unknown>;
+        }
+    >("/auth/google/start", {
+      method: "POST",
+      auth: false,
+      body: { ...dev, idToken },
+    });
+  },
   async signupStart(phoneOrEmail: string, channel?: "email" | "phone") {
     const dev = await getDeviceInfo();
     const trimmed = phoneOrEmail.trim();
@@ -494,7 +518,7 @@ export const api = {
   },
   getCardDepositLink(account?: AccountType) {
     const qs = account ? `?account=${encodeURIComponent(account)}` : "";
-    return request<{ accountType: AccountType; url?: string; link?: string; [k: string]: unknown }>(
+    return request<{ accountType: AccountType; url?: string; link?: string;[k: string]: unknown }>(
       `/deposits/card${qs}`
     );
   },

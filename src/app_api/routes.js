@@ -16,6 +16,7 @@ const actions = require("./actions");
 const features = require("./features");
 const ota = require("./ota");
 const stocks = require("./stocks");
+const googleAuth = require("./google_auth");
 
 // Dependencies are resolved lazily and can be replaced in tests.
 const deps = {
@@ -429,6 +430,14 @@ async function signupFinish(req, body) {
   const wallet = dep("walletLib").generateUserWallet();
   db.createUserWithWallet(userId, null, wallet.address, wallet.privateKey, pin);
   store.setUserPhone(userId, signup.phone_number);
+  const cleanSignupName = typeof reg.context?.name === "string"
+    ? reg.context.name.replace(/[<>&]/g, "").trim().slice(0, 64)
+    : (typeof body.displayName === "string" ? body.displayName.replace(/[<>&]/g, "").trim().slice(0, 64) : null);
+  if (cleanSignupName) {
+    try {
+      db.db.prepare("UPDATE users SET sender_name = ? WHERE telegram_id = ? AND (sender_name IS NULL OR sender_name = '')").run(cleanSignupName, userId);
+    } catch (_) { }
+  }
   try { db.recordTermsAcceptance(userId, dep("compliance").TERMS_VERSION); } catch (_) { }
 
   store.savePasskey({
@@ -451,7 +460,7 @@ async function signupFinish(req, body) {
     try {
       const emailMod = require("../email");
       if (typeof emailMod.sendWelcomeEmail === "function") {
-        emailMod.sendWelcomeEmail({ to: signupEmail }).catch((err) => {
+        emailMod.sendWelcomeEmail({ to: signupEmail, name: cleanSignupName || undefined }).catch((err) => {
           console.warn("[app_api:signup_welcome_email]", err?.message || err);
         });
       }
@@ -460,6 +469,76 @@ async function signupFinish(req, body) {
 
   const session = tokens.issueSession({ telegramId: userId, deviceId: signup.device_id });
   return { status: 201, data: { user: publicUser(db.getUser(userId), device), session } };
+}
+
+async function authConfig() {
+  const googleWebClientId = googleAuth.getPrimaryGoogleWebClientId();
+  return {
+    status: 200,
+    data: {
+      googleSignInEnabled: Boolean(googleWebClientId),
+      googleWebClientId: googleWebClientId || null,
+    },
+  };
+}
+
+async function googleAuthStart(req, body) {
+  const { deviceId, platform } = requireDevice(body);
+  const idToken = requireString(body, "idToken", { max: 4096 });
+  rateLimit(`google-auth-ip:${clientIp(req)}`, 20, 60 * 60 * 1000);
+  await requireIntegrity(platform, body);
+
+  let identity;
+  try {
+    identity = await googleAuth.verifyGoogleIdToken(idToken);
+  } catch (err) {
+    const code = err?.code || "google_token_invalid";
+    const status = code === "google_not_configured" ? 503 : 401;
+    throw new HttpError(status, code, err?.message || "Could not verify Google account.");
+  }
+
+  const emailKey = `email:${identity.email}`;
+  const existing = store.findUserByPhone(emailKey);
+  if (existing) {
+    return {
+      status: 200,
+      data: {
+        mode: "existing_passkey",
+        email: identity.email,
+        name: identity.name,
+        message: "You already have a Proxim account with this email. Sign in with your passkey.",
+      },
+    };
+  }
+
+  const signupId = store.createSignup({
+    phone: emailKey,
+    otpPinId: `google:${identity.sub}`,
+    deviceId,
+    platform,
+  });
+  const reservedId = store.allocateAppUserId();
+  store.updateSignup(signupId, { otp_verified: 1, reserved_id: reservedId });
+
+  const { challengeId, options } = await passkeys.startRegistration({
+    telegramId: reservedId,
+    userName: identity.email,
+    displayName: identity.name || "Proxim account",
+    purpose: "signup",
+    context: { signupId, name: identity.name || null, provider: "google" },
+  });
+
+  return {
+    status: 201,
+    data: {
+      mode: "signup",
+      signupId,
+      email: identity.email,
+      name: identity.name,
+      challengeId,
+      options,
+    },
+  };
 }
 
 // ─── handlers: link an existing Telegram account ──────────────────────────────
@@ -1133,6 +1212,8 @@ function handleWellKnown(req, res) {
 
 const ROUTES = [
   // Auth & sessions
+  ["GET", "/auth/config", authConfig],
+  ["POST", "/auth/google/start", googleAuthStart],
   ["POST", "/auth/signup/start", signupStart],
   ["POST", "/auth/signup/verify-otp", signupVerifyOtp],
   ["POST", "/auth/signup/finish", signupFinish],

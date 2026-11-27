@@ -13,25 +13,31 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { api, API_BASE_URL } from "../api/client";
 import { assertPasskey, createPasskey, isPasskeySupported } from "../api/passkey";
+import {
+  getBundledGoogleWebClientId,
+  isGoogleSignInNativeAvailable,
+  signInWithGoogleNative,
+} from "../api/googleSignIn";
 import * as SecureStore from "expo-secure-store";
 import { RETURNING_USER_KEY, useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING, FONTS } from "../theme";
-import { Button, Card, ErrorBanner, Input, Pill } from "../components/UI";
+import { COLORS, DEPTH, RADIUS, SPACING, FONTS } from "../theme";
+import { Button, Card, ErrorBanner, Input } from "../components/UI";
 import { PressableScale } from "../components/Touch";
 import { PoweredBy } from "../components/PoweredBy";
 
-type Step = "welcome" | "signup_phone" | "signup_otp" | "signup_passkey" | "link_telegram";
+type Step = "welcome" | "signup_email" | "signup_otp" | "signup_passkey" | "link_telegram";
 
 export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: string }) {
   const { signInWithSession, sessionNotice, clearSessionNotice } = useApp();
   const [step, setStep] = useState<Step>(initialLinkCode ? "link_telegram" : "welcome");
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Signup state
-  const [signupChannel, setSignupChannel] = useState<"email" | "phone">("email");
+  // Signup state (Google or Email -> Passkey + PIN)
   const [signupEmail, setSignupEmail] = useState("");
-  const [phone, setPhone] = useState("");
+  const [signupName, setSignupName] = useState<string | null>(null);
+  const [signupProvider, setSignupProvider] = useState<"google" | "email">("email");
   const [signupId, setSignupId] = useState("");
   const [otpCode, setOtpCode] = useState("");
   const [regChallengeId, setRegChallengeId] = useState("");
@@ -39,6 +45,7 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
   const [pin, setPin] = useState("");
   const [confirmPin, setConfirmPin] = useState("");
   const [acceptTerms, setAcceptTerms] = useState(false);
+  const [googleWebClientId, setGoogleWebClientId] = useState<string | null>(() => getBundledGoogleWebClientId());
 
   // Telegram link state
   const [linkCode, setLinkCode] = useState(initialLinkCode);
@@ -51,7 +58,18 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
     }
   }, [initialLinkCode]);
 
+  // Fetch server-configured Google Web Client ID at runtime so configuring Railway enables it automatically.
+  React.useEffect(() => {
+    api
+      .authConfig()
+      .then((cfg) => {
+        if (cfg?.googleWebClientId) setGoogleWebClientId(cfg.googleWebClientId);
+      })
+      .catch(() => {});
+  }, []);
+
   const passkeyAvailable = isPasskeySupported();
+  const googleNativeAvailable = isGoogleSignInNativeAvailable();
 
   // Someone has signed in on this phone before: go straight to fingerprint / face.
   const [returning, setReturning] = useState<boolean | null>(null);
@@ -84,20 +102,62 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
     }
   };
 
-  const handleSignupStart = async () => {
+  const handleGoogleContinue = async () => {
     setError(null);
-    const contact = signupChannel === "email" ? signupEmail.trim() : phone.trim();
-    if (signupChannel === "email" && (!contact || !contact.includes("@"))) {
-      setError("Enter a valid email address.");
+    clearSessionNotice();
+    if (!googleNativeAvailable) {
+      setError("Install the latest Proxim app build to use Continue with Google, or tap Continue with Email below.");
       return;
     }
-    if (signupChannel === "phone" && contact.length < 8) {
-      setError("Enter your phone number in international format (e.g. +2348012345678).");
+    setGoogleLoading(true);
+    try {
+      let clientId = googleWebClientId;
+      if (!clientId) {
+        const cfg = await api.authConfig().catch(() => null);
+        clientId = cfg?.googleWebClientId || null;
+        if (clientId) setGoogleWebClientId(clientId);
+      }
+      if (!clientId) {
+        setError("Google Sign-In is being finalized. Tap Continue with Email below to create your account right away.");
+        return;
+      }
+
+      const gRes = await signInWithGoogleNative(clientId);
+      if (gRes.cancelled) return;
+
+      const start = await api.googleAuthStart(gRes.idToken);
+      if (start.mode === "existing_passkey") {
+        setGoogleLoading(false);
+        await handlePasskeySignIn();
+        return;
+      }
+
+      setSignupProvider("google");
+      setSignupEmail(start.email);
+      setSignupName(start.name || gRes.name || null);
+      setSignupId(start.signupId);
+      setRegChallengeId(start.challengeId);
+      setRegOptions(start.options);
+      setStep("signup_passkey");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not continue with Google.");
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
+
+  const handleSignupStart = async () => {
+    setError(null);
+    const contact = signupEmail.trim().toLowerCase();
+    if (!contact || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(contact)) {
+      setError("Enter a valid email address.");
       return;
     }
     setLoading(true);
     try {
-      const res = await api.signupStart(contact, signupChannel);
+      const res = await api.signupStart(contact, "email");
+      setSignupProvider("email");
+      setSignupName(null);
       setSignupId(res.signupId);
       setStep("signup_otp");
     } catch (err) {
@@ -287,28 +347,61 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
 
           {step === "welcome" ? (
             <View>
+              <View style={styles.featureStrip}>
+                <View style={styles.featureChip}>
+                  <Ionicons name="globe-outline" size={14} color={COLORS.primary} />
+                  <Text style={styles.featureChipText}>Global Accounts</Text>
+                </View>
+                <View style={styles.featureChip}>
+                  <Ionicons name="card-outline" size={14} color={COLORS.primary} />
+                  <Text style={styles.featureChipText}>USD Cards</Text>
+                </View>
+                <View style={styles.featureChip}>
+                  <Ionicons name="trending-up-outline" size={14} color={COLORS.primary} />
+                  <Text style={styles.featureChipText}>Savings &amp; Stocks</Text>
+                </View>
+              </View>
+
               <Card>
-                <Text style={styles.cardTitle}>Get started</Text>
+                <Text style={styles.cardTitle}>Create your account</Text>
                 <Text style={styles.cardSub}>
-                  New to Proxim? Create your account directly in the app with a passkey — no Telegram needed. Already have a passkey? Sign in below.
+                  Set up your global dollar &amp; naira wallet in under 30 seconds — secured with your device passkey and 4-digit PIN.
                 </Text>
+
+                <PressableScale
+                  onPress={handleGoogleContinue}
+                  disabled={loading || googleLoading}
+                  depth={0.97}
+                  style={[styles.googleBtn, (loading || googleLoading) && { opacity: 0.65 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Continue with Google"
+                >
+                  <View style={styles.googleBadge}>
+                    <Text style={styles.googleBadgeText}>G</Text>
+                  </View>
+                  <Text style={styles.googleBtnText}>
+                    {googleLoading ? "Connecting Google…" : "Continue with Google"}
+                  </Text>
+                </PressableScale>
+
                 <Button
-                  title="Create new account"
+                  title="Continue with Email"
+                  variant="secondary"
                   onPress={() => {
                     setError(null);
-                    setStep("signup_phone");
+                    setStep("signup_email");
                   }}
-                  style={{ marginBottom: 10 }}
+                  style={{ marginTop: 10 }}
                 />
+
+                <View style={styles.orRow}>
+                  <View style={styles.orLine} />
+                  <Text style={styles.orText}>existing telegram user?</Text>
+                  <View style={styles.orLine} />
+                </View>
+
                 <Button
-                  title="Sign in with existing passkey"
-                  variant="secondary"
-                  onPress={handlePasskeySignIn}
-                  loading={loading}
-                  style={{ marginBottom: 10 }}
-                />
-                <Button
-                  title="Link existing Telegram wallet"
+                  title="Link Proxim Telegram wallet"
                   variant="ghost"
                   onPress={() => {
                     setError(null);
@@ -316,41 +409,38 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
                   }}
                 />
               </Card>
+
+              <PressableScale
+                onPress={handlePasskeySignIn}
+                disabled={loading || googleLoading}
+                style={styles.signInFootBtn}
+                accessibilityRole="button"
+              >
+                <Text style={styles.signInFootText}>
+                  Already have an account?{" "}
+                  <Text style={styles.signInFootLink}>Sign in</Text>
+                </Text>
+              </PressableScale>
+
               <PoweredBy />
             </View>
           ) : null}
 
-          {step === "signup_phone" ? (
+          {step === "signup_email" ? (
             <Card>
-              <Text style={styles.cardTitle}>Create your account</Text>
+              <Text style={styles.cardTitle}>Sign up with email</Text>
               <Text style={styles.cardSub}>
-                {signupChannel === "email"
-                  ? "Enter your email address to receive a one-time 6-digit verification code, then create your device passkey."
-                  : "Enter your phone number in international format to receive a one-time SMS code."}
+                Enter your email address to get a quick 6-digit code, then set your 4-digit PIN and passkey.
               </Text>
-              <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
-                <Pill label="Email (Instant)" active={signupChannel === "email"} onPress={() => { setError(null); setSignupChannel("email"); }} />
-                <Pill label="Phone SMS" active={signupChannel === "phone"} onPress={() => { setError(null); setSignupChannel("phone"); }} />
-              </View>
-              {signupChannel === "email" ? (
-                <Input
-                  label="Email address"
-                  placeholder="you@example.com"
-                  value={signupEmail}
-                  onChangeText={setSignupEmail}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                />
-              ) : (
-                <Input
-                  label="Phone number"
-                  placeholder="+2348012345678"
-                  value={phone}
-                  onChangeText={setPhone}
-                  keyboardType="phone-pad"
-                  autoCapitalize="none"
-                />
-              )}
+              <Input
+                label="Email address"
+                placeholder="you@example.com"
+                value={signupEmail}
+                onChangeText={setSignupEmail}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
               <Button title="Send verification code" onPress={handleSignupStart} loading={loading} />
               <Button
                 title="Back"
@@ -363,11 +453,9 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
 
           {step === "signup_otp" ? (
             <Card>
-              <Text style={styles.cardTitle}>
-                {signupChannel === "email" ? "Verify your email" : "Verify your phone"}
-              </Text>
+              <Text style={styles.cardTitle}>Verify your email</Text>
               <Text style={styles.cardSub}>
-                Enter the code sent to {signupChannel === "email" ? signupEmail.trim() : phone.trim()}.
+                Enter the 6-digit code sent to <Text style={{ fontFamily: FONTS.bold, color: COLORS.text }}>{signupEmail.trim()}</Text>.
               </Text>
               <Input
                 label="Verification code"
@@ -380,7 +468,7 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
               <Button
                 title="Back"
                 variant="ghost"
-                onPress={() => setStep("signup_phone")}
+                onPress={() => setStep("signup_email")}
                 style={{ marginTop: 8 }}
               />
             </Card>
@@ -388,10 +476,18 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
 
           {step === "signup_passkey" ? (
             <Card>
-              <Text style={styles.cardTitle}>Set PIN & create passkey</Text>
+              <Text style={styles.cardTitle}>Secure your wallet</Text>
+              {signupEmail ? (
+                <View style={styles.verifiedPill}>
+                  <Ionicons name="checkmark-circle" size={16} color={COLORS.success} />
+                  <Text style={styles.verifiedPillText} numberOfLines={1}>
+                    {signupProvider === "google" ? "Google verified · " : "Verified · "}
+                    {signupName ? `${signupName} (${signupEmail})` : signupEmail}
+                  </Text>
+                </View>
+              ) : null}
               <Text style={styles.cardSub}>
-                Your 4-digit PIN encrypts your wallet key, and your device passkey protects every
-                login and money transfer.
+                Choose a 4-digit PIN to encrypt your wallet key, then save your device passkey for 1-tap login and approvals.
               </Text>
               <Input
                 label="Choose 4-digit PIN"
@@ -424,7 +520,16 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
                   I accept the Proxim Terms of Service and Privacy Policy.
                 </Text>
               </PressableScale>
-              <Button title="Create passkey" onPress={handleFinishSignup} loading={loading} />
+              <Button title="Finish & save passkey" onPress={handleFinishSignup} loading={loading} />
+              <Button
+                title="Start over"
+                variant="ghost"
+                onPress={() => {
+                  setError(null);
+                  setStep("welcome");
+                }}
+                style={{ marginTop: 8 }}
+              />
             </Card>
           ) : null}
 
@@ -572,5 +677,108 @@ const styles = StyleSheet.create({
     fontFamily: FONTS.regular, fontSize: 11,
     textAlign: "center",
     marginTop: 8,
+  },
+  featureStrip: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
+    gap: 8,
+    marginBottom: 16,
+  },
+  featureChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: COLORS.goldSoft,
+    borderWidth: 1,
+    borderColor: COLORS.businessBorder,
+    borderRadius: RADIUS.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  featureChipText: {
+    color: COLORS.forest,
+    fontFamily: FONTS.semibold,
+    fontSize: 11.5,
+  },
+  googleBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    minHeight: 50,
+    borderRadius: RADIUS.md,
+    backgroundColor: COLORS.forest,
+    paddingHorizontal: 16,
+    ...DEPTH.forest,
+  },
+  googleBadge: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  googleBadgeText: {
+    color: COLORS.forest,
+    fontFamily: FONTS.extrabold,
+    fontSize: 14,
+  },
+  googleBtnText: {
+    color: COLORS.white,
+    fontFamily: FONTS.bold,
+    fontSize: 15,
+  },
+  orRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginTop: 14,
+    marginBottom: 6,
+  },
+  orLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: COLORS.border,
+  },
+  orText: {
+    color: COLORS.textMuted,
+    fontFamily: FONTS.medium,
+    fontSize: 11,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  signInFootBtn: {
+    alignItems: "center",
+    paddingVertical: 14,
+  },
+  signInFootText: {
+    color: COLORS.textSecondary,
+    fontFamily: FONTS.regular,
+    fontSize: 14,
+  },
+  signInFootLink: {
+    color: COLORS.primary,
+    fontFamily: FONTS.bold,
+    textDecorationLine: "underline",
+  },
+  verifiedPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#E8F6EE",
+    borderWidth: 1,
+    borderColor: "#B7E4C7",
+    borderRadius: RADIUS.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    marginBottom: 12,
+  },
+  verifiedPillText: {
+    color: COLORS.success,
+    fontFamily: FONTS.semibold,
+    fontSize: 12,
+    flex: 1,
   },
 });

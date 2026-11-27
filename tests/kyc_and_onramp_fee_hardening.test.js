@@ -784,6 +784,103 @@ test("NEAR Intents / Base Deposit Sweeper: avoids infinite 'Processing' spam on 
   }
 });
 
+test("Google Sign-In Auth Flow: /auth/config & /auth/google/start create pre-verified passkey signup and protect existing users", async () => {
+  const http = require("http");
+  const googleAuth = require("../src/app_api/google_auth");
+  const appRoutes = require("../src/app_api/routes");
+  const store = require("../src/app_api/store");
+
+  const prevClientId = process.env.GOOGLE_WEB_CLIENT_ID;
+  const prevRpId = process.env.APP_RP_ID;
+  process.env.GOOGLE_WEB_CLIENT_ID = "1234567890-test.apps.googleusercontent.com";
+  process.env.APP_RP_ID = "proxim.test";
+  googleAuth.__setTestVerifier(async (token) => {
+    if (token === "valid-new-user-token") {
+      return { sub: "google-sub-1001", email: "ada.google@example.com", name: "Ada Lovelace", picture: null };
+    }
+    if (token === "valid-existing-token") {
+      return { sub: "google-sub-1002", email: "existing.google@example.com", name: "Existing User", picture: null };
+    }
+    const err = new Error("Bad Google token");
+    err.code = "google_token_invalid";
+    throw err;
+  });
+
+  // Seed an existing email user to verify Google never bypasses passkey login
+  const existingId = store.allocateAppUserId();
+  const { ethers } = require("ethers");
+  const ew = ethers.Wallet.createRandom();
+  db.createUserWithWallet(existingId, null, ew.address, ew.privateKey, "4829");
+  store.setUserPhone(existingId, "email:existing.google@example.com");
+
+  const server = http.createServer((req, res) => appRoutes.handleAppApiRequest(req, res));
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+  const base = `http://127.0.0.1:${port}/api/app/v1`;
+
+  try {
+    // 1. /auth/config exposes public Web Client ID
+    const cfgRes = await fetch(`${base}/auth/config`);
+    assert.equal(cfgRes.status, 200);
+    const cfg = await cfgRes.json();
+    assert.equal(cfg.googleSignInEnabled, true);
+    assert.equal(cfg.googleWebClientId, "1234567890-test.apps.googleusercontent.com");
+
+    // 2. New Google user gets pre-verified signupId + passkey registration options directly (zero OTP!)
+    const newRes = await fetch(`${base}/auth/google/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        deviceId: "dev_google_test_12345678",
+        platform: "android",
+        deviceName: "Pixel 9",
+        idToken: "valid-new-user-token",
+      }),
+    });
+    assert.equal(newRes.status, 201);
+    const newData = await newRes.json();
+    assert.equal(newData.mode, "signup");
+    assert.equal(newData.email, "ada.google@example.com");
+    assert.equal(newData.name, "Ada Lovelace");
+    assert.ok(newData.signupId && newData.challengeId && newData.options?.challenge);
+
+    // 3. Existing email user is directed to passkey login (never bypasses passkey/PIN!)
+    const exRes = await fetch(`${base}/auth/google/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        deviceId: "dev_google_test_12345678",
+        platform: "android",
+        deviceName: "Pixel 9",
+        idToken: "valid-existing-token",
+      }),
+    });
+    assert.equal(exRes.status, 200);
+    const exData = await exRes.json();
+    assert.equal(exData.mode, "existing_passkey");
+    assert.equal(exData.email, "existing.google@example.com");
+
+    // 4. Invalid token is rejected with 401
+    const badRes = await fetch(`${base}/auth/google/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        deviceId: "dev_google_test_12345678",
+        platform: "android",
+        idToken: "tampered-token",
+      }),
+    });
+    assert.equal(badRes.status, 401);
+  } finally {
+    googleAuth.__setTestVerifier(null);
+    if (prevClientId === undefined) delete process.env.GOOGLE_WEB_CLIENT_ID;
+    else process.env.GOOGLE_WEB_CLIENT_ID = prevClientId;
+    if (prevRpId === undefined) delete process.env.APP_RP_ID;
+    else process.env.APP_RP_ID = prevRpId;
+    await new Promise((r) => server.close(r));
+  }
+});
+
 test.after(() => {
   try {
     if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);

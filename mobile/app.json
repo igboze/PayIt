@@ -2,7 +2,7 @@
   "expo": {
     "name": "Proxim",
     "slug": "proxim-mobile",
-    "version": "1.0.7",
+    "version": "1.0.8",
     "runtimeVersion": "1",
     "updates": {
       "enabled": true,
@@ -13,12 +13,12 @@
     "orientation": "portrait",
     "scheme": "proxim",
     "userInterfaceStyle": "dark",
-    "backgroundColor": "#0B1117",
+    "backgroundColor": "#002018",
     "icon": "./assets/icon.png",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#0B1117"
+      "backgroundColor": "#002018"
     },
     "ios": {
       "supportsTablet": false,
@@ -30,7 +30,7 @@
     },
     "android": {
       "package": "app.proxim.mobile",
-      "versionCode": 8,
+      "versionCode": 9,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#07271A"
@@ -66,6 +66,7 @@
     "plugins": [
       "expo-updates",
       "./plugins/withReleaseSigning",
+      "@react-native-google-signin/google-signin",
       "expo-font",
       "expo-sharing",
       "expo-document-picker",

@@ -142,10 +142,9 @@ function MainShell() {
 
   if (bootstrapping) {
     return (
-      <SafeAreaView style={styles.splash}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
-        <Text style={styles.splashText}>Connecting to Proxim…</Text>
-      </SafeAreaView>
+      <View style={styles.splash}>
+        <Image source={require("./assets/icon.png")} style={styles.splashLogo} resizeMode="contain" />
+      </View>
     );
   }
 
@@ -481,12 +480,15 @@ const styles = StyleSheet.create({
   },
   splash: {
     flex: 1,
-    backgroundColor: COLORS.page,
+    backgroundColor: COLORS.forest,
     alignItems: "center",
     justifyContent: "center",
-    gap: 12,
   },
-  splashText: { color: COLORS.textSecondary, fontFamily: FONTS.regular, fontSize: 14 },
+  splashLogo: {
+    width: 96,
+    height: 96,
+    borderRadius: 24,
+  },
   body: { flex: 1 },
   tabBar: {
     flexDirection: "row",

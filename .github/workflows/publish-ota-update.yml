@@ -46,6 +46,7 @@ jobs:
       - name: Export Android Hermes OTA bundle
         env:
           EXPO_PUBLIC_API_BASE_URL: https://payit-production.up.railway.app/api/app/v1
+          EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID: ${{ secrets.GOOGLE_WEB_CLIENT_ID }}
         run: npx expo export --platform android --output-dir .ota-dist
 
       - name: Package Expo Updates v1 archive
