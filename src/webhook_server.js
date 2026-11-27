@@ -906,6 +906,27 @@ function createWebhookServer({ bot, webhookPath = "/webhook/telegram" } = {}) {
     }
 
 
+    // 0f. Public static email & brand assets (/assets/email/:file)
+    const emailAssetMatch = req.method === "GET" && (req.url || "").split("?")[0].match(/^\/assets\/email\/([a-z0-9_.-]+\.png)$/i);
+    if (emailAssetMatch) {
+      const allowedAssets = new Set(["icon_x.png", "icon_facebook.png", "icon_website.png"]);
+      const fileName = emailAssetMatch[1];
+      if (allowedAssets.has(fileName)) {
+        try {
+          const assetPath = path.join(__dirname, "assets", "email", fileName);
+          const buf = fs.readFileSync(assetPath);
+          res.writeHead(200, {
+            "Content-Type": "image/png",
+            "Cache-Control": "public, max-age=86400",
+            "Access-Control-Allow-Origin": "*",
+          });
+          return res.end(buf);
+        } catch (_) { }
+      }
+      res.writeHead(404, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ error: "Asset not found" }));
+    }
+
     // 1. Health check
     if (req.method === "GET" && req.url === "/health") {
       let nuvionSummary = null;

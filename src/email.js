@@ -236,6 +236,43 @@ function escapeEmailHtml(val) {
     .replace(/"/g, "&quot;");
 }
 
+const SUPPORT_EMAIL = "info@proximfi.xyz";
+const PROXIM_SOCIAL_LINKS = {
+  x: "https://x.com/proximfi",
+  facebook: "https://www.facebook.com/proximfi/",
+  website: "https://www.proximfi.xyz/",
+};
+
+function getEmailAssetBaseUrl() {
+  return (
+    process.env.APP_PUBLIC_BASE_URL ||
+    process.env.PUBLIC_BASE_URL ||
+    "https://payit-production.up.railway.app"
+  ).trim().replace(/\/+$/, "");
+}
+
+function renderSocialIconsRow() {
+  const base = getEmailAssetBaseUrl();
+  const items = [
+    { href: PROXIM_SOCIAL_LINKS.x, src: `${base}/assets/email/icon_x.png`, alt: "X", label: "X" },
+    { href: PROXIM_SOCIAL_LINKS.facebook, src: `${base}/assets/email/icon_facebook.png`, alt: "Facebook", label: "Facebook" },
+    { href: PROXIM_SOCIAL_LINKS.website, src: `${base}/assets/email/icon_website.png`, alt: "Website", label: "Website" },
+  ];
+  const cells = items
+    .map(
+      (item, idx) => `
+      <td align="center" valign="middle" style="${idx < items.length - 1 ? "padding-right:10px;" : ""}">
+        <a href="${item.href}" target="_blank" rel="noopener noreferrer" title="${item.label}" style="display:inline-block;text-decoration:none;">
+          <img src="${item.src}" alt="${item.alt}" width="30" height="30" style="display:block;width:30px;height:30px;border:0;outline:none;text-decoration:none;border-radius:15px;" />
+        </a>
+      </td>`
+    )
+    .join("");
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:10px 0 10px 0;">
+    <tr>${cells}</tr>
+  </table>`;
+}
+
 /**
  * Gmail / Apple Mail / Outlook-safe responsive HTML email shell.
  * Uses pure nested presentation tables (zero CSS flex/grid/broken emoji badges)
@@ -248,7 +285,9 @@ function renderProximEmailShell({
   heading = "",
   subheading = "",
   bodyHtml = "",
-  footerNote = "Need help? Reply to this email or chat with us on Telegram at https://t.me/payeetbot",
+  footerNote = `Need help? Contact <a href="mailto:${SUPPORT_EMAIL}" style="color:#002018;font-weight:700;text-decoration:none;">${SUPPORT_EMAIL}</a>.`,
+  footerBrand = "Proxim &middot; Global Banking &amp; Payments",
+  showSocials = true,
 }) {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -287,8 +326,9 @@ function renderProximEmailShell({
           <!-- Footer -->
           <tr>
             <td style="background-color:#FAF7F0;border-top:1px solid #E6DEC9;padding:16px 24px;">
-              <p style="margin:0 0 6px 0;font-size:12.5px;line-height:19px;color:#5C5546;">${footerNote}</p>
-              <p style="margin:0;font-size:11.5px;line-height:17px;color:#8A8170;">Igboze from Proxim &middot; Global Banking &amp; Payments</p>
+              <p style="margin:0 0 4px 0;font-size:12.5px;line-height:19px;color:#5C5546;">${footerNote}</p>
+              ${showSocials ? renderSocialIconsRow() : ""}
+              <p style="margin:0;font-size:11.5px;line-height:17px;color:#8A8170;">${footerBrand}</p>
             </td>
           </tr>
         </table>
@@ -406,7 +446,8 @@ async function sendWelcomeEmail({ to, name } = {}) {
     "",
     ...featureRows.map(([k, v]) => `- ${k}: ${v}`),
     "",
-    "Need help? Reply to this email or reach us on Telegram at https://t.me/payeetbot.",
+    `Need help? Contact us at ${SUPPORT_EMAIL}.`,
+    `X: ${PROXIM_SOCIAL_LINKS.x} | Facebook: ${PROXIM_SOCIAL_LINKS.facebook} | Website: ${PROXIM_SOCIAL_LINKS.website}`,
   ].join("\n");
 
   return sendTransactionalEmail({
@@ -451,7 +492,8 @@ async function sendGlobalAccountCreatedEmail({ to, name, currency, accountType =
     "",
     ...rows.map(([k, v]) => `- ${k}: ${v}`),
     "",
-    "Open the Proxim app or Telegram bot (https://t.me/payeetbot) anytime to view or share your details.",
+    `Open Proxim anytime to view or share your details. Need help? Contact ${SUPPORT_EMAIL}.`,
+    `X: ${PROXIM_SOCIAL_LINKS.x} | Facebook: ${PROXIM_SOCIAL_LINKS.facebook} | Website: ${PROXIM_SOCIAL_LINKS.website}`,
   ].join("\n");
 
   return sendTransactionalEmail({
@@ -567,7 +609,7 @@ async function sendTransactionAlertEmail({
   const bodyHtml = `
     <p style="margin:0 0 14px 0;font-size:15px;line-height:22px;color:#3A352C;">${greeting} Here are the details of your recent ${escapeEmailHtml(acctLabel.toLowerCase())} transaction:</p>
     ${renderKeyValueTable(rows)}
-    <p style="margin:14px 0 0 0;font-size:13px;line-height:20px;color:#776F5F;">If you did not authorize this transaction, freeze your account immediately in Proxim or reply to this email.</p>
+    <p style="margin:14px 0 0 0;font-size:13px;line-height:20px;color:#776F5F;">If you did not authorize this transaction, freeze your account immediately in Proxim or contact <a href="mailto:${SUPPORT_EMAIL}" style="color:#002018;font-weight:700;text-decoration:none;">${SUPPORT_EMAIL}</a>.</p>
   `;
   const html = renderProximEmailShell({
     badge: badgeLabel,
@@ -576,7 +618,9 @@ async function sendTransactionAlertEmail({
     heading: escapeEmailHtml(`${sign}${amtText}`),
     subheading: escapeEmailHtml(meta.label),
     bodyHtml,
-    footerNote: "Automated Proxim Transaction Alert &middot; Reply if you need assistance.",
+    footerNote: `Automated Proxim Transaction Alert &middot; Support: <a href="mailto:${SUPPORT_EMAIL}" style="color:#002018;font-weight:700;text-decoration:none;">${SUPPORT_EMAIL}</a>`,
+    footerBrand: "Proxim &middot; Global Banking &amp; Payments",
+    showSocials: true,
   });
   const text = [
     name ? `Hello ${name},` : "Hello,",
@@ -585,7 +629,11 @@ async function sendTransactionAlertEmail({
     "",
     textRows,
     "",
-    "If you did not authorize this transaction, freeze your account in Proxim or reply to this email immediately.",
+    `If you did not authorize this transaction, freeze your account in Proxim or contact ${SUPPORT_EMAIL} immediately.`,
+    "",
+    `X: ${PROXIM_SOCIAL_LINKS.x}`,
+    `Facebook: ${PROXIM_SOCIAL_LINKS.facebook}`,
+    `Website: ${PROXIM_SOCIAL_LINKS.website}`,
   ].join("\n");
 
   return sendTransactionalEmail({ to, subject, html, text });

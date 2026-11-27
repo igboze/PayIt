@@ -1093,7 +1093,7 @@ export function ProfileScreen({
   const handleFreezeAccount = () => {
     Alert.alert(
       "Emergency Freeze Account",
-      "This immediately locks your Proxim account and signs out all devices. You will need to contact igboze@proximfi.xyz to unfreeze it. Continue?",
+      "This immediately locks your Proxim account and signs out all devices. You will need to contact info@proximfi.xyz to unfreeze it. Continue?",
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -1353,9 +1353,9 @@ export function ProfileScreen({
             </Text>
             <View style={{ gap: 8 }}>
               <Button
-                title="Email Support (igboze@proximfi.xyz)"
+                title="Email Support (info@proximfi.xyz)"
                 variant="secondary"
-                onPress={() => Linking.openURL("mailto:igboze@proximfi.xyz?subject=Proxim%20Support")}
+                onPress={() => Linking.openURL("mailto:info@proximfi.xyz?subject=Proxim%20Support")}
               />
               <Button
                 title="Telegram Support (@payeetbot)"
