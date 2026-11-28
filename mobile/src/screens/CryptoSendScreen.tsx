@@ -6,7 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "../api/client";
 import { useApp } from "../state/AppContext";
 import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TYPE, createThemeStyles } from "../theme";
-import { Button, ErrorBanner, Input, KeyboardSafe, ScreenHeader } from "../components/UI";
+import { Button, ErrorBanner, Input, KeyboardSafe, ScreenHeader, SkeletonCard } from "../components/UI";
 import { CurrencyLogo } from "../components/CurrencyLogo";
 import { PressableScale } from "../components/Touch";
 
@@ -85,7 +85,7 @@ export function CryptoSendScreen({ onBack }: { onBack: () => void }) {
       <ScreenHeader title="Send crypto" subtitle={`From your ${activeAccount === "business" ? "business" : "personal"} balance`} onBack={onBack} />
       <KeyboardSafe>
         <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
-          {loading ? <ActivityIndicator color={COLORS.primary} style={{ paddingVertical: 24 }} /> : null}
+          {loading ? <SkeletonCard rows={2} /> : null}
           <ErrorBanner message={error} onDismiss={() => setError(null)} />
 
           <Text style={styles.label}>Network</Text>

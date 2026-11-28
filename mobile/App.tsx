@@ -305,87 +305,89 @@ function MainShell() {
   const onForest = tab === "home" && !overlay;
   const topInsetBg = onForest ? (isBiz ? "#0F172A" : COLORS.forest) : COLORS.page;
   return (
-    <SafeAreaView style={styles.safe} edges={["bottom"]}>
+    <View style={styles.safe}>
       <StatusBar style={onForest || isDark ? "light" : "dark"} />
-      <View style={{ height: insets.top, backgroundColor: topInsetBg }} />
-      <KeyboardSafe>
-        {ota.updateReady ? (
-          <PressableScale onPress={() => setApplyingUpdate(true)} style={styles.otaBanner}>
-            <Ionicons name="cloud-download-outline" size={16} color={COLORS.onPrimary} />
-            <Text style={styles.otaBannerText}>New Proxim update ready · Tap to apply</Text>
-            <Ionicons name="refresh" size={15} color={COLORS.onPrimary} />
-          </PressableScale>
-        ) : null}
-        {tab !== "home" ? <AccountSwitcherBar onOpenAssistant={() => setOverlay("assistant")} /> : null}
-
-        {inbox.banner ? (
-          <PressableScale
-            onPress={() => {
-              inbox.dismissBanner();
-              setOverlay("notifications");
-            }}
-            style={styles.inboxBanner}
-          >
-            <Ionicons name="notifications" size={18} color={COLORS.primary} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.inboxTitle} numberOfLines={1}>{inbox.banner.title}</Text>
-              <Text style={styles.inboxBody} numberOfLines={2}>{inbox.banner.body}</Text>
-            </View>
-            <PressableScale onPress={inbox.dismissBanner} haptic="none" style={{ padding: 4 }}>
-              <Ionicons name="close" size={18} color={COLORS.textMuted} />
+      <SafeAreaView style={styles.safe} edges={["bottom"]}>
+        <View style={{ height: insets.top, backgroundColor: topInsetBg }} />
+        <KeyboardSafe>
+          {ota.updateReady ? (
+            <PressableScale onPress={() => setApplyingUpdate(true)} style={styles.otaBanner}>
+              <Ionicons name="cloud-download-outline" size={16} color={COLORS.onPrimary} />
+              <Text style={styles.otaBannerText}>New Proxim update ready · Tap to apply</Text>
+              <Ionicons name="refresh" size={15} color={COLORS.onPrimary} />
             </PressableScale>
-          </PressableScale>
-        ) : null}
-        <View style={styles.body}>
-          {tab === "home" ? <HomeScreen
-            onNavigate={handleHomeNav}
-            onOpenProfile={() => setTab("profile")}
-            onOpenBill={(c) => {
-              setBillCategory(c);
-              setOverlay("bills");
-            }}
-            unread={inbox.unread}
-          /> : null}
-          {tab === "accounts" ? <AccountsScreen initialSection={accountsSection} initialBizSubTab={bizSubTab} /> : null}
-          {tab === "cards" ? <CardsScreen /> : null}
-          {tab === "profile" ? <ProfileScreen initialTab={profileSection} initialVerifyMode={profileVerifyMode} /> : null}
-        </View>
+          ) : null}
+          {tab !== "home" ? <AccountSwitcherBar onOpenAssistant={() => setOverlay("assistant")} /> : null}
 
-        <View style={styles.tabBar}>
-          {tabs.map((t) => {
-            const active = tab === t.key;
-            return (
-              <PressableScale
-                key={t.key}
-                onPress={() => {
-                  if (t.key === "accounts") setAccountsSection(isBiz ? "business" : "accounts");
-                  if (t.key === "profile") {
-                    setProfileVerifyMode(null);
-                    setProfileSection("general");
-                  }
-                  setTab(t.key);
-                }}
-                style={styles.tabItem}
-              >
-                <View style={[styles.tabIcon, active && styles.tabIconActive]}>
-                  <Ionicons
-                    name={active ? t.activeIcon : t.icon}
-                    size={20}
-                    color={active ? COLORS.primary : COLORS.textMuted}
-                  />
-                </View>
-                <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>
-                  {t.label}
-                </Text>
+          {inbox.banner ? (
+            <PressableScale
+              onPress={() => {
+                inbox.dismissBanner();
+                setOverlay("notifications");
+              }}
+              style={styles.inboxBanner}
+            >
+              <Ionicons name="notifications" size={18} color={COLORS.primary} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.inboxTitle} numberOfLines={1}>{inbox.banner.title}</Text>
+                <Text style={styles.inboxBody} numberOfLines={2}>{inbox.banner.body}</Text>
+              </View>
+              <PressableScale onPress={inbox.dismissBanner} haptic="none" style={{ padding: 4 }}>
+                <Ionicons name="close" size={18} color={COLORS.textMuted} />
               </PressableScale>
-            );
-          })}
-        </View>
-      </KeyboardSafe>
+            </PressableScale>
+          ) : null}
+          <View style={styles.body}>
+            {tab === "home" ? <HomeScreen
+              onNavigate={handleHomeNav}
+              onOpenProfile={() => setTab("profile")}
+              onOpenBill={(c) => {
+                setBillCategory(c);
+                setOverlay("bills");
+              }}
+              unread={inbox.unread}
+            /> : null}
+            {tab === "accounts" ? <AccountsScreen initialSection={accountsSection} initialBizSubTab={bizSubTab} /> : null}
+            {tab === "cards" ? <CardsScreen /> : null}
+            {tab === "profile" ? <ProfileScreen initialTab={profileSection} initialVerifyMode={profileVerifyMode} /> : null}
+          </View>
+
+          <View style={styles.tabBar}>
+            {tabs.map((t) => {
+              const active = tab === t.key;
+              return (
+                <PressableScale
+                  key={t.key}
+                  onPress={() => {
+                    if (t.key === "accounts") setAccountsSection(isBiz ? "business" : "accounts");
+                    if (t.key === "profile") {
+                      setProfileVerifyMode(null);
+                      setProfileSection("general");
+                    }
+                    setTab(t.key);
+                  }}
+                  style={styles.tabItem}
+                >
+                  <View style={[styles.tabIcon, active && styles.tabIconActive]}>
+                    <Ionicons
+                      name={active ? t.activeIcon : t.icon}
+                      size={20}
+                      color={active ? COLORS.primary : COLORS.textMuted}
+                    />
+                  </View>
+                  <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>
+                    {t.label}
+                  </Text>
+                </PressableScale>
+              );
+            })}
+          </View>
+        </KeyboardSafe>
+      </SafeAreaView>
       {overlayView}
       <ApprovalSheet />
       {lockOverlay}
-    </SafeAreaView>
+    </View>
   );
 }
 

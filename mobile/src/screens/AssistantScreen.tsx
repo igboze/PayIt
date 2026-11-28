@@ -149,7 +149,7 @@ export function AssistantScreen({ onBack }: { onBack: () => void }) {
             style={{ marginBottom: 0 }}
           />
         </View>
-        <Button title="Send" onPress={() => sendText(input)} loading={loading} style={{ width: 76, marginBottom: 14 }} />
+        <Button title="Send" onPress={() => sendText(input)} loading={loading} style={{ width: 76, height: 50, marginBottom: 14 }} />
       </View>
     </KeyboardAvoidingView>
   );

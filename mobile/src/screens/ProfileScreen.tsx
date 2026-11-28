@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   AppState,
+  BackHandler,
   Linking,
   Modal,
   Platform,
@@ -154,6 +155,14 @@ export function ProfileScreen({
     setTab(next);
     setViewMode(next);
   };
+  useEffect(() => {
+    if (viewMode === "menu") return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      setViewMode("menu");
+      return true;
+    });
+    return () => sub.remove();
+  }, [viewMode]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -603,7 +612,7 @@ export function ProfileScreen({
           {title} {opts?.required ? "*" : "(optional)"}
         </Text>
         <Text style={[styles.rowSub, picked ? { color: COLORS.primary } : null]} numberOfLines={2}>
-          {picked ? `✅ Attached: ${picked.name}` : hint}
+          {picked ? `Attached: ${picked.name}` : hint}
         </Text>
       </View>
       <View style={{ flexDirection: "row", gap: 6 }}>
@@ -1414,18 +1423,6 @@ export function ProfileScreen({
       {tab === "general" ? (
         <>
           <Card>
-            <SectionHeader title="Appearance" />
-            <Text style={[styles.rowSub, { marginBottom: 10 }]}>
-              Choose Light, Dark, or automatically match your phone's system theme.
-            </Text>
-            <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
-              <Pill label="System" active={themePreference === "system"} onPress={() => setThemePreference("system")} />
-              <Pill label="Light" active={themePreference === "light"} onPress={() => setThemePreference("light")} />
-              <Pill label="Dark" active={themePreference === "dark"} onPress={() => setThemePreference("dark")} />
-            </View>
-          </Card>
-
-          <Card>
             <SectionHeader title="Account Profile" />
             <KeyValueRow label="Account ID" value={user?.id || "—"} />
             <KeyValueRow label="Username" value={user?.username ? `@${user.username}` : "Not set"} />
@@ -1603,7 +1600,7 @@ export function ProfileScreen({
                   label="Personal KYC Status"
                   value={
                     kyc.personal.status === "approved" || kyc.personal.tier >= 1
-                      ? "VERIFIED ✅"
+                      ? "Verified"
                       : kyc.personal.status === "pending" || kyc.personal.status === "incomplete"
                         ? "UNDER REVIEW ⏳"
                         : kyc.personal.status === "rejected" || kyc.personal.status === "failed"
@@ -1616,7 +1613,7 @@ export function ProfileScreen({
                   value={
                     user?.hasBusinessAccount
                       ? kyc.business.status === "approved" || kyc.business.tier >= 1
-                        ? "VERIFIED ✅"
+                        ? "Verified"
                         : kyc.business.status === "pending" || kyc.business.status === "incomplete"
                           ? "UNDER REVIEW ⏳"
                           : kyc.business.status === "rejected" || kyc.business.status === "failed"
@@ -1662,7 +1659,7 @@ export function ProfileScreen({
                   <Text style={[styles.rowSub, { color: COLORS.business, fontFamily: FONTS.bold }]}>
                     {kyc
                       ? kyc.business.status === "approved" || kyc.business.tier >= 1
-                        ? "VERIFIED ✅"
+                        ? "Verified"
                         : kyc.business.status === "pending" || kyc.business.status === "incomplete"
                           ? "Under Review ⏳"
                           : "Verify KYB"
@@ -1798,7 +1795,7 @@ export function ProfileScreen({
                 <Text style={[styles.rowSub, { color: COLORS.primary, fontFamily: FONTS.bold }]}>
                   {kyc
                     ? kyc.personal.status === "approved" || kyc.personal.tier >= 1
-                      ? "VERIFIED ✅"
+                      ? "Verified"
                       : kyc.personal.status === "pending" || kyc.personal.status === "incomplete"
                         ? "Under Review ⏳"
                         : "Verify KYC"
@@ -1898,7 +1895,7 @@ export function ProfileScreen({
                   <Text style={[styles.rowSub, { color: COLORS.business, fontFamily: FONTS.bold }]}>
                     {kyc
                       ? kyc.business.status === "approved" || kyc.business.tier >= 1
-                        ? "VERIFIED ✅"
+                        ? "Verified"
                         : kyc.business.status === "pending" || kyc.business.status === "incomplete"
                           ? "Under Review ⏳"
                           : "Verify KYB"

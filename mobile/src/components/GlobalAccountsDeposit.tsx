@@ -4,7 +4,7 @@ import * as Clipboard from "expo-clipboard";
 import { api } from "../api/client";
 import type { AccountType, GlobalAccountItem } from "../api/types";
 import { COLORS, DEPTH, RADIUS, SPACING, TYPE, createThemeStyles } from "../theme";
-import { Button, ErrorBanner, KeyValueRow, SuccessBanner } from "./UI";
+import { Button, ErrorBanner, KeyValueRow, SkeletonCard, SuccessBanner } from "./UI";
 import { CurrencyLogo } from "./CurrencyLogo";
 
 const CURRENCY_NAMES: Record<string, string> = {
@@ -137,7 +137,7 @@ export function GlobalAccountsDeposit({ accountType, onNeedsVerification }: { ac
       </Text>
       <ErrorBanner message={error} onDismiss={() => setError(null)} />
       <SuccessBanner message={notice} onDismiss={() => setNotice(null)} />
-      {loading ? <ActivityIndicator color={COLORS.primary} style={{ paddingVertical: 20 }} /> : null}
+      {loading ? <SkeletonCard rows={2} /> : null}
 
       {accounts.map((a, i) => {
         const ready = /active|approved|ready|open/i.test(a.status) || Boolean(a.accountNumber || a.iban);

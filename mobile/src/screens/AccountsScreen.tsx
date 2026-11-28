@@ -630,9 +630,9 @@ export function AccountsScreen({
                   label="Verification"
                   value={
                     a.kycTier >= 1 || a.kycStatus === "approved"
-                      ? "VERIFIED ✅"
+                      ? "Verified"
                       : a.kycStatus === "pending" || a.kycStatus === "incomplete"
-                        ? "Under Review ⏳"
+                        ? "Under Review"
                         : biz
                           ? "Verify KYB"
                           : "Verify KYC"

@@ -39,7 +39,7 @@ function SuccessView({ intent, res, onDone }: { intent: ActionIntentResponse; re
       <View style={styles.successTop}>
         <View style={styles.successRing}>
           <View style={styles.successDot}>
-            <Ionicons name="checkmark" size={40} color={COLORS.forest} />
+            <Ionicons name="checkmark" size={40} color={COLORS.onPrimary} />
           </View>
         </View>
         <Text style={styles.successHeading}>{successHeading(intent.actionType)}</Text>
