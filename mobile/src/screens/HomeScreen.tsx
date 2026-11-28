@@ -712,8 +712,8 @@ export function HomeScreen({
             }}
           >
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              <Ionicons name="checkmark-circle" size={16} color={COLORS.gold} />
-              <Text style={{ fontSize: 11, fontWeight: "800", letterSpacing: 0.7, color: COLORS.gold, textTransform: "uppercase" }}>
+              <Ionicons name="checkmark-circle" size={16} color={HERO.accent} />
+              <Text style={{ fontSize: 11, fontWeight: "800", letterSpacing: 0.7, color: HERO.accent, textTransform: "uppercase" }}>
                 VERIFIED ACCOUNT · DEPOSIT PREFERENCE
               </Text>
             </View>
@@ -748,7 +748,7 @@ export function HomeScreen({
                   alignItems: "center",
                 }}
               >
-                <Text style={{ fontSize: 12.5, fontWeight: "800", color: COLORS.forest }}>
+                <Text style={{ fontSize: 12.5, fontWeight: "800", color: COLORS.onGold }}>
                   Hold Local Currency
                 </Text>
               </PressableScale>
@@ -1333,13 +1333,9 @@ const styles = StyleSheet.create({
   },
   qaGold: {
     backgroundColor: COLORS.gold,
-    borderBottomWidth: 2,
-    borderBottomColor: COLORS.goldDark,
   },
   qaWhite: {
     backgroundColor: COLORS.white,
-    borderBottomWidth: 2,
-    borderBottomColor: "#C9D3CE",
   },
   qaWideLabel: {
     ...TYPE.bodyStrong,
@@ -1396,7 +1392,7 @@ const styles = StyleSheet.create({
     paddingRight: 8,
     paddingVertical: 9,
     minHeight: 84,
-    shadowColor: "#13110C",
+    shadowColor: COLORS.forest,
     shadowOpacity: 0.14,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 4 },

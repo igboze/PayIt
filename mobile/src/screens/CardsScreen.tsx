@@ -307,7 +307,7 @@ export function CardsScreen() {
                 ).map(([icon, label, fn, main]) => (
                   <PressableScale key={label} onPress={fn} depth={0.92} haptic="light" style={styles.roundItem} accessibilityRole="button" accessibilityLabel={label}>
                     <View style={[styles.roundBtn, main && styles.roundBtnMain]}>
-                      <Ionicons name={icon} size={20} color={main ? COLORS.gold : COLORS.primary} />
+                      <Ionicons name={icon} size={20} color={main ? COLORS.white : COLORS.primary} />
                     </View>
                     <Text style={styles.roundLabel}>{label}</Text>
                   </PressableScale>
@@ -425,12 +425,10 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderWidth: 1,
     borderColor: COLORS.border,
-    borderBottomWidth: 2,
-    borderBottomColor: COLORS.borderStrong,
     alignItems: "center",
     justifyContent: "center",
   },
-  roundBtnMain: { backgroundColor: COLORS.forest, borderColor: COLORS.forest, borderBottomColor: COLORS.primaryDark },
+  roundBtnMain: { backgroundColor: COLORS.forest, borderColor: COLORS.forest },
   roundLabel: { fontFamily: FONTS.semibold, fontSize: 11.5, color: COLORS.text },
   deleteLink: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 14, minHeight: 40 },
   deleteText: { fontFamily: FONTS.semibold, fontSize: 13, color: COLORS.dangerText },

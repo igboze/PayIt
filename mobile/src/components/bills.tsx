@@ -185,7 +185,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 10,
   },
-  tileOn: { borderColor: COLORS.primary, borderWidth: 2, borderBottomWidth: 4, borderBottomColor: COLORS.primaryDark, backgroundColor: COLORS.deep },
+  tileOn: { borderColor: COLORS.primary, borderWidth: 2, backgroundColor: COLORS.deep },
   tileName: { fontSize: 13, lineHeight: 17, fontFamily: FONTS.semibold, color: COLORS.text, textAlign: "center" },
   tileNameCompact: { fontSize: 12, lineHeight: 16, fontFamily: FONTS.semibold, color: COLORS.text, textAlign: "center" },
   badgePill: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: RADIUS.pill },

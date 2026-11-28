@@ -215,10 +215,10 @@ type Status = { label: string; color: string; bg: string };
 export function txStatus(tx: TransactionItem): Status | null {
   if (tx.payoutStatus === "paid") return { label: "Paid", color: COLORS.successText, bg: COLORS.primaryMuted };
   if (tx.payoutStatus === "failed") return { label: "Failed", color: COLORS.dangerText, bg: COLORS.dangerMuted };
-  if (tx.payoutStatus === "processing") return { label: "Processing", color: COLORS.warningText, bg: COLORS.businessMuted };
+  if (tx.payoutStatus === "processing") return { label: "Processing", color: COLORS.warningText, bg: COLORS.warningMuted };
   const s = String(tx.status || "").toLowerCase();
   if (/fail|reject|error|cancel/.test(s)) return { label: "Failed", color: COLORS.dangerText, bg: COLORS.dangerMuted };
-  if (/pending|submitted|processing|initiated/.test(s)) return { label: "Processing", color: COLORS.warningText, bg: COLORS.businessMuted };
+  if (/pending|submitted|processing|initiated/.test(s)) return { label: "Processing", color: COLORS.warningText, bg: COLORS.warningMuted };
   return null; // completed: no chip
 }
 

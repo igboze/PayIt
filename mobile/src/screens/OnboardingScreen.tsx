@@ -361,7 +361,7 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
           {!passkeyAvailable ? (
             <Card style={styles.runtimeWarning}>
               <View style={styles.warnRow}>
-                <Ionicons name="warning" size={18} color={COLORS.business} />
+                <Ionicons name="warning" size={18} color={COLORS.warningText} />
                 <Text style={styles.warnText}>
                   Passkeys aren&apos;t available on this device. Install the latest Proxim app to sign in securely.
                 </Text>
@@ -662,8 +662,8 @@ const styles = StyleSheet.create({
     maxWidth: 300,
   },
   runtimeWarning: {
-    borderColor: COLORS.businessBorder,
-    backgroundColor: COLORS.businessMuted,
+    borderColor: "#F2CFA0",
+    backgroundColor: COLORS.warningMuted,
   },
   warnRow: {
     flexDirection: "row",
@@ -718,7 +718,7 @@ const styles = StyleSheet.create({
     gap: 5,
     backgroundColor: COLORS.goldSoft,
     borderWidth: 1,
-    borderColor: COLORS.businessBorder,
+    borderColor: "#B5DEC8",
     borderRadius: RADIUS.pill,
     paddingHorizontal: 10,
     paddingVertical: 5,
