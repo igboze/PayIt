@@ -20,7 +20,7 @@ import type {
   StocksOverviewResponse,
 } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TYPE, createThemeStyles } from "../theme";
+import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TABULAR_NUMS, TYPE, createThemeStyles } from "../theme";
 import {
   Button,
   ForestHero,
@@ -34,6 +34,7 @@ import {
   Pill,
   ScreenHeader,
   SectionHeader,
+  SkeletonCard,
   SuccessBanner,
 } from "../components/UI";
 import { PressableScale } from "../components/Touch";
@@ -593,10 +594,7 @@ export function StocksScreen({ onBack }: { onBack: () => void }) {
           />
 
           {loading && !overview ? (
-            <View style={{ paddingVertical: 28, alignItems: "center", gap: 8 }}>
-              <ActivityIndicator color={COLORS.primary} />
-              <Text style={styles.muted}>Loading live US stock prices…</Text>
-            </View>
+            <SkeletonCard rows={4} />
           ) : stocks.length === 0 ? (
             <EmptyState
               icon="trending-up-outline"
@@ -691,8 +689,8 @@ const styles = createThemeStyles(() => ({
   },
   stockTicker: { fontFamily: FONTS.extrabold, fontSize: 15, color: COLORS.text },
   stockName: { fontFamily: FONTS.regular, fontSize: 12, color: COLORS.textSecondary, marginTop: 1 },
-  stockPrice: { fontFamily: FONTS.bold, fontSize: 14, color: COLORS.text },
-  stockChange: { fontFamily: FONTS.semibold, fontSize: 12, marginTop: 1 },
+  stockPrice: { fontFamily: FONTS.bold, fontSize: 14, color: COLORS.text, ...TABULAR_NUMS },
+  stockChange: { fontFamily: FONTS.semibold, fontSize: 12, marginTop: 1, ...TABULAR_NUMS },
   ownedBadge: {
     backgroundColor: COLORS.primaryMuted,
     paddingHorizontal: 6,
@@ -705,8 +703,8 @@ const styles = createThemeStyles(() => ({
   detailMeta: { fontFamily: FONTS.medium, fontSize: 12, color: COLORS.textSecondary },
   changePill: { borderRadius: RADIUS.pill, paddingHorizontal: 10, paddingVertical: 4 },
   changePillText: { fontFamily: FONTS.bold, fontSize: 12 },
-  heroPrice: { fontFamily: FONTS.extrabold, fontSize: 34, color: COLORS.text, letterSpacing: -0.8 },
-  heroPriceNgn: { fontFamily: FONTS.semibold, fontSize: 14, color: COLORS.textSecondary, marginTop: 2 },
+  heroPrice: { fontFamily: FONTS.extrabold, fontSize: 34, color: COLORS.text, letterSpacing: -0.8, ...TABULAR_NUMS },
+  heroPriceNgn: { fontFamily: FONTS.semibold, fontSize: 14, color: COLORS.textSecondary, marginTop: 2, ...TABULAR_NUMS },
   rangeRow: { flexDirection: "row", gap: 8, marginTop: 12 },
   rangeChip: {
     flex: 1,

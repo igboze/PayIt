@@ -1,7 +1,9 @@
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import {
   ActivityIndicator,
+  Animated,
   KeyboardAvoidingView,
+  Modal,
   Pressable,
   StyleProp,
   StyleSheet,
@@ -12,7 +14,7 @@ import {
   ViewStyle,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { COLORS, DEPTH, HERO, RADIUS, SPACING, FONTS, TYPE, createThemeStyles } from "../theme";
+import { COLORS, DEPTH, HERO, RADIUS, SPACING, FONTS, TABULAR_NUMS, TYPE, createThemeStyles } from "../theme";
 import { PressableScale } from "./Touch";
 import { CurrencyLogo, currencyInText } from "./CurrencyLogo";
 import { toUserError } from "../utils/errors";
@@ -430,7 +432,7 @@ const styles = createThemeStyles(() => ({
     ...DEPTH.card,
   },
   btn: {
-    height: 56,
+    height: 52,
     borderRadius: RADIUS.md,
     alignItems: "center",
     justifyContent: "center",
@@ -443,7 +445,7 @@ const styles = createThemeStyles(() => ({
   btnSecondary: {
     backgroundColor: COLORS.surface,
     ...DEPTH.raised,
-    borderWidth: 1.5,
+    borderWidth: 1,
     borderColor: COLORS.borderStrong,
   },
   btnDanger: {
@@ -459,28 +461,29 @@ const styles = createThemeStyles(() => ({
     color: COLORS.text,
   },
   inputWrap: {
-    marginBottom: SPACING.md,
+    marginBottom: 14,
   },
   inputLabel: {
     ...TYPE.label,
     fontFamily: FONTS.bold,
     color: COLORS.textSecondary,
-    marginBottom: 8,
+    marginBottom: 6,
   },
   input: {
-    minHeight: 56,
+    minHeight: 50,
     backgroundColor: COLORS.surface,
-    borderWidth: 1.5,
+    borderWidth: 1,
     borderColor: COLORS.borderStrong,
     borderRadius: RADIUS.md,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     color: COLORS.text,
     fontFamily: FONTS.medium,
     fontSize: 15,
   },
   inputFocused: {
     borderColor: COLORS.primary,
+    borderWidth: 1.5,
   },
   inputSecure: {
     paddingRight: 52,
@@ -492,24 +495,25 @@ const styles = createThemeStyles(() => ({
     right: 4,
     top: 0,
     bottom: 0,
-    width: 48,
+    width: 46,
     alignItems: "center",
     justifyContent: "center",
   },
   inputMultiline: {
-    minHeight: 96,
+    minHeight: 92,
     textAlignVertical: "top",
   },
   inputHint: {
     ...TYPE.label,
+    fontSize: 12,
     color: COLORS.textMuted,
-    marginTop: 6,
+    marginTop: 5,
   },
   pill: {
-    minHeight: 40,
+    minHeight: 36,
     justifyContent: "center",
-    paddingHorizontal: 15,
-    paddingVertical: 8,
+    paddingHorizontal: 13,
+    paddingVertical: 6,
     borderRadius: RADIUS.pill,
     borderWidth: 1,
   },
@@ -522,34 +526,36 @@ const styles = createThemeStyles(() => ({
     alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 10,
-    marginTop: SPACING.sm,
+    marginTop: 2,
   },
   sectionTitle: {
     ...TYPE.headline,
-    fontFamily: FONTS.extrabold,
-    fontSize: 16,
+    fontFamily: FONTS.bold,
+    fontSize: 15.5,
     color: COLORS.text,
   },
   screenHeader: {
-    height: 60,
+    height: 54,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingLeft: SPACING.sm,
+    paddingLeft: SPACING.sm + 2,
     paddingRight: SPACING.md,
     backgroundColor: COLORS.bg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.border,
   },
   screenHeaderLeft: {
     flexDirection: "row",
     alignItems: "center",
     flex: 1,
-    gap: 4,
+    gap: 6,
   },
   backBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    marginRight: 6,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    marginRight: 4,
     backgroundColor: COLORS.surface,
     borderWidth: 1,
     borderColor: COLORS.border,
@@ -559,11 +565,12 @@ const styles = createThemeStyles(() => ({
   screenTitle: {
     ...TYPE.headline,
     fontFamily: FONTS.extrabold,
-    fontSize: 18,
+    fontSize: 17,
     color: COLORS.text,
   },
   screenSubtitle: {
     ...TYPE.label,
+    fontSize: 12,
     color: COLORS.textSecondary,
   },
   errorBanner: {
@@ -628,9 +635,9 @@ const styles = createThemeStyles(() => ({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.surfaceElevated,
+    paddingVertical: 11,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.border,
     gap: 12,
   },
   kvCopy: {
@@ -654,11 +661,356 @@ const styles = createThemeStyles(() => ({
   },
   kvValue: {
     ...TYPE.bodyStrong,
+    ...TABULAR_NUMS,
     color: COLORS.text,
     textAlign: "right",
     flexShrink: 1,
   },
+  sheetBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(3, 12, 9, 0.65)",
+    justifyContent: "flex-end",
+  },
+  sheetDismissArea: {
+    flex: 1,
+  },
+  sheetBox: {
+    backgroundColor: COLORS.surface,
+    borderTopLeftRadius: RADIUS.xl,
+    borderTopRightRadius: RADIUS.xl,
+    borderTopWidth: 1,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: COLORS.borderStrong,
+    paddingHorizontal: SPACING.lg,
+    paddingTop: 10,
+    paddingBottom: 24,
+    maxHeight: "90%",
+  },
+  sheetHandle: {
+    alignSelf: "center",
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: COLORS.borderStrong,
+    marginBottom: 14,
+  },
+  sheetTitle: {
+    ...TYPE.title,
+    fontSize: 18,
+    color: COLORS.text,
+    marginBottom: 4,
+  },
+  sheetSub: {
+    ...TYPE.label,
+    color: COLORS.textSecondary,
+    marginBottom: 14,
+  },
+  segWrap: {
+    flexDirection: "row",
+    backgroundColor: COLORS.surfaceElevated,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 3,
+    gap: 3,
+    marginBottom: SPACING.md,
+  },
+  segItem: {
+    flex: 1,
+    minHeight: 36,
+    borderRadius: RADIUS.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    paddingHorizontal: 8,
+  },
+  segItemActive: {
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  segLabel: {
+    ...TYPE.label,
+    fontSize: 12.5,
+    fontFamily: FONTS.semibold,
+    color: COLORS.textSecondary,
+  },
+  segLabelActive: {
+    color: COLORS.text,
+    fontFamily: FONTS.bold,
+  },
+  listRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 13,
+    paddingHorizontal: 14,
+  },
+  listRowBorder: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.border,
+  },
+  listRowIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: COLORS.surfaceElevated,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  listRowTitle: {
+    ...TYPE.bodyStrong,
+    color: COLORS.text,
+  },
+  listRowSub: {
+    ...TYPE.label,
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    marginTop: 1,
+  },
+  badgeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: RADIUS.pill,
+    borderWidth: 1,
+  },
+  badgeRowText: {
+    fontFamily: FONTS.bold,
+    fontSize: 11,
+    letterSpacing: 0.2,
+  },
+  skelCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.lg,
+    padding: SPACING.md,
+    marginBottom: SPACING.md,
+    gap: 10,
+    ...DEPTH.card,
+  },
 }));
+
+/** Unified bottom sheet with consistent drag handle, backdrop dismiss, dark-mode border, and keyboard lift. */
+export function BottomSheet({
+  visible,
+  onClose,
+  title,
+  subtitle,
+  children,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  title?: string;
+  subtitle?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <KeyboardAvoidingView style={styles.sheetBackdrop} behavior="padding">
+        <Pressable style={styles.sheetDismissArea} onPress={onClose} />
+        <View style={styles.sheetBox}>
+          <View style={styles.sheetHandle} />
+          {title ? <Text style={styles.sheetTitle}>{title}</Text> : null}
+          {subtitle ? <Text style={styles.sheetSub}>{subtitle}</Text> : null}
+          {children}
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+/** Crisp institutional segmented control (replaces wrapped pill bars on top-level tabs). */
+export function SegmentedControl<T extends string>({
+  options,
+  value,
+  onChange,
+  style,
+}: {
+  options: Array<{ value: T; label: string; icon?: keyof typeof Ionicons.glyphMap }>;
+  value: T;
+  onChange: (next: T) => void;
+  style?: StyleProp<ViewStyle>;
+}) {
+  return (
+    <View style={[styles.segWrap, style]}>
+      {options.map((opt) => {
+        const active = opt.value === value;
+        return (
+          <PressableScale
+            key={opt.value}
+            onPress={() => onChange(opt.value)}
+            haptic="selection"
+            depth={0.97}
+            style={[styles.segItem, active && styles.segItemActive]}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: active }}
+          >
+            {opt.icon ? (
+              <Ionicons
+                name={opt.icon}
+                size={14}
+                color={active ? COLORS.primary : COLORS.textMuted}
+              />
+            ) : null}
+            <Text style={[styles.segLabel, active && styles.segLabelActive]} numberOfLines={1}>
+              {opt.label}
+            </Text>
+          </PressableScale>
+        );
+      })}
+    </View>
+  );
+}
+
+/** Grouped settings / action list row with icon, title, subtitle, optional right content, and chevron. */
+export function ListRow({
+  icon,
+  iconColor,
+  iconBg,
+  title,
+  subtitle,
+  right,
+  onPress,
+  showChevron = true,
+  last = false,
+  danger = false,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  iconColor?: string;
+  iconBg?: string;
+  title: string;
+  subtitle?: string;
+  right?: React.ReactNode;
+  onPress?: () => void;
+  showChevron?: boolean;
+  last?: boolean;
+  danger?: boolean;
+}) {
+  const inner = (
+    <View style={[styles.listRow, !last && styles.listRowBorder]}>
+      <View
+        style={[
+          styles.listRowIcon,
+          iconBg ? { backgroundColor: iconBg } : danger ? { backgroundColor: COLORS.dangerMuted } : null,
+        ]}
+      >
+        <Ionicons
+          name={icon}
+          size={18}
+          color={iconColor || (danger ? COLORS.dangerText : COLORS.primary)}
+        />
+      </View>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={[styles.listRowTitle, danger && { color: COLORS.dangerText }]} numberOfLines={1}>
+          {title}
+        </Text>
+        {subtitle ? (
+          <Text style={styles.listRowSub} numberOfLines={2}>
+            {subtitle}
+          </Text>
+        ) : null}
+      </View>
+      {right}
+      {showChevron && onPress ? <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} /> : null}
+    </View>
+  );
+  if (!onPress) return inner;
+  return (
+    <PressableScale onPress={onPress} depth={0.99} haptic="selection">
+      {inner}
+    </PressableScale>
+  );
+}
+
+/** Semantic status pill with crisp vector icon (zero emojis). */
+export function StatusBadge({
+  label,
+  tone = "success",
+  icon,
+}: {
+  label: string;
+  tone?: "success" | "warning" | "danger" | "business" | "neutral";
+  icon?: keyof typeof Ionicons.glyphMap;
+}) {
+  const palette =
+    tone === "success"
+      ? { bg: COLORS.primaryMuted, border: COLORS.primaryBorder, fg: COLORS.successText }
+      : tone === "warning"
+        ? { bg: COLORS.warningMuted, border: COLORS.warningBorder, fg: COLORS.warningText }
+        : tone === "danger"
+          ? { bg: COLORS.dangerMuted, border: COLORS.dangerBorder, fg: COLORS.dangerText }
+          : tone === "business"
+            ? { bg: COLORS.businessMuted, border: COLORS.businessBorder, fg: COLORS.business }
+            : { bg: COLORS.surfaceElevated, border: COLORS.border, fg: COLORS.textSecondary };
+  return (
+    <View style={[styles.badgeRow, { backgroundColor: palette.bg, borderColor: palette.border }]}>
+      {icon ? <Ionicons name={icon} size={12} color={palette.fg} /> : null}
+      <Text style={[styles.badgeRowText, { color: palette.fg }]}>{label}</Text>
+    </View>
+  );
+}
+
+/** Subtle pulsing skeleton block for structured loading states. */
+export function SkeletonBox({
+  width = "100%",
+  height = 14,
+  radius = 8,
+  style,
+}: {
+  width?: number | `${number}%`;
+  height?: number;
+  radius?: number;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const pulse = useRef(new Animated.Value(0.45)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 0.9, duration: 750, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0.45, duration: 750, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulse]);
+  return (
+    <Animated.View
+      style={[
+        {
+          width,
+          height,
+          borderRadius: radius,
+          backgroundColor: COLORS.surfaceElevated,
+          opacity: pulse,
+        },
+        style,
+      ]}
+    />
+  );
+}
+
+/** Structured card-shaped skeleton placeholder. */
+export function SkeletonCard({ rows = 3 }: { rows?: number }) {
+  return (
+    <View style={styles.skelCard}>
+      <SkeletonBox width="42%" height={14} />
+      {Array.from({ length: rows }, (_, i) => (
+        <View key={i} style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+          <SkeletonBox width={38} height={38} radius={10} />
+          <View style={{ flex: 1, gap: 6 }}>
+            <SkeletonBox width={i % 2 === 0 ? "62%" : "48%"} height={12} />
+            <SkeletonBox width="36%" height={10} />
+          </View>
+          <SkeletonBox width={58} height={14} />
+        </View>
+      ))}
+    </View>
+  );
+}
 
 /**
  * Lifts content above the on-screen keyboard. Android runs edge to edge, so the window no

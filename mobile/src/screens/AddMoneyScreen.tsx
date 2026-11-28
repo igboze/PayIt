@@ -3,11 +3,12 @@ import {
   ActivityIndicator,
   Linking,
   ScrollView,
-  StyleSheet,
+  Share,
   Text,
   View,
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
+import { Ionicons } from "@expo/vector-icons";
 import { api } from "../api/client";
 import type {
   CryptoDepositIntentResponse,
@@ -17,7 +18,7 @@ import type {
   NgnDepositOrder,
 } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING, FONTS, createThemeStyles } from "../theme";
+import { COLORS, RADIUS, SPACING, FONTS, TABULAR_NUMS, createThemeStyles } from "../theme";
 import {
   Button,
   Card,
@@ -25,9 +26,10 @@ import {
   formatNgn,
   Input,
   KeyValueRow,
-  Pill,
   ScreenHeader,
   SectionHeader,
+  SegmentedControl,
+  StatusBadge,
   SuccessBanner,
 } from "../components/UI";
 import { CurrencyLogo } from "../components/CurrencyLogo";
@@ -37,8 +39,9 @@ import { GlobalAccountsDeposit } from "../components/GlobalAccountsDeposit";
 type Method = "ngn" | "global" | "crypto" | "card";
 
 export function AddMoneyScreen({ onBack }: { onBack: () => void }) {
-  const { activeAccount, bumpDataVersion } = useApp();
+  const { user, activeAccount, bumpDataVersion } = useApp();
   const isBiz = activeAccount === "business";
+  const permanentNgn = user?.activeContext === activeAccount ? user?.ngnAccount : null;
 
   const [method, setMethod] = useState<Method>("ngn");
   const [error, setError] = useState<string | null>(null);
@@ -268,36 +271,82 @@ export function AddMoneyScreen({ onBack }: { onBack: () => void }) {
       />
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Text style={{ color: COLORS.text, fontFamily: FONTS.semibold, fontSize: 15, marginBottom: 12 }}>
-          Money you add goes to your {isBiz ? "business" : "personal"} balance.
-        </Text>
-
-        <View style={styles.methodRow}>
-          <Pill label="Naira bank" currency="NGN" active={method === "ngn"} onPress={() => setMethod("ngn")} />
-          <Pill label="Bank abroad" currency="USD" active={method === "global"} onPress={() => setMethod("global")} />
-          <Pill label="Crypto" active={method === "crypto"} onPress={() => setMethod("crypto")} />
-          <Pill label="Card" active={method === "card"} onPress={() => setMethod("card")} />
-        </View>
+        <SegmentedControl<Method>
+          value={method}
+          onChange={setMethod}
+          options={[
+            { value: "ngn", label: "Naira" },
+            { value: "global", label: "Global" },
+            { value: "crypto", label: "Crypto" },
+            { value: "card", label: "Card" },
+          ]}
+        />
 
         <ErrorBanner message={error} onDismiss={() => setError(null)} />
         <SuccessBanner message={notice} onDismiss={() => setNotice(null)} />
 
         {method === "ngn" ? (
-          <Card>
-            <SectionHeader title="Naira Bank Deposit" />
-            <Input
-              label="Amount in Naira (NGN)"
-              placeholder="e.g. 50000"
-              value={amountNgn}
-              onChangeText={(t) => setAmountNgn(t.replace(/[^\d.]/g, ""))}
-              keyboardType="numeric"
-              hint="Minimum ₦500. You will get a dedicated one-time bank account to transfer into."
-            />
-            <Button
-              title="Get bank account to pay into"
-              onPress={handleCreateNgnDeposit}
-              loading={loading}
-            />
+          <>
+            {permanentNgn?.accountNumber ? (
+              <Card>
+                <SectionHeader
+                  title="Your Naira Account"
+                  currency="NGN"
+                  right={<StatusBadge label="Instant · 0% fee" icon="flash" tone="success" />}
+                />
+                <Text style={[styles.mutedText, { marginBottom: 10 }]}>
+                  Transfer any Naira amount from any Nigerian bank app into this permanent account.
+                </Text>
+                <KeyValueRow label="Bank" currency={false} value={permanentNgn.bankName || "—"} />
+                <KeyValueRow
+                  label="Account Number"
+                  currency={false}
+                  value={permanentNgn.accountNumber}
+                  onCopy={() => copy("Account number", permanentNgn.accountNumber)}
+                />
+                {permanentNgn.beneficiaryName ? (
+                  <KeyValueRow label="Account Name" currency={false} value={permanentNgn.beneficiaryName} />
+                ) : null}
+                <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+                  <Button
+                    title="Copy account number"
+                    onPress={() => copy("Account number", permanentNgn.accountNumber)}
+                    style={{ flex: 1 }}
+                  />
+                  <Button
+                    title="Share"
+                    variant="secondary"
+                    onPress={() =>
+                      Share.share({
+                        message: `Bank: ${permanentNgn.bankName || "Proxim"}\nAccount Number: ${permanentNgn.accountNumber}${permanentNgn.beneficiaryName ? `\nAccount Name: ${permanentNgn.beneficiaryName}` : ""}`,
+                      }).catch(() => {})
+                    }
+                    style={{ width: 96 }}
+                  />
+                </View>
+              </Card>
+            ) : null}
+
+            <Card>
+              <SectionHeader
+                title={permanentNgn?.accountNumber ? "One-Time Naira Deposit" : "Naira Bank Deposit"}
+                currency="NGN"
+                right={!permanentNgn?.accountNumber ? <StatusBadge label="Instant" icon="flash" tone="success" /> : undefined}
+              />
+              <Input
+                label="Amount in Naira (NGN)"
+                placeholder="e.g. 50000"
+                value={amountNgn}
+                onChangeText={(t) => setAmountNgn(t.replace(/[^\d.]/g, ""))}
+                keyboardType="numeric"
+                hint="Minimum ₦500. Generates a one-time Nigerian bank account for this transfer."
+              />
+              <Button
+                title="Get bank account to pay into"
+                variant={permanentNgn?.accountNumber ? "secondary" : "primary"}
+                onPress={handleCreateNgnDeposit}
+                loading={loading}
+              />
 
             {ngnOrder ? (
               <View style={styles.resultBox}>
@@ -332,6 +381,7 @@ export function AddMoneyScreen({ onBack }: { onBack: () => void }) {
               </View>
             ) : null}
           </Card>
+          </>
         ) : null}
 
         {method === "crypto" ? (

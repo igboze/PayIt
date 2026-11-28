@@ -15,6 +15,7 @@ import {
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import * as SecureStore from "expo-secure-store";
+import { Ionicons } from "@expo/vector-icons";
 import { api } from "../api/client";
 import { getDocumentPicker, getImagePicker, getLegacyFileSystem } from "../nativeModules";
 import { toUserError } from "../utils/errors";
@@ -29,7 +30,7 @@ import type {
 import { useApp } from "../state/AppContext";
 import { useTheme } from "../state/ThemeContext";
 import { useAutoOtaUpdates } from "../hooks/useAutoOtaUpdates";
-import { COLORS, SPACING, FONTS, createThemeStyles } from "../theme";
+import { COLORS, RADIUS, SPACING, FONTS, TABULAR_NUMS, TYPE, createThemeStyles } from "../theme";
 import {
   Button,
   Card,
@@ -38,10 +39,14 @@ import {
   formatUsdc,
   Input,
   KeyValueRow,
+  ListRow,
   Pill,
   SectionHeader,
+  SegmentedControl,
+  StatusBadge,
   SuccessBanner,
 } from "../components/UI";
+import { PressableScale } from "../components/Touch";
 import { EditableAvatar } from "../components/Avatar";
 
 type ProfileTab = "general" | "kyc" | "security" | "contacts" | "schedules" | "rewards";
@@ -134,9 +139,21 @@ export function ProfileScreen({
   const isBiz = activeAccount === "business";
   const ota = useAutoOtaUpdates();
   const [tab, setTab] = useState<ProfileTab>(initialTab);
+  const [viewMode, setViewMode] = useState<"menu" | ProfileTab>(
+    initialVerifyMode || initialTab !== "general" ? initialTab : "menu"
+  );
   useEffect(() => {
     setTab(initialTab);
-  }, [initialTab]);
+    if (initialVerifyMode || initialTab !== "general") {
+      setViewMode(initialTab);
+    } else {
+      setViewMode("menu");
+    }
+  }, [initialTab, initialVerifyMode]);
+  const openSection = (next: ProfileTab) => {
+    setTab(next);
+    setViewMode(next);
+  };
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1201,6 +1218,149 @@ export function ProfileScreen({
     }
   };
 
+  const isVerified = isBiz
+    ? Number(user?.businessKycTier ?? 0) >= 1
+    : Number(user?.personalKycTier ?? user?.kycTier ?? 0) >= 1;
+
+  const sectionMeta: Record<ProfileTab, string> = {
+    general: "Account & Preferences",
+    kyc: "Identity Verification",
+    security: "Security & Passkeys",
+    contacts: "Saved Recipients",
+    schedules: "Scheduled Payments",
+    rewards: "Rewards & Referrals",
+  };
+
+  if (viewMode === "menu") {
+    return (
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={() => loadTab(true)} tintColor={COLORS.primary} />
+        }
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={styles.profileHero}>
+          <EditableAvatar size={84} />
+          <Text style={styles.profileHeroName}>
+            {isBiz
+              ? user?.bizSenderName || "Business Account"
+              : user?.senderName || (user?.username ? `@${user.username}` : "Your profile")}
+          </Text>
+          <View style={styles.profileHeroMeta}>
+            {user?.username ? <Text style={styles.profileHandle}>@{user.username}</Text> : null}
+            <StatusBadge
+              label={isVerified ? "Verified" : "Unverified"}
+              icon={isVerified ? "checkmark-circle" : "shield-outline"}
+              tone={isVerified ? "success" : "warning"}
+            />
+          </View>
+        </View>
+
+        <ErrorBanner message={error} onDismiss={() => setError(null)} />
+        <SuccessBanner message={notice} onDismiss={() => setNotice(null)} />
+
+        {/* 1-tap Appearance Switcher */}
+        <Text style={styles.menuGroupLabel}>Appearance</Text>
+        <SegmentedControl<"system" | "light" | "dark">
+          value={themePreference}
+          onChange={setThemePreference}
+          options={[
+            { value: "system", label: "System", icon: "phone-portrait-outline" },
+            { value: "light", label: "Light", icon: "sunny-outline" },
+            { value: "dark", label: "Dark", icon: "moon-outline" },
+          ]}
+        />
+
+        {/* Account & Security Group */}
+        <Text style={styles.menuGroupLabel}>Account</Text>
+        <Card style={styles.menuCard}>
+          <ListRow
+            icon="person-outline"
+            title="Account & Preferences"
+            subtitle="Username, payout names, Auto-Save & settlement"
+            onPress={() => openSection("general")}
+          />
+          <ListRow
+            icon="shield-checkmark-outline"
+            title="Identity Verification"
+            subtitle={isBiz ? "Personal KYC & Business KYB limits" : "Unlock USD, GBP, EUR accounts & cards"}
+            right={
+              <StatusBadge
+                label={isVerified ? "Verified" : "Action"}
+                tone={isVerified ? "success" : "warning"}
+              />
+            }
+            onPress={() => openSection("kyc")}
+          />
+          <ListRow
+            icon="lock-closed-outline"
+            title="Security & Passkeys"
+            subtitle="Transaction PIN, devices & recovery key"
+            onPress={() => openSection("security")}
+            last
+          />
+        </Card>
+
+        {/* Payments & Rewards Group */}
+        <Text style={styles.menuGroupLabel}>Payments &amp; Perks</Text>
+        <Card style={styles.menuCard}>
+          <ListRow
+            icon="people-outline"
+            title="Saved Recipients"
+            subtitle="Bank accounts & Proxim contacts"
+            onPress={() => openSection("contacts")}
+          />
+          <ListRow
+            icon="calendar-outline"
+            title="Scheduled Payments"
+            subtitle="Recurring transfers & automation"
+            onPress={() => openSection("schedules")}
+          />
+          <ListRow
+            icon="gift-outline"
+            title="Rewards & Referrals"
+            subtitle="Invite friends & redeem points"
+            onPress={() => openSection("rewards")}
+            last
+          />
+        </Card>
+
+        {/* Quick Actions Group */}
+        <Text style={styles.menuGroupLabel}>Support &amp; Session</Text>
+        <Card style={styles.menuCard}>
+          <ListRow
+            icon="document-text-outline"
+            title={`Export ${isBiz ? "Business" : "Personal"} Statement`}
+            subtitle="Download CSV transaction history"
+            onPress={handleExportCsv}
+          />
+          <ListRow
+            icon="mail-outline"
+            title="Contact Support"
+            subtitle="info@proximfi.xyz · Telegram @payeetbot"
+            onPress={() => Linking.openURL("mailto:info@proximfi.xyz?subject=Proxim%20Support")}
+          />
+          <ListRow
+            icon="log-out-outline"
+            title="Sign Out"
+            subtitle="Sign out on this device"
+            danger
+            showChevron={false}
+            onPress={() =>
+              Alert.alert("Sign Out", "Sign out of Proxim on this device?", [
+                { text: "Cancel", style: "cancel" },
+                { text: "Sign Out", style: "destructive", onPress: () => signOut() },
+              ])
+            }
+            last
+          />
+        </Card>
+      </ScrollView>
+    );
+  }
+
   return (
     <ScrollView
       style={styles.scroll}
@@ -1210,27 +1370,21 @@ export function ProfileScreen({
       }
       keyboardShouldPersistTaps="handled"
     >
-      <View style={{ alignItems: "center", gap: 6, marginBottom: 16 }}>
-        <EditableAvatar size={96} />
-        <Text style={{ fontFamily: FONTS.bold, fontSize: 20, color: COLORS.text, marginTop: 6 }}>
-          {isBiz
-            ? user?.bizSenderName || "Business Account"
-            : user?.senderName || (user?.username ? `@${user.username}` : "Your profile")}
-        </Text>
-        <Text style={{ fontFamily: FONTS.medium, fontSize: 13, color: isBiz ? COLORS.business : COLORS.textSecondary }}>
-          {isBiz ? "Business Workspace · Tap photo to change" : "Personal Account · Tap photo to change"}
+      <View style={styles.subViewBar}>
+        <PressableScale
+          onPress={() => setViewMode("menu")}
+          haptic="selection"
+          style={styles.subBackBtn}
+          accessibilityRole="button"
+          accessibilityLabel="Back to settings"
+        >
+          <Ionicons name="chevron-back" size={18} color={COLORS.text} />
+          <Text style={styles.subBackText}>Settings</Text>
+        </PressableScale>
+        <Text style={styles.subViewTitle} numberOfLines={1}>
+          {sectionMeta[tab]}
         </Text>
       </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 14 }}>
-        <View style={{ flexDirection: "row", gap: 8 }}>
-          <Pill label="Profile" active={tab === "general"} onPress={() => setTab("general")} />
-          <Pill label="Verify ID" active={tab === "kyc"} onPress={() => setTab("kyc")} />
-          <Pill label="Security" active={tab === "security"} onPress={() => setTab("security")} />
-          <Pill label="Contacts" active={tab === "contacts"} onPress={() => setTab("contacts")} />
-          <Pill label="Schedules" active={tab === "schedules"} onPress={() => setTab("schedules")} />
-          <Pill label="Rewards" active={tab === "rewards"} onPress={() => setTab("rewards")} />
-        </View>
-      </ScrollView>
 
       <ErrorBanner message={error} onDismiss={() => setError(null)} />
       <SuccessBanner message={notice} onDismiss={() => setNotice(null)} />
@@ -1293,7 +1447,7 @@ export function ProfileScreen({
             <View style={{ marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: COLORS.border }}>
               <Text style={styles.rowTitle}>Verified Deposit Settlement</Text>
               <Text style={[styles.rowSub, { marginBottom: 8 }]}>
-                Choose whether verified local currency deposits stay in their currency or auto-convert to USDC (0% deposit fee).
+                Choose whether incoming bank deposits remain in their local currency or auto-convert to USD (0% deposit fee).
               </Text>
               <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
                 <Pill
@@ -1302,7 +1456,7 @@ export function ProfileScreen({
                   onPress={() => handleChangeSettlementMode("local")}
                 />
                 <Pill
-                  label="Auto-settle in USDC"
+                  label="Auto-settle in USD"
                   active={user?.depositSettlementMode === "usdc"}
                   onPress={() => handleChangeSettlementMode("usdc")}
                 />
@@ -2146,7 +2300,65 @@ const styles = createThemeStyles(() => ({
   rowTitle: { color: COLORS.text, fontSize: 14, fontFamily: FONTS.semibold },
   rowSub: { color: COLORS.textSecondary, fontFamily: FONTS.regular, fontSize: 12, marginTop: 2 },
   sectionSubHead: { color: COLORS.text, fontSize: 13, fontFamily: FONTS.bold, marginTop: 12, marginBottom: 8 },
-  pointsHero: { color: COLORS.primary, fontSize: 32, fontFamily: FONTS.extrabold },
+  pointsHero: { color: COLORS.primary, fontSize: 32, fontFamily: FONTS.extrabold, ...TABULAR_NUMS },
+  profileHero: {
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 16,
+    paddingTop: 4,
+  },
+  profileHeroName: {
+    ...TYPE.title,
+    color: COLORS.text,
+    marginTop: 4,
+  },
+  profileHeroMeta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  profileHandle: {
+    ...TYPE.label,
+    color: COLORS.textSecondary,
+  },
+  menuGroupLabel: {
+    ...TYPE.overline,
+    color: COLORS.textMuted,
+    marginBottom: 8,
+    marginTop: 4,
+    paddingHorizontal: 2,
+  },
+  menuCard: {
+    padding: 0,
+  },
+  subViewBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 14,
+  },
+  subBackBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: RADIUS.pill,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  subBackText: {
+    ...TYPE.label,
+    fontFamily: FONTS.bold,
+    color: COLORS.text,
+  },
+  subViewTitle: {
+    ...TYPE.headline,
+    fontFamily: FONTS.extrabold,
+    color: COLORS.text,
+    flex: 1,
+  },
   modalBackdrop: {
     flex: 1,
     backgroundColor: "rgba(15, 23, 42, 0.72)",

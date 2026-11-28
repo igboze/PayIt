@@ -302,16 +302,19 @@ export function fontFor(weight?: string | number | null): string {
   return FONTS.regular;
 }
 
-// Canvas type scale.
+// Tabular numerals prevent financial figures from jittering or misaligning in columns.
+export const TABULAR_NUMS = { fontVariant: ["tabular-nums" as const] };
+
+// Canvas type scale — institutional proportions with tabular figures on display & headline scales.
 export const TYPE = {
-  xl: { fontFamily: FONTS.extrabold, fontSize: 44, lineHeight: 52, letterSpacing: -0.9 },
-  display: { fontFamily: FONTS.bold, fontSize: 30, lineHeight: 38, letterSpacing: -0.45 },
-  title: { fontFamily: FONTS.bold, fontSize: 22, lineHeight: 28, letterSpacing: -0.2 },
-  headline: { fontFamily: FONTS.semibold, fontSize: 17, lineHeight: 24, letterSpacing: -0.1 },
-  body: { fontFamily: FONTS.regular, fontSize: 15, lineHeight: 22 },
-  bodyStrong: { fontFamily: FONTS.semibold, fontSize: 15, lineHeight: 22 },
-  label: { fontFamily: FONTS.medium, fontSize: 13, lineHeight: 18 },
-  overline: { fontFamily: FONTS.semibold, fontSize: 12, lineHeight: 16, letterSpacing: 0.7, textTransform: "uppercase" as const },
+  xl: { fontFamily: FONTS.extrabold, fontSize: 40, lineHeight: 46, letterSpacing: -0.9, fontVariant: ["tabular-nums" as const] },
+  display: { fontFamily: FONTS.bold, fontSize: 28, lineHeight: 34, letterSpacing: -0.45, fontVariant: ["tabular-nums" as const] },
+  title: { fontFamily: FONTS.bold, fontSize: 20, lineHeight: 26, letterSpacing: -0.25 },
+  headline: { fontFamily: FONTS.semibold, fontSize: 16, lineHeight: 22, letterSpacing: -0.1 },
+  body: { fontFamily: FONTS.regular, fontSize: 14.5, lineHeight: 21 },
+  bodyStrong: { fontFamily: FONTS.semibold, fontSize: 14.5, lineHeight: 21 },
+  label: { fontFamily: FONTS.medium, fontSize: 12.5, lineHeight: 17 },
+  overline: { fontFamily: FONTS.bold, fontSize: 11, lineHeight: 15, letterSpacing: 0.75, textTransform: "uppercase" as const },
 } as const;
 
 export const SPACING = {
@@ -323,9 +326,9 @@ export const SPACING = {
 } as const;
 
 export const RADIUS = {
-  sm: 12,
-  md: 16,
-  lg: 20,
-  xl: 28,
+  sm: 10,
+  md: 14,
+  lg: 16,
+  xl: 24,
   pill: 999,
 } as const;

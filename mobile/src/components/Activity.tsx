@@ -1,12 +1,12 @@
 // Activity: transaction rows grouped by day, payout status, and the details sheet with a
 // downloadable receipt (the same PNG receipt the Telegram bot sends).
 import React, { useState } from "react";
-import { ActivityIndicator, Image, Linking, Modal, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Image, Linking, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { api, getAccessToken } from "../api/client";
 import type { AccountType, TransactionItem } from "../api/types";
-import { COLORS, DEPTH, RADIUS, SPACING, TYPE, createThemeStyles } from "../theme";
-import { Button, ErrorBanner, formatRawTxAmount, KeyValueRow, shortAddr } from "./UI";
+import { COLORS, DEPTH, RADIUS, SPACING, TABULAR_NUMS, TYPE, createThemeStyles } from "../theme";
+import { BottomSheet, Button, ErrorBanner, formatRawTxAmount, KeyValueRow, shortAddr, SkeletonBox } from "./UI";
 import { PressableScale, notifyHaptic } from "./Touch";
 import { getLegacyFileSystem, getSharing } from "../nativeModules";
 import { useApp } from "../state/AppContext";
@@ -330,50 +330,45 @@ export function TxDetailSheet({
   };
 
   return (
-    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
-      <View style={styles.backdrop}>
-        <View style={styles.sheet}>
-          <View style={styles.handle} />
-          <View style={styles.head}>
-            <Text style={styles.headAmount}>{display.primary}</Text>
-            {display.secondary ? <Text style={styles.headSub}>{display.secondary}</Text> : null}
-            <Text style={styles.headTitle}>{txTitle(tx)}</Text>
-            {status ? <StatusChip status={status} /> : null}
-          </View>
-          <ScrollView showsVerticalScrollIndicator={false}>
-            <KeyValueRow label="Type" value={txKindLabel(tx.type, tx)} />
-            {tx.counterparty?.name ? <KeyValueRow currency={false} label={isCreditTx(tx) ? "From" : "Recipient"} value={titleCase(tx.counterparty.name)} /> : null}
-            {tx.counterparty?.detail ? <KeyValueRow currency={false} label={isCreditTx(tx) ? "Sender Bank / Account" : "Destination"} value={tx.counterparty.detail} /> : null}
-            {tx.payoutStatus ? (
-              <KeyValueRow
-                label="Payout"
-                value={tx.payoutStatus === "paid" ? "Paid to the bank" : tx.payoutStatus === "failed" ? "Didn't go through" : "On its way to the bank"}
-              />
-            ) : null}
-            {tx.narration ? <KeyValueRow currency={false} label="Note" value={tx.narration} /> : null}
-            <KeyValueRow label="Date" value={`${dayLabel(tx.createdAt)}, ${timeOf(tx.createdAt)}`} />
-            <KeyValueRow label="Account" value={tx.accountType === "business" ? "Business" : "Personal"} />
-            {tx.txHash ? <KeyValueRow currency={false} label="Reference" value={shortAddr(tx.txHash, 10, 8)} /> : null}
-
-            {preview && token ? (
-              <View style={styles.receiptBox}>
-                <Image
-                  source={{ uri: api.getReceiptUrl(tx.id), headers: { Authorization: `Bearer ${token}`, "X-Proxim-Account": activeAccount } }}
-                  style={styles.receiptImg}
-                  resizeMode="contain"
-                />
-              </View>
-            ) : null}
-            <ErrorBanner message={error} onDismiss={() => setError(null)} />
-          </ScrollView>
-          <View style={styles.actions}>
-            <Button title="Save or share receipt" onPress={saveReceipt} loading={saving} />
-            {!preview ? <Button title="View receipt" variant="secondary" onPress={() => setPreview(true)} /> : null}
-            <Button title="Close" variant="ghost" onPress={onClose} />
-          </View>
-        </View>
+    <BottomSheet visible onClose={onClose}>
+      <View style={styles.head}>
+        <Text style={styles.headAmount}>{display.primary}</Text>
+        {display.secondary ? <Text style={styles.headSub}>{display.secondary}</Text> : null}
+        <Text style={styles.headTitle}>{txTitle(tx)}</Text>
+        {status ? <StatusChip status={status} /> : null}
       </View>
-    </Modal>
+      <ScrollView showsVerticalScrollIndicator={false}>
+        <KeyValueRow label="Type" value={txKindLabel(tx.type, tx)} />
+        {tx.counterparty?.name ? <KeyValueRow currency={false} label={isCreditTx(tx) ? "From" : "Recipient"} value={titleCase(tx.counterparty.name)} /> : null}
+        {tx.counterparty?.detail ? <KeyValueRow currency={false} label={isCreditTx(tx) ? "Sender Bank / Account" : "Destination"} value={tx.counterparty.detail} /> : null}
+        {tx.payoutStatus ? (
+          <KeyValueRow
+            label="Payout"
+            value={tx.payoutStatus === "paid" ? "Paid to the bank" : tx.payoutStatus === "failed" ? "Didn't go through" : "On its way to the bank"}
+          />
+        ) : null}
+        {tx.narration ? <KeyValueRow currency={false} label="Note" value={tx.narration} /> : null}
+        <KeyValueRow label="Date" value={`${dayLabel(tx.createdAt)}, ${timeOf(tx.createdAt)}`} />
+        <KeyValueRow label="Account" value={tx.accountType === "business" ? "Business" : "Personal"} />
+        {tx.txHash ? <KeyValueRow currency={false} label="Reference" value={shortAddr(tx.txHash, 10, 8)} /> : null}
+
+        {preview && token ? (
+          <View style={styles.receiptBox}>
+            <Image
+              source={{ uri: api.getReceiptUrl(tx.id), headers: { Authorization: `Bearer ${token}`, "X-Proxim-Account": activeAccount } }}
+              style={styles.receiptImg}
+              resizeMode="contain"
+            />
+          </View>
+        ) : null}
+        <ErrorBanner message={error} onDismiss={() => setError(null)} />
+      </ScrollView>
+      <View style={styles.actions}>
+        <Button title="Save or share receipt" onPress={saveReceipt} loading={saving} />
+        {!preview ? <Button title="View receipt" variant="secondary" onPress={() => setPreview(true)} /> : null}
+        <Button title="Close" variant="ghost" onPress={onClose} />
+      </View>
+    </BottomSheet>
   );
 }
 
@@ -382,15 +377,14 @@ export function SkeletonRows({ count = 4 }: { count?: number }) {
     <View style={{ gap: 6 }}>
       {Array.from({ length: count }, (_, i) => (
         <View key={i} style={styles.row}>
-          <View style={[styles.tile, { backgroundColor: COLORS.surfaceElevated }]} />
-          <View style={{ flex: 1, gap: 8 }}>
-            <View style={[styles.bone, { width: "55%" }]} />
-            <View style={[styles.bone, { width: "35%", height: 10 }]} />
+          <SkeletonBox width={42} height={42} radius={13} />
+          <View style={{ flex: 1, gap: 7 }}>
+            <SkeletonBox width={i % 2 === 0 ? "58%" : "46%"} height={12} />
+            <SkeletonBox width="36%" height={10} />
           </View>
-          <View style={[styles.bone, { width: 56 }]} />
+          <SkeletonBox width={58} height={14} />
         </View>
       ))}
-      <ActivityIndicator color={COLORS.primary} style={{ marginTop: 6 }} />
     </View>
   );
 }
@@ -399,34 +393,23 @@ const styles = createThemeStyles(() => ({
   row: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
-    paddingVertical: 14,
+    gap: 12,
+    paddingVertical: 12,
     paddingHorizontal: 12,
     borderRadius: RADIUS.md,
     backgroundColor: COLORS.surface,
     ...DEPTH.card,
   },
-  tile: { width: 44, height: 44, borderRadius: 15, alignItems: "center", justifyContent: "center" },
+  tile: { width: 42, height: 42, borderRadius: 13, alignItems: "center", justifyContent: "center" },
   title: { ...TYPE.bodyStrong, color: COLORS.text },
   subRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  sub: { ...TYPE.label, color: COLORS.textSecondary, flexShrink: 1 },
-  amount: { ...TYPE.bodyStrong, color: COLORS.text },
+  sub: { ...TYPE.label, ...TABULAR_NUMS, color: COLORS.textSecondary, flexShrink: 1 },
+  amount: { ...TYPE.bodyStrong, ...TABULAR_NUMS, color: COLORS.text },
   chip: { borderRadius: RADIUS.pill, paddingHorizontal: 8, paddingVertical: 2 },
-  chipText: { ...TYPE.label, fontSize: 12, lineHeight: 16 },
-  bone: { height: 12, borderRadius: 6, backgroundColor: COLORS.surfaceElevated },
-  backdrop: { flex: 1, backgroundColor: "rgba(0, 20, 15, 0.55)", justifyContent: "flex-end" },
-  sheet: {
-    backgroundColor: COLORS.surface,
-    borderTopLeftRadius: RADIUS.xl,
-    borderTopRightRadius: RADIUS.xl,
-    padding: SPACING.lg,
-    paddingTop: 10,
-    maxHeight: "90%",
-  },
-  handle: { alignSelf: "center", width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.borderStrong, marginBottom: 14 },
+  chipText: { ...TYPE.label, fontSize: 11.5, lineHeight: 15 },
   head: { alignItems: "center", gap: 4, marginBottom: 12 },
-  headAmount: { ...TYPE.display, color: COLORS.text },
-  headSub: { ...TYPE.bodyStrong, color: COLORS.textSecondary },
+  headAmount: { ...TYPE.display, ...TABULAR_NUMS, color: COLORS.text },
+  headSub: { ...TYPE.bodyStrong, ...TABULAR_NUMS, color: COLORS.textSecondary },
   headTitle: { ...TYPE.body, color: COLORS.textSecondary, textAlign: "center" },
   receiptBox: { marginTop: 14, borderRadius: RADIUS.md, overflow: "hidden", backgroundColor: COLORS.page },
   receiptImg: { width: "100%", height: 380 },

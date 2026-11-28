@@ -4,7 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "../api/client";
 import type { SavingsOverview } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, DEPTH, FONTS, RADIUS, SPACING, createThemeStyles } from "../theme";
+import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TABULAR_NUMS, createThemeStyles } from "../theme";
 import {
   Button,
   Card,
@@ -16,6 +16,7 @@ import {
   KeyValueRow,
   ScreenHeader,
   SectionHeader,
+  SkeletonCard,
   SuccessBanner,
 } from "../components/UI";
 import { CurrencyLogo } from "../components/CurrencyLogo";
@@ -179,9 +180,7 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
         <SuccessBanner message={notice} onDismiss={() => setNotice(null)} />
 
         {loading && !savings ? (
-          <View style={{ paddingVertical: 36, alignItems: "center" }}>
-            <ActivityIndicator color={COLORS.primary} />
-          </View>
+          <SkeletonCard rows={3} />
         ) : (
           <>
             {/* Active savings position */}

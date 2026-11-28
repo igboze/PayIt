@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from "react";
-import { ActivityIndicator, BackHandler, Image, Linking, StyleSheet, Text, View } from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import { ActivityIndicator, Animated, BackHandler, Image, Linking, StyleSheet, Text, View } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -238,101 +238,61 @@ function MainShell() {
     }
   };
 
-  if (overlay === "add") {
-    return (
+  const overlayAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (overlay) {
+      overlayAnim.setValue(0);
+      Animated.timing(overlayAnim, {
+        toValue: 1,
+        duration: 180,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [overlay, overlayAnim]);
+
+  const overlayView = overlay ? (
+    <Animated.View
+      style={[
+        styles.overlaySheet,
+        {
+          opacity: overlayAnim,
+          transform: [
+            {
+              translateY: overlayAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [22, 0],
+              }),
+            },
+          ],
+        },
+      ]}
+    >
       <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
         <KeyboardSafe>
-          <AddMoneyScreen onBack={() => setOverlay(null)} />
-          <ApprovalSheet />
+          {overlay === "add" ? <AddMoneyScreen onBack={() => setOverlay(null)} /> : null}
+          {overlay === "send" ? (
+            <SendScreen
+              onBack={() => {
+                setDeepClaimToken("");
+                setOverlay(null);
+              }}
+              initialMode={deepClaimToken ? "user" : "ngn"}
+              initialClaimToken={deepClaimToken}
+            />
+          ) : null}
+          {overlay === "bills" ? <BillsScreen onBack={() => setOverlay(null)} initialCategory={billCategory} /> : null}
+          {overlay === "savings" ? <SavingsScreen onBack={() => setOverlay(null)} /> : null}
+          {overlay === "stocks" ? <StocksScreen onBack={() => setOverlay(null)} /> : null}
+          {overlay === "swap" ? <SwapScreen onBack={() => setOverlay(null)} /> : null}
+          {overlay === "activity" ? <ActivityScreen onBack={() => setOverlay(null)} /> : null}
+          {overlay === "notifications" ? (
+            <NotificationsScreen onBack={() => setOverlay(null)} onOpened={inbox.markAllRead} />
+          ) : null}
+          {overlay === "assistant" ? <AssistantScreen onBack={() => setOverlay(null)} /> : null}
         </KeyboardSafe>
       </SafeAreaView>
-    );
-  }
-  if (overlay === "send") {
-    return (
-      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-        <KeyboardSafe>
-          <SendScreen
-            onBack={() => {
-              setDeepClaimToken("");
-              setOverlay(null);
-            }}
-            initialMode={deepClaimToken ? "user" : "ngn"}
-            initialClaimToken={deepClaimToken}
-          />
-          <ApprovalSheet />
-        </KeyboardSafe>
-      </SafeAreaView>
-    );
-  }
-  if (overlay === "bills") {
-    return (
-      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-        <KeyboardSafe>
-          <BillsScreen onBack={() => setOverlay(null)} initialCategory={billCategory} />
-          <ApprovalSheet />
-        </KeyboardSafe>
-      </SafeAreaView>
-    );
-  }
-  if (overlay === "savings") {
-    return (
-      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-        <KeyboardSafe>
-          <SavingsScreen onBack={() => setOverlay(null)} />
-          <ApprovalSheet />
-        </KeyboardSafe>
-      </SafeAreaView>
-    );
-  }
-  if (overlay === "stocks") {
-    return (
-      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-        <KeyboardSafe>
-          <StocksScreen onBack={() => setOverlay(null)} />
-          <ApprovalSheet />
-        </KeyboardSafe>
-      </SafeAreaView>
-    );
-  }
-  if (overlay === "swap") {
-    return (
-      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-        <KeyboardSafe>
-          <SwapScreen onBack={() => setOverlay(null)} />
-          <ApprovalSheet />
-        </KeyboardSafe>
-      </SafeAreaView>
-    );
-  }
-  if (overlay === "activity") {
-    return (
-      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-        <KeyboardSafe>
-          <ActivityScreen onBack={() => setOverlay(null)} />
-        </KeyboardSafe>
-      </SafeAreaView>
-    );
-  }
-  if (overlay === "notifications") {
-    return (
-      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-        <KeyboardSafe>
-          <NotificationsScreen onBack={() => setOverlay(null)} onOpened={inbox.markAllRead} />
-        </KeyboardSafe>
-      </SafeAreaView>
-    );
-  }
-  if (overlay === "assistant") {
-    return (
-      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-        <KeyboardSafe>
-          <AssistantScreen onBack={() => setOverlay(null)} />
-          <ApprovalSheet />
-        </KeyboardSafe>
-      </SafeAreaView>
-    );
-  }
+    </Animated.View>
+  ) : null;
 
   const tabs: Array<{ key: MainTab; label: string; icon: keyof typeof Ionicons.glyphMap; activeIcon: keyof typeof Ionicons.glyphMap }> = [
     { key: "home", label: isBiz ? "Business" : "Home", icon: isBiz ? "briefcase-outline" : "home-outline", activeIcon: isBiz ? "briefcase" : "home" },
@@ -342,7 +302,7 @@ function MainShell() {
   ];
 
   // Home draws its dark header right up under the status bar; other tabs sit on the page surface.
-  const onForest = tab === "home";
+  const onForest = tab === "home" && !overlay;
   const topInsetBg = onForest ? (isBiz ? "#0F172A" : COLORS.forest) : COLORS.page;
   return (
     <SafeAreaView style={styles.safe} edges={["bottom"]}>
@@ -410,7 +370,7 @@ function MainShell() {
                 <View style={[styles.tabIcon, active && styles.tabIconActive]}>
                   <Ionicons
                     name={active ? t.activeIcon : t.icon}
-                    size={22}
+                    size={20}
                     color={active ? COLORS.primary : COLORS.textMuted}
                   />
                 </View>
@@ -421,9 +381,9 @@ function MainShell() {
             );
           })}
         </View>
-
-        <ApprovalSheet />
       </KeyboardSafe>
+      {overlayView}
+      <ApprovalSheet />
       {lockOverlay}
     </SafeAreaView>
   );
@@ -503,29 +463,39 @@ const styles = createThemeStyles(() => ({
     borderRadius: 24,
   },
   body: { flex: 1 },
+  overlaySheet: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 50,
+    elevation: 50,
+    backgroundColor: COLORS.bg,
+  },
   tabBar: {
     flexDirection: "row",
-    borderTopWidth: 1,
+    borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: COLORS.border,
     backgroundColor: COLORS.surface,
-    paddingTop: 10,
-    paddingBottom: 12,
-    paddingHorizontal: 12,
+    paddingTop: 7,
+    paddingBottom: 8,
+    paddingHorizontal: 10,
   },
   tabItem: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 4,
+    gap: 3,
   },
   tabLabel: {
     color: COLORS.textMuted,
     fontFamily: FONTS.medium,
-    fontSize: 12,
-    lineHeight: 16,
+    fontSize: 11,
+    lineHeight: 14,
   },
   tabLabelActive: { color: COLORS.primary, fontFamily: FONTS.bold },
-  tabIcon: { width: 56, height: 30, borderRadius: 15, alignItems: "center", justifyContent: "center" },
+  tabIcon: { width: 48, height: 28, borderRadius: 14, alignItems: "center", justifyContent: "center" },
   tabIconActive: { backgroundColor: COLORS.goldSoft },
   inboxBanner: {
     flexDirection: "row",

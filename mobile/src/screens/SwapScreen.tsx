@@ -1,26 +1,29 @@
-import React, { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { ActivityIndicator, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { api } from "../api/client";
-import type { SwapPairRate } from "../api/types";
+import type { SwapPairRate, UnifiedBalance } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING, FONTS, createThemeStyles } from "../theme";
+import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TABULAR_NUMS, TYPE, createThemeStyles } from "../theme";
 import {
   Button,
   Card,
   ErrorBanner,
-  Input,
   KeyValueRow,
-  Pill,
   ScreenHeader,
-  SectionHeader,
+  SkeletonCard,
+  StatusBadge,
   SuccessBanner,
 } from "../components/UI";
+import { CurrencyLogo } from "../components/CurrencyLogo";
+import { PressableScale } from "../components/Touch";
 
 export function SwapScreen({ onBack }: { onBack: () => void }) {
-  const { activeAccount, requestApproval } = useApp();
+  const { activeAccount, dataVersion, requestApproval, balanceHidden } = useApp();
   const isBiz = activeAccount === "business";
 
   const [pair, setPair] = useState<SwapPairRate | null>(null);
+  const [balance, setBalance] = useState<UnifiedBalance | null>(null);
   const [swapDir, setSwapDir] = useState<"USDC_EURC" | "EURC_USDC">("USDC_EURC");
   const [swapAmt, setSwapAmt] = useState("");
   const [quote, setQuote] = useState<{ amountOut?: string; protocolFee?: string } | null>(null);
@@ -30,56 +33,82 @@ export function SwapScreen({ onBack }: { onBack: () => void }) {
   const [swapping, setSwapping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const quoteReqId = useRef(0);
 
   const tokenIn: "USDC" | "EURC" = swapDir === "USDC_EURC" ? "USDC" : "EURC";
   const tokenOut: "USDC" | "EURC" = swapDir === "USDC_EURC" ? "EURC" : "USDC";
+  const curIn = swapDir === "USDC_EURC" ? "USD" : "EUR";
+  const curOut = swapDir === "USDC_EURC" ? "EUR" : "USD";
+  const symIn = curIn === "USD" ? "$" : "€";
+  const symOut = curOut === "USD" ? "$" : "€";
 
-  const loadRates = useCallback(async (isRefresh = false) => {
-    if (isRefresh) setRefreshing(true);
-    else setLoadingRates(true);
-    setError(null);
-    try {
-      const res = await api.getSwapRates();
-      if (res.pair) {
-        setPair(res.pair);
-      } else {
-        setPair(null);
+  const availableIn =
+    swapDir === "USDC_EURC"
+      ? Number(balance?.totalUsdc ?? 0)
+      : Number(balance?.arc?.eurc ?? 0);
+
+  const loadRates = useCallback(
+    async (isRefresh = false) => {
+      if (isRefresh) setRefreshing(true);
+      else setLoadingRates(true);
+      setError(null);
+      try {
+        const [rateRes, balRes] = await Promise.all([
+          api.getSwapRates().catch(() => null),
+          api.getBalances(activeAccount).catch(() => null),
+        ]);
+        setPair(rateRes?.pair || null);
+        if (balRes) setBalance(balRes);
+      } finally {
+        setLoadingRates(false);
+        setRefreshing(false);
       }
-    } catch {
-      // Do not block swapping if live rate banner temporarily fails — quote still works on demand
-      setPair(null);
-    } finally {
-      setLoadingRates(false);
-      setRefreshing(false);
-    }
-  }, []);
+    },
+    [activeAccount]
+  );
 
   useEffect(() => {
     loadRates(false);
-  }, [loadRates]);
+  }, [loadRates, dataVersion]);
 
-  const handleGetQuote = async () => {
-    setError(null);
-    setNotice(null);
-    setQuote(null);
+  // Live debounced auto-quote as the user types (no manual "Get Live Quote" button needed)
+  useEffect(() => {
     const amt = Number(swapAmt);
     if (!Number.isFinite(amt) || amt < 1) {
-      setError(`Enter at least 1 ${tokenIn} to get a live quote.`);
+      setQuote(null);
+      setQuoting(false);
       return;
     }
+    const id = ++quoteReqId.current;
     setQuoting(true);
-    try {
-      const res = await api.quoteSwap(tokenIn, tokenOut, amt);
-      const q = (res.quote || {}) as { amountOut?: string; destinationAmount?: string; protocolFee?: string };
-      setQuote({
-        amountOut: String(q.amountOut || q.destinationAmount || ""),
-        protocolFee: q.protocolFee ? String(q.protocolFee) : undefined,
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not get a live swap quote right now.");
-    } finally {
-      setQuoting(false);
-    }
+    const t = setTimeout(async () => {
+      try {
+        const res = await api.quoteSwap(tokenIn, tokenOut, amt);
+        if (quoteReqId.current !== id) return;
+        const q = (res.quote || {}) as { amountOut?: string; destinationAmount?: string; protocolFee?: string };
+        setQuote({
+          amountOut: String(q.amountOut || q.destinationAmount || ""),
+          protocolFee: q.protocolFee ? String(q.protocolFee) : undefined,
+        });
+      } catch {
+        if (quoteReqId.current === id) setQuote(null);
+      } finally {
+        if (quoteReqId.current === id) setQuoting(false);
+      }
+    }, 450);
+    return () => clearTimeout(t);
+  }, [swapAmt, tokenIn, tokenOut]);
+
+  const handleFlip = () => {
+    setSwapDir((prev) => (prev === "USDC_EURC" ? "EURC_USDC" : "USDC_EURC"));
+    setQuote(null);
+    setError(null);
+  };
+
+  const handleSetMax = () => {
+    if (!Number.isFinite(availableIn) || availableIn <= 0) return;
+    const floored = Math.floor(availableIn * 100) / 100;
+    setSwapAmt(floored > 0 ? String(floored) : "");
   };
 
   const handleExecuteSwap = async () => {
@@ -87,7 +116,7 @@ export function SwapScreen({ onBack }: { onBack: () => void }) {
     setNotice(null);
     const amt = Number(swapAmt);
     if (!Number.isFinite(amt) || amt < 1) {
-      setError(`Enter at least 1 ${tokenIn} to swap.`);
+      setError(`Enter at least ${symIn}1.00 to convert.`);
       return;
     }
     setSwapping(true);
@@ -98,11 +127,12 @@ export function SwapScreen({ onBack }: { onBack: () => void }) {
         tokenOut,
         amountIn: amt,
       });
-      setNotice(res.notice || `Swapped ${amt} ${tokenIn} to ${tokenOut}!`);
+      setNotice(res.notice || `Converted ${symIn}${amt.toFixed(2)} ${curIn} to ${curOut}.`);
       setSwapAmt("");
       setQuote(null);
+      loadRates(true);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Swap failed.";
+      const msg = err instanceof Error ? err.message : "Conversion failed.";
       if (!/cancel/i.test(msg)) setError(msg);
     } finally {
       setSwapping(false);
@@ -110,14 +140,18 @@ export function SwapScreen({ onBack }: { onBack: () => void }) {
   };
 
   const activeRate = swapDir === "USDC_EURC" ? pair?.usdcToEurc : pair?.eurcToUsdc;
+  const numAmt = Number(swapAmt);
   const estPreview =
-    activeRate && Number(swapAmt) >= 1 ? (Number(swapAmt) * activeRate).toFixed(4) : null;
+    activeRate && Number.isFinite(numAmt) && numAmt > 0 ? (numAmt * activeRate).toFixed(2) : null;
+  const displayOut = quote?.amountOut
+    ? Number(quote.amountOut).toFixed(2)
+    : estPreview || "0.00";
 
   return (
     <View style={styles.root}>
       <ScreenHeader
-        title="Currency Swap"
-        subtitle={`${isBiz ? "Business" : "Personal"} wallet · Instant USDC ↔ EURC`}
+        title="Convert Currency"
+        subtitle={`${isBiz ? "Business" : "Personal"} · Instant USD ↔ EUR`}
         onBack={onBack}
       />
 
@@ -131,78 +165,161 @@ export function SwapScreen({ onBack }: { onBack: () => void }) {
         <ErrorBanner message={error} onDismiss={() => setError(null)} />
         <SuccessBanner message={notice} onDismiss={() => setNotice(null)} />
 
-        <Card>
-          <SectionHeader title="Live FX Rate" />
-          {loadingRates ? (
-            <View style={styles.rateLoading}>
-              <ActivityIndicator size="small" color={COLORS.primary} />
-              <Text style={styles.muted}>Getting the live rate…</Text>
+        {loadingRates && !pair && !balance ? (
+          <SkeletonCard rows={3} />
+        ) : (
+          <>
+            {/* Live FX pill header */}
+            {activeRate ? (
+              <View style={styles.ratePillRow}>
+                <StatusBadge
+                  icon="pulse"
+                  tone="success"
+                  label={`1 ${curIn} = ${activeRate.toFixed(4)} ${curOut}`}
+                />
+                <StatusBadge icon="flash" tone="neutral" label="Instant" />
+              </View>
+            ) : null}
+
+            {/* Dual Converter Stack */}
+            <View style={styles.converterStack}>
+              {/* FROM box */}
+              <View style={styles.legCard}>
+                <View style={styles.legTop}>
+                  <Text style={styles.legLabel}>You convert</Text>
+                  <View style={styles.balRow}>
+                    <Text style={styles.balHint}>
+                      Balance: {balanceHidden ? "••••" : `${symIn}${availableIn.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                    </Text>
+                    {availableIn >= 1 ? (
+                      <PressableScale onPress={handleSetMax} haptic="selection" style={styles.maxPill}>
+                        <Text style={styles.maxPillText}>Max</Text>
+                      </PressableScale>
+                    ) : null}
+                  </View>
+                </View>
+
+                <View style={styles.legMain}>
+                  <View style={styles.curBadge}>
+                    <CurrencyLogo code={curIn} size={24} />
+                    <Text style={styles.curCode}>{curIn}</Text>
+                  </View>
+                  <TextInput
+                    style={styles.amountInput}
+                    value={swapAmt}
+                    onChangeText={(t) => {
+                      const clean = t.replace(/[^\d.]/g, "");
+                      const parts = clean.split(".");
+                      setSwapAmt(parts.length > 2 ? `${parts[0]}.${parts.slice(1).join("")}` : clean);
+                    }}
+                    placeholder="0.00"
+                    placeholderTextColor={COLORS.textMuted}
+                    keyboardType="decimal-pad"
+                    selectionColor={COLORS.primary}
+                  />
+                </View>
+              </View>
+
+              {/* Floating Flip Button */}
+              <View style={styles.flipAnchor}>
+                <PressableScale
+                  onPress={handleFlip}
+                  haptic="selection"
+                  depth={0.92}
+                  style={styles.flipBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel="Swap currency direction"
+                >
+                  <Ionicons name="swap-vertical" size={18} color={COLORS.primary} />
+                </PressableScale>
+              </View>
+
+              {/* TO box */}
+              <View style={[styles.legCard, styles.legCardOut]}>
+                <View style={styles.legTop}>
+                  <Text style={styles.legLabel}>You receive</Text>
+                  {quoting ? (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                      <ActivityIndicator size="small" color={COLORS.primary} />
+                      <Text style={styles.balHint}>Updating quote…</Text>
+                    </View>
+                  ) : quote?.amountOut ? (
+                    <Text style={[styles.balHint, { color: COLORS.successText }]}>Live quote locked</Text>
+                  ) : (
+                    <Text style={styles.balHint}>Estimated</Text>
+                  )}
+                </View>
+
+                <View style={styles.legMain}>
+                  <View style={styles.curBadge}>
+                    <CurrencyLogo code={curOut} size={24} />
+                    <Text style={styles.curCode}>{curOut}</Text>
+                  </View>
+                  <Text
+                    style={[
+                      styles.amountOut,
+                      (!swapAmt || numAmt <= 0) && { color: COLORS.textMuted },
+                    ]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                  >
+                    {symOut}
+                    {displayOut}
+                  </Text>
+                </View>
+              </View>
             </View>
-          ) : pair?.usdcToEurc ? (
-            <>
-              <KeyValueRow currency="USD" label="$1" value={`≈ €${pair.usdcToEurc.toFixed(4)}`} />
-              <KeyValueRow currency="EUR" label="€1" value={`≈ $${(pair.eurcToUsdc || 0).toFixed(4)}`} />
-              <KeyValueRow label="Swap Fee" value={`${pair.feePct}%`} />
-            </>
-          ) : (
-            <Text style={styles.muted}>Enter an amount to see a live quote.</Text>
-          )}
-        </Card>
 
-        <Card>
-          <SectionHeader title="Convert Currency" />
-          <View style={styles.pillRow}>
-            <Pill
-              label="Dollars → Euros"
-              currency="USD"
-              active={swapDir === "USDC_EURC"}
-              onPress={() => {
-                setSwapDir("USDC_EURC");
-                setQuote(null);
-              }}
-            />
-            <Pill
-              label="Euros → Dollars"
-              currency="EUR"
-              active={swapDir === "EURC_USDC"}
-              onPress={() => {
-                setSwapDir("EURC_USDC");
-                setQuote(null);
-              }}
-            />
-          </View>
-
-          <Input
-            label={`You Send (${tokenIn})`}
-            placeholder="e.g. 25"
-            value={swapAmt}
-            onChangeText={(t) => {
-              setSwapAmt(t.replace(/[^\d.]/g, ""));
-              setQuote(null);
-            }}
-            keyboardType="decimal-pad"
-            hint={estPreview ? `Indicative output: ≈ ${estPreview} ${tokenOut} (before fee)` : `Minimum 1 ${tokenIn}`}
-          />
-
-          <Button
-            title="Get Live Quote"
-            variant="secondary"
-            onPress={handleGetQuote}
-            loading={quoting}
-            style={{ marginBottom: 12 }}
-          />
-
-          {quote?.amountOut ? (
-            <View style={styles.quoteBox}>
-              <KeyValueRow label="You Receive" value={`${quote.amountOut} ${tokenOut}`} />
-              {quote.protocolFee ? (
-                <KeyValueRow label="Protocol Fee" value={`${quote.protocolFee} ${tokenOut}`} />
-              ) : null}
+            {/* Quick amount presets */}
+            <View style={styles.presetRow}>
+              {[10, 25, 50, 100, 250].map((v) => (
+                <PressableScale
+                  key={v}
+                  onPress={() => setSwapAmt(String(v))}
+                  haptic="selection"
+                  style={[styles.presetChip, numAmt === v && styles.presetChipOn]}
+                >
+                  <Text style={[styles.presetText, numAmt === v && styles.presetTextOn]}>
+                    {symIn}
+                    {v}
+                  </Text>
+                </PressableScale>
+              ))}
             </View>
-          ) : null}
 
-          <Button title={`Review & Swap ${tokenIn} → ${tokenOut}`} onPress={handleExecuteSwap} loading={swapping} />
-        </Card>
+            {/* Breakdown card */}
+            <Card>
+              <KeyValueRow
+                currency={false}
+                label="Exchange rate"
+                value={activeRate ? `1 ${curIn} = ${activeRate.toFixed(4)} ${curOut}` : "Calculated at confirmation"}
+              />
+              <KeyValueRow
+                currency={false}
+                label="Conversion fee"
+                value={
+                  quote?.protocolFee
+                    ? `${symOut}${Number(quote.protocolFee).toFixed(2)}`
+                    : pair?.feePct != null
+                      ? `${pair.feePct}%`
+                      : "Included in quote"
+                }
+              />
+              <KeyValueRow currency={false} label="Settlement" value="Instant" />
+            </Card>
+
+            <Button
+              title={
+                numAmt >= 1
+                  ? `Convert ${symIn}${numAmt.toFixed(2)} ${curIn} → ${symOut}${displayOut} ${curOut}`
+                  : `Convert ${curIn} → ${curOut}`
+              }
+              onPress={handleExecuteSwap}
+              loading={swapping}
+              disabled={!Number.isFinite(numAmt) || numAmt < 1}
+            />
+          </>
+        )}
       </ScrollView>
     </View>
   );
@@ -211,16 +328,141 @@ export function SwapScreen({ onBack }: { onBack: () => void }) {
 const styles = createThemeStyles(() => ({
   root: { flex: 1, backgroundColor: COLORS.bg },
   content: { padding: SPACING.md, paddingBottom: 40 },
-  rateLoading: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8 },
-  muted: { color: COLORS.textSecondary, fontFamily: FONTS.regular, fontSize: 13 },
-  pillRow: { flexDirection: "row", gap: 8, marginBottom: 14 },
-  quoteBox: {
-    backgroundColor: COLORS.page,
-    borderRadius: RADIUS.md,
+  ratePillRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 12,
+  },
+  converterStack: {
+    marginBottom: 12,
+  },
+  legCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.lg,
+    padding: 16,
+    gap: 12,
+    ...DEPTH.card,
+  },
+  legCardOut: {
+    marginTop: 6,
+    backgroundColor: COLORS.surface,
+  },
+  legTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  legLabel: {
+    ...TYPE.overline,
+    fontSize: 10.5,
+    color: COLORS.textMuted,
+  },
+  balRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  balHint: {
+    ...TYPE.label,
+    ...TABULAR_NUMS,
+    fontSize: 12,
+    color: COLORS.textSecondary,
+  },
+  maxPill: {
+    backgroundColor: COLORS.primaryMuted,
     borderWidth: 1,
     borderColor: COLORS.primaryBorder,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
+    borderRadius: RADIUS.pill,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  maxPillText: {
+    fontFamily: FONTS.bold,
+    fontSize: 11,
+    color: COLORS.primary,
+  },
+  legMain: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  curBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: COLORS.page,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: RADIUS.pill,
+    paddingLeft: 6,
+    paddingRight: 12,
+    paddingVertical: 6,
+  },
+  curCode: {
+    fontFamily: FONTS.extrabold,
+    fontSize: 14,
+    color: COLORS.text,
+  },
+  amountInput: {
+    flex: 1,
+    textAlign: "right",
+    fontFamily: FONTS.extrabold,
+    fontSize: 28,
+    color: COLORS.text,
+    ...TABULAR_NUMS,
+    paddingVertical: 2,
+  },
+  amountOut: {
+    flex: 1,
+    textAlign: "right",
+    fontFamily: FONTS.extrabold,
+    fontSize: 28,
+    color: COLORS.text,
+    ...TABULAR_NUMS,
+  },
+  flipAnchor: {
+    alignItems: "center",
+    marginVertical: -16,
+    zIndex: 4,
+  },
+  flipBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1.5,
+    borderColor: COLORS.borderStrong,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  presetRow: {
+    flexDirection: "row",
+    gap: 8,
     marginBottom: 14,
+  },
+  presetChip: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: RADIUS.sm,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    alignItems: "center",
+  },
+  presetChipOn: {
+    backgroundColor: COLORS.primaryMuted,
+    borderColor: COLORS.primary,
+  },
+  presetText: {
+    fontFamily: FONTS.bold,
+    fontSize: 12,
+    ...TABULAR_NUMS,
+    color: COLORS.textSecondary,
+  },
+  presetTextOn: {
+    color: COLORS.primary,
   },
 }));

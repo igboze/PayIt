@@ -24,7 +24,7 @@ import type {
   PaymentLinkItem,
 } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, DEPTH, FONTS, RADIUS, SPACING, createThemeStyles } from "../theme";
+import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TABULAR_NUMS, createThemeStyles } from "../theme";
 import {
   Button,
   Card,
@@ -36,7 +36,9 @@ import {
   KeyValueRow,
   Pill,
   SectionHeader,
+  SegmentedControl,
   shortAddr,
+  SkeletonCard,
   SuccessBanner,
 } from "../components/UI";
 import { CurrencyLogo } from "../components/CurrencyLogo";
@@ -564,27 +566,20 @@ export function AccountsScreen({
       }
       keyboardShouldPersistTaps="handled"
     >
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 14 }}>
-        <View style={{ flexDirection: "row", gap: 8 }}>
-          <Pill label="Balances" active={section === "accounts"} onPress={() => setSection("accounts")} />
-          <Pill label="Global Bank" active={section === "global"} onPress={() => setSection("global")} />
-          <Pill
-            label={isBiz ? "Business Tools" : "Invoices"}
-            active={section === "business"}
-            tone={isBiz ? "business" : "primary"}
-            onPress={() => setSection("business")}
-          />
-        </View>
-      </ScrollView>
+      <SegmentedControl<AccountsSection>
+        value={section}
+        onChange={setSection}
+        options={[
+          { value: "accounts", label: "Balances" },
+          { value: "global", label: "Global Bank" },
+          { value: "business", label: isBiz ? "Business" : "Invoices" },
+        ]}
+      />
 
       <ErrorBanner message={error} onDismiss={() => setError(null)} />
       <SuccessBanner message={notice} onDismiss={() => setNotice(null)} />
 
-      {loading && !refreshing ? (
-        <View style={{ paddingVertical: 16, alignItems: "center" }}>
-          <ActivityIndicator color={COLORS.primary} />
-        </View>
-      ) : null}
+      {loading && !refreshing ? <SkeletonCard rows={2} /> : null}
 
       {/* 1. PERSONAL & BUSINESS WALLETS */}
       {section === "accounts" ? (
@@ -1185,9 +1180,9 @@ const styles = createThemeStyles(() => ({
   content: { padding: SPACING.md, paddingBottom: 36 },
   balDualBlock: { marginBottom: 10, gap: 4 },
   balRow: { flexDirection: "row", alignItems: "center", gap: 7 },
-  bigVal: { color: COLORS.text, fontSize: 28, fontFamily: FONTS.extrabold },
+  bigVal: { color: COLORS.text, fontSize: 28, fontFamily: FONTS.extrabold, ...TABULAR_NUMS },
   balCode: { color: COLORS.textMuted, fontSize: 12, fontFamily: FONTS.bold, marginTop: 3 },
-  ngnVal: { color: COLORS.primary, fontSize: 16, fontFamily: FONTS.bold },
+  ngnVal: { color: COLORS.primary, fontSize: 16, fontFamily: FONTS.bold, ...TABULAR_NUMS },
   ngnCode: { color: COLORS.textMuted, fontSize: 11, fontFamily: FONTS.bold, marginTop: 1 },
   muted: { color: COLORS.textSecondary, fontFamily: FONTS.regular, fontSize: 12, lineHeight: 18, marginBottom: 10 },
   pillWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 },
