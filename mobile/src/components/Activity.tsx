@@ -307,7 +307,8 @@ export function TxDetailSheet({
           </View>
           <ScrollView showsVerticalScrollIndicator={false}>
             <KeyValueRow label="Type" value={txKindLabel(tx.type, tx)} />
-            {tx.counterparty?.detail ? <KeyValueRow currency={false} label="To" value={tx.counterparty.detail} /> : null}
+            {tx.counterparty?.name ? <KeyValueRow currency={false} label={isCreditTx(tx) ? "From" : "Recipient"} value={titleCase(tx.counterparty.name)} /> : null}
+            {tx.counterparty?.detail ? <KeyValueRow currency={false} label={isCreditTx(tx) ? "Sender Bank / Account" : "Destination"} value={tx.counterparty.detail} /> : null}
             {tx.payoutStatus ? (
               <KeyValueRow
                 label="Payout"

@@ -572,6 +572,49 @@ async function ensureChildToParentMarginTarget(entityId, currency) {
 // ── 4. Inbound Fiat Auto-Sweep Engine (Zero Idle Custody in Nuvion) ───────────
 
 /**
+ * Resolve sender / originator bank details from a Nuvion inflow object (`confirmed`).
+ * Checks top-level fields, nested sender/originator/source/debtor/meta objects, and
+ * falls back to local/live counterparty lookup when `confirmed.counterparty_id` is present.
+ */
+async function resolveNuvionInflowSender(confirmed, entityId = null) {
+  const statement = require("./statement");
+  const base = statement.extractInboundSenderDetails(confirmed);
+  let { name, bank, account } = base;
+
+  // If Nuvion attached a counterparty_id on the inflow, check local cache or GET /counterparties/:id
+  if ((!name || !bank || !account) && confirmed?.counterparty_id) {
+    try {
+      if (entityId && typeof db.getNuvionCounterpartiesByEntity === "function") {
+        const localCp = db.getNuvionCounterpartiesByEntity(entityId).find(
+          (c) => String(c.counterparty_id) === String(confirmed.counterparty_id)
+        );
+        if (localCp) {
+          if (!name && localCp.account_holder_name) name = localCp.account_holder_name;
+          try {
+            const s = localCp.summary_json ? JSON.parse(localCp.summary_json) : {};
+            if (!bank && (s.bank_name || s.bankName)) bank = s.bank_name || s.bankName;
+            if (!account && (s.account_number || s.iban || s.wallet_address)) {
+              account = s.account_number || s.iban || s.wallet_address;
+            }
+          } catch (_) { }
+        }
+      }
+      if ((!name || !bank || !account) && typeof nuvion.getCounterparty === "function") {
+        const remoteCp = await nuvion.getCounterparty(confirmed.counterparty_id, entityId).catch(() => null);
+        if (remoteCp) {
+          const fromCp = statement.extractInboundSenderDetails(remoteCp);
+          if (!name && fromCp.name) name = fromCp.name;
+          if (!bank && fromCp.bank) bank = fromCp.bank;
+          if (!account && fromCp.account) account = fromCp.account;
+        }
+      }
+    } catch (_) { }
+  }
+
+  return { name: name || null, bank: bank || null, account: account || null };
+}
+
+/**
  * Hold a verified user's settled inbound fiat deposit in its local currency checking account
  * (0% Proxim inbound fee, no auto-conversion to USDC).
  * Fraud-screens the inflow, records it in SQLite, settles linked invoices/merchant checkouts,
@@ -626,6 +669,7 @@ async function handleInboundFiatDeposit({ confirmed, entityRecord, bot = null })
     const accountId = confirmed.account_id;
     const grossMajor = nuvion.fromNuvionMinor(grossMinor);
     const netFiatMajor = nuvion.fromNuvionMinor(netMinor);
+    const senderInfo = await resolveNuvionInflowSender(confirmed, entityId);
 
     job = db.createNuvionJob({
       entityId,
@@ -647,6 +691,9 @@ async function handleInboundFiatDeposit({ confirmed, entityRecord, bot = null })
         narration: confirmed.narration || null,
         fundingSessionId: confirmed.meta?.funding_session_id || null,
         settlementMode: "local",
+        senderName: senderInfo.name,
+        senderBank: senderInfo.bank,
+        senderAccount: senderInfo.account,
       },
     });
 
@@ -722,6 +769,9 @@ async function handleInboundFiatDeposit({ confirmed, entityRecord, bot = null })
           sourceCurrency: currency,
           sourceAmount: Number.isFinite(netFiatMajor) && netFiatMajor > 0 ? netFiatMajor : null,
           depositChannel,
+          counterpartyName: senderInfo.name,
+          counterpartyBank: senderInfo.bank,
+          counterpartyAccount: senderInfo.account,
         }
       );
     } catch (txErr) {
@@ -761,6 +811,7 @@ async function handleInboundFiatDeposit({ confirmed, entityRecord, bot = null })
 
     const fiatStr = formatFiatAmount(currency, netFiatMajor);
     const acctLabel = entity.account_type === "business" ? "Business Account" : "Personal Account";
+    const senderDisplayLine = [senderInfo.name, [senderInfo.bank, senderInfo.account].filter(Boolean).join(" · ")].filter(Boolean).join(" — ");
     const captionLines = [
       `🎉 <b>${currency} Deposit Received!</b>`,
       `──────────────────────────`,
@@ -768,6 +819,9 @@ async function handleInboundFiatDeposit({ confirmed, entityRecord, bot = null })
       `🏷️ <b>Deposit Fee:</b> 0% (Held in ${currency})`,
       `💼 <b>Account:</b> ${acctLabel}`,
     ];
+    if (senderDisplayLine) {
+      captionLines.push(`👤 <b>From:</b> ${escapeHtml(senderDisplayLine)}`);
+    }
     if (paidInvoiceNumber) {
       captionLines.push(`🧾 <b>Invoice Paid:</b> <code>${escapeHtml(paidInvoiceNumber)}</code>`);
     }
@@ -784,10 +838,12 @@ async function handleInboundFiatDeposit({ confirmed, entityRecord, bot = null })
       try {
         receiptPath = await generateReceiptPNG({
           receiptId: `DEP-${String(confirmed.id).slice(-10)}`,
-          senderName: currency === "NGN" ? "Nigerian Bank Transfer" : `${currency} Bank Transfer`,
+          senderName: senderInfo.name || (currency === "NGN" ? "Nigerian Bank Transfer" : `${currency} Bank Transfer`),
+          senderBank: senderInfo.bank || "",
+          senderAddress: senderInfo.account || "",
           recipientName: entity.legal_name || acctLabel,
           amountUsdc: currency === "USD" ? netFiatMajor : 0,
-          displayCurrency: currency === "NGN" ? "NGN" : "USD",
+          displayCurrency: currency,
           fiatAmountDisplay: fiatStr,
           type: "Deposit",
           timestamp: new Date().toISOString(),
@@ -1080,7 +1136,13 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null, col
       });
     }
 
-    const jobPayload = { ...(job.payload || {}) };
+    const senderInfo = await resolveNuvionInflowSender(confirmed, entityId);
+    const jobPayload = {
+      ...(job.payload || {}),
+      senderName: (job.payload && job.payload.senderName) || senderInfo.name,
+      senderBank: (job.payload && job.payload.senderBank) || senderInfo.bank,
+      senderAccount: (job.payload && job.payload.senderAccount) || senderInfo.account,
+    };
 
     // Step 0: Chargeback & Reversal Arbitrage Screener (Finding 3)
     // Screens hosted payment links (Interac e-Transfer, Open Banking, MoMo) and frozen accounts
@@ -1361,6 +1423,9 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null, col
           sourceCurrency: currency,
           sourceAmount: Number.isFinite(grossMajor) && grossMajor > 0 ? grossMajor : null,
           depositChannel,
+          counterpartyName: jobPayload.senderName || null,
+          counterpartyBank: jobPayload.senderBank || null,
+          counterpartyAccount: jobPayload.senderAccount || null,
         }
       );
     } catch (txErr) {
@@ -1406,6 +1471,7 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null, col
       const isNgn = currency === "NGN";
       const acctLabel = entity.account_type === "business" ? "Business Account" : "Personal Account";
       const fiatStr = formatFiatAmount(currency, grossMajor);
+      const senderDisplayLine = [jobPayload.senderName, [jobPayload.senderBank, jobPayload.senderAccount].filter(Boolean).join(" · ")].filter(Boolean).join(" — ");
       const captionLines = [
         `🎉 <b>Deposit Received!</b>`,
         `──────────────────────────`,
@@ -1415,6 +1481,9 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null, col
         captionLines.push(`💰 <b>Credited to Balance:</b> $${creditedUsd.toFixed(2)}`);
       }
       captionLines.push(`💼 <b>Account:</b> ${acctLabel}`);
+      if (senderDisplayLine) {
+        captionLines.push(`👤 <b>From:</b> ${escapeHtml(senderDisplayLine)}`);
+      }
       if (paidInvoiceNumber) {
         captionLines.push(`🧾 <b>Invoice Paid:</b> <code>${escapeHtml(paidInvoiceNumber)}</code>`);
       }
@@ -1429,10 +1498,12 @@ async function handleInboundFiatSweep({ confirmed, entityRecord, bot = null, col
       try {
         receiptPath = await generateReceiptPNG({
           receiptId: `DEP-${String(confirmed.id).slice(-10)}`,
-          senderName: isNgn ? "Nigerian Bank Transfer" : `${currency} Bank Transfer`,
+          senderName: jobPayload.senderName || (isNgn ? "Nigerian Bank Transfer" : `${currency} Bank Transfer`),
+          senderBank: jobPayload.senderBank || "",
+          senderAddress: jobPayload.senderAccount || "",
           recipientName: entity.legal_name || acctLabel,
           amountUsdc: creditedUsd,
-          displayCurrency: isNgn ? "NGN" : "USD",
+          displayCurrency: isNgn ? "NGN" : currency,
           fiatAmountDisplay: isNgn ? formatFiatAmount("NGN", netFiatMajor) : `${fiatStr} ($${creditedUsd.toFixed(2)})`,
           type: "Deposit",
           timestamp: new Date().toISOString(),

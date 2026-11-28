@@ -292,7 +292,7 @@ async function sendOnchain(ctx, pin, toAddress, amountUsdc, narration, type = "t
             throw new ActionError(502, "transfer_failed", solTx?.error || "Transfer failed. Please try again.");
           }
           const solHash = solTx.txHash || solTx.signature;
-          db.recordTransaction(ctx.telegramId, type, String(amountMicro), "completed", solHash, accountType, 18, "solana", narration || null);
+          db.recordTransaction(ctx.telegramId, type, String(amountMicro), "completed", solHash, accountType, 18, "solana", narration || null, options.txMeta || null);
           return { txHash: solHash, chain: "solana" };
         }
       }
@@ -307,7 +307,7 @@ async function sendOnchain(ctx, pin, toAddress, amountUsdc, narration, type = "t
   // or credited/notified to the recipient.
   const txRes = await walletLib.sendSponsoredOrDirectTransaction(signer, toAddress, amountMicro, "0x", { waitForConfirmation: true });
   const txHash = txRes.txHash || txRes.hash;
-  db.recordTransaction(ctx.telegramId, type, String(amountMicro), "completed", txHash, accountType, 18, "arc", narration || null);
+  db.recordTransaction(ctx.telegramId, type, String(amountMicro), "completed", txHash, accountType, 18, "arc", narration || null, options.txMeta || null);
   return options.returnMeta ? { txHash, chain: "arc" } : txHash;
 }
 
@@ -394,7 +394,9 @@ const ACTIONS = {
     async execute(ctx, a, pin) {
       const accountType = a.accountType || "personal";
       await recordOutbound(ctx, Number(a.amountUsdc), a.toAddress, "app_transfer", accountType);
-      const txHash = await sendOnchain(ctx, pin, a.toAddress, a.amountUsdc, a.narration, "transfer", accountType);
+      const txHash = await sendOnchain(ctx, pin, a.toAddress, a.amountUsdc, a.narration, "transfer", accountType, {
+        txMeta: { counterpartyBank: "Arc Wallet", counterpartyAccount: a.toAddress },
+      });
       return { txHash, amountUsdc: a.amountUsdc, toAddress: a.toAddress, accountType, notice: `Sent $${fmt(a.amountUsdc)}` };
     },
   },
@@ -463,13 +465,33 @@ const ACTIONS = {
       const sendRes = await sendOnchain(ctx, pin, a.toAddress, a.amountUsdc, a.narration, "p2p_send", accountType, {
         fallbackSolanaRecipient,
         returnMeta: true,
+        txMeta: {
+          counterpartyName: a.recipientLabel || null,
+          counterpartyBank: "Proxim",
+          counterpartyAccount: a.toAddress || null,
+        },
       });
       const txHash = typeof sendRes === "string" ? sendRes : sendRes.txHash;
       const chainUsed = typeof sendRes === "string" ? "arc" : (sendRes.chain || "arc");
+      const from = ctx.user.username ? `@${ctx.user.username}` : (ctx.user.sender_name || "a Proxim user");
       try {
-        db.recordTransaction(Number(a.recipientId), "p2p_receive", String(dep("walletLib").parseToMicro(Number(a.amountUsdc).toFixed(6))), "completed", txHash, "personal", 18, chainUsed, a.narration || null);
+        db.recordTransaction(
+          Number(a.recipientId),
+          "p2p_receive",
+          String(dep("walletLib").parseToMicro(Number(a.amountUsdc).toFixed(6))),
+          "completed",
+          txHash,
+          "personal",
+          18,
+          chainUsed,
+          a.narration || null,
+          {
+            counterpartyName: from,
+            counterpartyBank: "Proxim",
+            counterpartyAccount: getWalletAddress(ctx.user, accountType) || null,
+          }
+        );
       } catch (_) { }
-      const from = ctx.user.username ? `@${ctx.user.username}` : "a Proxim user";
       try {
         await dep("notify").notify(Number(a.recipientId), { title: "Money received", html: `💸 <b>You received $${fmt(a.amountUsdc)}</b> from ${from}.${a.narration ? `\nNote: ${String(a.narration).replace(/[<>&]/g, "")}` : ""}` });
       } catch (_) { }
@@ -1108,7 +1130,12 @@ const ACTIONS = {
         18,
         rail,
         a.narration || null,
-        resolvedFiat ? { sourceCurrency: "NGN", sourceAmount: resolvedFiat } : null
+        {
+          ...(resolvedFiat ? { sourceCurrency: "NGN", sourceAmount: resolvedFiat } : {}),
+          counterpartyName: order.accountName || a.accountName || null,
+          counterpartyBank: order.bankName || order.bank?.name || a.bankName || null,
+          counterpartyAccount: String(a.accountNumber || ""),
+        }
       );
       const displayNgn = resolvedFiat || (a.amountNgn ? Number(a.amountNgn) : null);
       const notice = displayNgn

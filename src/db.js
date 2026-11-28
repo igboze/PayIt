@@ -447,6 +447,9 @@ function ensureTransactionsSchema() {
   if (!cols.includes("source_currency")) db.exec("ALTER TABLE transactions ADD COLUMN source_currency TEXT");
   if (!cols.includes("source_amount")) db.exec("ALTER TABLE transactions ADD COLUMN source_amount REAL");
   if (!cols.includes("deposit_channel")) db.exec("ALTER TABLE transactions ADD COLUMN deposit_channel TEXT");
+  if (!cols.includes("counterparty_name")) db.exec("ALTER TABLE transactions ADD COLUMN counterparty_name TEXT");
+  if (!cols.includes("counterparty_bank")) db.exec("ALTER TABLE transactions ADD COLUMN counterparty_bank TEXT");
+  if (!cols.includes("counterparty_account")) db.exec("ALTER TABLE transactions ADD COLUMN counterparty_account TEXT");
 }
 
 function ensurePajOrdersSchema() {
@@ -465,6 +468,15 @@ function ensurePajOrdersSchema() {
     const onrampCols = db.prepare("PRAGMA table_info(paj_onramp_orders)").all().map(c => c.name);
     if (!onrampCols.includes("narration")) {
       db.exec("ALTER TABLE paj_onramp_orders ADD COLUMN narration TEXT");
+    }
+    if (!onrampCols.includes("sender_name")) {
+      db.exec("ALTER TABLE paj_onramp_orders ADD COLUMN sender_name TEXT");
+    }
+    if (!onrampCols.includes("sender_bank")) {
+      db.exec("ALTER TABLE paj_onramp_orders ADD COLUMN sender_bank TEXT");
+    }
+    if (!onrampCols.includes("sender_account")) {
+      db.exec("ALTER TABLE paj_onramp_orders ADD COLUMN sender_account TEXT");
     }
   } catch (err) {
     console.warn("[db] ensurePajOrdersSchema onramp note:", err.message);
@@ -1109,6 +1121,9 @@ function recordTransaction(telegramId, type, amountMicro, status, txHash, accoun
   const rawSourceAmt = meta && meta.sourceAmount !== undefined && meta.sourceAmount !== null ? Number(meta.sourceAmount) : null;
   const sourceAmount = rawSourceAmt !== null && Number.isFinite(rawSourceAmt) && rawSourceAmt > 0 ? rawSourceAmt : null;
   const depositChannel = meta && meta.depositChannel ? String(meta.depositChannel).toLowerCase() : null;
+  const counterpartyName = meta && meta.counterpartyName ? String(meta.counterpartyName).trim().slice(0, 140) : null;
+  const counterpartyBank = meta && meta.counterpartyBank ? String(meta.counterpartyBank).trim().slice(0, 120) : null;
+  const counterpartyAccount = meta && meta.counterpartyAccount ? String(meta.counterpartyAccount).trim().slice(0, 120) : null;
   const cleanHash = txHash ? String(txHash).trim() : null;
   const cleanAcct = accountType || "personal";
   const amountStr = amountMicro.toString();
@@ -1195,11 +1210,15 @@ function recordTransaction(telegramId, type, amountMicro, status, txHash, accoun
       const nextSourceCur = existing.source_currency || sourceCurrency;
       const nextSourceAmt = existing.source_amount ?? sourceAmount;
       const nextChannel = existing.deposit_channel || depositChannel;
+      const nextCpName = existing.counterparty_name || counterpartyName;
+      const nextCpBank = existing.counterparty_bank || counterpartyBank;
+      const nextCpAcct = existing.counterparty_account || counterpartyAccount;
       db.prepare(
         `UPDATE transactions
-         SET status = ?, tx_hash = ?, narration = ?, source_currency = ?, source_amount = ?, deposit_channel = ?
+         SET status = ?, tx_hash = ?, narration = ?, source_currency = ?, source_amount = ?, deposit_channel = ?,
+             counterparty_name = ?, counterparty_bank = ?, counterparty_account = ?
          WHERE id = ?`
-      ).run(nextStatus, nextHash, nextNarration, nextSourceCur, nextSourceAmt, nextChannel, existing.id);
+      ).run(nextStatus, nextHash, nextNarration, nextSourceCur, nextSourceAmt, nextChannel, nextCpName, nextCpBank, nextCpAcct, existing.id);
       return existing.id;
     }
   } catch (dedupeErr) {
@@ -1207,7 +1226,7 @@ function recordTransaction(telegramId, type, amountMicro, status, txHash, accoun
   }
 
   const result = db.prepare(
-    "INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, account_type, decimals, chain, narration, source_currency, source_amount, deposit_channel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "INSERT INTO transactions (telegram_id, type, amount_micro, status, tx_hash, account_type, decimals, chain, narration, source_currency, source_amount, deposit_channel, counterparty_name, counterparty_bank, counterparty_account) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
   ).run(
     telegramId,
     type,
@@ -1220,7 +1239,10 @@ function recordTransaction(telegramId, type, amountMicro, status, txHash, accoun
     narration || null,
     sourceCurrency,
     sourceAmount,
-    depositChannel
+    depositChannel,
+    counterpartyName,
+    counterpartyBank,
+    counterpartyAccount
   );
   const insertedId = result.lastInsertRowid;
 
@@ -1240,6 +1262,9 @@ function recordTransaction(telegramId, type, amountMicro, status, txHash, accoun
           narration: narration || null,
           sourceCurrency,
           sourceAmount,
+          counterpartyName,
+          counterpartyBank,
+          counterpartyAccount,
         }).catch(() => { });
       } catch (_) { }
     });

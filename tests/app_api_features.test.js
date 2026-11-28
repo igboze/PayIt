@@ -320,7 +320,7 @@ test.before(async () => {
 test.after(() => {
   schedules.stopScheduleRunner();
   server?.close();
-  for (const f of [tmpDb, `${tmpDb}-wal`, `${tmpDb}-shm`]) { try { fs.unlinkSync(f); } catch (_) {} }
+  for (const f of [tmpDb, `${tmpDb}-wal`, `${tmpDb}-shm`]) { try { fs.unlinkSync(f); } catch (_) { } }
 });
 
 test.beforeEach(() => routes.__resetRateLimits());
@@ -333,7 +333,7 @@ async function call(method, p, body, token) {
   });
   const text = await res.text();
   let json = null;
-  try { json = JSON.parse(text); } catch (_) {}
+  try { json = JSON.parse(text); } catch (_) { }
   return { status: res.status, body: json, text, headers: res.headers };
 }
 
@@ -534,7 +534,7 @@ test("persistent schedule runner executes due schedules once and auto-pauses aft
   let shouldFail = false;
   const schedNotifs = [];
   schedules.__setTestDeps({
-    fraudGuard: { assertOutboundAllowed: async () => {} },
+    fraudGuard: { assertOutboundAllowed: async () => { } },
     walletLib: {
       ...realWallet,
       sendSponsoredOrDirectTransaction: async (signer, to, amountMicro) => {
@@ -610,7 +610,7 @@ test("scheduled NGN bank payout: approved once, runs with the system key, funds 
   const recorded = [];
   let orderAmount = null;
   schedules.__setTestDeps({
-    fraudGuard: { assertOutboundAllowed: async () => {} },
+    fraudGuard: { assertOutboundAllowed: async () => { } },
     paj: { createOfframpPayout: async (p) => { pajOrders.push(p); return { id: `paj_sched_${pajOrders.length}`, address: "0x8888888888888888888888888888888888888888", amount: orderAmount ?? p.amountUsdc, accountName: "ADA OKAFOR" }; } },
     multichain: { isSolanaAddress: () => false },
     walletLib: {
@@ -621,7 +621,7 @@ test("scheduled NGN bank payout: approved once, runs with the system key, funds 
       },
     },
     db: new Proxy(db, { get: (t, k) => (k === "recordOfframpOrder" ? (o) => { recorded.push(o); return t.recordOfframpOrder(o); } : t[k]) }),
-    notify: { notify: async () => {} },
+    notify: { notify: async () => { } },
   });
   const past = new Date(Date.now() - 60_000).toISOString();
   db.db.prepare("UPDATE app_schedules SET next_run_at = ? WHERE id = ?").run(past, created.id);
@@ -896,7 +896,10 @@ test("business home, profile, invoices, payment links, assistant, and statement 
   assert.match(csvRes.headers.get("content-type"), /text\/csv/);
   assert.match(csvRes.headers.get("content-disposition"), /proxim-statement\.csv/);
   const lines = csvRes.text.trim().split(/\r?\n/);
-  assert.equal(lines[0], "id,created_at,account_type,type,status,amount,amount_raw,decimals,chain,tx_hash,narration");
+  assert.ok(
+    lines[0].startsWith("id,created_at,account_type,type,status,amount,amount_raw,decimals,chain,tx_hash,narration,direction,category,type_label,fiat_currency,fiat_amount,signed_usd_amount,counterparty_name,counterparty_bank,counterparty_account"),
+    `unexpected CSV header: ${lines[0]}`
+  );
   assert.ok(lines[1].includes("12.5"), `expected formatted amount 12.5 in: ${lines[1]}`);
   assert.ok(lines[1].includes("\"'=SUM(A1:A2), note\""), `expected CSV formula-escaped narration in: ${lines[1]}`);
 });

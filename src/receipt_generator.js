@@ -95,6 +95,7 @@ function buildReceiptSvg(opts = {}) {
   const {
     receiptId = `R-${Date.now()}`,
     senderName = "Proxim Wallet",
+    senderBank = "",
     senderAddress = "",
     recipientName = "Recipient",
     recipientAddress = "",
@@ -102,6 +103,8 @@ function buildReceiptSvg(opts = {}) {
     amountUsdc = 0,
     token = "USDC",
     nairaEquiv = null,
+    displayCurrency = null,
+    fiatAmountDisplay = null,
     type = "Payment",
     timestamp = new Date().toISOString(),
     status = "Confirmed",
@@ -171,12 +174,18 @@ function buildReceiptSvg(opts = {}) {
     typeLower.includes("cable") ||
     typeLower.includes("betting") ||
     typeLower.includes("transport");
-  const isBankPayout = !isBill && (isCashOut || /^\d{10}$/.test(String(recipientAddress || "").trim()));
+  const isBankPayout = !isBill && !isDeposit && (
+    isCashOut ||
+    isWithdrawal ||
+    Boolean(detectedBank) ||
+    /^\d{6,16}$/.test(String(recipientAddress || "").trim()) ||
+    /^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/i.test(String(recipientAddress || "").trim())
+  );
   let shortRecip = "";
   if (recipientAddress) {
     const rawRecip = String(recipientAddress).trim();
     if (isBankPayout) {
-      shortRecip = `Acct: ${rawRecip}`;
+      shortRecip = rawRecip.length > 22 ? `${rawRecip.slice(0, 10)}...${rawRecip.slice(-6)}` : `Acct: ${rawRecip}`;
     } else if (rawRecip.length > 18) {
       shortRecip = `${rawRecip.slice(0, 6)}...${rawRecip.slice(-4)}`;
     } else {
@@ -191,8 +200,6 @@ function buildReceiptSvg(opts = {}) {
     destSubinfo = detectedBank;
   } else if (shortRecip) {
     destSubinfo = shortRecip;
-  } else if (isDeposit && shortSender) {
-    destSubinfo = shortSender;
   }
 
   const displayRecipientName = cleanRecipientName.length > 28
@@ -202,7 +209,9 @@ function buildReceiptSvg(opts = {}) {
   let cleanNaira = null;
   const rawNairaInput = (nairaEquiv !== null && nairaEquiv !== undefined && nairaEquiv !== "")
     ? nairaEquiv
-    : (opts.amountNgn !== null && opts.amountNgn !== undefined && opts.amountNgn !== "" ? opts.amountNgn : null);
+    : (opts.amountNgn !== null && opts.amountNgn !== undefined && opts.amountNgn !== ""
+        ? opts.amountNgn
+        : (fiatAmountDisplay && String(fiatAmountDisplay).includes("₦") ? fiatAmountDisplay : null));
   if (rawNairaInput !== null) {
     if (typeof rawNairaInput === "number") {
       cleanNaira = `₦${rawNairaInput.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -214,8 +223,10 @@ function buildReceiptSvg(opts = {}) {
     cleanNaira = String(opts.amountPrimary).trim();
   }
 
+  const normalizedDispCur = displayCurrency ? String(displayCurrency).toUpperCase() : null;
   const isNairaTx = Boolean(
     cleanNaira ||
+    normalizedDispCur === "NGN" ||
     String(token).toUpperCase() === "NGN" ||
     isCashOut ||
     isBill ||
@@ -225,7 +236,7 @@ function buildReceiptSvg(opts = {}) {
   const isNairaOnlyOfframp = Boolean(isCashOut && isNairaTx);
 
   let displayAmount = "0.00";
-  let displayToken = token;
+  let displayToken = normalizedDispCur || token;
   if (isNairaTx) {
     if (cleanNaira) {
       const numericNaira = parseFloat(cleanNaira.replace(/[^0-9.]/g, ""));
@@ -239,6 +250,10 @@ function buildReceiptSvg(opts = {}) {
         : `₦${amtNumNgn.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     }
     displayToken = "NGN";
+  } else if (fiatAmountDisplay && String(fiatAmountDisplay).trim()) {
+    const cleanFiat = String(fiatAmountDisplay).split(" (")[0].trim();
+    displayAmount = cleanFiat;
+    displayToken = normalizedDispCur && !cleanFiat.toUpperCase().includes(normalizedDispCur) ? normalizedDispCur : "";
   } else {
     const amtNum = Number(amountUsdc || 0);
     displayAmount = isNaN(amtNum)
@@ -283,10 +298,18 @@ function buildReceiptSvg(opts = {}) {
   rows.push({ label: "Payment type", val: isNairaOnlyOfframp ? "Bank Transfer" : type });
   if (senderName) {
     rows.push({
-      label: isDeposit ? "Source" : "From",
+      label: isDeposit ? "Sender" : "From",
       val: senderName,
-      sub: (!isNairaTx && shortSender && shortSender !== senderName) ? shortSender : null,
+      sub: (!isDeposit && !isNairaTx && shortSender && shortSender !== senderName) ? shortSender : null,
     });
+  }
+  if (isDeposit && senderBank && String(senderBank).trim()) {
+    rows.push({ label: "Sender Bank", val: String(senderBank).trim() });
+  }
+  if (isDeposit && senderAddress && String(senderAddress).trim() && String(senderAddress).trim() !== String(senderName || "").trim()) {
+    const rawSenderAcct = String(senderAddress).trim();
+    const senderAcctDisplay = rawSenderAcct.length > 24 ? `${rawSenderAcct.slice(0, 10)}...${rawSenderAcct.slice(-6)}` : rawSenderAcct;
+    rows.push({ label: "Sender Account", val: senderAcctDisplay, isMono: true });
   }
   if (narration && String(narration).trim()) {
     rows.push({ label: "Narration", val: String(narration).trim() });

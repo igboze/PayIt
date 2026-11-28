@@ -1414,43 +1414,83 @@ async function showHistory(ctx) {
     await settlementDaemon.pollPendingOnrampOrders(bot);
   } catch (_) { }
 
-  const txs = db.getTransactions(ctx.from.id, 10);
+  const statementLib = require("./src/statement");
+  const built = statementLib.buildAccountStatement({
+    db,
+    telegramId: ctx.from.id,
+    limit: 12,
+  });
 
-  if (!txs.length) {
+  if (!built.rows.length) {
     return ctx.reply(
       `📋 No transactions yet.\n\nOnce you send or receive money, everything will appear here.`,
       backToMenu
     );
   }
 
-  const typeLabel = {
-    send_usdc: "Sent dollars",
-    send_eurc: "Sent euros",
-    offramp: "Cashed out",
-    offramp_request: "Cashed out",
-    autopay: "Auto-payment",
-    yield_deposit: "Saved to interest pool",
-    yield_withdraw: "Withdrew from interest pool",
+  const fmtLineAmt = (r) => {
+    const sign = r.isCredit ? "+" : "-";
+    if (r.fiatCurrency && r.fiatAmount) {
+      if (r.fiatCurrency === "NGN") return `${sign}₦${Math.round(r.fiatAmount).toLocaleString("en-NG")}`;
+      const syms = { USD: "$", GBP: "£", EUR: "€", CAD: "CA$", AED: "AED ", GHS: "GH₵", KES: "KSh ", TZS: "TSh ", MXN: "MX$" };
+      const sym = syms[r.fiatCurrency] || `${r.fiatCurrency} `;
+      return `${sign}${sym}${Number(r.fiatAmount).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+    return `${sign}$${r.usdAmount.toFixed(2)}`;
   };
 
-  const lines = txs.map(t => {
-    const label = typeLabel[t.type] || t.type;
-    const amount = walletLib.formatMicro(t.amount_micro);
-    const status = t.status === "confirmed" ? "✅" : t.status === "failed" ? "❌" : "⏳";
-    const acctTag = t.account_type === "business" ? " [Business]" : " [Personal]";
-    return `${status} ${label}${acctTag}  $${parseFloat(amount).toFixed(2)}\n   ${t.created_at}`;
+  const lines = built.rows.slice(0, 10).map((r) => {
+    const stLower = String(r.status || "").toLowerCase();
+    const statusIcon = /confirm|complet|paid|settle|success/.test(stLower) ? "✅" : /fail|reject|cancel|error/.test(stLower) ? "❌" : "⏳";
+    const dirTag = r.isCredit ? "IN" : "OUT";
+    const acctTag = r.account_type === "business" ? "Business" : "Personal";
+    const cpParts = [r.counterpartyName, r.counterpartyDetail].filter(Boolean).join(" · ");
+    const cpLine = cpParts ? `\n   ${r.isCredit ? "From" : "To"}: ${cpParts.slice(0, 64)}` : "";
+    return `${statusIcon} [${dirTag} · ${r.category}] ${r.typeLabel} (${acctTag})  ${fmtLineAmt(r)}${cpLine}\n   ${r.created_at || ""}`;
   });
 
   await ctx.reply(
-    `📋 Recent Activity\n──────────────────────────\n` +
+    `📋 Account Activity & Statement\n──────────────────────────\n` +
     lines.join("\n\n") +
-    `\n\nFull history: ${getExplorerUrl(address)}`,
+    `\n\nFull on-chain explorer: ${getExplorerUrl(address)}`,
     Markup.inlineKeyboard([
-      [Markup.button.callback("💰 Balance", "action_balance")],
-      [Markup.button.callback("🏠 Main Menu", "main_menu")],
+      [Markup.button.callback("📄 Download Full Statement (CSV)", "action_export_statement_csv")],
+      [Markup.button.callback("💰 Balance", "action_balance"), Markup.button.callback("🏠 Main Menu", "main_menu")],
     ])
   );
 }
+
+bot.action("action_export_statement_csv", async (ctx) => {
+  await ctx.answerCbQuery("Generating account statement...");
+  const user = requireUser(ctx);
+  if (!user) return;
+  try {
+    const statementLib = require("./src/statement");
+    const built = statementLib.buildAccountStatement({
+      db,
+      telegramId: ctx.from.id,
+      limit: 1000,
+    });
+    const s = built.summary;
+    const fname = `proxim-statement-${new Date().toISOString().slice(0, 10)}.csv`;
+    const caption =
+      `📄 <b>Proxim Account Statement</b>\n` +
+      `──────────────────────────\n` +
+      `• <b>Transactions:</b> ${s.totalTransactions}\n` +
+      `• <b>Deposits:</b> ${s.totalDepositsCount} (Fiat: ${s.fiatDepositsCount} · Crypto: ${s.cryptoDepositsCount})\n` +
+      `• <b>Withdrawals:</b> ${s.totalWithdrawalsCount} (Fiat: ${s.fiatWithdrawalsCount} · Crypto: ${s.cryptoWithdrawalsCount})\n` +
+      `• <b>Total Inflow:</b> +$${s.totalInflowUsd.toFixed(2)}\n` +
+      `• <b>Total Outflow:</b> -$${s.totalOutflowUsd.toFixed(2)}\n` +
+      `<i>Includes Fiat &amp; Crypto deposits, withdrawals, sender/recipient bank details, and references.</i>`;
+    await ctx.replyWithDocument(
+      { source: Buffer.from(built.csv, "utf8"), filename: fname },
+      { caption, parse_mode: "HTML" }
+    );
+  } catch (err) {
+    console.error("[bot:export_statement_csv]", err);
+    await ctx.reply("Could not generate your account statement right now. Please try again.");
+  }
+});
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
@@ -5031,14 +5071,28 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
       const effectiveRate = pajOrder?.rate || trackedOrder?.rate;
       const effectiveTx = (bridgeRes && bridgeRes.arcTxHash) || pajOrder?.txHash || trackedOrder?.tx_hash || orderId;
 
-      // 0.2% platform fee inside trade amount
+      // Atomically claim onramp completion BEFORE collecting the 0.2% fee so simultaneous
+      // webhook / settlement daemon / manual Check Deposit clicks can NEVER double-charge!
+      let claimedFeeRight = true;
+      if (orderId) {
+        try {
+          const upd = db.db.prepare(
+            "UPDATE paj_onramp_orders SET status = 'completed', tx_hash = COALESCE(tx_hash, ?), completed_at = COALESCE(completed_at, datetime('now')) WHERE order_id = ? AND status != 'completed'"
+          ).run(effectiveTx || null, String(orderId));
+          claimedFeeRight = Boolean(upd && upd.changes > 0);
+        } catch (_) {
+          claimedFeeRight = String(trackedOrder?.status || "").toLowerCase() !== "completed";
+        }
+      }
+
+      // 0.2% platform fee inside trade amount (only if this call claimed completion)
       const onrampFeeRate = Number(process.env.ONRAMP_PLATFORM_FEE_RATE ?? 0.002);
       const feeUsdc = Number((effectiveUsdc * onrampFeeRate).toFixed(4));
       const netAmountUsdc = Number((effectiveUsdc - feeUsdc).toFixed(4));
       const feeRecipient = process.env.APP_FEE_RECIPIENT_ADDRESS || process.env.PAYIT_DEV_FEE_ADDRESS || "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
       let feeTxHash = null;
 
-      if (isSettledOnArc && user && feeUsdc > 0.0001 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
+      if (claimedFeeRight && isSettledOnArc && user && feeUsdc > 0.0001 && feeRecipient && walletLib.isValidAddress(feeRecipient)) {
         try {
           const encryptedKey = isBiz
             ? (user.biz_system_encrypted_key || user.system_encrypted_key)
@@ -5058,13 +5112,14 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
         } catch (feeErr) {
           console.warn("[bot:action_check_paj_onramp_fee_note]", feeErr.message);
         }
-      } else if (!isSettledOnArc && user && feeUsdc > 0.0001) {
+      } else if (claimedFeeRight && !isSettledOnArc && user && feeUsdc > 0.0001) {
         let solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
         if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
           try {
             solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress;
           } catch { }
         }
+        if (!solFeeRecipient) solFeeRecipient = "4BPnUzFDibVcWQ5zzixGodRUHwqDxHYpUPdPYus3Bn56";
         if (solFeeRecipient && multichain.isSolanaAddress(solFeeRecipient)) {
           try {
             const encryptedKey = isBiz

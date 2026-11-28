@@ -84,6 +84,25 @@ function _lookupFiatAmountFromOrders(db, telegramId, rawType, txHash, amountUsd)
   return null;
 }
 
+function _lookupCounterpartyFromOrders(db, telegramId, rawType, txHash) {
+  if (!txHash || !db?.db) return null;
+  try {
+    const statement = require("./statement");
+    const enriched = statement.enrichTransactionRow(db, telegramId, {
+      type: rawType,
+      tx_hash: txHash,
+    });
+    if (enriched.counterpartyName || enriched.counterpartyBank || enriched.counterpartyAccount) {
+      return {
+        name: enriched.counterpartyName,
+        bank: enriched.counterpartyBank,
+        account: enriched.counterpartyAccount,
+      };
+    }
+  } catch (_) { }
+  return null;
+}
+
 function getEmailConfigDiagnostics() {
   const smtpUser = (process.env.SMTP_USER || "").trim();
   const smtpPass = (process.env.SMTP_PASS || "").trim();
@@ -582,6 +601,9 @@ async function sendTransactionAlertEmail({
   narration = null,
   txHash = null,
   timestamp = null,
+  counterpartyName = null,
+  counterpartyBank = null,
+  counterpartyAccount = null,
 } = {}) {
   const rawType = String(type || "transaction").toLowerCase();
   const meta = TX_ALERT_LABELS[rawType] || (rawType.startsWith("bill_")
@@ -607,9 +629,21 @@ async function sendTransactionAlertEmail({
     ["Transaction Type", meta.label],
     ["Amount", `${sign}${amtText}`],
     ["Account", acctLabel],
-    ["Status", displayStatus],
-    ["Date (UTC)", whenStr],
   ];
+  const cpNameClean = counterpartyName ? String(counterpartyName).trim() : "";
+  const cpBankClean = counterpartyBank ? String(counterpartyBank).trim() : "";
+  const cpAcctClean = counterpartyAccount ? String(counterpartyAccount).trim() : "";
+  if (cpNameClean) {
+    rows.push([meta.credit ? "From" : "Recipient", cpNameClean.slice(0, 100)]);
+  }
+  const cpBankAcct = [cpBankClean, cpAcctClean].filter(Boolean).join(" · ");
+  if (cpBankAcct) {
+    rows.push([meta.credit ? "Sender Bank / Account" : "Destination Bank / Account", cpBankAcct.slice(0, 120)]);
+  }
+  rows.push(
+    ["Status", displayStatus],
+    ["Date (UTC)", whenStr]
+  );
   if (narration) rows.push(["Description", String(narration).slice(0, 120)]);
   if (txHash) rows.push(["Reference", String(txHash).slice(0, 48)]);
 
@@ -676,6 +710,9 @@ async function dispatchVerifiedTransactionEmail({
   narration = null,
   sourceCurrency = null,
   sourceAmount = null,
+  counterpartyName = null,
+  counterpartyBank = null,
+  counterpartyAccount = null,
 } = {}) {
   try {
     if (!telegramId) return { skipped: true, reason: "no_user" };
@@ -729,6 +766,18 @@ async function dispatchVerifiedTransactionEmail({
       finalSourceAmt = Math.round(amountUsd * rateNgn);
     }
 
+    let finalCpName = counterpartyName;
+    let finalCpBank = counterpartyBank;
+    let finalCpAccount = counterpartyAccount;
+    if ((!finalCpName || !finalCpBank || !finalCpAccount) && txHash && db.db) {
+      const cp = _lookupCounterpartyFromOrders(db, telegramId, rawType, txHash);
+      if (cp) {
+        if (!finalCpName) finalCpName = cp.name;
+        if (!finalCpBank) finalCpBank = cp.bank;
+        if (!finalCpAccount) finalCpAccount = cp.account;
+      }
+    }
+
     const user = db.getUser?.(telegramId);
     const name = user?.sender_name || user?.username || null;
 
@@ -743,6 +792,9 @@ async function dispatchVerifiedTransactionEmail({
       status: cleanStatus,
       narration,
       txHash,
+      counterpartyName: finalCpName,
+      counterpartyBank: finalCpBank,
+      counterpartyAccount: finalCpAccount,
     });
   } catch (err) {
     console.warn("[email:tx_alert] dispatch note:", err?.message || err);

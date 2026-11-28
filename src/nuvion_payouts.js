@@ -524,12 +524,21 @@ async function initiateHeldFiatPayout({
   let paymentDetailId;
   let recipientName;
   let recipientSummary;
+  let recipientBankName = null;
+  let recipientAccountNumber = null;
 
   if (savedCounterparty && savedCounterparty.counterparty_id && savedCounterparty.payment_detail_id) {
     counterpartyId = savedCounterparty.counterparty_id;
     paymentDetailId = savedCounterparty.payment_detail_id;
     recipientName = savedCounterparty.account_holder_name || savedCounterparty.label;
     recipientSummary = savedCounterparty.label;
+    try {
+      const s = savedCounterparty.summary_json ? JSON.parse(savedCounterparty.summary_json) : {};
+      recipientBankName = s.bank_name || s.bankName || rail.label || null;
+      recipientAccountNumber = s.account_number || s.iban || s.phone_number || s.email || s.routing_number || null;
+    } catch (_) {
+      recipientBankName = rail.label || null;
+    }
   } else {
     if (!recipientDetails) throw new Error("Recipient banking details are required.");
     const registered = await ensurePayoutRecipient(entity.entity_id, rail, recipientDetails);
@@ -537,6 +546,8 @@ async function initiateHeldFiatPayout({
     paymentDetailId = registered.paymentDetailId;
     recipientName = recipientDetails.account_holder_name;
     recipientSummary = `${recipientName} (${q.targetCurrency})`;
+    recipientBankName = recipientDetails.bank_name || recipientDetails.bankName || rail.label || null;
+    recipientAccountNumber = recipientDetails.account_number || recipientDetails.iban || recipientDetails.phone_number || recipientDetails.email || recipientDetails.routing_number || null;
   }
 
   const refSuffix = crypto.randomBytes(4).toString("hex");
@@ -561,6 +572,8 @@ async function initiateHeldFiatPayout({
     counterpartyId,
     paymentDetailId,
     recipientName,
+    recipientBankName,
+    recipientAccountNumber,
     recipientSummary,
     narration: narration || `Payment to ${recipientName}`,
   };
@@ -664,7 +677,13 @@ async function initiateHeldFiatPayout({
       18,
       "local_fiat",
       jobPayload.narration,
-      { sourceCurrency: q.targetCurrency, sourceAmount: q.targetAmountMajor }
+      {
+        sourceCurrency: q.targetCurrency,
+        sourceAmount: q.targetAmountMajor,
+        counterpartyName: recipientName || null,
+        counterpartyBank: recipientBankName || rail.label || null,
+        counterpartyAccount: recipientAccountNumber || null,
+      }
     );
   } catch (_) { }
 
@@ -1097,12 +1116,21 @@ async function initiateGlobalPayout({
   let paymentDetailId;
   let recipientName;
   let recipientSummary;
+  let recipientBankName = null;
+  let recipientAccountNumber = null;
 
   if (savedCounterparty && savedCounterparty.counterparty_id && savedCounterparty.payment_detail_id) {
     counterpartyId = savedCounterparty.counterparty_id;
     paymentDetailId = savedCounterparty.payment_detail_id;
     recipientName = savedCounterparty.account_holder_name || savedCounterparty.label;
     recipientSummary = savedCounterparty.label;
+    try {
+      const s = savedCounterparty.summary_json ? JSON.parse(savedCounterparty.summary_json) : {};
+      recipientBankName = s.bank_name || s.bankName || rail.label || null;
+      recipientAccountNumber = s.account_number || s.iban || s.phone_number || s.email || s.routing_number || null;
+    } catch (_) {
+      recipientBankName = rail.label || null;
+    }
   } else {
     if (!recipientDetails) throw new Error("Recipient banking details are required.");
     const registered = await ensurePayoutRecipient(entity.entity_id, rail, recipientDetails);
@@ -1110,6 +1138,8 @@ async function initiateGlobalPayout({
     paymentDetailId = registered.paymentDetailId;
     recipientName = recipientDetails.account_holder_name;
     recipientSummary = `${recipientName} (${quoteInfo.targetCurrency})`;
+    recipientBankName = recipientDetails.bank_name || recipientDetails.bankName || rail.label || null;
+    recipientAccountNumber = recipientDetails.account_number || recipientDetails.iban || recipientDetails.phone_number || recipientDetails.email || recipientDetails.routing_number || null;
   }
 
   const refSuffix = crypto.randomBytes(4).toString("hex");
@@ -1130,6 +1160,8 @@ async function initiateGlobalPayout({
     counterpartyId,
     paymentDetailId,
     recipientName,
+    recipientBankName,
+    recipientAccountNumber,
     recipientSummary,
     narration: narration || `Payment to ${recipientName}`,
     fundingRoute: null,
@@ -1428,7 +1460,13 @@ async function handleOutboundPayoutCompleted({ confirmed, entityRecord, bot = nu
         18,
         isHeldFiat ? "local_fiat" : "base",
         p.narration || `Payout to ${p.recipientName || targetCurrency}`,
-        { sourceCurrency: targetCurrency, sourceAmount: targetMajor }
+        {
+          sourceCurrency: targetCurrency,
+          sourceAmount: targetMajor,
+          counterpartyName: p.recipientName || null,
+          counterpartyBank: p.recipientBankName || p.railLabel || null,
+          counterpartyAccount: p.recipientAccountNumber || null,
+        }
       );
     }
   } catch (txErr) {
@@ -1452,19 +1490,24 @@ async function handleOutboundPayoutCompleted({ confirmed, entityRecord, bot = nu
   const telegram = getBotTelegram(bot);
   if (telegram && job.telegram_id) {
     const fiatDisplay = corridors.formatCurrencyMajor(targetCurrency, targetMajor);
+    const bankDisplay = p.recipientBankName || p.railLabel || null;
+    const acctDisplay = p.recipientAccountNumber || null;
     const captionLines = [
       `✅ <b>Transfer Delivered!</b>`,
       `──────────────────────────`,
       `👤 <b>Recipient:</b> ${escapeHtml(p.recipientName || "Recipient")}`,
       `💵 <b>Amount Delivered:</b> ${fiatDisplay}`,
     ];
+    if (bankDisplay || acctDisplay) {
+      captionLines.push(`🏦 <b>Destination:</b> ${escapeHtml([bankDisplay, acctDisplay].filter(Boolean).join(" · "))}`);
+    }
     if (!isNgn) {
       captionLines.push(`💳 <b>Total Paid:</b> $${userTotalUsd.toFixed(2)}`);
       if (p.effectiveRate) {
         captionLines.push(`💱 <b>Rate:</b> 1 USD = ${Number(p.effectiveRate).toFixed(4)} ${targetCurrency}`);
       }
     }
-    if (p.railLabel) captionLines.push(`🏦 <b>Method:</b> ${escapeHtml(p.railLabel)}`);
+    if (p.railLabel && p.railLabel !== bankDisplay) captionLines.push(`🌐 <b>Method:</b> ${escapeHtml(p.railLabel)}`);
     if (p.narration) captionLines.push(`💬 <b>Note:</b> <i>${escapeHtml(p.narration)}</i>`);
     captionLines.push(`🔖 <b>Reference:</b> <code>${escapeHtml(confirmed.id || job.unique_reference)}</code>`);
     const caption = captionLines.join("\n");
@@ -1475,8 +1518,10 @@ async function handleOutboundPayoutCompleted({ confirmed, entityRecord, bot = nu
         receiptId: `PAY-${String(confirmed.id || job.id).slice(-10)}`,
         senderName: entityRecord?.legal_name || "Proxim Account",
         recipientName: p.recipientName || "Recipient",
+        recipientAddress: acctDisplay || "",
+        bankName: bankDisplay || "",
         amountUsdc: userTotalUsd,
-        displayCurrency: isNgn ? "NGN" : "USD",
+        displayCurrency: targetCurrency,
         fiatAmountDisplay: isNgn ? fiatDisplay : `${fiatDisplay} ($${userTotalUsd.toFixed(2)})`,
         type: p.payrollBatchId ? "Payroll" : "Cash Out",
         timestamp: new Date().toISOString(),

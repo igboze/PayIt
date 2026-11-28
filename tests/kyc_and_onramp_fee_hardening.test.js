@@ -524,7 +524,7 @@ test("Mobile Fee Enforcement: payout.ngn pre-checks balance for amount+1% fee, w
     walletLib: mockWallet,
     paj: mockPaj,
     swap: mockSwap,
-    fraudGuard: { async assertOutboundAllowed() {} },
+    fraudGuard: { async assertOutboundAllowed() { } },
   });
 
   // 1. payout.ngn MUST reject when balance ($10.00) doesn't cover payout ($10.00) + 1% fee ($0.10)
@@ -1291,8 +1291,182 @@ test("Verified Transaction Alert Emails & Monthly ₦200 Maintenance Fee Worker"
   }
 });
 
+test("Counterparty capture (Nuvion/Paj credits & debits), receipt SVG rendering, and full Fiat+Crypto statement CSV", async () => {
+  const db = require("../src/db");
+  const statement = require("../src/statement");
+  const receiptGen = require("../src/receipt_generator");
+  const orchestrator = require("../src/nuvion_orchestrator");
+  const features = require("../src/app_api/features");
+
+  // 1. Extract sender details from Nuvion & Paj payloads (nested + meta shapes)
+  const fromNuvion = statement.extractInboundSenderDetails({
+    id: "inflow_nv_cp_1",
+    currency: "GBP",
+    amount: 250_00,
+    meta: {
+      originator_name: "ACME LONDON LTD",
+      originator_bank_name: "Barclays UK",
+      originator_account_number: "GB29BARC20040112345678",
+    },
+  });
+  assert.equal(fromNuvion.name, "ACME LONDON LTD");
+  assert.equal(fromNuvion.bank, "Barclays UK");
+  assert.equal(fromNuvion.account, "GB29BARC20040112345678");
+
+  const fromPaj = statement.extractInboundSenderDetails({
+    id: "paj_in_cp_1",
+    senderName: "CHINEDU OKAFOR",
+    senderBankName: "Access Bank",
+    senderAccountNumber: "0098765432",
+  });
+  assert.equal(fromPaj.name, "CHINEDU OKAFOR");
+  assert.equal(fromPaj.bank, "Access Bank");
+  assert.equal(fromPaj.account, "0098765432");
+
+  // 2. End-to-end Nuvion local-currency deposit persists sender bank/account on transactions & receipt
+  const { ethers } = require("ethers");
+  const stmtTg = 777444222;
+  const wStmt = ethers.Wallet.createRandom();
+  db.createUserWithWallet(stmtTg, "stmt_user", wStmt.address, wStmt.privateKey, "4927", null, null, null);
+  db.upsertNuvionEntity({
+    telegramId: stmtTg,
+    accountType: "personal",
+    entityId: "ent_stmt_test_1",
+    entityType: "individual",
+    status: "approved",
+    legalName: "Statement User",
+    email: "stmt@example.com",
+  });
+
+  const holdRes = await orchestrator.handleInboundFiatDeposit({
+    confirmed: {
+      id: "nv_in_ngn_cp_1",
+      account_id: "acct_ngn_stmt_1",
+      currency: "NGN",
+      amount: 150000_00,
+      applicable_fee: 0,
+      status: "successful",
+      payment_type: "bank-transfer",
+      narration: "Design retainer",
+      sender: {
+        name: "ADAORA EZE",
+        bank_name: "GTBank",
+        account_number: "0123456789",
+      },
+    },
+    entityRecord: db.getNuvionEntityByUser(stmtTg, "personal"),
+  });
+  assert.equal(holdRes.held, true);
+
+  // Record a Fiat withdrawal (debit) AND a Crypto deposit + Crypto withdrawal
+  db.recordTransaction(
+    stmtTg,
+    "offramp",
+    "50000000000000000000",
+    "confirmed",
+    "tx_fiat_out_1",
+    "personal",
+    18,
+    "local_fiat",
+    "Vendor invoice",
+    {
+      sourceCurrency: "NGN",
+      sourceAmount: 75000,
+      counterpartyName: "LAGOS LOGISTICS LTD",
+      counterpartyBank: "Zenith Bank",
+      counterpartyAccount: "1012345678",
+    }
+  );
+  db.recordTransaction(
+    stmtTg,
+    "deposit_crosschain",
+    "200000000000000000000",
+    "confirmed",
+    "0xcrypto_in_1",
+    "personal",
+    18,
+    "base",
+    "Crypto deposit from Base",
+    {
+      sourceCurrency: "USDC",
+      sourceAmount: 200,
+      depositChannel: "crypto",
+      counterpartyBank: "Base",
+      counterpartyAccount: "0x1111111111111111111111111111111111111111",
+    }
+  );
+  db.recordTransaction(
+    stmtTg,
+    "crosschain_withdraw",
+    "40000000000000000000",
+    "confirmed",
+    "0xcrypto_out_1",
+    "personal",
+    18,
+    "arc",
+    "Crypto withdrawal to SOLANA",
+    {
+      counterpartyBank: "SOLANA",
+      counterpartyAccount: "4BPnUzFDibVcWQ5zzixGodRUHwqDxHYpUPdPYus3Bn56",
+    }
+  );
+
+  // 3. Receipt SVG shows sender bank + account on deposit AND recipient bank + account on debit
+  const depSvg = receiptGen.buildReceiptSvg({
+    receiptId: "DEP-001",
+    senderName: "ADAORA EZE",
+    senderBank: "GTBank",
+    senderAddress: "0123456789",
+    recipientName: "Statement User",
+    amountUsdc: 100,
+    displayCurrency: "NGN",
+    fiatAmountDisplay: "₦150,000.00",
+    type: "Deposit",
+    status: "Confirmed",
+  });
+  assert.ok(depSvg.includes("ADAORA EZE"), "Deposit receipt must include sender name");
+  assert.ok(depSvg.includes("GTBank"), "Deposit receipt must include sender bank");
+  assert.ok(depSvg.includes("0123456789"), "Deposit receipt must include sender account number");
+
+  const debSvg = receiptGen.buildReceiptSvg({
+    receiptId: "PAY-001",
+    senderName: "Statement User",
+    recipientName: "LAGOS LOGISTICS LTD",
+    bankName: "Zenith Bank",
+    recipientAddress: "1012345678",
+    amountUsdc: 50,
+    displayCurrency: "NGN",
+    fiatAmountDisplay: "₦75,000.00",
+    type: "Cash Out",
+    status: "Confirmed",
+  });
+  assert.ok(debSvg.includes("LAGOS LOGISTICS LTD"), "Debit receipt must include recipient name");
+  assert.ok(debSvg.includes("Zenith Bank"), "Debit receipt must include recipient bank");
+  assert.ok(debSvg.includes("1012345678"), "Debit receipt must include recipient account");
+
+  // 4. Full Account Statement includes BOTH Fiat & Crypto deposits & withdrawals with counterparty & direction
+  const built = statement.buildAccountStatement({ db, telegramId: stmtTg, limit: 50 });
+  assert.equal(built.summary.fiatDepositsCount, 1);
+  assert.equal(built.summary.fiatWithdrawalsCount, 1);
+  assert.equal(built.summary.cryptoDepositsCount, 1);
+  assert.equal(built.summary.cryptoWithdrawalsCount, 1);
+  assert.ok(built.csv.includes("CREDIT,Fiat,Naira Bank Deposit,NGN,150000"), "CSV must show Fiat CREDIT with NGN amount");
+  assert.ok(built.csv.includes("ADAORA EZE,GTBank,0123456789"), "CSV must show deposit sender bank & account");
+  assert.ok(built.csv.includes("DEBIT,Fiat,Naira Bank Withdrawal,NGN,75000,-50,LAGOS LOGISTICS LTD,Zenith Bank,1012345678"), "CSV must show Fiat DEBIT with recipient details");
+  assert.ok(built.csv.includes("CREDIT,Crypto,Cross-Chain Crypto Deposit,USDC,200,200,,Base,0x1111111111111111111111111111111111111111"), "CSV must show Crypto CREDIT");
+  assert.ok(built.csv.includes("DEBIT,Crypto,Cross-Chain Crypto Withdrawal,,,-40,,SOLANA,4BPnUzFDibVcWQ5zzixGodRUHwqDxHYpUPdPYus3Bn56"), "CSV must show Crypto DEBIT");
+
+  // 5. Mobile getTransactionReceipt renders PNG cleanly for deposit with sender info
+  const depTx = db.db.prepare("SELECT * FROM transactions WHERE telegram_id = ? AND tx_hash = 'nv_in_ngn_cp_1'").get(stmtTg);
+  assert.ok(depTx, "Expected persisted Nuvion deposit row");
+  const pngRes = await features.getTransactionReceipt({ telegramId: stmtTg, user: db.getUser(stmtTg) }, depTx.id, {});
+  assert.equal(pngRes.status, 200);
+  assert.equal(pngRes.contentType, "image/png");
+  assert.ok(Buffer.isBuffer(pngRes.raw) && pngRes.raw.length > 5000, "Must return valid PNG receipt");
+});
+
 test.after(() => {
   try {
     if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
-  } catch (_) {}
+  } catch (_) { }
 });

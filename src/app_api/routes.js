@@ -854,21 +854,30 @@ async function transactions(req, url) {
     return null;
   };
 
+  const statementLib = require("../statement");
   const mapped = rows.map((t) => {
     const depMeta = depositInfo(t) || {};
     const payMeta = payoutInfo(t) || {};
-    let offrampOrderId = null;
-    if (/offramp|payout/i.test(String(t.type || "")) && t.tx_hash && typeof db.getOfframpOrderByOrderId === "function") {
-      try {
-        const o = db.getOfframpOrderByOrderId(t.tx_hash);
-        if (o && Number(o.telegram_id) === Number(auth.telegramId) && o.order_id) {
-          offrampOrderId = String(o.order_id);
-        }
-      } catch (_) { }
+    const enriched = statementLib.enrichTransactionRow(db, auth.telegramId, t);
+    let counterparty = payMeta.counterparty || null;
+    if (!counterparty && (enriched.counterpartyName || enriched.counterpartyBank || enriched.counterpartyAccount)) {
+      const acct = String(enriched.counterpartyAccount || "");
+      const acctDisplay = acct && acct.length > 16 ? `${acct.slice(0, 6)}…${acct.slice(-4)}` : acct;
+      counterparty = {
+        name: enriched.counterpartyName || null,
+        detail: [enriched.counterpartyBank, acctDisplay].filter(Boolean).join(" · "),
+      };
     }
+    const offrampOrderId = enriched.offrampOrderId || null;
     return {
       ...depMeta,
       ...payMeta,
+      ...(counterparty ? { counterparty } : {}),
+      ...(enriched.fiatCurrency && !depMeta.fiatCurrency && !payMeta.fiatCurrency ? { fiatCurrency: enriched.fiatCurrency } : {}),
+      ...(enriched.fiatAmount != null && depMeta.fiatAmount == null && payMeta.fiatAmount == null ? { fiatAmount: enriched.fiatAmount } : {}),
+      ...(enriched.payoutStatus && !payMeta.payoutStatus ? { payoutStatus: enriched.payoutStatus, payoutUpdatedAt: enriched.payoutUpdatedAt } : {}),
+      direction: enriched.direction,
+      category: enriched.category,
       id: t.id,
       type: t.type,
       status: t.status,

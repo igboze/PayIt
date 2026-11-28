@@ -216,7 +216,23 @@ async function runBankPayout({ telegramId, accountType, amount, payment, key }) 
     amountUsdc: fundingAmount, feeUsdc, netAmountUsdc: fundingAmount, fiatAmount: order.fiatAmount || null, rate: order.rate || null, rail, txHash, feeTxHash,
     narration: payment.narration || null, senderName: senderName || null, status: "submitted",
   });
-  db.recordTransaction(telegramId, "offramp", String(walletLib.parseToMicro(fundingAmount.toFixed(6))), "submitted", txHash || orderId, accountType, 18, rail, payment.narration || null);
+  db.recordTransaction(
+    telegramId,
+    "offramp",
+    String(walletLib.parseToMicro(fundingAmount.toFixed(6))),
+    "submitted",
+    txHash || orderId,
+    accountType,
+    18,
+    rail,
+    payment.narration || null,
+    {
+      ...(order.fiatAmount ? { sourceCurrency: "NGN", sourceAmount: Number(order.fiatAmount) } : {}),
+      counterpartyName: order.accountName || payment.accountName || null,
+      counterpartyBank: order.bankName || (order.bank && order.bank.name) || null,
+      counterpartyAccount: String(payment.accountNumber || ""),
+    }
+  );
   return txHash || orderId;
 }
 

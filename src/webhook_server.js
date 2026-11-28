@@ -77,6 +77,9 @@ async function sendOnrampDepositNotification({
   rate = null,
   network = "Arc Mainnet",
   narration = null,
+  senderName = null,
+  senderBank = null,
+  senderAccount = null,
 }) {
   const botInstance = (bot && bot.telegram) ? bot : (bot && bot.bot && bot.bot.telegram ? bot.bot : bot);
   if (!botInstance || !botInstance.telegram || !telegramId) return;
@@ -122,6 +125,11 @@ async function sendOnrampDepositNotification({
     caption += `📈 <b>Exchange Rate:</b> ₦${Number(rate).toLocaleString()}/$\n`;
   }
 
+  const senderDisplay = [senderName, [senderBank, senderAccount].filter(Boolean).join(" · ")].filter(Boolean).join(" — ");
+  if (senderDisplay) {
+    caption += `👤 <b>From:</b> ${escapeHtml(senderDisplay)}\n`;
+  }
+
   if (narration && String(narration).trim()) {
     caption += `💬 <b>Narration:</b> <i>${escapeHtml(String(narration).trim())}</i>\n`;
   }
@@ -156,7 +164,9 @@ async function sendOnrampDepositNotification({
   try {
     receiptPath = await generateReceiptPNG({
       receiptId: `DEP-${String(orderId || txHash || Date.now()).slice(0, 10)}`,
-      senderName: "Bank Transfer (Naira On-Ramp)",
+      senderName: senderName || "Bank Transfer (Naira On-Ramp)",
+      senderBank: senderBank || "",
+      senderAddress: senderAccount || "",
       recipientName: user ? (isBiz ? (user.business_name || "Business Account") : (user.first_name || "Personal Account")) : "Proxim Account",
       recipientAddress: userAddress || null,
       amountUsdc: effectiveUsdc,
@@ -371,6 +381,9 @@ async function processPajEvent(payload, bot) {
                 orderId: effectiveOrderId,
                 onchainTxHash: trackedOfframp?.tx_hash || data.txHash || null,
                 ...(resolvedFiatNgn > 0 ? { sourceCurrency: "NGN", sourceAmount: resolvedFiatNgn } : {}),
+                counterpartyName: trackedOfframp?.account_name || data.accountName || null,
+                counterpartyBank: bankName || null,
+                counterpartyAccount: accountNumber || null,
               }
             );
           }
@@ -747,6 +760,7 @@ async function processPajEvent(payload, bot) {
     const amountMicro = walletLib.parseToMicro(creditedAmountUsdc.toFixed(6));
 
     const onrampNarration = data.narration || data.description || data.paymentReference || data.remark || data.metadata?.narration || null;
+    const pajSender = require("./statement").extractInboundSenderDetails(data);
 
     // Record onramp transaction in ledger
     const settlementTxHash = (bridgeResult && bridgeResult.arcTxHash) || solanaTxSignature || data.id;
@@ -765,10 +779,20 @@ async function processPajEvent(payload, bot) {
           sourceCurrency: "NGN",
           sourceAmount: effectiveFiatAmount > 0 ? effectiveFiatAmount : null,
           depositChannel: "naira",
+          counterpartyName: pajSender.name,
+          counterpartyBank: pajSender.bank,
+          counterpartyAccount: pajSender.account,
         }
       );
       if (fiatOrderId) {
         db.completeOnrampOrder(fiatOrderId, { txHash: settlementTxHash, narration: onrampNarration });
+        if (pajSender.name || pajSender.bank || pajSender.account) {
+          try {
+            db.db.prepare(
+              "UPDATE paj_onramp_orders SET sender_name = COALESCE(sender_name, ?), sender_bank = COALESCE(sender_bank, ?), sender_account = COALESCE(sender_account, ?) WHERE order_id = ?"
+            ).run(pajSender.name, pajSender.bank, pajSender.account, String(fiatOrderId));
+          } catch (_) { }
+        }
       }
     } catch (recErr) {
       console.warn("[webhook_server] Record onramp tx error:", recErr.message);
@@ -790,6 +814,9 @@ async function processPajEvent(payload, bot) {
             rate: orderRate,
             network: "Arc Mainnet",
             narration: onrampNarration,
+            senderName: pajSender.name,
+            senderBank: pajSender.bank,
+            senderAccount: pajSender.account,
           });
         } else if (process.env.AUTO_BRIDGE_SOLANA_TO_ARC !== "true") {
           await sendOnrampDepositNotification({
@@ -804,6 +831,9 @@ async function processPajEvent(payload, bot) {
             rate: orderRate,
             network: "Solana Mainnet",
             narration: onrampNarration,
+            senderName: pajSender.name,
+            senderBank: pajSender.bank,
+            senderAccount: pajSender.account,
           });
         } else if (typeof botInstance.telegram?.sendMessage === "function") {
           await botInstance.telegram.sendMessage(

@@ -1004,7 +1004,17 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
         amountMicro,
         "confirmed",
         burnResult.instantDisburseHash || burnResult.txHash || txHash,
-        accountType
+        accountType,
+        18,
+        String(effectiveCctpConfig.name || "base").toLowerCase(),
+        `Crypto deposit from ${effectiveCctpConfig.name}`,
+        {
+          sourceCurrency: "USDC",
+          sourceAmount: effectiveAmountUsdc,
+          depositChannel: "crypto",
+          counterpartyBank: effectiveCctpConfig.name,
+          counterpartyAccount: (fromAddress && fromAddress !== "External") ? fromAddress : null,
+        }
       );
       db.awardPoints(targetTelegramId, 5, "deposit", `Cross-chain deposit from ${effectiveCctpConfig.name}`);
       recorded = true;

@@ -399,7 +399,23 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
     bankDetails.narration || options.narration || null,
     effectiveSenderName ? `Payment from ${effectiveSenderName}` : null
   );
-  const txId = db.recordTransaction(telegramId, "offramp", amountMicro, "pending", null, options.accountType || "personal", 18, rail, effectiveNarration);
+  const txId = db.recordTransaction(
+    telegramId,
+    "offramp",
+    amountMicro,
+    "pending",
+    null,
+    options.accountType || "personal",
+    18,
+    rail,
+    effectiveNarration,
+    {
+      ...(bankDetails?.fiatAmount ? { sourceCurrency: "NGN", sourceAmount: Number(bankDetails.fiatAmount) } : {}),
+      counterpartyName: bankDetails?.accountName || null,
+      counterpartyBank: bankDetails?.bankName || null,
+      counterpartyAccount: bankDetails?.accountNumber ? String(bankDetails.accountNumber) : null,
+    }
+  );
 
   // Step 1: Create or reuse existing offramp order via Paj v2 for the full netAmountUsdc (payout amount).
   // CRITICAL: Only reuse a pre-validation order if its narration & senderName ALREADY match the user's final choices.
@@ -927,7 +943,18 @@ async function executeCrossChainWithdrawal(userWallet, {
 
   // ── Tier 1: Direct CCTP Withdrawal ──────────────────────────────────────────
   if (CCTP_CHAINS.has(chainKey) && !intentAsset) {
-    const txId = db.recordTransaction(telegramId, "crosschain_withdraw", amountMicro, "pending", null, accountType, 18, "arc");
+    const txId = db.recordTransaction(
+      telegramId,
+      "crosschain_withdraw",
+      amountMicro,
+      "pending",
+      null,
+      accountType,
+      18,
+      "arc",
+      `Crypto withdrawal to ${chainKey.toUpperCase()}`,
+      { counterpartyBank: chainKey.toUpperCase(), counterpartyAccount: destinationAddress }
+    );
     try {
       const result = await cctpBridge.executeArcCrossChainWithdrawal({
         userWallet,
@@ -1018,7 +1045,18 @@ async function executeCrossChainWithdrawal(userWallet, {
   // Step 2: Proxim triggers 1Click Intent from Base USDC to destination chain
   const INTENT_CHAINS = new Set(["bitcoin", "btc", "tron", "near", "starknet"]);
   if (INTENT_CHAINS.has(chainKey) || intentAsset) {
-    const txId = db.recordTransaction(telegramId, "intent_withdraw", amountMicro, "pending", null, accountType, 18, "arc");
+    const txId = db.recordTransaction(
+      telegramId,
+      "intent_withdraw",
+      amountMicro,
+      "pending",
+      null,
+      accountType,
+      18,
+      "arc",
+      `Crypto withdrawal to ${chainKey.toUpperCase()}`,
+      { counterpartyBank: chainKey.toUpperCase(), counterpartyAccount: destinationAddress }
+    );
     try {
       // Burn to Base relayer / destination
       const baseBurn = await cctpBridge.executeArcToEvmCctpBurn({

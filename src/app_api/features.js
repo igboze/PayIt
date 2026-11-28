@@ -851,6 +851,38 @@ async function getNgnDepositStatus(auth, orderId) {
           console.warn("[app_api:onramp_status_fee_note]", feeErr.message);
         }
       }
+      // Record deposit_naira transaction in ledger so polling-settled mobile deposits appear in statement & receipts
+      try {
+        const creditedUsdc = feeTxHash ? Number((amountUsdc - feeUsdc).toFixed(4)) : amountUsdc;
+        const resolvedFiat = Number(live?.fiatAmount || live?.amountFiat || local.fiat_amount || 0) || null;
+        const sender = require("../statement").extractInboundSenderDetails(live || {});
+        if (creditedUsdc > 0 && typeof db.recordTransaction === "function") {
+          const walletLib = dep("walletLib");
+          const amtMicro = walletLib.parseToMicro(creditedUsdc.toFixed(6));
+          db.recordTransaction(
+            auth.telegramId,
+            "deposit_naira",
+            String(amtMicro),
+            "confirmed",
+            live?.txHash || local.tx_hash || id,
+            acctType,
+            18,
+            rail === "solana" ? "solana" : "arc",
+            live?.narration || local.narration || null,
+            {
+              orderId: id,
+              sourceCurrency: "NGN",
+              sourceAmount: resolvedFiat,
+              depositChannel: "naira",
+              counterpartyName: sender.name,
+              counterpartyBank: sender.bank,
+              counterpartyAccount: sender.account,
+            }
+          );
+        }
+      } catch (recErr) {
+        console.warn("[app_api:onramp_status_record_note]", recErr.message);
+      }
     }
   }
 
@@ -2028,41 +2060,20 @@ async function exportStatementCsv(auth, url) {
   if (fromRaw && Number.isNaN(fromMs)) throw bad("Invalid 'from' date.");
   if (toRaw && Number.isNaN(toMs)) throw bad("Invalid 'to' date.");
 
-  let rows = dep("db").getTransactions(auth.telegramId, limit, accountType);
-  if (fromMs !== null || toMs !== null) {
-    rows = rows.filter((t) => {
-      const ts = t.created_at ? Date.parse(t.created_at.includes("T") ? t.created_at : `${t.created_at.replace(" ", "T")}Z`) : NaN;
-      if (Number.isNaN(ts)) return false;
-      if (fromMs !== null && ts < fromMs) return false;
-      if (toMs !== null && ts > toMs) return false;
-      return true;
-    });
-  }
-
-  const header = ["id", "created_at", "account_type", "type", "status", "amount", "amount_raw", "decimals", "chain", "tx_hash", "narration"];
-  const lines = [header.join(",")];
-  for (const t of rows) {
-    const rawAmt = t.amount_micro ?? t.amount ?? "";
-    const decimals = t.decimals ?? 18;
-    lines.push([
-      t.id,
-      t.created_at || "",
-      t.account_type || "personal",
-      t.type || "",
-      t.status || "",
-      formatAmountForCsv(rawAmt, decimals),
-      rawAmt,
-      decimals,
-      t.chain || "arc",
-      t.tx_hash || "",
-      t.narration || "",
-    ].map(csvCell).join(","));
-  }
+  const statement = require("../statement");
+  const built = statement.buildAccountStatement({
+    db: dep("db"),
+    telegramId: auth.telegramId,
+    accountType,
+    limit,
+    fromMs,
+    toMs,
+  });
 
   const filename = `proxim-statement${accountType ? `-${accountType}` : ""}.csv`;
   return {
     status: 200,
-    raw: `${lines.join("\r\n")}\r\n`,
+    raw: built.csv,
     contentType: "text/csv; charset=utf-8",
     headers: {
       "Content-Disposition": `attachment; filename="${filename}"`,
@@ -3929,30 +3940,54 @@ async function getTransactionReceipt(auth, rawId, opts = {}) {
   const db = dep("db");
   const tx = db.db.prepare("SELECT * FROM transactions WHERE id = ? AND telegram_id = ?").get(id, Number(auth.telegramId));
   if (!tx) throw new FeatureError(404, "not_found", "Transaction not found.");
-  const amountNum = Number(formatAmountForCsv(tx.amount_micro ?? tx.amount ?? "0", tx.decimals ?? 18)) || 0;
+
+  const statement = require("../statement");
+  const enriched = statement.enrichTransactionRow(db, auth.telegramId, tx);
+  const amountNum = enriched.usdAmount || 0;
   const acctType = tx.account_type || "personal";
-  // Bank payouts: name the account that was paid, like the bot's payout receipts.
-  let payout = null;
-  if (/offramp|payout|withdraw/i.test(String(tx.type || "")) && tx.tx_hash && typeof db.getOfframpOrderByOrderId === "function") {
-    try {
-      const o = db.getOfframpOrderByOrderId(tx.tx_hash);
-      if (o && Number(o.telegram_id) === Number(auth.telegramId)) payout = o;
-    } catch (_) { }
-  }
-  const outPath = await dep("receiptGenerator").generateReceiptPNG({
+  const ownerName = db.resolveSenderName(auth.telegramId, acctType) || (acctType === "business" ? "Business Account" : "Personal Account");
+  const ownerAddr = acctType === "business" ? (auth.user.business_deposit_address || auth.user.deposit_address) : auth.user.deposit_address;
+
+  const isCredit = enriched.isCredit;
+  const fiatCur = enriched.fiatCurrency;
+  const fiatAmt = enriched.fiatAmount;
+  const isNgn = fiatCur === "NGN";
+  const formatFiat = (cur, amt) => {
+    if (!cur || !amt) return null;
+    if (cur === "NGN") return `₦${Number(amt).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const syms = { USD: "$", GBP: "£", EUR: "€", CAD: "CA$", AED: "AED ", GHS: "GH₵", KES: "KSh ", TZS: "TSh ", MXN: "MX$" };
+    return `${syms[cur] || `${cur} `}${Number(amt).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  const receiptOpts = {
     receiptId: `TX-${tx.id}`,
-    senderName: db.resolveSenderName(auth.telegramId, acctType),
-    senderAddress: acctType === "business" ? (auth.user.business_deposit_address || auth.user.deposit_address) : auth.user.deposit_address,
-    recipientName: payout?.account_name || tx.narration || tx.type || "Transaction",
-    recipientAddress: payout ? [payout.bank_name, payout.account_number].filter(Boolean).join(" · ") : (tx.tx_hash || ""),
     amountUsdc: amountNum,
-    token: "USDC",
-    type: tx.type || "Transfer",
+    token: isNgn ? "NGN" : (fiatCur || "USDC"),
+    displayCurrency: fiatCur || "USDC",
+    nairaEquiv: isNgn && fiatAmt ? formatFiat("NGN", fiatAmt) : null,
+    fiatAmountDisplay: fiatCur && fiatAmt ? formatFiat(fiatCur, fiatAmt) : null,
+    type: isCredit ? "Deposit" : (/offramp|withdraw_naira|payout/i.test(String(tx.type || "")) ? "Cash Out" : (enriched.typeLabel || tx.type || "Transfer")),
     timestamp: tx.created_at || new Date().toISOString(),
     status: tx.status || "Completed",
     txHash: tx.tx_hash || null,
     narration: tx.narration || null,
-  });
+  };
+
+  if (isCredit) {
+    receiptOpts.senderName = enriched.counterpartyName || (isNgn ? "Nigerian Bank Transfer" : (fiatCur ? `${fiatCur} Bank Transfer` : "External Deposit"));
+    receiptOpts.senderBank = enriched.counterpartyBank || "";
+    receiptOpts.senderAddress = enriched.counterpartyAccount || "";
+    receiptOpts.recipientName = ownerName;
+    receiptOpts.recipientAddress = ownerAddr || "";
+  } else {
+    receiptOpts.senderName = ownerName;
+    receiptOpts.senderAddress = ownerAddr || "";
+    receiptOpts.recipientName = enriched.counterpartyName || tx.narration || enriched.typeLabel || "Recipient";
+    receiptOpts.bankName = enriched.counterpartyBank || "";
+    receiptOpts.recipientAddress = enriched.counterpartyAccount || (tx.tx_hash || "");
+  }
+
+  const outPath = await dep("receiptGenerator").generateReceiptPNG(receiptOpts);
   const fs = require("fs");
   const png = fs.readFileSync(outPath);
   try { fs.unlinkSync(outPath); } catch (_) { }
