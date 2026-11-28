@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, StyleSheet, Text, View } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { api } from "../api/client";
 import type { AccountType, GlobalAccountItem } from "../api/types";
@@ -27,8 +27,12 @@ const CURRENCY_NAMES: Record<string, string> = {
 export function GlobalAccountsDeposit({ accountType, onNeedsVerification }: { accountType: AccountType; onNeedsVerification?: () => void }) {
   const [accounts, setAccounts] = useState<GlobalAccountItem[]>([]);
   const [supported, setSupported] = useState<string[]>([]);
+  const [currencyFees, setCurrencyFees] = useState<Record<string, { formatted: string; amount: number; coveredByBaseMonthlyFee?: boolean }>>({});
+  const [minAgeDays, setMinAgeDays] = useState<number>(15);
+  const [graceDays, setGraceDays] = useState<number>(14);
   const [loading, setLoading] = useState(true);
   const [opening, setOpening] = useState<string | null>(null);
+  const [closing, setClosing] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -39,6 +43,9 @@ export function GlobalAccountsDeposit({ accountType, onNeedsVerification }: { ac
       const res = await api.listGlobalAccounts(accountType);
       setAccounts(res.accounts || []);
       setSupported(res.supportedCurrencies || []);
+      setCurrencyFees(res.currencyFees || {});
+      if (res.billingPolicy?.minAgeDays != null) setMinAgeDays(res.billingPolicy.minAgeDays);
+      if (res.billingPolicy?.graceDays != null) setGraceDays(res.billingPolicy.graceDays);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't load your accounts abroad.");
     } finally {
@@ -56,7 +63,7 @@ export function GlobalAccountsDeposit({ accountType, onNeedsVerification }: { ac
     setTimeout(() => setNotice(null), 2000);
   };
 
-  const open = async (currency: string) => {
+  const executeOpen = async (currency: string) => {
     setOpening(currency);
     setError(null);
     try {
@@ -70,6 +77,52 @@ export function GlobalAccountsDeposit({ accountType, onNeedsVerification }: { ac
     } finally {
       setOpening(null);
     }
+  };
+
+  const open = (currency: string) => {
+    const code = currency.toUpperCase();
+    const fee = currencyFees[code];
+    if (code === "NGN" || fee?.coveredByBaseMonthlyFee) {
+      executeOpen(code);
+      return;
+    }
+    const feeLabel = fee?.formatted || "monthly maintenance fee";
+    Alert.alert(
+      `Open ${CURRENCY_NAMES[code] || code} Account?`,
+      `Monthly maintenance fee: ${feeLabel}\n\n• Billed automatically at month-end from your balance\n• Accounts opened less than ${minAgeDays} days before month-end are not charged until the following month\n• Close any zero-balance account anytime to stop future fees (unpaid zero-balance accounts close automatically ${graceDays} days after notice).`,
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: `Open ${code} Account`, onPress: () => executeOpen(code) },
+      ]
+    );
+  };
+
+  const confirmClose = (currency: string) => {
+    const code = currency.toUpperCase();
+    Alert.alert(
+      `Close ${code} Account?`,
+      `Closing this account stops all future monthly maintenance fees for ${code}. Your ${code} balance must be 0 before closing. You can open a new account anytime later.`,
+      [
+        { text: "Keep Account", style: "cancel" },
+        {
+          text: "Close Account",
+          style: "destructive",
+          onPress: async () => {
+            setClosing(code);
+            setError(null);
+            try {
+              const res = await api.closeGlobalAccount(code, accountType);
+              setNotice(res.notice || `${code} account closed.`);
+              await load();
+            } catch (err) {
+              setError(err instanceof Error ? err.message : `Couldn't close ${code} account.`);
+            } finally {
+              setClosing(null);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const have = new Set(accounts.map((a) => a.currency.toUpperCase()));
@@ -105,6 +158,25 @@ export function GlobalAccountsDeposit({ accountType, onNeedsVerification }: { ac
             {a.sortCode ? <KeyValueRow currency={false} label="Sort code" value={a.sortCode} onCopy={() => copy("Sort code", a.sortCode!)} /> : null}
             {a.iban ? <KeyValueRow currency={false} label="IBAN" value={a.iban} onCopy={() => copy("IBAN", a.iban!)} /> : null}
             {a.swiftCode ? <KeyValueRow currency={false} label="SWIFT / BIC" value={a.swiftCode} onCopy={() => copy("SWIFT code", a.swiftCode!)} /> : null}
+            {a.monthlyFee && a.currency.toUpperCase() !== "NGN" ? (
+              <KeyValueRow currency={false} label="Monthly maintenance" value={a.monthlyFee} />
+            ) : null}
+            {a.pastDue ? (
+              <Text style={styles.pastDueWarn}>
+                Maintenance fee due ({a.pastDue.currency} {a.pastDue.amount.toFixed(2)}). Fund your balance before{" "}
+                {String(a.pastDue.graceExpiresAt || "").slice(0, 10)} to keep this account active.
+              </Text>
+            ) : null}
+            {a.canClose !== false && a.currency.toUpperCase() !== "NGN" ? (
+              <Button
+                title={`Close ${a.currency.toUpperCase()} account`}
+                variant="secondary"
+                loading={closing === a.currency.toUpperCase()}
+                disabled={Boolean(closing)}
+                onPress={() => confirmClose(a.currency)}
+                style={{ marginTop: 8 }}
+              />
+            ) : null}
           </View>
         );
       })}
@@ -112,17 +184,23 @@ export function GlobalAccountsDeposit({ accountType, onNeedsVerification }: { ac
       {!loading && canOpen.length ? (
         <View style={styles.card}>
           <Text style={styles.title}>{accounts.length ? "Add another currency" : "Open an account abroad"}</Text>
-          <Text style={styles.intro}>Get your own account details in another currency. ID verification is required.</Text>
-          {canOpen.map((c) => (
-            <Button
-              key={c}
-              title={`Open ${CURRENCY_NAMES[c.toUpperCase()] || c} account`}
-              variant="secondary"
-              loading={opening === c}
-              disabled={Boolean(opening)}
-              onPress={() => open(c)}
-            />
-          ))}
+          <Text style={styles.intro}>
+            Get your own named bank details in another currency. Monthly maintenance fees apply at month-end once open {minAgeDays}+ days (close anytime for free).
+          </Text>
+          {canOpen.map((c) => {
+            const code = c.toUpperCase();
+            const feeLabel = code !== "NGN" && currencyFees[code]?.formatted ? ` · ${currencyFees[code].formatted}` : "";
+            return (
+              <Button
+                key={c}
+                title={`Open ${CURRENCY_NAMES[code] || code} account${feeLabel}`}
+                variant="secondary"
+                loading={opening === c}
+                disabled={Boolean(opening)}
+                onPress={() => open(c)}
+              />
+            );
+          })}
         </View>
       ) : null}
     </View>
@@ -137,4 +215,5 @@ const styles = StyleSheet.create({
   status: { ...TYPE.label },
   statusOk: { color: COLORS.successText },
   statusWait: { color: COLORS.warningText },
+  pastDueWarn: { ...TYPE.label, color: COLORS.dangerText, marginTop: 6 },
 });

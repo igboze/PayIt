@@ -1509,6 +1509,11 @@ const PARAM_ROUTES = [
     rateLimit(`global-acct:${auth.telegramId}`, 10, 60 * 60 * 1000);
     return features.provisionGlobalAccount(auth, body, m[1]);
   }],
+  ["DELETE", /^\/global\/accounts\/([A-Za-z]{3})$/, (req, url, m) => {
+    const auth = authenticate(req);
+    rateLimit(`global-acct-close:${auth.telegramId}`, 10, 60 * 60 * 1000);
+    return features.closeGlobalAccount(auth, url, m[1]);
+  }],
   ["GET", /^\/cards\/([^/]+)\/transactions$/, (req, url, m) => features.listCardTransactions(authenticate(req), url, m[1])],
   ["DELETE", /^\/schedules\/([^/]+)$/, (req, _arg, m) => features.updateScheduleStatus(authenticate(req), m[1], "cancelled")],
   ["POST", /^\/schedules\/([^/]+)\/cancel$/, (req, _arg, m) => features.updateScheduleStatus(authenticate(req), m[1], "cancelled")],

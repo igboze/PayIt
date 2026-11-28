@@ -268,6 +268,15 @@ export interface GlobalAccountItem {
   iban: string | null;
   swiftCode: string | null;
   status: string;
+  monthlyFee?: string | null;
+  monthlyFeeAmount?: number | null;
+  canClose?: boolean;
+  pastDue?: {
+    billingMonth: string;
+    amount: number;
+    currency: string;
+    graceExpiresAt: string | null;
+  } | null;
 }
 
 export interface GlobalRailField {

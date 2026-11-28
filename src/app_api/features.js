@@ -1112,16 +1112,27 @@ async function listGlobalAccounts(auth, url) {
   const accountType = resolveAccountType(auth, url.searchParams.get("account"));
   const db = dep("db");
   const corridors = dep("nuvionCorridors");
+  const nuvion = dep("nuvion");
   const entity = db.getNuvionEntityByUser(auth.telegramId, accountType);
   const supportedCurrencies = corridors?.ALL_NUVION_RECEIVING_CURRENCIES || ["USD", "GBP", "EUR", "NGN", "AED", "KES", "GHS", "TZS", "MXN", "CAD"];
+  const currencyFees = typeof nuvion?.getAllReceivingCurrencyFees === "function" ? nuvion.getAllReceivingCurrencyFees() : {};
+  const billingPolicy = {
+    billingCycle: "month_end",
+    minAgeDays: Number(process.env.GLOBAL_ACCOUNT_FEE_MIN_AGE_DAYS || 15),
+    graceDays: Number(process.env.GLOBAL_ACCOUNT_FEE_GRACE_DAYS || 14),
+  };
 
   if (!entity) {
     return {
       status: 200,
-      data: { accountType, kycStatus: "not_started", supportedCurrencies, accounts: [] },
+      data: { accountType, kycStatus: "not_started", supportedCurrencies, currencyFees, billingPolicy, accounts: [] },
     };
   }
   const details = db.getNuvionAccountDetailsByEntity(entity.entity_id).filter((d) => d.asset_type === "fiat");
+  const pastDueRows = typeof db.getPastDueGlobalAccountFees === "function"
+    ? db.getPastDueGlobalAccountFees({ telegramId: auth.telegramId })
+    : [];
+  const pastDueByAccount = new Map(pastDueRows.map((r) => [String(r.account_id), r]));
   const intlBanks = dep("internationalBanks");
   const accounts = await Promise.all(
     details.map(async (d) => {
@@ -1131,7 +1142,21 @@ async function listGlobalAccounts(auth, url) {
           liveCode = await intlBanks.enrichReceivingBankCodeLive(d.currency, d.bank_name);
         } catch (_) { }
       }
-      return formatGlobalAccount(d, liveCode);
+      const formatted = formatGlobalAccount(d, liveCode);
+      const feeSpec = currencyFees[String(d.currency || "").toUpperCase()] || null;
+      const pastDue = pastDueByAccount.get(String(d.account_id)) || null;
+      return {
+        ...formatted,
+        monthlyFee: feeSpec ? feeSpec.formatted : null,
+        monthlyFeeAmount: feeSpec ? feeSpec.amount : null,
+        canClose: String(d.currency || "").toUpperCase() !== "NGN",
+        pastDue: pastDue ? {
+          billingMonth: pastDue.billing_month,
+          amount: pastDue.amount_major,
+          currency: pastDue.currency,
+          graceExpiresAt: pastDue.grace_expires_at,
+        } : null,
+      };
     })
   );
   return {
@@ -1140,9 +1165,38 @@ async function listGlobalAccounts(auth, url) {
       accountType,
       kycStatus: entity.status || "pending",
       supportedCurrencies,
+      currencyFees,
+      billingPolicy,
       accounts,
     },
   };
+}
+
+async function closeGlobalAccount(auth, url, rawCurrency) {
+  const currency = String(rawCurrency || "").trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(currency)) throw bad("Invalid currency code.");
+  if (currency === "NGN") {
+    throw new FeatureError(400, "cannot_close_primary", "Your primary NGN account cannot be closed here.");
+  }
+  const accountType = resolveAccountType(auth, url?.searchParams?.get("account"));
+  try {
+    const res = await dep("nuvionOrchestrator").closeGlobalReceivingAccount(auth.telegramId, accountType, currency, {
+      reason: "user_closed_mobile",
+    });
+    return {
+      status: 200,
+      data: {
+        closed: true,
+        accountType,
+        currency,
+        accountId: res.accountId,
+        notice: `${currency} account closed. No further monthly maintenance fees will apply.`,
+      },
+    };
+  } catch (err) {
+    const msg = String(err.message || "Could not close global account.").replace(/nuvion/gi, "Global Neobank");
+    throw new FeatureError(400, "close_failed", msg);
+  }
 }
 
 async function provisionGlobalAccount(auth, body, rawCurrency) {
@@ -4053,6 +4107,7 @@ module.exports = {
   getCryptoDepositStatus,
   listGlobalAccounts,
   provisionGlobalAccount,
+  closeGlobalAccount,
   listGlobalCorridors,
   listGlobalBankCodes,
   listGlobalRecipients,

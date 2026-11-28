@@ -274,6 +274,70 @@ async function provisionGlobalReceivingAccount(telegramId, accountType = "person
   };
 }
 
+/**
+ * Close an unused / zero-balance international receiving account on Nuvion (`DELETE /accounts/{account_id}`)
+ * so Nuvion stops charging monthly maintenance fees for it.
+ * Safety guard: refuses deletion if the account still holds any positive balance (`available > 0 || current > 0`).
+ */
+async function closeGlobalReceivingAccount(telegramId, accountType = "personal", currency, { allowNgn = false, reason = "user_requested" } = {}) {
+  const code = String(currency || "").trim().toUpperCase();
+  if (!code) throw new Error("Currency is required to close an account.");
+  if (code === "NGN" && !allowNgn) {
+    throw new Error("Your primary NGN account cannot be closed here.");
+  }
+
+  const entity = db.getNuvionEntityByUser(telegramId, accountType);
+  if (!entity) {
+    throw new Error("No verified account profile found.");
+  }
+
+  const activeAccts = db.getNuvionAccountsByEntity(entity.entity_id, { currency: code, purpose: "receiving" });
+  const target = activeAccts[0] || null;
+  if (!target) {
+    throw new Error(`No active ${code} receiving account found.`);
+  }
+
+  // Live safety check on Nuvion: never delete an account that holds funds
+  if (nuvion.isNuvionConfigured()) {
+    try {
+      const liveAcct = await nuvion.getAccount(target.account_id, entity.entity_id);
+      const avail = Number(liveAcct?.balance?.available || 0);
+      const curr = Number(liveAcct?.balance?.current || 0);
+      if (avail > 0 || curr > 0) {
+        const major = nuvion.fromNuvionMinor(Math.max(avail, curr));
+        throw new Error(
+          `Your ${code} account still has a balance of ${formatFiatAmount(code, major)}. Please withdraw or convert it before closing.`
+        );
+      }
+    } catch (balErr) {
+      if (/still has a balance/i.test(balErr.message)) throw balErr;
+      // If Nuvion returns 404 (already deleted on Nuvion), still clean up local DB cleanly
+      if (balErr?.status === 404) {
+        db.markNuvionAccountClosed(target.account_id);
+        invalidateEntityFiatBalanceCache(entity.entity_id);
+        return { closed: true, accountId: target.account_id, currency: code, alreadyDeletedRemotely: true };
+      }
+      throw balErr;
+    }
+
+    try {
+      await nuvion.deleteAccount(target.account_id, entity.entity_id);
+    } catch (delErr) {
+      if (delErr?.status !== 404) throw delErr;
+    }
+  }
+
+  db.markNuvionAccountClosed(target.account_id);
+  invalidateEntityFiatBalanceCache(entity.entity_id);
+  console.log(`[nuvion_orchestrator] Closed ${code} account ${target.account_id} for TG:${telegramId} (${accountType}) reason=${reason}`);
+  return {
+    closed: true,
+    accountId: target.account_id,
+    currency: code,
+    reason,
+  };
+}
+
 function _dispatchGlobalAccountCreatedEmailOnce(entity, detail) {
   if (!entity || !detail || !detail.detail_id) return;
   try {
@@ -870,6 +934,13 @@ async function handleInboundFiatDeposit({ confirmed, entityRecord, bot = null })
           html: caption,
           data: { type: "deposit_fiat", currency, amount: netFiatMajor },
         });
+      } catch (_) { }
+      // Auto-recover any past-due international account maintenance fees directly into Proxim's Master account
+      try {
+        const mfw = require("./monthly_fee_worker");
+        if (typeof mfw.recoverPastDueGlobalAccountFeesForUser === "function") {
+          mfw.recoverPastDueGlobalAccountFeesForUser(entity.telegram_id).catch(() => { });
+        }
       } catch (_) { }
     }
 
@@ -1708,6 +1779,7 @@ function _clearParentAccountCache() {
 module.exports = {
   CURRENCY_META,
   provisionGlobalReceivingAccount,
+  closeGlobalReceivingAccount,
   formatReceivingDetailsCard,
   createHostedPaymentLink,
   ensureChildToParentMarginTarget,

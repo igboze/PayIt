@@ -3416,6 +3416,32 @@ function ensureNuvionSchema() {
       );
       CREATE INDEX IF NOT EXISTS idx_monthly_fees_month ON monthly_maintenance_fees(billing_month, status);
 
+      CREATE TABLE IF NOT EXISTS global_account_maintenance_fees (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id      INTEGER NOT NULL,
+        entity_id        TEXT NOT NULL,
+        account_type     TEXT NOT NULL DEFAULT 'personal',
+        account_id       TEXT NOT NULL,
+        currency         TEXT NOT NULL,
+        billing_month    TEXT NOT NULL,
+        amount_major     REAL NOT NULL,
+        amount_minor     INTEGER NOT NULL,
+        amount_usd       REAL DEFAULT 0,
+        funding_source   TEXT,
+        tx_ref           TEXT,
+        status           TEXT NOT NULL DEFAULT 'charged',
+        notified_at      TEXT,
+        reminder_sent_at TEXT,
+        grace_expires_at TEXT,
+        closed_at        TEXT,
+        error_message    TEXT,
+        created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(account_id, billing_month)
+      );
+      CREATE INDEX IF NOT EXISTS idx_global_acct_fees_status ON global_account_maintenance_fees(status, grace_expires_at);
+      CREATE INDEX IF NOT EXISTS idx_global_acct_fees_tg ON global_account_maintenance_fees(telegram_id, status);
+
       CREATE TABLE IF NOT EXISTS nuvion_kyc_drafts (
         telegram_id  INTEGER NOT NULL,
         account_type TEXT NOT NULL DEFAULT 'personal',
@@ -3746,14 +3772,154 @@ function upsertNuvionAccount({
   return db.prepare("SELECT * FROM nuvion_accounts WHERE account_id = ?").get(String(accountId)) || null;
 }
 
-function getNuvionAccountsByEntity(entityId, { currency = null, purpose = null } = {}) {
+function getNuvionAccountsByEntity(entityId, { currency = null, purpose = null, includeClosed = false } = {}) {
   ensureNuvionSchema();
   let sql = "SELECT * FROM nuvion_accounts WHERE entity_id = ?";
   const vals = [String(entityId)];
+  if (!includeClosed) { sql += " AND LOWER(COALESCE(status, 'active')) != 'closed'"; }
   if (currency) { sql += " AND currency = ?"; vals.push(String(currency).toUpperCase()); }
   if (purpose) { sql += " AND purpose = ?"; vals.push(purpose); }
   sql += " ORDER BY id ASC";
   return db.prepare(sql).all(...vals) || [];
+}
+
+function markNuvionAccountClosed(accountId) {
+  ensureNuvionSchema();
+  const id = String(accountId);
+  db.prepare(
+    "UPDATE nuvion_accounts SET status = 'closed', updated_at = datetime('now') WHERE account_id = ?"
+  ).run(id);
+  db.prepare(
+    "UPDATE nuvion_account_details SET status = 'closed', updated_at = datetime('now') WHERE account_id = ?"
+  ).run(id);
+  return db.prepare("SELECT * FROM nuvion_accounts WHERE account_id = ?").get(id) || null;
+}
+
+function getBillableGlobalAccountsForMonth(billingMonth, minAgeDays = 15) {
+  ensureNuvionSchema();
+  const safeDays = Math.max(0, Math.floor(Number(minAgeDays) || 0));
+  return db.prepare(`
+    SELECT
+      na.account_id,
+      na.entity_id,
+      na.currency,
+      na.display_name,
+      na.nuvion_ban,
+      na.created_at AS account_created_at,
+      ne.telegram_id,
+      ne.account_type,
+      ne.legal_name,
+      ne.email AS entity_email,
+      u.deposit_address,
+      u.business_deposit_address
+    FROM nuvion_accounts na
+    JOIN nuvion_entities ne ON ne.entity_id = na.entity_id
+    JOIN users u ON u.telegram_id = ne.telegram_id
+    WHERE COALESCE(u.is_blocked, 0) = 0
+      AND LOWER(COALESCE(ne.status, '')) = 'approved'
+      AND LOWER(COALESCE(na.status, 'active')) = 'active'
+      AND LOWER(COALESCE(na.purpose, 'receiving')) = 'receiving'
+      AND UPPER(na.currency) NOT IN ('NGN', 'USC', 'UST', 'RLD')
+      AND datetime(na.created_at) <= datetime('now', '-' || ? || ' days')
+      AND NOT EXISTS (
+        SELECT 1 FROM global_account_maintenance_fees gaf
+        WHERE gaf.account_id = na.account_id
+          AND gaf.billing_month = ?
+          AND gaf.status IN ('charged', 'closed_unpaid', 'waived')
+      )
+    ORDER BY ne.telegram_id ASC, na.id ASC
+  `).all(safeDays, String(billingMonth)) || [];
+}
+
+function recordGlobalAccountMaintenanceFee({
+  telegramId,
+  entityId,
+  accountType = "personal",
+  accountId,
+  currency,
+  billingMonth,
+  amountMajor,
+  amountMinor,
+  amountUsd = 0,
+  fundingSource = null,
+  txRef = null,
+  status = "charged",
+  notifiedAt = null,
+  graceExpiresAt = null,
+  closedAt = null,
+  errorMessage = null,
+}) {
+  ensureNuvionSchema();
+  db.prepare(`
+    INSERT INTO global_account_maintenance_fees (
+      telegram_id, entity_id, account_type, account_id, currency, billing_month,
+      amount_major, amount_minor, amount_usd, funding_source, tx_ref, status,
+      notified_at, grace_expires_at, closed_at, error_message, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(account_id, billing_month) DO UPDATE SET
+      amount_major     = excluded.amount_major,
+      amount_minor     = excluded.amount_minor,
+      amount_usd       = excluded.amount_usd,
+      funding_source   = COALESCE(excluded.funding_source, global_account_maintenance_fees.funding_source),
+      tx_ref           = COALESCE(excluded.tx_ref, global_account_maintenance_fees.tx_ref),
+      status           = excluded.status,
+      notified_at      = COALESCE(global_account_maintenance_fees.notified_at, excluded.notified_at),
+      grace_expires_at = COALESCE(global_account_maintenance_fees.grace_expires_at, excluded.grace_expires_at),
+      closed_at        = COALESCE(excluded.closed_at, global_account_maintenance_fees.closed_at),
+      error_message    = excluded.error_message,
+      updated_at       = datetime('now')
+  `).run(
+    Number(telegramId),
+    String(entityId),
+    accountType,
+    String(accountId),
+    String(currency).toUpperCase(),
+    String(billingMonth),
+    Number(amountMajor || 0),
+    Math.round(Number(amountMinor || 0)),
+    Number(amountUsd || 0),
+    fundingSource,
+    txRef,
+    status,
+    notifiedAt,
+    graceExpiresAt,
+    closedAt,
+    errorMessage
+  );
+  return db.prepare(
+    "SELECT * FROM global_account_maintenance_fees WHERE account_id = ? AND billing_month = ? LIMIT 1"
+  ).get(String(accountId), String(billingMonth));
+}
+
+function getPastDueGlobalAccountFees({ telegramId = null, expiredOnly = false, needsReminderOnly = false } = {}) {
+  ensureNuvionSchema();
+  let sql = `
+    SELECT gaf.*, ne.legal_name, ne.email AS entity_email
+    FROM global_account_maintenance_fees gaf
+    LEFT JOIN nuvion_entities ne ON ne.entity_id = gaf.entity_id
+    WHERE gaf.status = 'past_due'
+  `;
+  const vals = [];
+  if (telegramId != null) {
+    sql += " AND gaf.telegram_id = ?";
+    vals.push(Number(telegramId));
+  }
+  if (expiredOnly) {
+    sql += " AND gaf.grace_expires_at IS NOT NULL AND datetime(gaf.grace_expires_at) <= datetime('now')";
+  }
+  if (needsReminderOnly) {
+    sql += " AND gaf.reminder_sent_at IS NULL AND gaf.notified_at IS NOT NULL AND datetime(gaf.notified_at) <= datetime('now', '-7 days') AND (gaf.grace_expires_at IS NULL OR datetime(gaf.grace_expires_at) > datetime('now'))";
+  }
+  sql += " ORDER BY gaf.id ASC";
+  return db.prepare(sql).all(...vals) || [];
+}
+
+function markGlobalAccountFeeReminderSent(id) {
+  ensureNuvionSchema();
+  db.prepare(
+    "UPDATE global_account_maintenance_fees SET reminder_sent_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
+  ).run(Number(id));
 }
 
 function upsertNuvionAccountDetail({
@@ -3802,14 +3968,17 @@ function upsertNuvionAccountDetail({
   return db.prepare("SELECT * FROM nuvion_account_details WHERE detail_id = ?").get(String(detailId)) || null;
 }
 
-function getNuvionAccountDetailsByEntity(entityId, currency = null) {
+function getNuvionAccountDetailsByEntity(entityId, currency = null, { includeClosed = false } = {}) {
   ensureNuvionSchema();
+  const statusClause = includeClosed ? "" : " AND LOWER(COALESCE(status, 'active')) != 'closed'";
   if (currency) {
     return db.prepare(
-      "SELECT * FROM nuvion_account_details WHERE entity_id = ? AND currency = ? ORDER BY id DESC"
+      `SELECT * FROM nuvion_account_details WHERE entity_id = ? AND currency = ?${statusClause} ORDER BY id DESC`
     ).all(String(entityId), String(currency).toUpperCase()) || [];
   }
-  return db.prepare("SELECT * FROM nuvion_account_details WHERE entity_id = ? ORDER BY id DESC").all(String(entityId)) || [];
+  return db.prepare(
+    `SELECT * FROM nuvion_account_details WHERE entity_id = ?${statusClause} ORDER BY id DESC`
+  ).all(String(entityId)) || [];
 }
 
 function saveNuvionCounterparty({
@@ -4143,6 +4312,11 @@ module.exports = {
   deleteNuvionKycDraft,
   upsertNuvionAccount,
   getNuvionAccountsByEntity,
+  markNuvionAccountClosed,
+  getBillableGlobalAccountsForMonth,
+  recordGlobalAccountMaintenanceFee,
+  getPastDueGlobalAccountFees,
+  markGlobalAccountFeeReminderSent,
   upsertNuvionAccountDetail,
   getNuvionAccountDetailsByEntity,
   saveNuvionCounterparty,

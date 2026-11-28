@@ -21,6 +21,76 @@ const SUPPORTED_FIAT_RECEIVING_CURRENCIES = [
   "USD", "EUR", "GBP", "CAD", "NGN", "AED", "KES", "GHS", "TZS", "MXN",
 ];
 
+// Exact Nuvion monthly account maintenance fees verified from live Nuvion `account_maintenance_fee`
+// billing records (in major + minor units). Override any currency via GLOBAL_ACCOUNT_MONTHLY_FEES_JSON.
+const DEFAULT_GLOBAL_ACCOUNT_MONTHLY_FEES = {
+  USD: { amount: 2.00, minor: 200, currency: "USD", symbol: "$", approxUsd: 2.00 },
+  EUR: { amount: 2.00, minor: 200, currency: "EUR", symbol: "€", approxUsd: 2.18 },
+  GBP: { amount: 2.00, minor: 200, currency: "GBP", symbol: "£", approxUsd: 2.55 },
+  CAD: { amount: 2.00, minor: 200, currency: "CAD", symbol: "CA$", approxUsd: 1.45 },
+  AED: { amount: 10.00, minor: 1000, currency: "AED", symbol: "AED ", approxUsd: 2.72 },
+  NGN: { amount: 100.00, minor: 10000, currency: "NGN", symbol: "₦", approxUsd: 0.07, coveredByBaseMonthlyFee: true },
+  GHS: { amount: 5.00, minor: 500, currency: "GHS", symbol: "GH₵", approxUsd: 0.35 },
+  KES: { amount: 25.00, minor: 2500, currency: "KES", symbol: "KSh ", approxUsd: 0.19 },
+  TZS: { amount: 500.00, minor: 50000, currency: "TZS", symbol: "TSh ", approxUsd: 0.20 },
+  MXN: { amount: 35.00, minor: 3500, currency: "MXN", symbol: "MX$", approxUsd: 2.00 },
+  ZAR: { amount: 10.00, minor: 1000, currency: "ZAR", symbol: "R", approxUsd: 0.55 },
+  CNY: { amount: 13.15, minor: 1315, currency: "CNY", symbol: "¥", approxUsd: 1.85 },
+};
+
+function getGlobalAccountMonthlyFee(currency) {
+  const code = String(currency || "").trim().toUpperCase();
+  let overrides = null;
+  if (process.env.GLOBAL_ACCOUNT_MONTHLY_FEES_JSON) {
+    try { overrides = JSON.parse(process.env.GLOBAL_ACCOUNT_MONTHLY_FEES_JSON); } catch (_) { }
+  }
+  const base = DEFAULT_GLOBAL_ACCOUNT_MONTHLY_FEES[code];
+  const ov = overrides && overrides[code];
+  if (ov != null) {
+    const amt = typeof ov === "number" ? ov : Number(ov.amount ?? ov);
+    if (Number.isFinite(amt) && amt >= 0) {
+      const sym = (typeof ov === "object" && ov.symbol) || base?.symbol || `${code} `;
+      const approxUsd = (typeof ov === "object" && Number(ov.approxUsd)) || base?.approxUsd || amt;
+      return {
+        currency: code,
+        amount: Number(amt.toFixed(2)),
+        minor: Math.round(amt * 100),
+        symbol: sym,
+        approxUsd: Number(approxUsd),
+        coveredByBaseMonthlyFee: Boolean((typeof ov === "object" && ov.coveredByBaseMonthlyFee) || base?.coveredByBaseMonthlyFee),
+      };
+    }
+  }
+  if (!base) return null;
+  return { ...base };
+}
+
+function formatGlobalAccountMonthlyFee(currency) {
+  const spec = getGlobalAccountMonthlyFee(currency);
+  if (!spec) return null;
+  if (spec.coveredByBaseMonthlyFee) {
+    return "Included in base account fee";
+  }
+  const amtStr = Number.isInteger(spec.amount) && spec.amount >= 100
+    ? spec.amount.toLocaleString("en-US")
+    : spec.amount.toFixed(2);
+  return `${spec.symbol}${amtStr}/mo`;
+}
+
+function getAllReceivingCurrencyFees() {
+  const map = {};
+  for (const cur of SUPPORTED_FIAT_RECEIVING_CURRENCIES) {
+    const spec = getGlobalAccountMonthlyFee(cur);
+    if (spec) {
+      map[cur] = {
+        ...spec,
+        formatted: formatGlobalAccountMonthlyFee(cur),
+      };
+    }
+  }
+  return map;
+}
+
 // Official Nuvion POST /documents accepted meta.file_type values (exact case-sensitive match)
 const ALLOWED_DOCUMENT_MIME_TYPES = new Set([
   "application/pdf",
@@ -867,6 +937,16 @@ async function getAccount(accountId, entityId = null) {
   return res.data?.account || res.data;
 }
 
+async function deleteAccount(accountId, entityId = null) {
+  const res = await nuvionRequest({
+    method: "DELETE",
+    path: `/accounts/${encodeURIComponent(accountId)}`,
+    entityId,
+    role: "operations",
+  });
+  return res.data || { deleted: true, account_id: accountId };
+}
+
 async function createAccountDetails({ accountId, entityId = null, chain = null, assetType = null }) {
   const body = { account_id: accountId };
   if (chain) body.chain = String(chain).toLowerCase();
@@ -1384,6 +1464,10 @@ module.exports = {
   DEFAULT_API_VERSION,
   DEFAULT_FX_MARGIN_BPS,
   SUPPORTED_FIAT_RECEIVING_CURRENCIES,
+  DEFAULT_GLOBAL_ACCOUNT_MONTHLY_FEES,
+  getGlobalAccountMonthlyFee,
+  formatGlobalAccountMonthlyFee,
+  getAllReceivingCurrencyFees,
   ALLOWED_DOCUMENT_MIME_TYPES,
   STABLECOIN_CHAIN_TO_NETWORK,
   getEnvironment,
@@ -1422,6 +1506,7 @@ module.exports = {
   createAccount,
   listAccounts,
   getAccount,
+  deleteAccount,
   createAccountDetails,
   listAccountDetails,
   getAccountDetails,

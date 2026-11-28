@@ -63,7 +63,7 @@ async function showGlobalAccountsMenu(ctx, accountType = "personal") {
     `🏦 <b>${label}</b>\n──────────────────────────\n` +
     `<b>Account Holder:</b> ${escapeHtml(entity.legal_name || "Verified Account")}\n\n` +
     `Tap a currency below to view or generate your permanent named bank details.\n` +
-    `<i>Any transfer received automatically converts and settles straight into your main Proxim balance.</i>`,
+    `<i>International accounts carry a monthly maintenance fee billed at month-end (accounts opened less than 15 days before month-end are skipped until the following month). Close unused accounts anytime to stop future fees.</i>`,
     {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
@@ -303,12 +303,7 @@ function registerGlobalAccountsFlows(bot, depsIn = {}) {
     return showGlobalAccountsMenu(ctx, accountType);
   });
 
-  bot.action(/^nuvion_acct_(per|biz)_([A-Z]{3})$/, async (ctx) => {
-    ctx.answerCbQuery().catch(() => {});
-    const accountType = ctx.match[1] === "biz" ? "business" : "personal";
-    const currency = ctx.match[2];
-    const p = ctx.match[1];
-
+  async function executeProvisionAndShow(ctx, accountType, currency, p) {
     await ctx.reply(`⏳ Checking your named <b>${currency}</b> bank account...`, { parse_mode: "HTML" });
     try {
       const result = await orchestrator.provisionGlobalReceivingAccount(
@@ -322,15 +317,10 @@ function registerGlobalAccountsFlows(bot, depsIn = {}) {
         const reason = result.statusReason;
         console.warn(`[nuvion] ${currency} account for TG:${ctx.from.id} is inactive at Nuvion: ${reason || "no reason given"}`);
         return ctx.reply(
-          `⚠️ <b>Your ${currency} Bank Account Isn't Active Yet</b>
-──────────────────────────
-` +
-          `Our banking partner has not activated your named <b>${currency}</b> account.
-
-` +
-          (reason ? `<b>Reason:</b> ${escapeHtml(reason)}
-
-` : "") +
+          `⚠️ <b>Your ${currency} Bank Account Isn't Active Yet</b>\n` +
+          `──────────────────────────\n` +
+          `Our banking partner has not activated your named <b>${currency}</b> account.\n\n` +
+          (reason ? `<b>Reason:</b> ${escapeHtml(reason)}\n\n` : "") +
           `Please contact support so we can resolve this with our banking partner, then tap Refresh.`,
           {
             parse_mode: "HTML",
@@ -357,13 +347,20 @@ function registerGlobalAccountsFlows(bot, depsIn = {}) {
         );
       }
 
-      const cardText = orchestrator.formatReceivingDetailsCard(detail, entity.legal_name);
+      const feeLabel = nuvion.formatGlobalAccountMonthlyFee ? nuvion.formatGlobalAccountMonthlyFee(currency) : null;
+      const feeLine = feeLabel && currency !== "NGN"
+        ? `\n\n💳 <i>Monthly maintenance fee: <b>${escapeHtml(feeLabel)}</b> (billed at month-end once open 15+ days).</i>`
+        : "";
+      const cardText = orchestrator.formatReceivingDetailsCard(detail, entity.legal_name) + feeLine;
+      const buttons = [];
+      if (currency !== "NGN") {
+        buttons.push([Markup.button.callback(`🗑️ Close ${currency} Account`, `nuvion_acct_close_${p}_${currency}`)]);
+      }
+      buttons.push([Markup.button.callback("« All Global Accounts", `nuvion_accounts_menu_${p}`)]);
+      buttons.push([Markup.button.callback("🏠 Main Menu", "main_menu")]);
       return ctx.reply(cardText, {
         parse_mode: "HTML",
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback("« All Global Accounts", `nuvion_accounts_menu_${p}`)],
-          [Markup.button.callback("🏠 Main Menu", "main_menu")],
-        ]),
+        ...Markup.inlineKeyboard(buttons),
       });
     } catch (err) {
       console.warn(
@@ -375,6 +372,95 @@ function registerGlobalAccountsFlows(bot, depsIn = {}) {
         {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([[Markup.button.callback("« Global Accounts", `nuvion_accounts_menu_${p}`)]]),
+        }
+      );
+    }
+  }
+
+  bot.action(/^nuvion_acct_(per|biz)_([A-Z]{3})$/, async (ctx) => {
+    ctx.answerCbQuery().catch(() => {});
+    const accountType = ctx.match[1] === "biz" ? "business" : "personal";
+    const currency = ctx.match[2];
+    const p = ctx.match[1];
+
+    // If user already has an active/pending account in this currency (or it's NGN), display it immediately.
+    // For brand-new international accounts, disclose the exact monthly maintenance fee upfront before opening.
+    const entity = db.getNuvionEntityByUser(ctx.from.id, accountType);
+    const existing = entity
+      ? db.getNuvionAccountDetailsByEntity(entity.entity_id, currency).filter((d) => d.asset_type === "fiat")
+      : [];
+    if (currency !== "NGN" && existing.length === 0) {
+      const feeLabel = nuvion.formatGlobalAccountMonthlyFee ? nuvion.formatGlobalAccountMonthlyFee(currency) : null;
+      return ctx.reply(
+        `🌍 <b>Open Named ${currency} Global Bank Account</b>\n──────────────────────────\n` +
+        `• <b>Monthly Maintenance Fee:</b> <b>${escapeHtml(feeLabel || "Standard banking partner fee")}</b>\n` +
+        `• <b>Billing Schedule:</b> Billed automatically at month-end from your balance\n` +
+        `• <b>New Account Grace:</b> Accounts opened fewer than <b>15 days</b> before month-end are <b>not charged</b> until the following month\n` +
+        `• <b>Zero Lock-in:</b> You can close any zero-balance account anytime to stop future fees (unpaid zero-balance accounts close automatically 14 days after notice).\n\n` +
+        `Would you like to open your named <b>${currency}</b> account now?`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback(`✅ Open ${currency} Account`, `nuvion_acct_confirm_${p}_${currency}`)],
+            [Markup.button.callback("❌ Cancel", `nuvion_accounts_menu_${p}`)],
+          ]),
+        }
+      );
+    }
+
+    return executeProvisionAndShow(ctx, accountType, currency, p);
+  });
+
+  bot.action(/^nuvion_acct_confirm_(per|biz)_([A-Z]{3})$/, async (ctx) => {
+    ctx.answerCbQuery().catch(() => {});
+    const accountType = ctx.match[1] === "biz" ? "business" : "personal";
+    const currency = ctx.match[2];
+    const p = ctx.match[1];
+    return executeProvisionAndShow(ctx, accountType, currency, p);
+  });
+
+  bot.action(/^nuvion_acct_close_(per|biz)_([A-Z]{3})$/, async (ctx) => {
+    ctx.answerCbQuery().catch(() => {});
+    const currency = ctx.match[2];
+    const p = ctx.match[1];
+    return ctx.reply(
+      `⚠️ <b>Close Your ${currency} Bank Account?</b>\n──────────────────────────\n` +
+      `Closing this account stops all future monthly maintenance fees for <b>${currency}</b>.\n` +
+      `Your ${currency} balance must be <b>0</b> before closing. You can open a new account anytime later.`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback(`🗑️ Yes, Close ${currency} Account`, `nuvion_acct_close_confirm_${p}_${currency}`)],
+          [Markup.button.callback("❌ Keep Account", `nuvion_acct_${p}_${currency}`)],
+        ]),
+      }
+    );
+  });
+
+  bot.action(/^nuvion_acct_close_confirm_(per|biz)_([A-Z]{3})$/, async (ctx) => {
+    ctx.answerCbQuery().catch(() => {});
+    const accountType = ctx.match[1] === "biz" ? "business" : "personal";
+    const currency = ctx.match[2];
+    const p = ctx.match[1];
+    await ctx.reply(`⏳ Closing your ${currency} bank account...`);
+    try {
+      await orchestrator.closeGlobalReceivingAccount(ctx.from.id, accountType, currency, {
+        reason: "user_closed_telegram",
+      });
+      return ctx.reply(
+        `✅ <b>${currency} Account Closed</b>\n──────────────────────────\n` +
+        `Your named <b>${currency}</b> account has been closed. No further monthly maintenance fees will be charged for it.`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([[Markup.button.callback("« All Global Accounts", `nuvion_accounts_menu_${p}`)]]),
+        }
+      );
+    } catch (err) {
+      return ctx.reply(
+        `❌ ${escapeHtml(String(err.message || "Could not close account.").replace(/nuvion/gi, "Global Neobank"))}`,
+        {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([[Markup.button.callback("« All Global Accounts", `nuvion_accounts_menu_${p}`)]]),
         }
       );
     }

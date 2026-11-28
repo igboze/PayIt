@@ -599,6 +599,8 @@ export const api = {
       accountType: AccountType;
       kycStatus: string;
       supportedCurrencies: string[];
+      currencyFees?: Record<string, { currency: string; amount: number; minor: number; symbol: string; approxUsd: number; formatted: string; coveredByBaseMonthlyFee?: boolean }>;
+      billingPolicy?: { billingCycle: string; minAgeDays: number; graceDays: number };
       accounts: GlobalAccountItem[];
     }>(`/global/accounts${qs}`);
   },
@@ -606,6 +608,13 @@ export const api = {
     return request<{ accountType: AccountType; account: GlobalAccountItem; isPending: boolean; cached: boolean }>(
       `/global/accounts/${encodeURIComponent(currency)}`,
       { method: "POST", body: accountType ? { accountType } : {} }
+    );
+  },
+  closeGlobalAccount(currency: string, accountType?: AccountType) {
+    const qs = accountType ? `?account=${encodeURIComponent(accountType)}` : "";
+    return request<{ closed: boolean; accountType: AccountType; currency: string; accountId: string; notice?: string }>(
+      `/global/accounts/${encodeURIComponent(currency)}${qs}`,
+      { method: "DELETE" }
     );
   },
   listGlobalCorridors() {
