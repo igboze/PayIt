@@ -1418,6 +1418,42 @@ function openYieldPosition(telegramId, amountUsdc, pool, options = {}) {
   const chain = pool.chain || "arc";
 
   const cols = db.prepare("PRAGMA table_info(yield_positions)").all().map(c => c.name);
+
+  // If the user already has an active position in this same vault for this account type,
+  // top up its principal instead of creating a duplicate active row that hides earlier deposits.
+  if (vaultAddress) {
+    const isPersonal = String(accountType).toLowerCase() === "personal";
+    const existing = db.prepare(
+      `SELECT * FROM yield_positions
+       WHERE telegram_id = ?
+         AND (LOWER(account_type) = LOWER(?) ${isPersonal ? "OR account_type IS NULL" : ""})
+         AND LOWER(vault_address) = LOWER(?)
+         AND (status = 'active' OR status IS NULL)
+       ORDER BY id DESC LIMIT 1`
+    ).get(normTgId, accountType, vaultAddress);
+
+    if (existing) {
+      const mergedAmount = parseFloat((Number(existing.amount_usdc || 0) + Number(amountUsdc || 0)).toFixed(6));
+      const setParts = ["amount_usdc = ?", "apy = ?", "project = ?", "symbol = ?", "chain = ?"];
+      const updateVals = [mergedAmount, apy, project, symbol, chain];
+      if (depositTxHash) {
+        setParts.push("deposit_tx_hash = ?");
+        updateVals.push(depositTxHash);
+      }
+      if (cols.includes("user_apy")) {
+        setParts.push("user_apy = ?");
+        updateVals.push(userApy);
+      }
+      if (cols.includes("payit_fee_apy")) {
+        setParts.push("payit_fee_apy = ?");
+        updateVals.push(payitFeeApy);
+      }
+      updateVals.push(existing.id);
+      db.prepare(`UPDATE yield_positions SET ${setParts.join(", ")} WHERE id = ?`).run(...updateVals);
+      return;
+    }
+  }
+
   const insertCols = [
     "telegram_id", "amount_usdc", "apy", "project", "symbol", "chain",
     "vault_address", "is_auto_earn", "deposit_tx_hash", "account_type", "status"
@@ -1449,6 +1485,7 @@ function closeYieldPosition(telegramId, payout, options = {}) {
   const feeTxHash = options.feeTxHash || null;
   const positionId = options.positionId || null;
   const accountType = options.accountType || null;
+  const vaultAddress = options.vaultAddress || null;
 
   if (positionId) {
     db.prepare(`
@@ -1461,10 +1498,49 @@ function closeYieldPosition(telegramId, payout, options = {}) {
         fee_tx_hash = ?
       WHERE id = ? AND status = 'active'
     `).run(payout, devFee, withdrawTxHash, feeTxHash, positionId);
+
+    // If full redemption cleared this vault, also close any legacy duplicate active rows in the same vault.
+    if (vaultAddress && telegramId != null && !Number.isNaN(Number(telegramId))) {
+      const normTgId = Math.round(Number(telegramId));
+      const isPersonal = !accountType || String(accountType).toLowerCase() === "personal";
+      try {
+        if (accountType) {
+          db.prepare(`
+            UPDATE yield_positions SET
+              status = 'closed',
+              closed_at = datetime('now'),
+              payout = 0,
+              dev_fee_usdc = 0,
+              withdraw_tx_hash = ?,
+              fee_tx_hash = ?
+            WHERE telegram_id = ?
+              AND id != ?
+              AND (LOWER(account_type) = LOWER(?) ${isPersonal ? "OR account_type IS NULL" : ""})
+              AND LOWER(vault_address) = LOWER(?)
+              AND (status = 'active' OR status IS NULL)
+          `).run(withdrawTxHash, feeTxHash, normTgId, positionId, accountType, vaultAddress);
+        } else {
+          db.prepare(`
+            UPDATE yield_positions SET
+              status = 'closed',
+              closed_at = datetime('now'),
+              payout = 0,
+              dev_fee_usdc = 0,
+              withdraw_tx_hash = ?,
+              fee_tx_hash = ?
+            WHERE telegram_id = ?
+              AND id != ?
+              AND LOWER(vault_address) = LOWER(?)
+              AND (status = 'active' OR status IS NULL)
+          `).run(withdrawTxHash, feeTxHash, normTgId, positionId, vaultAddress);
+        }
+      } catch (_) { }
+    }
     return;
   }
 
   if (accountType) {
+    const isPersonal = String(accountType).toLowerCase() === "personal";
     db.prepare(`
       UPDATE yield_positions SET
         status = 'closed',
@@ -1473,7 +1549,9 @@ function closeYieldPosition(telegramId, payout, options = {}) {
         dev_fee_usdc = ?,
         withdraw_tx_hash = ?,
         fee_tx_hash = ?
-      WHERE telegram_id = ? AND account_type = ? AND status = 'active'
+      WHERE telegram_id = ?
+        AND (LOWER(account_type) = LOWER(?) ${isPersonal ? "OR account_type IS NULL" : ""})
+        AND status = 'active'
     `).run(payout, devFee, withdrawTxHash, feeTxHash, telegramId, accountType);
     return;
   }

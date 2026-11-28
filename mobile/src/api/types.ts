@@ -415,6 +415,7 @@ export interface SavingsOverview {
     accruedYieldUsdc: number;
     grossYieldUsdc?: number;
     platformFeeUsdc?: number;
+    onChain?: boolean;
     apy: number;
     /** The user's rate (after fees) when they saved. */
     apyAtDeposit?: number;

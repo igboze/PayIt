@@ -92,3 +92,133 @@ test("Savings: db getOpenYieldPosition handles case-insensitive and legacy null 
   });
 });
 
+test("Savings: calcYieldBreakdown trusts real on-chain profit even when lower than time estimate", () => {
+  const position = {
+    amount_usdc: 1000,
+    apy: 20, // timer estimate for 1 year = $200
+    opened_at: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString(),
+  };
+
+  // Real on-chain profit was only $5 (e.g. variable APY dropped) — must NOT inflate to $200
+  const lowReal = savings.calcYieldBreakdown(position, 5);
+  assert.equal(lowReal.grossYield, 5);
+  assert.equal(lowReal.devFee, 0.5);
+  assert.equal(lowReal.netYield, 4.5);
+
+  // Real on-chain profit was $0 — must NOT charge any fee
+  const zeroReal = savings.calcYieldBreakdown(position, 0);
+  assert.equal(zeroReal.grossYield, 0);
+  assert.equal(zeroReal.devFee, 0);
+  assert.equal(zeroReal.netYield, 0);
+});
+
+test("Savings: parseRedeemedAssetsFromReceipt extracts exact USDC from Withdraw and Transfer logs", () => {
+  const { Interface, parseUnits } = require("ethers");
+  const vaultAddr = "0xbeeff419ecc98763045e0a26490b62adfb9103c1";
+  const ownerAddr = "0x1111111111111111111111111111111111111111";
+  const usdcAddr = "0x3600000000000000000000000000000000000000";
+
+  // 1. ERC-4626 Withdraw event log
+  const vaultIface = new Interface([
+    "event Withdraw(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares)",
+  ]);
+  const wLog = vaultIface.encodeEventLog(vaultIface.getEvent("Withdraw"), [
+    ownerAddr,
+    ownerAddr,
+    ownerAddr,
+    parseUnits("105.4321", 6),
+    parseUnits("100", 18),
+  ]);
+  const fromWithdraw = savings.parseRedeemedAssetsFromReceipt(
+    { logs: [{ address: vaultAddr, topics: wLog.topics, data: wLog.data }] },
+    vaultAddr,
+    ownerAddr,
+    usdcAddr,
+    6
+  );
+  assert.equal(fromWithdraw, 105.4321);
+
+  // 2. ERC-20 Transfer(vault -> user) fallback log
+  const erc20Iface = new Interface([
+    "event Transfer(address indexed from, address indexed to, uint256 value)",
+  ]);
+  const tLog = erc20Iface.encodeEventLog(erc20Iface.getEvent("Transfer"), [
+    vaultAddr,
+    ownerAddr,
+    parseUnits("50.123456", 6),
+  ]);
+  const fromTransfer = savings.parseRedeemedAssetsFromReceipt(
+    { logs: [{ address: usdcAddr, topics: tLog.topics, data: tLog.data }] },
+    vaultAddr,
+    ownerAddr,
+    usdcAddr,
+    6
+  );
+  assert.equal(fromTransfer, 50.123456);
+});
+
+test("Savings: repeat deposits into same vault accumulate principal cleanly without orphan rows", () => {
+  const db = require("../src/db");
+  const testTgId = 888777999;
+  const vaultAddr = "0xbeeff419ecc98763045e0a26490b62adfb9103c1";
+  db.prepare("DELETE FROM yield_positions WHERE telegram_id = ?").run(testTgId);
+
+  db.openYieldPosition(testTgId, 20, { project: "Steakhouse High Yield USDC", userApy: 18, rawApy: 20, vaultAddress: vaultAddr }, { accountType: "personal" });
+  db.openYieldPosition(testTgId, 30, { project: "Steakhouse High Yield USDC", userApy: 18, rawApy: 20, vaultAddress: vaultAddr }, { accountType: "personal" });
+
+  const activeRows = db.prepare("SELECT * FROM yield_positions WHERE telegram_id = ? AND status = 'active'").all(testTgId);
+  assert.equal(activeRows.length, 1, "Repeat deposit into same vault should merge into single active position");
+  assert.equal(Number(activeRows[0].amount_usdc), 50, "Principal should equal sum of both deposits ($20 + $30)");
+
+  db.closeYieldPosition(testTgId, 50.5, { positionId: activeRows[0].id, accountType: "personal", vaultAddress: vaultAddr });
+  assert.equal(db.getOpenYieldPosition(testTgId, "personal"), null);
+});
+
+test("Savings: production mode throws on failed on-chain withdrawal and keeps DB position active", async () => {
+  const { Wallet } = require("ethers");
+  const db = require("../src/db");
+  const testTgId = 888778001;
+  const vaultAddr = "0xbeeff419ecc98763045e0a26490b62adfb9103c1";
+  db.prepare("DELETE FROM yield_positions WHERE telegram_id = ?").run(testTgId);
+
+  db.openYieldPosition(testTgId, 25, { project: "Steakhouse High Yield USDC", userApy: 18, rawApy: 20, vaultAddress: vaultAddr }, { accountType: "personal" });
+  const openPos = db.getOpenYieldPosition(testTgId, "personal");
+  assert.ok(openPos);
+
+  const randomWallet = Wallet.createRandom();
+  randomWallet.telegramId = testTgId;
+
+  await assert.rejects(
+    () => savings.withdrawFromVaultWithFee({
+      userWallet: randomWallet,
+      position: openPos,
+      allowSimulatedFallback: false,
+    }),
+    /no active vault shares|withdrawal failed/i
+  );
+
+  // Position MUST still be active in DB so funds are never orphaned
+  const stillOpen = db.getOpenYieldPosition(testTgId, "personal");
+  assert.ok(stillOpen, "Failed production withdrawal must NOT close DB position");
+  assert.equal(stillOpen.id, openPos.id);
+
+  // Clean up
+  db.prepare("DELETE FROM yield_positions WHERE telegram_id = ?").run(testTgId);
+});
+
+test("Savings: formatPosition shows net interest cleanly without 10% performance fee line", () => {
+  const pos = {
+    amount_usdc: 100,
+    apy: 20,
+    user_apy: 18,
+    opened_at: new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString(),
+    project: "Steakhouse High Yield USDC",
+    chain: "Arc Mainnet",
+  };
+  const formatted = savings.formatPosition(pos, { netYield: 1.5, grossYield: 1.666667, devFee: 0.166667, onChain: true });
+  assert.ok(formatted.includes("+$1.5000 USDC"));
+  assert.ok(formatted.includes("$101.5000 USDC"));
+  assert.ok(!/10% performance fee/i.test(formatted));
+  assert.ok(/net of service fees/i.test(formatted));
+});
+

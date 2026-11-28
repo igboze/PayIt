@@ -227,7 +227,9 @@ test("2. Savings: user picks vault before deposit, Auto-Save selects highest APY
   );
   assert.equal(prepared.action.vaultAddress, "0xbd69ce1b1027e932158aa96a873a91c41cb729f9");
   assert.equal(prepared.action.vaultName, "Flowmark USDC Turbo");
-  assert.ok(prepared.summary.lines.some(([k, v]) => /platform fee/i.test(k) && /10%/.test(v)));
+  // UI summary displays the net APY cleanly (4.32%) without showing a separate 10% platform fee line
+  assert.ok(prepared.summary.lines.some(([k, v]) => /apy/i.test(k) && /4\.32%/.test(v)));
+  assert.ok(!prepared.summary.lines.some(([k]) => /platform fee/i.test(k)));
 
   // Rejects unknown vault address
   await assert.rejects(

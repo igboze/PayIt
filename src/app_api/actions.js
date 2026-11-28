@@ -1384,9 +1384,8 @@ const ACTIONS = {
           lines: [
             ["Savings vault", pool.name || pool.project || "Dollar lending vault"],
             ["Amount", `$${fmt(amountUsdc)}`],
-            ["Net APY (you earn)", userApy > 0 ? `${userApy.toFixed(2)}% a year (variable)` : "Variable rate"],
-            ["Platform fee", `${feePct}% of earned yield on withdrawal`],
-            ["Withdraw", "Anytime"],
+            ["Estimated APY", userApy > 0 ? `${userApy.toFixed(2)}% a year (variable)` : "Variable rate"],
+            ["Withdraw", "Anytime · Zero lockups"],
           ],
         },
         context: { pool },
@@ -1421,10 +1420,25 @@ const ACTIONS = {
       const open = dep("db").getOpenYieldPosition(ctx.telegramId, accountType);
       if (!open) throw new ActionError(404, "no_position", "You have no savings to withdraw.");
       const savings = dep("savings");
-      const breakdown = typeof savings.calcYieldBreakdown === "function"
-        ? savings.calcYieldBreakdown(open)
-        : { netYield: Number(savings.calcAccruedYield?.(open) || 0), devFee: 0, feePct: 10 };
+      const ownerAddress = accountType === "business"
+        ? ctx.user?.business_deposit_address
+        : ctx.user?.deposit_address;
+      let breakdown = null;
+      if (typeof savings.getLivePositionValue === "function") {
+        try {
+          breakdown = await savings.getLivePositionValue(ownerAddress, open);
+        } catch (_) {
+          breakdown = null;
+        }
+      }
+      if (!breakdown) {
+        breakdown = typeof savings.calcYieldBreakdown === "function"
+          ? savings.calcYieldBreakdown(open)
+          : { netYield: Number(savings.calcAccruedYield?.(open) || 0), devFee: 0, feePct: 10 };
+      }
       const principal = Number(open.amount_usdc || 0);
+      const netYield = Number(breakdown.netYield || 0);
+      const totalToReceive = principal + netYield;
       return {
         amountUsd: 0,
         action: { accountType, positionId: String(open.id) },
@@ -1433,8 +1447,8 @@ const ACTIONS = {
           lines: [
             ["Vault", open.project || "Dollar Savings"],
             ["Principal", `$${fmt(principal)}`],
-            ["Est. profit (after fee)", `+$${Number(breakdown.netYield || 0).toFixed(4)}`],
-            ["Platform fee", `${breakdown.feePct || 10}% of profit ($${Number(breakdown.devFee || 0).toFixed(4)})`],
+            ["Interest earned", `+$${netYield.toFixed(4)}`],
+            ["Total to receive", `$${totalToReceive.toFixed(4)}`],
             ["Back to", "Your balance"],
           ],
         },
@@ -1452,7 +1466,11 @@ const ACTIONS = {
         const amtMicro = dep("walletLib").parseToMicro(Number(r.totalUserPayout || 0).toFixed(6));
         db.recordTransaction(ctx.telegramId, "yield_withdraw", amtMicro, "confirmed", r.withdrawTxHash || null, accountType, 18, "arc", `Withdrew from ${open.project || "Savings"}`);
       } catch (_) { }
-      return { withdrawnUsdc: r.totalUserPayout, netYieldUsdc: r.netYieldUsdc, feeUsdc: r.devFeeUsdc, feeTxHash: r.feeTxHash || null, txHash: r.withdrawTxHash, notice: `Withdrew $${fmt(r.totalUserPayout || 0)}` };
+      const netEarned = Number(r.netYieldUsdc || 0);
+      const notice = netEarned >= 0.0001
+        ? `Withdrew $${Number(r.totalUserPayout || 0).toFixed(4)} (+$${netEarned.toFixed(4)} interest earned)`
+        : `Withdrew $${fmt(r.totalUserPayout || 0)}`;
+      return { withdrawnUsdc: r.totalUserPayout, netYieldUsdc: r.netYieldUsdc, feeUsdc: r.devFeeUsdc, feeTxHash: r.feeTxHash || null, txHash: r.withdrawTxHash, notice };
     },
   },
 

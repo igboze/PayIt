@@ -2208,13 +2208,23 @@ async function showMyYield(ctx) {
       ])
     );
   }
+  const ownerAddr = effectiveContext === "business" ? user.business_deposit_address : user.deposit_address;
+  let liveBreakdown = null;
+  if (typeof savings.getLivePositionValue === "function") {
+    try {
+      liveBreakdown = await savings.getLivePositionValue(ownerAddr, position);
+    } catch (_) { }
+  }
   await ctx.reply(
-    savings.formatPosition(position),
-    Markup.inlineKeyboard([
-      [btnPrimary("💵 Withdraw Savings Immediately", "yield_withdraw_start")],
-      [btnSuccess("📈 View Rates", "action_yields")],
-      [btnDefault("🏠 Main Menu", "main_menu")],
-    ])
+    savings.formatPosition(position, liveBreakdown),
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [btnPrimary("💵 Withdraw Savings Immediately", "yield_withdraw_start")],
+        [btnSuccess("📈 View Rates", "action_yields")],
+        [btnDefault("🏠 Main Menu", "main_menu")],
+      ]),
+    }
   );
 }
 
@@ -4827,18 +4837,25 @@ bot.action("yield_withdraw_start", async (ctx) => {
   }
 
   const principal = Number(position.amount_usdc) || 0;
-  const grossYield = savings.calcAccruedYield(position);
-  const devFee = parseFloat((grossYield * savings.PAYIT_FEE_FRACTION).toFixed(4));
-  const netYield = parseFloat((grossYield - devFee).toFixed(4));
-  const total = parseFloat((principal + netYield).toFixed(4));
+  const ownerAddr = effectiveContext === "business" ? user.business_deposit_address : user.deposit_address;
+  let liveBreakdown = null;
+  if (typeof savings.getLivePositionValue === "function") {
+    try {
+      liveBreakdown = await savings.getLivePositionValue(ownerAddr, position);
+    } catch (_) { }
+  }
+  const breakdown = liveBreakdown || savings.calcYieldBreakdown(position);
+  const grossYield = Number(breakdown.grossYield) || 0;
+  const devFee = Number(breakdown.devFee) || 0;
+  const netYield = Number(breakdown.netYield) || 0;
+  const total = parseFloat((principal + netYield).toFixed(6));
   convState.setState(ctx.from.id, "confirm_yield_withdraw", { position, accrued: grossYield, devFee, netYield, total }, effectiveContext);
   return ctx.reply(
     `💵 <b>Withdraw ${effectiveContext === "business" ? "Business" : "Personal"} Savings</b>\n──────────────────────────\n` +
     `• <b>Principal:</b> $${principal.toFixed(2)} USDC\n` +
-    `• <b>Profit Earned (Interest):</b> +$${grossYield.toFixed(4)} USDC\n` +
-    `• <b>Performance Fee (10% on profit only):</b> -$${devFee.toFixed(4)} USDC\n` +
-    `• <b>Net Payout to You:</b> $${total.toFixed(4)} USDC\n\n` +
-    `<i>Your full principal and 90% of your earnings will be returned immediately to your ${effectiveContext === "business" ? "business treasury" : "personal wallet"}.</i>\n\n` +
+    `• <b>Interest Earned:</b> +$${netYield.toFixed(4)} USDC\n` +
+    `• <b>Total Payout to You:</b> $${total.toFixed(4)} USDC\n\n` +
+    `<i>Your full principal and earned interest will be returned immediately to your ${effectiveContext === "business" ? "business treasury" : "personal wallet"}. Displayed earnings are net of service fees.</i>\n\n` +
     `💬 <i>Send your 4-digit PIN into the chat (e.g. 1234) to withdraw immediately:</i>`,
     {
       parse_mode: "HTML",
@@ -10095,6 +10112,7 @@ bot.on("text", async (ctx) => {
       const userWallet = new Wallet(pk, arcProvider);
       userWallet.telegramId = userId;
       let withdrawResult = null;
+      let withdrawErrorMsg = null;
       try {
         withdrawResult = await savings.withdrawFromVaultWithFee({
           userWallet,
@@ -10102,32 +10120,15 @@ bot.on("text", async (ctx) => {
           feeRecipientAddress: process.env.APP_FEE_RECIPIENT_ADDRESS,
         });
       } catch (err) {
-        console.warn("[bot:earn_withdraw] Notice from on-chain fee withdrawal:", err.message);
+        withdrawErrorMsg = err.message;
+        console.warn("[bot:earn_withdraw] On-chain withdrawal failed:", err.message);
       }
 
-      let withdrawTx = withdrawResult?.withdrawTxHash;
-      const feeTx = withdrawResult?.feeTxHash;
-      const devFeeAmount = withdrawResult ? withdrawResult.devFeeUsdc : (state.data.devFee || 0);
-      const netPaid = withdrawResult ? withdrawResult.netUserAmountUsdc : state.data.total;
+      const withdrawTx = withdrawResult?.withdrawTxHash || null;
+      const netPaid = withdrawResult ? Number(withdrawResult.netUserAmountUsdc || 0) : 0;
 
-      // Fallback: If withdrawal was simulated or on-chain vault tx reverted, disburse real USDC directly on Arc
-      if (!withdrawTx || withdrawTx === "0xsimulated_withdraw_tx_hash" || withdrawResult?.simulated) {
-        try {
-          const cctpBridge = require("./src/cctp_bridge");
-          const disburseHash = await cctpBridge.disburseDirectOnArc({
-            recipientArcAddress: userWallet.address,
-            amountUsdc: netPaid,
-          });
-          if (disburseHash) {
-            withdrawTx = disburseHash;
-          }
-        } catch (disbursementErr) {
-          console.warn("[bot:earn_withdraw] Relayer fallback disburse note:", disbursementErr.message);
-        }
-      }
-
-      if (!withdrawResult && !withdrawTx) {
-        idempotency.failOperationIdempotency(idemKey, "Withdrawal transaction failed on Arc");
+      if (!withdrawResult || !withdrawResult.success || !withdrawTx) {
+        idempotency.failOperationIdempotency(idemKey, withdrawErrorMsg || "Withdrawal transaction failed on Arc");
         const principalStr = (Number(state.data.position?.amount_usdc) || 0).toFixed(2);
         return ctx.reply(
           `⚠️ <b>Withdrawal Could Not Be Completed</b>\n──────────────────────────\n` +
@@ -10136,15 +10137,6 @@ bot.on("text", async (ctx) => {
           `Please try again shortly.`,
           { parse_mode: "HTML" }
         );
-      }
-
-      if (!withdrawResult) {
-        db.closeYieldPosition(userId, netPaid, {
-          devFee: devFeeAmount,
-          accountType: context,
-          positionId: posId,
-          withdrawTxHash: withdrawTx,
-        });
       }
 
       db.recordTransaction(userId, "yield_withdraw", BigInt(Math.round(netPaid * 1e18)), "confirmed", withdrawTx, context);
@@ -10159,13 +10151,9 @@ bot.on("text", async (ctx) => {
       if (withdrawTx && withdrawTx !== "0xsimulated_withdraw_tx_hash") {
         txLinks += `\n\n🔗 <a href="${netConfig.explorerUrl}/tx/${withdrawTx}">View Withdrawal on Arc Explorer</a>`;
       }
-      if (feeTx) {
-        txLinks += `\n🔗 <a href="${netConfig.explorerUrl}/tx/${feeTx}">View Proxim Service Fee on Arc Explorer</a>`;
-      }
 
       const principalReturned = Number(state.data.position?.amount_usdc) || 0;
-      const accruedEarned = Number(state.data.accrued) || 0;
-      const safeDevFee = Number(devFeeAmount) || 0;
+      const netInterestEarned = Number(withdrawResult?.netYieldUsdc ?? state.data.netYield ?? 0);
       const safeNetPaid = Number(netPaid) || 0;
 
       let receiptPath = null;
@@ -10190,9 +10178,8 @@ bot.on("text", async (ctx) => {
         `✅ <b>${context === "business" ? "Business" : "Personal"} Savings Withdrawn!</b>\n──────────────────────────\n` +
         `• <b>Account:</b> ${context === "business" ? "Business Treasury" : "Personal Wallet"}\n` +
         `• <b>Principal Returned:</b> $${principalReturned.toFixed(2)}\n` +
-        `• <b>Interest Earned:</b> +$${accruedEarned.toFixed(4)}\n` +
-        `• <b>Service Fee (10% on profit):</b> -$${safeDevFee.toFixed(4)}\n` +
-        `• <b>Net Credited to Account:</b> $${safeNetPaid.toFixed(4)}` +
+        `• <b>Interest Earned:</b> +$${netInterestEarned.toFixed(4)}\n` +
+        `• <b>Total Credited to Account:</b> $${safeNetPaid.toFixed(4)}` +
         txLinks;
 
       if (receiptPath && typeof ctx.replyWithPhoto === "function") {

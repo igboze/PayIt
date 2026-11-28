@@ -980,9 +980,12 @@ async function handleApiRequest(req, res, bot = null) {
           return sendJson(res, 200, { success: true, active: false, position: null });
         }
 
-        const grossYield = savings.calcAccruedYield(pos);
-        const devFee = grossYield * savings.PAYIT_FEE_FRACTION;
-        const netYield = grossYield - devFee;
+        const ownerAddr = accountType === "business" ? user.business_deposit_address : user.deposit_address;
+        const breakdown = typeof savings.getLivePositionValue === "function"
+          ? await savings.getLivePositionValue(ownerAddr, pos)
+          : savings.calcYieldBreakdown(pos);
+        const grossYield = Number(breakdown?.grossYield || 0);
+        const netYield = Number(breakdown?.netYield || 0);
         return sendJson(res, 200, {
           success: true,
           active: true,
@@ -991,6 +994,7 @@ async function handleApiRequest(req, res, bot = null) {
             accruedGrossUsdc: Number(grossYield.toFixed(6)),
             accruedNetUsdc: Number(netYield.toFixed(6)),
             currentTotalUsdc: Number((Number(pos.amount_usdc || 0) + netYield).toFixed(6)),
+            onChain: Boolean(breakdown?.onChain),
           },
         });
       }

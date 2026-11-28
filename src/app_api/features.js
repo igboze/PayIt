@@ -1586,13 +1586,26 @@ async function getSavingsOverview(auth, url = null) {
 
   const feeFraction = Number(savings.PAYIT_FEE_FRACTION ?? 0.1);
   const feePct = Math.round(feeFraction * 100);
-  const breakdown = open && typeof savings.calcYieldBreakdown === "function"
-    ? savings.calcYieldBreakdown(open)
-    : (() => {
-      const gross = open && typeof savings.calcAccruedYield === "function" ? Number(savings.calcAccruedYield(open) || 0) : 0;
-      const fee = Number((gross * feeFraction).toFixed(6));
-      return { grossYield: gross, devFee: fee, netYield: Number(Math.max(0, gross - fee).toFixed(6)), feePct };
-    })();
+  const ownerAddress = accountType === "business"
+    ? auth.user?.business_deposit_address
+    : auth.user?.deposit_address;
+  let breakdown;
+  if (open && typeof savings.getLivePositionValue === "function") {
+    try {
+      breakdown = await savings.getLivePositionValue(ownerAddress, open);
+    } catch (_) {
+      breakdown = null;
+    }
+  }
+  if (!breakdown) {
+    breakdown = open && typeof savings.calcYieldBreakdown === "function"
+      ? savings.calcYieldBreakdown(open)
+      : (() => {
+        const gross = open && typeof savings.calcAccruedYield === "function" ? Number(savings.calcAccruedYield(open) || 0) : 0;
+        const fee = Number((gross * feeFraction).toFixed(6));
+        return { grossYield: gross, devFee: fee, netYield: Number(Math.max(0, gross - fee).toFixed(6)), feePct, onChain: false };
+      })();
+  }
 
   // The user's own rate (after Proxim's fee) at the time they saved. Older positions only
   // stored the vault's gross rate, so derive the user's share for those.
@@ -1616,6 +1629,7 @@ async function getSavingsOverview(auth, url = null) {
         accruedYieldUsdc: breakdown.netYield,
         grossYieldUsdc: breakdown.grossYield,
         platformFeeUsdc: breakdown.devFee,
+        onChain: Boolean(breakdown.onChain),
         apy: Number(apyAtDeposit.toFixed(2)),
         apyAtDeposit: Number(apyAtDeposit.toFixed(2)),
         currentApy: livePool ? Number(Number(livePool.userApy ?? livePool.apy ?? 0).toFixed(2)) : null,

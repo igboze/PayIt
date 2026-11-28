@@ -78,7 +78,6 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
   const activePool =
     pools.find((p) => p.vaultAddress && selectedVault && p.vaultAddress.toLowerCase() === selectedVault.toLowerCase()) ||
     null;
-  const feePct = savings?.platformFeePct ?? 10;
 
   const handleDeposit = async () => {
     setError(null);
@@ -193,10 +192,10 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
                 sub={balanceHidden ? "Balance hidden" : `+${formatUsdc(savings.position.accruedYieldUsdc, 4)} earned so far`}
               >
                 <View style={styles.rateChip}>
-                  <Ionicons name="lock-closed" size={13} color={COLORS.onGold} />
+                  <Ionicons name="trending-up" size={13} color={COLORS.onGold} />
                   <Text style={styles.rateChipText}>
-                    {(savings.position.apyAtDeposit ?? savings.position.apy) > 0
-                      ? `${(savings.position.apyAtDeposit ?? savings.position.apy).toFixed(2)}% APY locked when you saved`
+                    {(savings.position.currentApy ?? savings.position.apyAtDeposit ?? savings.position.apy) > 0
+                      ? `${(savings.position.currentApy ?? savings.position.apyAtDeposit ?? savings.position.apy).toFixed(2)}% APY · Variable`
                       : "Variable rate"}
                   </Text>
                 </View>
@@ -209,9 +208,8 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
                     <KeyValueRow label="Savings vault" value={savings.position.vaultName} />
                   ) : null}
                   {savings.position.currentApy != null && savings.position.currentApy > 0 ? (
-                    <KeyValueRow label="Current vault rate" value={`${savings.position.currentApy.toFixed(2)}% net APY`} />
+                    <KeyValueRow label="Current vault rate" value={`${savings.position.currentApy.toFixed(2)}% APY`} />
                   ) : null}
-                  <KeyValueRow label="Platform fee" value={`${feePct}% of earned yield only`} />
                   {savings.position.isAutoEarn ? (
                     <KeyValueRow label="Added by" value="Auto-save (highest APY)" />
                   ) : null}
@@ -260,7 +258,7 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
               <Card>
                 <SectionHeader title="1. Choose your savings type" />
                 <Text style={styles.selectHint}>
-                  Tap the vault you want to deposit into. Rates shown are net after the {feePct}% yield performance fee.
+                  Tap the vault you want to deposit into. Rates and earnings shown are net of service fees.
                 </Text>
                 <View style={{ gap: 10 }}>
                   {pools.map((p, i) => {
@@ -297,7 +295,7 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
                         </View>
                         <View style={{ alignItems: "flex-end", gap: 4 }}>
                           <Text style={styles.poolApy}>{p.apy > 0 ? `${p.apy.toFixed(2)}%` : "Active"}</Text>
-                          <Text style={styles.poolApySub}>net APY</Text>
+                          <Text style={styles.poolApySub}>APY</Text>
                         </View>
                         <View style={[styles.radio, isSelected && styles.radioOn]}>
                           {isSelected ? <Ionicons name="checkmark" size={14} color={COLORS.onPrimary} /> : null}
@@ -316,7 +314,7 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
                 <View style={styles.chosenSummary}>
                   <Text style={styles.chosenLabel}>Selected vault</Text>
                   <Text style={styles.chosenVal}>
-                    {activePool.name} ({activePool.apy.toFixed(2)}% net APY)
+                    {activePool.name} ({activePool.apy.toFixed(2)}% APY)
                   </Text>
                 </View>
               ) : null}
@@ -326,7 +324,7 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
                 value={saveAmt}
                 onChangeText={(t) => setSaveAmt(t.replace(/[^\d.]/g, ""))}
                 keyboardType="decimal-pad"
-                hint={`Minimum $1.00. ${feePct}% platform fee applies only to earned yield on withdrawal.`}
+                hint="Minimum $1.00. Withdraw anytime with zero lockups."
               />
               <Button
                 title={activePool ? `Deposit into ${activePool.name}` : "Select a vault above"}

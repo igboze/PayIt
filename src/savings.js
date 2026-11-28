@@ -9,10 +9,37 @@ const { getNetworkConfig } = require("./network");
 const db = require("./db");
 const walletLib = require("./wallet");
 
-const PAYIT_FEE_FRACTION = 0.10; // Proxim keeps 10% of APY profit on withdrawal
+const PAYIT_FEE_FRACTION = 0.10; // Proxim keeps 10% of realized APY profit on withdrawal
+const MIN_ONCHAIN_FEE_USDC = parseFloat(process.env.SAVINGS_MIN_FEE_USDC || "0.01"); // Skip fee transfer below $0.01 so Arc gas never exceeds fee
 const DEMO_SPEED = parseFloat(process.env.SAVINGS_DEMO_SPEED || "1");
 const MIN_VAULT_TVL_USD = parseFloat(process.env.SAVINGS_MIN_VAULT_TVL || "10000");
 const MAX_REALISTIC_APY_PCT = parseFloat(process.env.SAVINGS_MAX_VAULT_APY || "35");
+const POSITION_CACHE_TTL_MS = 15_000;
+
+const _vaultMetaCache = new Map(); // vaultAddrLower -> { assetAddress, assetDecimals }
+const _livePositionCache = new Map(); // `${ownerLower}:${vaultLower}` -> { expiresAt, data }
+
+function isTestMockMode() {
+  return (
+    process.env.NODE_ENV === "test" ||
+    process.env.MOCK_SAVINGS === "true" ||
+    process.env.PAYIT_TEST_MODE === "true" ||
+    Boolean(process.env.NODE_TEST_CONTEXT) ||
+    process.execArgv.some((arg) => arg === "--test" || arg.startsWith("--test-"))
+  );
+}
+
+function invalidatePositionCache(ownerAddress, vaultAddress = null) {
+  if (!ownerAddress) return;
+  const ownerLower = String(ownerAddress).toLowerCase();
+  if (vaultAddress) {
+    _livePositionCache.delete(`${ownerLower}:${String(vaultAddress).toLowerCase()}`);
+    return;
+  }
+  for (const key of _livePositionCache.keys()) {
+    if (key.startsWith(`${ownerLower}:`)) _livePositionCache.delete(key);
+  }
+}
 
 let _earnKit = null;
 function getEarnKit() {
@@ -65,7 +92,85 @@ const ERC4626_ABI = [
   "function balanceOf(address account) view returns (uint256)",
   "function previewRedeem(uint256 shares) view returns (uint256)",
   "function convertToAssets(uint256 shares) view returns (uint256)",
+  "event Withdraw(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares)",
 ];
+
+const ERC20_TRANSFER_ABI = [
+  "function decimals() view returns (uint8)",
+  "function balanceOf(address account) view returns (uint256)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "event Transfer(address indexed from, address indexed to, uint256 value)",
+];
+
+async function getVaultAssetMeta(vaultAddress, providerOrSigner) {
+  const key = String(vaultAddress || "").toLowerCase();
+  if (_vaultMetaCache.has(key)) return _vaultMetaCache.get(key);
+  const vaultContract = new Contract(vaultAddress, ERC4626_ABI, providerOrSigner);
+  const assetAddress = await vaultContract.asset();
+  let assetDecimals = 6;
+  try {
+    const assetContract = new Contract(assetAddress, ERC20_TRANSFER_ABI, providerOrSigner);
+    assetDecimals = Number(await assetContract.decimals());
+  } catch (_) { }
+  const meta = { assetAddress, assetDecimals };
+  _vaultMetaCache.set(key, meta);
+  return meta;
+}
+
+/**
+ * Extract exact redeemed USDC assets from an ERC-4626 Withdraw / ERC-20 Transfer receipt.
+ * Immune to Arc native gas deduction or unrelated concurrent transfers.
+ */
+function parseRedeemedAssetsFromReceipt(receipt, vaultAddress, ownerAddress, assetAddress, assetDecimals = 6) {
+  if (!receipt || !Array.isArray(receipt.logs) || receipt.logs.length === 0) return null;
+  const vaultLower = String(vaultAddress || "").toLowerCase();
+  const ownerLower = String(ownerAddress || "").toLowerCase();
+  const assetLower = String(assetAddress || "").toLowerCase();
+
+  try {
+    const { Interface } = require("ethers");
+    const vaultIface = new Interface(ERC4626_ABI);
+    for (const log of receipt.logs) {
+      if (String(log.address || "").toLowerCase() !== vaultLower) continue;
+      try {
+        const parsed = vaultIface.parseLog(log);
+        if (parsed && parsed.name === "Withdraw") {
+          const receiver = String(parsed.args?.receiver || "").toLowerCase();
+          const owner = String(parsed.args?.owner || "").toLowerCase();
+          if (receiver === ownerLower || owner === ownerLower) {
+            const assets = parsed.args?.assets;
+            if (assets != null && assets > 0n) {
+              return Number(formatUnits(assets, assetDecimals));
+            }
+          }
+        }
+      } catch (_) { }
+    }
+
+    if (assetLower) {
+      const erc20Iface = new Interface(ERC20_TRANSFER_ABI);
+      let totalTransferred = 0n;
+      for (const log of receipt.logs) {
+        if (String(log.address || "").toLowerCase() !== assetLower) continue;
+        try {
+          const parsed = erc20Iface.parseLog(log);
+          if (parsed && parsed.name === "Transfer") {
+            const from = String(parsed.args?.from || "").toLowerCase();
+            const to = String(parsed.args?.to || "").toLowerCase();
+            if (from === vaultLower && to === ownerLower) {
+              totalTransferred += BigInt(parsed.args?.value || 0n);
+            }
+          }
+        } catch (_) { }
+      }
+      if (totalTransferred > 0n) {
+        return Number(formatUnits(totalTransferred, assetDecimals));
+      }
+    }
+  } catch (_) { }
+  return null;
+}
 
 /**
  * Discover live yield vaults on Arc via Circle EarnKit.
@@ -195,13 +300,19 @@ function calcAccruedYield(position) {
 
 /**
  * Exact breakdown of accrued yield vs 10% platform performance fee.
+ * When `onChainGrossYield` is provided (including 0), trusts the real on-chain profit
+ * instead of inflating it with a synthetic time estimate.
  */
 function calcYieldBreakdown(position, onChainGrossYield = null) {
-  const estimatedGross = calcAccruedYield(position);
-  const realGross = onChainGrossYield != null && Number.isFinite(Number(onChainGrossYield)) && Number(onChainGrossYield) > 0
-    ? Number(onChainGrossYield)
-    : 0;
-  const grossYield = parseFloat(Math.max(realGross, estimatedGross).toFixed(6));
+  const hasRealOnChain =
+    onChainGrossYield !== null &&
+    onChainGrossYield !== undefined &&
+    Number.isFinite(Number(onChainGrossYield));
+
+  const grossYield = hasRealOnChain
+    ? parseFloat(Math.max(0, Number(onChainGrossYield)).toFixed(6))
+    : parseFloat(Math.max(0, calcAccruedYield(position)).toFixed(6));
+
   const devFee = parseFloat((grossYield * PAYIT_FEE_FRACTION).toFixed(6));
   const netYield = parseFloat(Math.max(0, grossYield - devFee).toFixed(6));
   return {
@@ -213,15 +324,116 @@ function calcYieldBreakdown(position, onChainGrossYield = null) {
 }
 
 /**
- * Format position details for display in Telegram.
+ * Fetch real live on-chain vault share value for a user's active position on Arc.
+ * Returns net-of-fee yield matching what the user will receive on withdrawal.
+ * Falls back gracefully to DB time estimate only if RPC is unreachable or in offline tests.
  */
-function formatPosition(position) {
+async function getLivePositionValue(ownerAddress, position, options = {}) {
+  const fallback = () => {
+    const b = calcYieldBreakdown(position);
+    const principal = Number(position?.amount_usdc) || 0;
+    return {
+      ...b,
+      principalUsdc: principal,
+      onChainAssetsUsdc: parseFloat((principal + b.grossYield).toFixed(6)),
+      onChain: false,
+    };
+  };
+
+  if (!position) return null;
+  const vaultAddress = position.vault_address || position.vaultAddress;
+  if (!ownerAddress || !vaultAddress || !walletLib.isValidAddress(ownerAddress) || !walletLib.isValidAddress(vaultAddress)) {
+    return fallback();
+  }
+
+  // Skip live mainnet RPC calls during unit tests unless explicitly requested
+  if (isTestMockMode() && !options.forceOnChain) {
+    return fallback();
+  }
+
+  const cacheKey = `${String(ownerAddress).toLowerCase()}:${String(vaultAddress).toLowerCase()}`;
+  if (!options.bypassCache) {
+    const cached = _livePositionCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.data;
+    }
+  }
+
+  const timeoutMs = Number(options.timeoutMs || 3500);
+  try {
+    const net = getNetworkConfig();
+    const provider = options.provider || new JsonRpcProvider(net.rpcUrl, net.chainId, { staticNetwork: true });
+    const vaultContract = new Contract(vaultAddress, ERC4626_ABI, provider);
+
+    const readOnChain = async () => {
+      const [meta, shares] = await Promise.all([
+        getVaultAssetMeta(vaultAddress, provider),
+        vaultContract.balanceOf(ownerAddress),
+      ]);
+      if (shares <= 0n) {
+        const b = calcYieldBreakdown(position, 0);
+        return {
+          ...b,
+          principalUsdc: Number(position.amount_usdc) || 0,
+          onChainAssetsUsdc: 0,
+          shares: "0",
+          onChain: true,
+        };
+      }
+      let assetsRaw = 0n;
+      try {
+        assetsRaw = await vaultContract.previewRedeem(shares);
+      } catch (_) {
+        assetsRaw = await vaultContract.convertToAssets(shares);
+      }
+      const assetsUsdc = Number(formatUnits(assetsRaw, meta.assetDecimals));
+      const principal = Number(position.amount_usdc) || 0;
+      const realGross = Math.max(0, parseFloat((assetsUsdc - principal).toFixed(6)));
+      const b = calcYieldBreakdown(position, realGross);
+      // If real fee is below the on-chain dust floor, user keeps 100% of those sub-cent pennies on withdrawal
+      const effectiveDevFee = b.devFee >= MIN_ONCHAIN_FEE_USDC ? b.devFee : 0;
+      const effectiveNetYield = parseFloat(Math.max(0, b.grossYield - effectiveDevFee).toFixed(6));
+      return {
+        grossYield: b.grossYield,
+        devFee: effectiveDevFee,
+        netYield: effectiveNetYield,
+        feePct: b.feePct,
+        principalUsdc: principal,
+        onChainAssetsUsdc: parseFloat(assetsUsdc.toFixed(6)),
+        shares: shares.toString(),
+        onChain: true,
+      };
+    };
+
+    const result = await Promise.race([
+      readOnChain(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("on-chain position read timeout")), timeoutMs)),
+    ]);
+
+    _livePositionCache.set(cacheKey, {
+      expiresAt: Date.now() + POSITION_CACHE_TTL_MS,
+      data: result,
+    });
+    return result;
+  } catch (_) {
+    return fallback();
+  }
+}
+
+/**
+ * Format position details for display in Telegram.
+ * Displays net-of-fee APY and net-of-fee earned interest so what the user sees is what they withdraw.
+ */
+function formatPosition(position, liveBreakdown = null) {
   if (!position) return "No active savings position found.";
   const principal = Number(position.amount_usdc) || 0;
   const userApy = Number(position.user_apy) > 0
     ? Number(position.user_apy)
     : Number((Number(position.apy || 0) * (1 - PAYIT_FEE_FRACTION)).toFixed(2));
-  const { netYield: netAccrued } = calcYieldBreakdown(position);
+  const breakdown = liveBreakdown && typeof liveBreakdown.netYield === "number"
+    ? liveBreakdown
+    : calcYieldBreakdown(position);
+  const netAccrued = Number(breakdown.netYield) || 0;
   const total = principal + netAccrued;
   const vaultAddr = position.vault_address || position.vaultAddress || "—";
   const shortVault = vaultAddr.length > 12 ? `${vaultAddr.slice(0, 6)}...${vaultAddr.slice(-4)}` : vaultAddr;
@@ -233,11 +445,11 @@ function formatPosition(position) {
     `• <b>Principal Saved:</b> $${principal.toFixed(2)} USDC\n` +
     `• <b>Vault:</b> ${position.project || "Arc Morpho Vault"} (<code>${shortVault}</code>)\n` +
     `• <b>Network:</b> ${position.chain || "Arc"}\n` +
-    `• <b>APY:</b> ${userApy}% per year\n` +
+    `• <b>APY:</b> ${userApy}% per year (variable)\n` +
     `• <b>Started:</b> ${position.opened_at || "Recently"}\n` +
-    `• <b>Profit Earned (Interest):</b> +$${netAccrued.toFixed(4)} USDC\n` +
+    `• <b>Interest Earned:</b> +$${netAccrued.toFixed(4)} USDC\n` +
     `• <b>Current Vault Total:</b> $${total.toFixed(4)} USDC\n\n` +
-    `<i>Withdraw anytime immediately to return your principal and profit. 10% performance fee applies only to accrued profits upon withdrawal.</i>`
+    `<i>Withdraw anytime immediately to receive your principal and earned interest. Rates and earnings shown are net of service fees.</i>`
   );
 }
 
@@ -275,6 +487,10 @@ async function depositIntoVault(privateKey, vaultAddress, amountUsdc) {
       amount: String(amountUsdc),
       ...(apiKey ? { config: { apiKey } } : {}),
     });
+    try {
+      const userWallet = walletLib.walletFromPrivateKey(privateKey);
+      invalidatePositionCache(userWallet.address, vaultAddress);
+    } catch (_) { }
     return {
       success: true,
       hash: res?.hash || res?.txHash || null,
@@ -291,17 +507,8 @@ async function depositIntoVault(privateKey, vaultAddress, amountUsdc) {
     const userWallet = walletLib.walletFromPrivateKey(privateKey);
     const vaultContract = new Contract(vaultAddress, ERC4626_ABI, userWallet);
 
-    const assetAddress = await vaultContract.asset();
-    const erc20Abi = [
-      "function decimals() view returns (uint8)",
-      "function allowance(address owner, address spender) view returns (uint256)",
-      "function approve(address spender, uint256 amount) returns (bool)",
-    ];
-    const assetContract = new Contract(assetAddress, erc20Abi, userWallet);
-    let assetDecimals = 6;
-    try {
-      assetDecimals = Number(await assetContract.decimals());
-    } catch (_) { }
+    const { assetAddress, assetDecimals } = await getVaultAssetMeta(vaultAddress, userWallet);
+    const assetContract = new Contract(assetAddress, ERC20_TRANSFER_ABI, userWallet);
     const amountAssets = parseUnits(Number(amountUsdc).toFixed(Math.min(assetDecimals, 6)), assetDecimals);
 
     const allowance = await assetContract.allowance(userWallet.address, vaultAddress);
@@ -312,6 +519,7 @@ async function depositIntoVault(privateKey, vaultAddress, amountUsdc) {
 
     const tx = await vaultContract.deposit(amountAssets, userWallet.address);
     const receipt = await tx.wait();
+    invalidatePositionCache(userWallet.address, vaultAddress);
     return {
       success: true,
       hash: receipt?.hash || tx.hash,
@@ -321,10 +529,7 @@ async function depositIntoVault(privateKey, vaultAddress, amountUsdc) {
     };
   } catch (contractErr) {
     console.warn("[savings:deposit] Direct ERC-4626 deposit note:", contractErr.message);
-    const isTestMock = process.env.NODE_ENV === "test" ||
-      process.env.MOCK_SAVINGS === "true" ||
-      process.env.PAYIT_TEST_MODE === "true";
-    if (isTestMock) {
+    if (isTestMockMode()) {
       return {
         success: true,
         hash: "0xsimulated_deposit_tx_hash",
@@ -346,38 +551,118 @@ async function depositIntoVault(privateKey, vaultAddress, amountUsdc) {
 
 /**
  * Execute on-chain withdrawal from an Arc Earn vault.
- * When options.redeemAll is true, redeems all vault shares (principal + accrued interest)
- * so zero on-chain interest is left stranded in the vault.
+ * When options.redeemAll is true, executes direct ERC-4626 redeem(allShares) FIRST
+ * so 100% of principal + 100% of accrued yield is redeemed with zero stranded dust shares,
+ * and extracts the exact redeemed USDC amount from on-chain Withdraw / Transfer receipt logs.
  */
 async function withdrawFromVault(privateKey, vaultAddress, amountUsdc, options = {}) {
   const net = getNetworkConfig();
   const chain = net.isTestnet ? "Arc_Testnet" : "Arc";
   const apiKey = process.env.CIRCLE_KIT_KEY || process.env.ARC_API_KEY;
-  const adapter = createEthersAdapterFromPrivateKey({ privateKey });
-  const kit = getEarnKit();
   const userWallet = walletLib.walletFromPrivateKey(privateKey);
   const vaultContract = new Contract(vaultAddress, ERC4626_ABI, userWallet);
+  const allowSimulated =
+    options.allowSimulatedFallback === true ||
+    (options.allowSimulatedFallback !== false && isTestMockMode());
 
-  // Resolve real ERC-20 asset decimals (6 for Arc ERC-20 USDC) and full withdrawable amount
+  invalidatePositionCache(userWallet.address, vaultAddress);
+
+  // Resolve real ERC-20 asset decimals (6 for Arc ERC-20 USDC), share balance, and previewRedeem amount
+  let assetAddress = null;
   let assetDecimals = 6;
   let withdrawAmountStr = String(amountUsdc);
   let onChainShares = 0n;
+  let sharesChecked = false;
+  let previewAssetsUsdc = null;
+  let balanceBeforeRaw = null;
   try {
-    const assetAddress = await vaultContract.asset();
-    const assetContract = new Contract(assetAddress, ["function decimals() view returns (uint8)"], userWallet);
-    assetDecimals = Number(await assetContract.decimals());
+    const meta = await getVaultAssetMeta(vaultAddress, userWallet);
+    assetAddress = meta.assetAddress;
+    assetDecimals = meta.assetDecimals;
     onChainShares = await vaultContract.balanceOf(userWallet.address);
+    sharesChecked = true;
+    if (assetAddress) {
+      try {
+        const assetContract = new Contract(assetAddress, ERC20_TRANSFER_ABI, userWallet);
+        balanceBeforeRaw = await assetContract.balanceOf(userWallet.address);
+      } catch (_) { }
+    }
     if (options.redeemAll && onChainShares > 0n) {
-      const maxWithdrawable = await vaultContract.maxWithdraw(userWallet.address);
-      if (maxWithdrawable > 0n) {
-        withdrawAmountStr = formatUnits(maxWithdrawable, assetDecimals);
+      let previewRaw = 0n;
+      try {
+        previewRaw = await vaultContract.previewRedeem(onChainShares);
+      } catch (_) {
+        previewRaw = await vaultContract.maxWithdraw(userWallet.address);
+      }
+      if (previewRaw > 0n) {
+        withdrawAmountStr = formatUnits(previewRaw, assetDecimals);
+        previewAssetsUsdc = Number(withdrawAmountStr);
       }
     }
-  } catch (_) { }
+  } catch (preReadErr) {
+    console.warn("[savings:withdraw] Pre-read vault state note:", preReadErr.message);
+  }
 
-  const timeoutMs = (process.env.NODE_ENV === "test" || process.env.PAYIT_TEST_MODE === "true") ? 4000 : 30000;
+  // If on-chain check confirmed zero shares exist in this vault, fail cleanly in production
+  if (sharesChecked && onChainShares === 0n && !allowSimulated) {
+    return {
+      success: false,
+      zeroShares: true,
+      error: "No active vault shares found on-chain for this wallet.",
+      txHash: null,
+      vaultAddress,
+      amountUsdc: 0,
+    };
+  }
 
+  let directErr = null;
+  // 1. Direct ERC-4626 redeem(allShares) FIRST when redeeming full position:
+  //    guarantees principal + 100% of accrued yield with zero dust left behind.
+  if (options.redeemAll && onChainShares > 0n) {
+    try {
+      const tx = await vaultContract.redeem(onChainShares, userWallet.address, userWallet.address);
+      const receipt = await tx.wait();
+      invalidatePositionCache(userWallet.address, vaultAddress);
+
+      let actualRedeemedUsdc = parseRedeemedAssetsFromReceipt(
+        receipt,
+        vaultAddress,
+        userWallet.address,
+        assetAddress,
+        assetDecimals
+      );
+      if (actualRedeemedUsdc == null && assetAddress && balanceBeforeRaw != null) {
+        try {
+          const assetContract = new Contract(assetAddress, ERC20_TRANSFER_ABI, userWallet);
+          const balanceAfterRaw = await assetContract.balanceOf(userWallet.address);
+          if (balanceAfterRaw > balanceBeforeRaw) {
+            actualRedeemedUsdc = Number(formatUnits(balanceAfterRaw - balanceBeforeRaw, assetDecimals));
+          }
+        } catch (_) { }
+      }
+      if (actualRedeemedUsdc == null) {
+        actualRedeemedUsdc = previewAssetsUsdc ?? (parseFloat(withdrawAmountStr) || amountUsdc);
+      }
+      return {
+        success: true,
+        hash: receipt?.hash || tx.hash,
+        txHash: receipt?.hash || tx.hash,
+        vaultAddress,
+        amountUsdc: parseFloat(Number(actualRedeemedUsdc).toFixed(6)),
+        exactOnChain: true,
+      };
+    } catch (err) {
+      directErr = err;
+      console.warn("[savings:withdraw] Direct ERC-4626 redeem fallback to EarnKit:", err.message);
+    }
+  }
+
+  // 2. Circle EarnKit withdraw fallback (or primary for partial withdraws)
+  const timeoutMs = isTestMockMode() ? 4000 : 30000;
+  let kitErr = null;
   try {
+    const adapter = createEthersAdapterFromPrivateKey({ privateKey });
+    const kit = getEarnKit();
     const kitPromise = kit.withdraw({
       from: { adapter, chain },
       vaultAddress,
@@ -388,46 +673,81 @@ async function withdrawFromVault(privateKey, vaultAddress, amountUsdc, options =
       setTimeout(() => reject(new Error("EarnKit withdraw timeout")), timeoutMs)
     );
     const res = await Promise.race([kitPromise, timeoutPromise]);
+    invalidatePositionCache(userWallet.address, vaultAddress);
+
+    const txHash = res?.hash || res?.txHash || null;
+    let actualRedeemedUsdc = null;
+    if (txHash && userWallet.provider) {
+      try {
+        const receipt = await userWallet.provider.getTransactionReceipt(txHash);
+        actualRedeemedUsdc = parseRedeemedAssetsFromReceipt(
+          receipt,
+          vaultAddress,
+          userWallet.address,
+          assetAddress,
+          assetDecimals
+        );
+      } catch (_) { }
+    }
+    if (actualRedeemedUsdc == null) {
+      actualRedeemedUsdc = parseFloat(res?.amount || withdrawAmountStr) || amountUsdc;
+    }
     return {
       success: true,
-      hash: res?.hash || res?.txHash || null,
-      txHash: res?.hash || res?.txHash || null,
+      hash: txHash,
+      txHash,
       vaultAddress,
-      amountUsdc: parseFloat(res?.amount || withdrawAmountStr) || amountUsdc,
+      amountUsdc: parseFloat(Number(actualRedeemedUsdc).toFixed(6)),
+      exactOnChain: true,
     };
-  } catch (kitErr) {
-    console.warn("[savings:withdraw] EarnKit withdraw fallback to direct ERC-4626:", kitErr.message);
+  } catch (err) {
+    kitErr = err;
+    console.warn("[savings:withdraw] EarnKit withdraw note:", err.message);
   }
 
-  // Direct ERC-4626 fallback on Arc (uses real assetDecimals, e.g. 6 for USDC)
-  try {
-    const amountAssets = parseUnits(Number(withdrawAmountStr).toFixed(Math.min(assetDecimals, 6)), assetDecimals);
-
-    let tx;
-    if (options.redeemAll && onChainShares > 0n) {
-      tx = await vaultContract.redeem(onChainShares, userWallet.address, userWallet.address);
-    } else {
-      try {
-        tx = await vaultContract.withdraw(amountAssets, userWallet.address, userWallet.address);
-      } catch (withdrawErr) {
-        const shares = onChainShares > 0n ? onChainShares : await vaultContract.balanceOf(userWallet.address);
-        if (shares > 0n) {
-          tx = await vaultContract.redeem(shares, userWallet.address, userWallet.address);
-        } else {
-          throw withdrawErr;
+  // 3. Direct ERC-4626 withdraw/redeem last-resort attempt if not already tried
+  if (!directErr) {
+    try {
+      const amountAssets = parseUnits(Number(withdrawAmountStr).toFixed(Math.min(assetDecimals, 6)), assetDecimals);
+      let tx;
+      if (options.redeemAll && onChainShares > 0n) {
+        tx = await vaultContract.redeem(onChainShares, userWallet.address, userWallet.address);
+      } else {
+        try {
+          tx = await vaultContract.withdraw(amountAssets, userWallet.address, userWallet.address);
+        } catch (withdrawErr) {
+          const shares = onChainShares > 0n ? onChainShares : await vaultContract.balanceOf(userWallet.address);
+          if (shares > 0n) {
+            tx = await vaultContract.redeem(shares, userWallet.address, userWallet.address);
+          } else {
+            throw withdrawErr;
+          }
         }
       }
+      const receipt = await tx.wait();
+      invalidatePositionCache(userWallet.address, vaultAddress);
+      const parsedAssets = parseRedeemedAssetsFromReceipt(
+        receipt,
+        vaultAddress,
+        userWallet.address,
+        assetAddress,
+        assetDecimals
+      );
+      return {
+        success: true,
+        hash: receipt?.hash || tx.hash,
+        txHash: receipt?.hash || tx.hash,
+        vaultAddress,
+        amountUsdc: parseFloat(Number(parsedAssets ?? (parseFloat(withdrawAmountStr) || amountUsdc)).toFixed(6)),
+        exactOnChain: true,
+      };
+    } catch (contractErr) {
+      directErr = contractErr;
+      console.warn("[savings:withdraw] Direct ERC-4626 withdraw note:", contractErr.message);
     }
-    const receipt = await tx.wait();
-    return {
-      success: true,
-      hash: receipt?.hash || tx.hash,
-      txHash: receipt?.hash || tx.hash,
-      vaultAddress,
-      amountUsdc: parseFloat(withdrawAmountStr) || amountUsdc,
-    };
-  } catch (contractErr) {
-    console.warn("[savings:withdraw] Direct ERC-4626 withdraw note:", contractErr.message);
+  }
+
+  if (allowSimulated) {
     return {
       success: true,
       hash: "0xsimulated_withdraw_tx_hash",
@@ -437,19 +757,29 @@ async function withdrawFromVault(privateKey, vaultAddress, amountUsdc, options =
       simulated: true,
     };
   }
+
+  return {
+    success: false,
+    error: directErr?.message || kitErr?.message || "On-chain vault withdrawal failed",
+    txHash: null,
+    vaultAddress,
+    amountUsdc: 0,
+  };
 }
 
 /**
  * Execute full withdrawal with on-chain Dev Fee routing.
- * Dev fee (10% of accrued yield profit) is deducted and routed to fee recipient.
+ * Dev fee (10% of REALIZED on-chain yield profit) is deducted and routed to fee recipient
+ * only when the realized fee meets MIN_ONCHAIN_FEE_USDC ($0.01) so Arc gas never exceeds the fee.
  *
  * @param {object} params
  * @param {object} params.userWallet - User's ethers Wallet instance
  * @param {object} params.position - User's active yield position record from DB
  * @param {string} [params.feeRecipientAddress] - Dev fee recipient address
+ * @param {boolean} [params.allowSimulatedFallback] - Override test mock behavior
  * @returns {Promise<object>}
  */
-async function withdrawFromVaultWithFee({ userWallet, position, feeRecipientAddress }) {
+async function withdrawFromVaultWithFee({ userWallet, position, feeRecipientAddress, allowSimulatedFallback }) {
   if (!position) {
     throw new Error("No active savings position found");
   }
@@ -461,24 +791,31 @@ async function withdrawFromVaultWithFee({ userWallet, position, feeRecipientAddr
     "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
 
   const principal = Number(position.amount_usdc) || 0;
+  const allowSimulated =
+    allowSimulatedFallback === true ||
+    (allowSimulatedFallback !== false && isTestMockMode());
 
-  // 1. Withdraw principal + gross yield from vault back to user's wallet (redeem all shares)
+  // 1. Withdraw principal + 100% of gross yield from vault back to user's wallet (redeem all shares)
   let withdrawRes = null;
+  let withdrawErr = null;
   try {
-    withdrawRes = await withdrawFromVault(userWallet.privateKey, vaultAddress, principal, { redeemAll: true });
+    withdrawRes = await withdrawFromVault(userWallet.privateKey, vaultAddress, principal, {
+      redeemAll: true,
+      allowSimulatedFallback: allowSimulated,
+    });
   } catch (err) {
+    withdrawErr = err;
     console.warn(`[savings:withdraw] Vault withdrawal exception: ${err.message}`);
-    withdrawRes = {
-      success: true,
-      hash: "0xsimulated_withdraw_tx_hash",
-      txHash: "0xsimulated_withdraw_tx_hash",
-      vaultAddress,
-      amountUsdc: principal,
-      simulated: true,
-    };
   }
 
   if (!withdrawRes || !withdrawRes.success) {
+    if (!allowSimulated) {
+      throw new Error(
+        withdrawRes?.error ||
+        withdrawErr?.message ||
+        "On-chain vault withdrawal failed. Your savings remain safely in the vault."
+      );
+    }
     withdrawRes = {
       success: true,
       hash: "0xsimulated_withdraw_tx_hash",
@@ -492,16 +829,18 @@ async function withdrawFromVaultWithFee({ userWallet, position, feeRecipientAddr
   let withdrawTxHash = withdrawRes.txHash || withdrawRes.hash || null;
   let isSimulated = Boolean(withdrawRes.simulated || withdrawTxHash === "0xsimulated_withdraw_tx_hash");
 
-  // Reconcile actual on-chain redeemed profit (when real shares were redeemed) against accrued yield
+  // Reconcile REAL on-chain redeemed profit (never inflate real withdrawals with synthetic clock estimates)
   const redeemedUsdc = Number(withdrawRes.amountUsdc || 0);
-  const onChainGrossYield = !isSimulated && redeemedUsdc > principal ? redeemedUsdc - principal : 0;
-  const { grossYield, devFee, netYield } = calcYieldBreakdown(position, onChainGrossYield);
-  const totalUserPayout = parseFloat((principal + netYield).toFixed(6));
-  const grossPayout = parseFloat((principal + grossYield).toFixed(6));
+  const onChainGrossYield = !isSimulated
+    ? Math.max(0, parseFloat((redeemedUsdc - principal).toFixed(6)))
+    : null;
+  const breakdown = calcYieldBreakdown(position, onChainGrossYield);
+  const grossYield = breakdown.grossYield;
+  const calculatedDevFee = breakdown.devFee;
 
-  // If vault withdrawal was simulated or fallback, disburse real USDC float to user's wallet on Arc
-  // Disbursing grossPayout ensures deducting devFee leaves user with exactly totalUserPayout
+  // In test mock mode, optionally disburse real USDC float if relayer is configured
   if (isSimulated && userWallet && userWallet.address) {
+    const grossPayout = parseFloat((principal + grossYield).toFixed(6));
     try {
       const cctpBridge = require("./cctp_bridge");
       const disburseHash = await cctpBridge.disburseDirectOnArc({
@@ -517,49 +856,76 @@ async function withdrawFromVaultWithFee({ userWallet, position, feeRecipientAddr
     }
   }
 
-  // 2. Route 10% platform performance fee on accrued yield on-chain to fee recipient
+  // 2. Route 10% platform performance fee on REALIZED yield on-chain to fee recipient.
+  //    Skip sub-cent dust fees (< MIN_ONCHAIN_FEE_USDC) on real on-chain withdrawals
+  //    so Arc gas (~$0.0016) never eats more than the fee or cuts into the user's principal.
   let feeTxHash = null;
-  if (devFee >= 0.00001 && feeTarget && walletLib.isValidAddress(feeTarget)) {
+  let appliedDevFee = isSimulated ? calculatedDevFee : 0;
+
+  if (calculatedDevFee >= MIN_ONCHAIN_FEE_USDC && feeTarget && walletLib.isValidAddress(feeTarget)) {
     try {
-      const devFeeMicro = walletLib.parseToMicro(devFee.toFixed(6));
-      const feeTx = await walletLib.sendSponsoredOrDirectTransaction(userWallet, feeTarget, devFeeMicro);
+      const devFeeMicro = walletLib.parseToMicro(calculatedDevFee.toFixed(6));
+      const feeTx = await walletLib.sendSponsoredOrDirectTransaction(userWallet, feeTarget, devFeeMicro, "0x", {
+        waitForConfirmation: !isSimulated,
+      });
       feeTxHash = feeTx.txHash;
-      console.log(`[savings:fee] Routed 10% platform fee ($${devFee.toFixed(6)} USDC) -> ${feeTarget} (tx: ${feeTxHash})`);
+      appliedDevFee = calculatedDevFee;
+      console.log(`[savings:fee] Routed 10% platform fee ($${calculatedDevFee.toFixed(6)} USDC) -> ${feeTarget} (tx: ${feeTxHash})`);
     } catch (feeErr) {
       console.warn("[savings] Dev fee transfer note:", feeErr.message);
       try {
         const cctpBridge = require("./cctp_bridge");
-        feeTxHash = await cctpBridge.disburseDirectOnArc({
+        const relayerFeeHash = await cctpBridge.disburseDirectOnArc({
           recipientArcAddress: feeTarget,
-          amountUsdc: devFee,
+          amountUsdc: calculatedDevFee,
         });
-      } catch (_) {}
+        if (relayerFeeHash) {
+          feeTxHash = relayerFeeHash;
+          appliedDevFee = calculatedDevFee;
+        }
+      } catch (_) { }
     }
+  } else if (!isSimulated && calculatedDevFee > 0) {
+    console.log(
+      `[savings:fee] Skipping dust fee ($${calculatedDevFee.toFixed(6)} < $${MIN_ONCHAIN_FEE_USDC.toFixed(2)}) so user keeps 100% of small yield`
+    );
   }
 
-  // 3. Mark position closed in SQLite
+  const netYield = parseFloat(Math.max(0, grossYield - appliedDevFee).toFixed(6));
+  const totalUserPayout = !isSimulated && redeemedUsdc > 0
+    ? parseFloat(Math.max(0, redeemedUsdc - appliedDevFee).toFixed(6))
+    : parseFloat((principal + netYield).toFixed(6));
+
+  if (userWallet?.address) {
+    invalidatePositionCache(userWallet.address, vaultAddress);
+  }
+
+  // 3. Mark position closed in SQLite (along with any duplicate active rows in the same vault)
   db.closeYieldPosition(userWallet.telegramId || position.telegram_id, totalUserPayout, {
-    devFee,
+    devFee: appliedDevFee,
     withdrawTxHash,
     feeTxHash,
     positionId: position.id,
     accountType: position.account_type || "personal",
+    vaultAddress,
   });
 
   return {
     success: true,
     principal: position.amount_usdc,
     principalUsdc: position.amount_usdc,
+    redeemedUsdc: !isSimulated ? redeemedUsdc : parseFloat((principal + grossYield).toFixed(6)),
     grossYield,
     grossYieldUsdc: grossYield,
     netYield,
     netYieldUsdc: netYield,
-    devFee,
-    devFeeUsdc: devFee,
+    devFee: appliedDevFee,
+    devFeeUsdc: appliedDevFee,
     totalUserPayout,
     netUserAmountUsdc: totalUserPayout,
     withdrawTxHash,
     feeTxHash,
+    simulated: isSimulated,
   };
 }
 
@@ -660,6 +1026,9 @@ module.exports = {
   openYieldPosition,
   calcAccruedYield,
   calcYieldBreakdown,
+  getLivePositionValue,
+  invalidatePositionCache,
+  parseRedeemedAssetsFromReceipt,
   formatPosition,
   getDepositQuote,
   depositIntoVault,
@@ -667,4 +1036,5 @@ module.exports = {
   withdrawFromVaultWithFee,
   syncOnChainVaultPositions,
   PAYIT_FEE_FRACTION,
+  MIN_ONCHAIN_FEE_USDC,
 };

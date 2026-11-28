@@ -100,12 +100,12 @@ describe("EarnKit & PayIT Yield System", () => {
       assert.equal(result.principalUsdc, 100.0, "Principal should be $100");
       assert.ok(result.grossYieldUsdc >= 11.9 && result.grossYieldUsdc <= 12.1, `Gross yield should be ~$12.00, got ${result.grossYieldUsdc}`);
 
-      // Verify 10% fee
-      const expectedFee = parseFloat((result.grossYieldUsdc * 0.10).toFixed(4));
+      // Verify 10% fee (6-decimal USDC precision)
+      const expectedFee = parseFloat((result.grossYieldUsdc * 0.10).toFixed(6));
       assert.equal(result.devFeeUsdc, expectedFee, "Dev fee must be exactly 10% of gross yield");
 
       // Verify net user payout (90% yield + 100% principal)
-      const expectedNet = parseFloat((result.principalUsdc + (result.grossYieldUsdc - expectedFee)).toFixed(4));
+      const expectedNet = parseFloat((result.principalUsdc + (result.grossYieldUsdc - expectedFee)).toFixed(6));
       assert.equal(result.netUserAmountUsdc, expectedNet, "User should receive 100% principal + 90% net yield");
 
       // Verify database updated position
