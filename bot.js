@@ -1430,6 +1430,11 @@ async function showHistory(ctx) {
 
   const fmtLineAmt = (r) => {
     const sign = r.isCredit ? "+" : "-";
+    if (r.category === "Crypto") {
+      const token = String(r.type || "").toLowerCase() === "send_eurc" ? "EURC" : "USDC";
+      const exact = Number(Number(r.usdAmount || 0).toFixed(6)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+      return `${sign}${exact} ${token}`;
+    }
     if (r.fiatCurrency && r.fiatAmount) {
       if (r.fiatCurrency === "NGN") return `${sign}₦${Math.round(r.fiatAmount).toLocaleString("en-NG")}`;
       const syms = { USD: "$", GBP: "£", EUR: "€", CAD: "CA$", AED: "AED ", GHS: "GH₵", KES: "KSh ", TZS: "TSh ", MXN: "MX$" };
@@ -9508,7 +9513,12 @@ bot.on("text", async (ctx) => {
             status: "Confirmed",
             txHash: results[0].txHash,
           });
-          await ctx.replyWithPhoto({ source: receiptPath }, { caption: "✅ Payment sent!", ...afterPaymentButtons });
+          const exactAmtSent = Number(Number(state.data.amountUsdc || 0).toFixed(6)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+          const sentToken = state.data.token || "USDC";
+          await ctx.replyWithPhoto(
+            { source: receiptPath },
+            { caption: `✅ Sent ${exactAmtSent} ${sentToken} to ${state.data.recipientName || state.data.walletAddress}!`, ...afterPaymentButtons }
+          );
         } catch {
           await safeReplyFormattedResults(ctx, results, afterPaymentButtons);
         }

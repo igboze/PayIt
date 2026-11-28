@@ -396,11 +396,11 @@ async function sendKycStatusEmail({ to, name, status, accountType = "personal" }
       <p style="margin:0 0 14px 0;font-size:15px;line-height:22px;color:#3A352C;">${greeting}</p>
       <p style="margin:0 0 16px 0;font-size:15px;line-height:22px;color:#3A352C;">Great news! Your <strong>${escapeEmailHtml(label)}</strong> is now <strong>VERIFIED</strong>. Your global bank accounts and virtual USD cards are unlocked.</p>
       ${renderKeyValueTable([
-        ["Account Status", "VERIFIED"],
-        ["Global Accounts", "USD, GBP, EUR, NGN, CAD, AED, KES, GHS, TZS"],
-        ["Deposit Fee", "0% (Hold Local Currency or Auto-USD)"],
-        ["Virtual Cards", "USD Cards for global online payments"],
-      ])}
+      ["Account Status", "VERIFIED"],
+      ["Global Accounts", "USD, GBP, EUR, NGN, CAD, AED, KES, GHS, TZS"],
+      ["Deposit Fee", "0% (Hold Local Currency or Auto-USD)"],
+      ["Virtual Cards", "USD Cards for global online payments"],
+    ])}
       <p style="margin:14px 0 0 0;font-size:14px;line-height:21px;color:#5C5546;">Open the Proxim app or Telegram bot anytime to view your account details and choose whether incoming deposits stay in their local currency or auto-convert to USD.</p>
     `;
     return sendTransactionalEmail({
@@ -544,6 +544,8 @@ const TX_ALERT_LABELS = {
   deposit_crosschain: { label: "Crypto Deposit", credit: true },
   deposit_crypto: { label: "Crypto Deposit", credit: true },
   crypto_deposit: { label: "Crypto Deposit", credit: true },
+  near_deposit: { label: "Crypto Deposit", credit: true },
+  evm_sweep: { label: "Crypto Deposit", credit: true },
   onramp: { label: "Naira Deposit", credit: true },
   paj_onramp: { label: "Naira Deposit", credit: true },
   p2p_receive: { label: "Money Received", credit: true },
@@ -559,9 +561,12 @@ const TX_ALERT_LABELS = {
   global_payout: { label: "International Transfer", credit: false },
   card_load: { label: "Virtual USD Card Funding", credit: false },
   card_spend: { label: "Virtual USD Card Spend", credit: false },
-  send_usdc: { label: "USD Transfer Sent", credit: false },
-  send_eurc: { label: "EUR Transfer Sent", credit: false },
-  transfer: { label: "Transfer Sent", credit: false },
+  send_usdc: { label: "Crypto Transfer Sent", credit: false },
+  send_eurc: { label: "EURC Transfer Sent", credit: false },
+  transfer: { label: "Crypto Transfer Sent", credit: false },
+  crosschain_withdraw: { label: "Crypto Withdrawal", credit: false },
+  intent_withdraw: { label: "Crypto Withdrawal", credit: false },
+  move_funds: { label: "Internal Chain Move", credit: false },
   p2p_send: { label: "Proxim Transfer Sent", credit: false },
   p2p_escrow: { label: "Gift Link Sent", credit: false },
   scheduled_transfer: { label: "Scheduled Transfer", credit: false },
@@ -576,9 +581,41 @@ const TX_ALERT_LABELS = {
   monthly_maintenance_fee: { label: "Monthly Account & Alert Fee", credit: false },
 };
 
-function _formatAlertAmount({ sourceCurrency, sourceAmount, amountUsd }) {
+const CRYPTO_ALERT_TX_TYPES = new Set([
+  "deposit_crypto",
+  "deposit_crosschain",
+  "crypto_deposit",
+  "near_deposit",
+  "evm_sweep",
+  "send_usdc",
+  "send_eurc",
+  "transfer",
+  "crosschain_withdraw",
+  "intent_withdraw",
+  "move_funds",
+]);
+
+function _formatExactUsdc(val) {
+  const n = Number(val || 0);
+  if (!Number.isFinite(n)) return "0.00";
+  return Number(n.toFixed(6)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+}
+
+function _formatAlertAmount({ sourceCurrency, sourceAmount, amountUsd, rawType = "" }) {
   const cur = sourceCurrency ? String(sourceCurrency).toUpperCase() : null;
   const srcAmt = Number(sourceAmount);
+  const typeLower = String(rawType || "").toLowerCase();
+
+  // Crypto deposits & crypto sends always display the exact value in USDC (or EURC)
+  if (cur === "USDC" || cur === "EURC") {
+    const val = Number.isFinite(srcAmt) && srcAmt > 0 ? srcAmt : Number(amountUsd || 0);
+    return `${_formatExactUsdc(val)} ${cur}`;
+  }
+  if (!cur && CRYPTO_ALERT_TX_TYPES.has(typeLower)) {
+    const token = typeLower === "send_eurc" ? "EURC" : "USDC";
+    return `${_formatExactUsdc(amountUsd)} ${token}`;
+  }
+
   if (cur && Number.isFinite(srcAmt) && srcAmt > 0) {
     if (cur === "NGN") return `₦${Math.round(srcAmt).toLocaleString("en-NG")}`;
     const syms = { USD: "$", GBP: "£", EUR: "€", CAD: "CA$", AED: "AED ", GHS: "GH₵", KES: "KSh ", TZS: "TSh ", MXN: "MX$" };
@@ -612,7 +649,7 @@ async function sendTransactionAlertEmail({
 
   const safe = (v) => String(v || "").replace(/[<>&]/g, "");
   const sign = meta.credit ? "+" : "-";
-  const amtText = _formatAlertAmount({ sourceCurrency, sourceAmount, amountUsd });
+  const amtText = _formatAlertAmount({ sourceCurrency, sourceAmount, amountUsd, rawType });
   const badgeBg = meta.credit ? "#007840" : "#002018";
   const badgeColor = meta.credit ? "#FFFFFF" : "#E0A82E";
   const badgeLabel = meta.credit ? "CREDIT ALERT" : "DEBIT ALERT";

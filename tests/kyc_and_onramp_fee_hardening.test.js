@@ -1490,6 +1490,37 @@ test("Counterparty capture (Nuvion/Paj credits & debits), receipt SVG rendering,
   assert.ok(eurDebSvg.includes("EUR"), "EUR Cash Out receipt must render EUR currency code");
   assert.ok(!eurDebSvg.includes("₦540"), "EUR Cash Out receipt must NEVER format USD/EUR as Naira");
 
+  // 3c. Crypto deposit & crypto send receipts show EXACT USDC value (preserving fractional precision, e.g. 10.1234 USDC & 1.4795 USDC)
+  const cryptoDepSvg = receiptGen.buildReceiptSvg({
+    receiptId: "DEP-CRYPTO-1",
+    senderName: "Base Transfer",
+    senderBank: "Base",
+    senderAddress: "0x1111111111111111111111111111111111111111",
+    recipientName: "Statement User",
+    amountUsdc: 10.1234,
+    token: "USDC",
+    displayCurrency: "USDC",
+    type: "Deposit",
+    status: "Confirmed",
+  });
+  assert.ok(cryptoDepSvg.includes("10.1234"), "Crypto deposit receipt must show exact received USDC value (10.1234)");
+  assert.ok(cryptoDepSvg.includes("USDC"), "Crypto deposit receipt must show USDC token");
+
+  const cryptoSendSvg = receiptGen.buildReceiptSvg({
+    receiptId: "WD-CRYPTO-1",
+    senderName: "Statement User",
+    recipientName: "Solana",
+    bankName: "SOLANA",
+    recipientAddress: "5ba1CAazPrdYYcaTYyzTqMExgCadu2aFauW24r28dh5g",
+    amountUsdc: 1.4795,
+    token: "USDC",
+    displayCurrency: "USDC",
+    type: "Crypto Withdrawal",
+    status: "Confirmed",
+  });
+  assert.ok(cryptoSendSvg.includes("1.4795"), "Crypto send receipt must show exact sent USDC value (1.4795)");
+  assert.ok(cryptoSendSvg.includes("USDC"), "Crypto send receipt must show USDC token");
+
   // 4. Full Account Statement includes BOTH Fiat & Crypto deposits & withdrawals with counterparty & direction
   const built = statement.buildAccountStatement({ db, telegramId: stmtTg, limit: 50 });
   assert.equal(built.summary.fiatDepositsCount, 1);

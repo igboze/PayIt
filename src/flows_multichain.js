@@ -1348,10 +1348,11 @@ async function handleMultichainState(bot, ctx, state, text, userId) {
           ? `\n<i>⚡ Cross-chain bridging & solver routing in progress.\nYour funds typically arrive in 1–2 minutes, and you will receive an arrival alert with your destination transaction link!</i>`
           : `\n<i>Funds typically arrive on the destination chain in 1–5 minutes.</i>`;
 
+        const exactUsdcOut = Number(Number(result.amount || 0).toFixed(6)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
         const caption =
           `✅ <b>Withdrawal Submitted!</b>\n──────────────────────────\n` +
           `🌐 <b>Destination:</b> ${chainLabel}\n` +
-          `💰 <b>Amount:</b> $${Number(result.amount).toFixed(2)} USDC\n` +
+          `💰 <b>Amount:</b> ${exactUsdcOut} USDC\n` +
           `📍 <b>Recipient:</b> <code>${state.data.destinationAddress}</code>\n` +
           (result.txHash ? `🔗 <b>Arc Burn Hash:</b>\n<code>${result.txHash}</code>\n` : "") +
           footerNote;

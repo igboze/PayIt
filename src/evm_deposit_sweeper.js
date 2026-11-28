@@ -769,7 +769,17 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
             amountMicro,
             "confirmed",
             swapTxHash || txHash,
-            accountType
+            accountType,
+            18,
+            String(chainName || "evm").toLowerCase(),
+            `Crypto deposit from ${chainName}`,
+            {
+              sourceCurrency: "USDC",
+              sourceAmount: effectiveAmountUsdc,
+              depositChannel: "crypto",
+              counterpartyBank: chainName,
+              counterpartyAccount: (fromAddress && fromAddress !== "External") ? fromAddress : null,
+            }
           );
           db.awardPoints(targetTelegramId, 5, "deposit", `Cross-chain deposit from ${chainName}`);
           recorded = true;
@@ -787,16 +797,17 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
     // Notify user with image receipt (skipped when already receipted cleanly by Nuvion fiat orchestrator)
     if (!isNuvionSettled && bot && targetTelegramId) {
       try {
+        const exactUsdcStr = Number(Number(effectiveAmountUsdc || 0).toFixed(6)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
         const displayAmount = `${rawAmount} ${token}`;
         const feeNote = !isNative && networkFee > 0
-          ? `\n⛽ <b>Network Fee:</b> $${networkFee.toFixed(2)} USDC`
+          ? `\n⛽ <b>Network Fee:</b> ${Number(Number(networkFee).toFixed(6)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 })} USDC`
           : "";
         const caption =
           `🎉 <b>Deposit Received & Credited!</b>\n` +
           `──────────────────────────\n` +
           `🌐 <b>Source Network:</b> ${chainName}\n` +
           `💵 <b>Received:</b> ${displayAmount}${feeNote}\n` +
-          `💰 <b>Credited on Arc:</b> $${effectiveAmountUsdc.toFixed(2)} USDC\n` +
+          `💰 <b>Credited on Arc:</b> ${exactUsdcStr} USDC\n` +
           `💼 <b>Account:</b> ${accountLabel}\n` +
           `🔗 <b>Status:</b> Ready to spend, send, or save!\n\n` +
           `<i>Your funds were automatically transferred to your Proxim account with zero user gas!</i>`;
@@ -806,7 +817,8 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
           receiptPath = await generateReceiptPNG({
             receiptId: `DEP-${(swapTxHash || txHash || "").slice(0, 10) || Date.now()}`,
             senderName: `${chainName} Transfer`,
-            senderAddress: signer ? signer.address : toAddress,
+            senderBank: chainName,
+            senderAddress: (fromAddress && fromAddress !== "External") ? fromAddress : "",
             recipientName: user ? (user.business_name || user.first_name || "Proxim Account") : "Proxim Account",
             recipientAddress: toAddress,
             amountUsdc: effectiveAmountUsdc,
@@ -1032,10 +1044,14 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
   // 7. Instant Telegram Notification with clean consumer receipt image
   if (!isNuvionSettled && bot && targetTelegramId) {
     try {
-      const displayAmount = isNative ? `${rawAmount} ${token}` : `$${(parseFloat(rawAmount.toString()) || (effectiveAmountUsdc + networkFee)).toFixed(2)} USDC`;
-      const swapNote = isNative ? `\n🔄 <b>Swapped:</b> ${displayAmount} → $${effectiveAmountUsdc.toFixed(2)} USDC` : "";
+      const exactUsdcStr = Number(Number(effectiveAmountUsdc || 0).toFixed(6)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+      const grossUsdcNum = parseFloat(rawAmount.toString()) || (effectiveAmountUsdc + networkFee);
+      const displayAmount = isNative
+        ? `${rawAmount} ${token}`
+        : `${Number(grossUsdcNum.toFixed(6)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 })} USDC`;
+      const swapNote = isNative ? `\n🔄 <b>Swapped:</b> ${displayAmount} → ${exactUsdcStr} USDC` : "";
       const feeNote = !isNative && networkFee > 0
-        ? `\n⛽ <b>Network Fee:</b> $${networkFee.toFixed(2)} USDC`
+        ? `\n⛽ <b>Network Fee:</b> ${Number(Number(networkFee).toFixed(6)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 })} USDC`
         : "";
       const txRefHash = burnResult?.instantDisburseHash || burnResult?.txHash || swapTxHash || txHash || null;
 
@@ -1044,7 +1060,7 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
         `──────────────────────────\n` +
         `🌐 <b>Source Network:</b> ${effectiveCctpConfig.name}\n` +
         `💵 <b>Received:</b> ${displayAmount}${swapNote}${feeNote}\n` +
-        `💰 <b>Credited on Arc:</b> $${effectiveAmountUsdc.toFixed(2)} USDC\n` +
+        `💰 <b>Credited on Arc:</b> ${exactUsdcStr} USDC\n` +
         `💼 <b>Account:</b> ${accountLabel}\n` +
         `🔗 <b>Status:</b> Ready to spend, send, or save!\n\n` +
         `<i>Your funds were automatically transferred to your Proxim account with zero user gas!</i>`;
@@ -1054,7 +1070,8 @@ async function processEvmDeposit(payload, bot = null, options = {}) {
         receiptPath = await generateReceiptPNG({
           receiptId: `DEP-${(txRefHash || "").slice(0, 10) || Date.now()}`,
           senderName: `${effectiveCctpConfig.name} Transfer`,
-          senderAddress: signer ? signer.address : toAddress,
+          senderBank: effectiveCctpConfig.name,
+          senderAddress: (fromAddress && fromAddress !== "External") ? fromAddress : "",
           recipientName: user ? (user.business_name || user.first_name || "Proxim Account") : "Proxim Account",
           recipientAddress: toAddress,
           amountUsdc: effectiveAmountUsdc,

@@ -3945,8 +3945,11 @@ async function getTransactionReceipt(auth, rawId, opts = {}) {
   const ownerAddr = acctType === "business" ? (auth.user.business_deposit_address || auth.user.deposit_address) : auth.user.deposit_address;
 
   const isCredit = enriched.isCredit;
-  const fiatCur = enriched.fiatCurrency;
-  const fiatAmt = enriched.fiatAmount;
+  const typeLower = String(tx.type || "").toLowerCase();
+  const isCryptoTx = enriched.category === "Crypto" || /deposit_crypto|deposit_crosschain|crypto_deposit|near_deposit|evm_sweep|crosschain_withdraw|intent_withdraw|send_usdc|send_eurc|^transfer$/.test(typeLower);
+  const cryptoToken = typeLower === "send_eurc" ? "EURC" : "USDC";
+  const fiatCur = isCryptoTx ? null : enriched.fiatCurrency;
+  const fiatAmt = isCryptoTx ? null : enriched.fiatAmount;
   const isNgn = fiatCur === "NGN";
   const formatFiat = (cur, amt) => {
     if (!cur || !amt) return null;
@@ -3958,11 +3961,11 @@ async function getTransactionReceipt(auth, rawId, opts = {}) {
   const receiptOpts = {
     receiptId: `TX-${tx.id}`,
     amountUsdc: amountNum,
-    token: isNgn ? "NGN" : (fiatCur || "USDC"),
-    displayCurrency: fiatCur || "USDC",
+    token: isCryptoTx ? cryptoToken : (isNgn ? "NGN" : (fiatCur || "USDC")),
+    displayCurrency: isCryptoTx ? cryptoToken : (fiatCur || "USDC"),
     nairaEquiv: isNgn && fiatAmt ? formatFiat("NGN", fiatAmt) : null,
     fiatAmountDisplay: fiatCur && fiatAmt ? formatFiat(fiatCur, fiatAmt) : null,
-    type: isCredit ? "Deposit" : (/offramp|withdraw_naira|payout/i.test(String(tx.type || "")) ? "Cash Out" : (enriched.typeLabel || tx.type || "Transfer")),
+    type: isCredit ? "Deposit" : (/offramp|withdraw_naira|payout/i.test(typeLower) ? "Cash Out" : (enriched.typeLabel || tx.type || "Transfer")),
     timestamp: tx.created_at || new Date().toISOString(),
     status: tx.status || "Completed",
     txHash: tx.tx_hash || null,

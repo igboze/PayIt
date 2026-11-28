@@ -52,11 +52,27 @@ export function formatCurrencyAmount(amount: number, currency?: string | null): 
   return sym ? `${sym}${formatted}` : `${formatted} ${cur}`;
 }
 
+function formatRawExactCrypto(raw: string, decimals = 18): string {
+  const s = String(raw || "").trim();
+  if (!s) return "0.00";
+  let n = NaN;
+  if (/^\d+$/.test(s) && decimals > 0) {
+    const padded = s.padStart(decimals + 1, "0");
+    const whole = padded.slice(0, padded.length - decimals);
+    const frac = padded.slice(padded.length - decimals, padded.length - decimals + 6).replace(/0+$/, "");
+    n = Number(`${whole}.${frac || "0"}`);
+  } else {
+    n = Number(s);
+  }
+  if (!Number.isFinite(n)) return "0.00";
+  return Number(n.toFixed(6)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+}
+
 /**
  * Primary + secondary display amount for a transaction row / detail sheet:
  * - Naira deposits (Paj / Global Neobank NGN): Primary in Naira (+₦...), secondary USD equivalent.
  * - International deposits (Global Neobank GBP/EUR/USD/CAD/KES/etc.): Primary in source currency (+£... / +€...).
- * - Crypto deposits: Primary in crypto (+$... USDC).
+ * - Crypto deposits & crypto sends: Primary in exact USDC (+10.1234 USDC / −40.00 USDC).
  * - Everything else: USD primary with optional Naira secondary for NGN bank payouts.
  */
 export function getTxDisplayAmounts(tx: TransactionItem): { primary: string; secondary: string | null } {
@@ -93,10 +109,19 @@ export function getTxDisplayAmounts(tx: TransactionItem): { primary: string; sec
 
     const isCryptoDeposit =
       channel === "crypto" ||
-      /deposit_crypto|near_deposit|evm_sweep|cctp|^deposit$/.test(typeLower);
+      /deposit_crypto|deposit_crosschain|crypto_deposit|near_deposit|evm_sweep|cctp|^deposit$/.test(typeLower);
     if (isCryptoDeposit) {
       return {
-        primary: `${sign}${usdStr} USDC`,
+        primary: `${sign}${formatRawExactCrypto(tx.amount, tx.decimals)} USDC`,
+        secondary: null,
+      };
+    }
+  } else {
+    const isCryptoSend = /crosschain_withdraw|intent_withdraw|send_usdc|send_eurc|^transfer$|move_funds/.test(typeLower);
+    if (isCryptoSend) {
+      const token = typeLower === "send_eurc" ? "EURC" : "USDC";
+      return {
+        primary: `${sign}${formatRawExactCrypto(tx.amount, tx.decimals)} ${token}`,
         secondary: null,
       };
     }

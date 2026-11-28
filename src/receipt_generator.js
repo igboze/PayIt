@@ -34,6 +34,14 @@ function escape(str) {
     .replace(/'/g, "&#39;");
 }
 
+function formatExactCryptoAmount(val) {
+  const n = Number(val || 0);
+  if (!Number.isFinite(n)) return "0.00";
+  // Preserve up to 6 exact decimal places for USDC/EURC while always showing at least 2 (e.g. 10.00, 10.1234)
+  const rounded = Number(n.toFixed(6));
+  return rounded.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+}
+
 function getInitials(name) {
   if (!name) return "PX";
   const cleaned = String(name).replace(/[^a-zA-Z0-9\s]/g, "").trim();
@@ -264,12 +272,9 @@ function buildReceiptSvg(opts = {}) {
     displayAmount = cleanFiat;
     displayToken = normalizedDispCur && !cleanFiat.toUpperCase().includes(normalizedDispCur) ? normalizedDispCur : "";
   } else {
-    const amtNum = Number(amountUsdc || 0);
-    displayAmount = isNaN(amtNum)
-      ? "0.00"
-      : amtNum.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    displayAmount = formatExactCryptoAmount(amountUsdc);
   }
-  const amtFontSize = displayAmount.length > 12 ? 26 : (displayAmount.length > 10 ? 30 : (displayAmount.length > 8 ? 34 : 38));
+  const amtFontSize = displayAmount.length > 14 ? 22 : (displayAmount.length > 12 ? 26 : (displayAmount.length > 10 ? 30 : (displayAmount.length > 8 ? 34 : 38)));
 
   // Dimensions & Layout
   const canvasW = 460;

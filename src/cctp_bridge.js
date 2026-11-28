@@ -337,7 +337,7 @@ async function pollCctpAttestation(identifier, maxAttempts = 30, intervalMs = 20
             try {
               const { keccak256 } = require("ethers");
               messageHash = keccak256(firstMsg.message.startsWith("0x") ? firstMsg.message : "0x" + firstMsg.message);
-            } catch {}
+            } catch { }
           }
           if (firstMsg.message) {
             cachedMessage = firstMsg.message;
@@ -369,7 +369,7 @@ async function pollCctpAttestation(identifier, maxAttempts = 30, intervalMs = 20
             try {
               const { keccak256 } = require("ethers");
               messageHash = keccak256(firstMsg.message.startsWith("0x") ? firstMsg.message : "0x" + firstMsg.message);
-            } catch {}
+            } catch { }
           }
           if (firstMsg.message) {
             cachedMessage = firstMsg.message;
@@ -383,7 +383,7 @@ async function pollCctpAttestation(identifier, maxAttempts = 30, intervalMs = 20
             };
           }
         }
-      } catch {}
+      } catch { }
     }
 
     // 3. Query Iris V1 attestations endpoint by messageHash if available
@@ -648,11 +648,12 @@ async function completeInboundCctpTransferFlow({
               status: "Confirmed",
               txHash: arcTxHash,
             });
-          } catch (_) {}
+          } catch (_) { }
 
+          const exactUsdcIn = Number(Number(amountUsdc || 0).toFixed(6)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
           const caption = `🎉 <b>Deposit Received & Credited!</b>\n` +
             `──────────────────────────\n` +
-            `💰 <b>Dollars Credited:</b> $${Number(amountUsdc).toFixed(2)} USDC\n` +
+            `💰 <b>Amount Received:</b> ${exactUsdcIn} USDC\n` +
             `🏛 <b>Network:</b> Arc Mainnet${explorerLink}\n\n` +
             `<i>Your balance has been updated and is ready to spend, save, or send!</i>`;
 
@@ -746,20 +747,21 @@ async function recoverPendingInboundCctpTransfers(bot = null) {
                   status: "Confirmed",
                   txHash: arcTxHash,
                 });
-              } catch (_) {}
+              } catch (_) { }
 
+              const exactUsdcRec = Number(Number(item.amount_usdc || 0).toFixed(6)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
               const caption = `🎉 <b>Deposit Received & Credited!</b>\n` +
                 `──────────────────────────\n` +
-                `💰 <b>Dollars Credited:</b> $${Number(item.amount_usdc).toFixed(2)} USDC\n` +
+                `💰 <b>Amount Received:</b> ${exactUsdcRec} USDC\n` +
                 `🏛 <b>Network:</b> Arc Mainnet${explorerLink}\n\n` +
                 `<i>Your balance has been updated and is ready to spend, save, or send!</i>`;
 
               if (receiptPath && typeof bot.telegram.sendPhoto === "function") {
                 await bot.telegram.sendPhoto(item.telegram_id, { source: receiptPath }, { caption, parse_mode: "HTML" }).catch(async () => {
-                  await bot.telegram.sendMessage(item.telegram_id, caption, { parse_mode: "HTML" }).catch(() => {});
+                  await bot.telegram.sendMessage(item.telegram_id, caption, { parse_mode: "HTML" }).catch(() => { });
                 });
               } else {
-                await bot.telegram.sendMessage(item.telegram_id, caption, { parse_mode: "HTML" }).catch(() => {});
+                await bot.telegram.sendMessage(item.telegram_id, caption, { parse_mode: "HTML" }).catch(() => { });
               }
             }
           }
@@ -827,10 +829,11 @@ async function sendSolanaDepositReceipt({
   const networkLine = bridgedToArc ? "Arc Mainnet (via Solana)" : "Solana Mainnet";
   const explorerUrl = bridgedToArc && txHash ? getExplorerUrl(txHash, "tx") : null;
   const explorerLink = explorerUrl ? `\n🔗 <a href="${explorerUrl}">View on Arcscan</a>` : "";
+  const exactSolUsdc = Number(Number(amountUsdc || 0).toFixed(6)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
   const caption =
     `🎉 <b>Solana Deposit Received!</b>\n` +
     `──────────────────────────\n` +
-    `💰 <b>Amount:</b> $${Number(amountUsdc).toFixed(2)} USDC\n` +
+    `💰 <b>Amount Received:</b> $${exactSolUsdc} USDC\n` +
     `📍 <b>Solana Address:</b> <code>${solanaAddress || userObj?.solana_deposit_address || "—"}</code>\n` +
     `🏛 <b>Network:</b> ${networkLine}${explorerLink}\n\n` +
     `<i>Your balance is ready to spend, save, or cash out.</i>`;
@@ -1304,7 +1307,7 @@ async function executeArcToSolanaCctpBurn({ userWallet, amountUsdc, recipientSol
               console.log(`[cctp_bridge] Extracted CCTP message from Arc receipt ✓ hash=${messageHash}`);
               break;
             }
-          } catch {}
+          } catch { }
         }
       }
     }
@@ -1383,7 +1386,7 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
   const bs58Key = feePayerKey || process.env.SOLANA_FEE_PAYER_KEY;
   if (!bs58Key) {
     const msg = "SOLANA_FEE_PAYER_KEY is not set. Add a Solana wallet with ~0.1 SOL to your .env to enable gasless CCTP withdrawals.";
-    try { db.failCctpPendingBurn(arcTxHash, msg); } catch {}
+    try { db.failCctpPendingBurn(arcTxHash, msg); } catch { }
     throw new Error(msg);
   }
 
@@ -1400,7 +1403,7 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
       `Fee-payer ${feePayerKeypair.publicKey.toBase58()} has only ${lamports / 1e9} SOL — ` +
       `need ≥ ${MIN_FEE_PAYER_LAMPORTS / 1e9} SOL. Top up wallet and run /retry_cctp to resume.`;
     console.error("[cctp_bridge:complete_SOL_FAIL]", msg);
-    try { db.failCctpPendingBurn(arcTxHash, msg); } catch {}
+    try { db.failCctpPendingBurn(arcTxHash, msg); } catch { }
     throw new Error(msg);
   }
 
@@ -1445,7 +1448,7 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
               console.log(`[cctp_bridge:complete] Found message in receipt ✓ hash=${msgDetails.messageHash}`);
               break;
             }
-          } catch {}
+          } catch { }
         }
       }
     } catch (rcptErr) {
@@ -1455,7 +1458,7 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
 
   if (!msgDetails?.message) {
     const msg = `CCTP message not found for Arc tx ${arcTxHash}. The tx may not be confirmed yet or CCTP isn't registered for this token.`;
-    try { db.failCctpPendingBurn(arcTxHash, msg); } catch {}
+    try { db.failCctpPendingBurn(arcTxHash, msg); } catch { }
     throw new Error(msg);
   }
 
@@ -1476,7 +1479,7 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
     }
   } catch (attErr) {
     const msg = `Attestation polling failed for ${arcTxHash}: ${attErr.message}`;
-    try { db.failCctpPendingBurn(arcTxHash, msg); } catch {}
+    try { db.failCctpPendingBurn(arcTxHash, msg); } catch { }
     throw new Error(msg);
   }
   console.log(`[cctp_bridge:complete] Attestation received ✓`);
@@ -1491,7 +1494,7 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
 
   if (!result.success) {
     const msg = `Solana receiveMessage failed: ${result.error}`;
-    try { db.failCctpPendingBurn(arcTxHash, msg); } catch {}
+    try { db.failCctpPendingBurn(arcTxHash, msg); } catch { }
     throw new Error(msg);
   }
 
@@ -1499,7 +1502,7 @@ async function completeCctpWithdrawalOnSolana({ arcTxHash, messageHex, messageHa
   console.log(`[cctp_bridge:complete] USDC minted on Solana ✓ tx=${solanaTxSig}`);
 
   // Mark completed in DB so it's not retried again
-  try { db.completeCctpPendingBurn(arcTxHash, solanaTxSig); } catch {}
+  try { db.completeCctpPendingBurn(arcTxHash, solanaTxSig); } catch { }
 
   return {
     success: true,
@@ -1759,7 +1762,7 @@ async function executeEvmCctpBurn({
             console.log(`[cctp_bridge] Extracted CCTP message from ${chainConfig.name} ✓ hash=${messageHash}`);
             break;
           }
-        } catch {}
+        } catch { }
       }
     }
   } catch (waitErr) {
@@ -1845,7 +1848,7 @@ async function executeEvmCctpBurn({
                 userPrivateKey: signerPrivateKey,
               });
               if (persistedInboundId && typeof db.completeInboundCctpTransfer === "function") {
-                try { db.completeInboundCctpTransfer(persistedInboundId, mintTxHash); } catch {}
+                try { db.completeInboundCctpTransfer(persistedInboundId, mintTxHash); } catch { }
               }
               console.log(`[cctp_bridge] EVM CCTP burn successfully redeemed on Arc MessageTransmitter ✓ tx=${mintTxHash}`);
             }
@@ -1969,7 +1972,7 @@ async function executeArcToEvmCctpBurn({ userWallet, amountUsdc, destinationDoma
               console.log(`[cctp_bridge] Extracted CCTP message from Arc receipt ✓ hash=${messageHash}`);
               break;
             }
-          } catch {}
+          } catch { }
         }
       }
     }
@@ -2086,14 +2089,14 @@ async function completeCctpWithdrawalOnEvm({
         } else if (fetched?.message && !msgDetails.message) {
           msgDetails = fetched;
         }
-      } catch (e) {}
+      } catch (e) { }
       await new Promise((r) => setTimeout(r, 2000));
     }
   }
 
   if (!msgDetails?.message) {
     const errMsg = `CCTP message not found for Arc tx ${arcTxHash}`;
-    try { db.failCctpPendingBurn(arcTxHash, errMsg); } catch {}
+    try { db.failCctpPendingBurn(arcTxHash, errMsg); } catch { }
     throw new Error(errMsg);
   }
 
@@ -2117,7 +2120,7 @@ async function completeCctpWithdrawalOnEvm({
       }
     } catch (attErr) {
       const errMsg = `Attestation polling failed for ${arcTxHash}: ${attErr.message}`;
-      try { db.failCctpPendingBurn(arcTxHash, errMsg); } catch {}
+      try { db.failCctpPendingBurn(arcTxHash, errMsg); } catch { }
       throw new Error(errMsg);
     }
   }
@@ -2131,7 +2134,7 @@ async function completeCctpWithdrawalOnEvm({
         if (irisMsg.messageHash) msgDetails.messageHash = irisMsg.messageHash;
         if (irisMsg.attestation && !attestation) attestation = irisMsg.attestation;
       }
-    } catch (_) {}
+    } catch (_) { }
   }
   console.log(`[cctp_bridge:evm_complete] Attestation received ✓ for ${arcTxHash}`);
 
@@ -2198,8 +2201,8 @@ async function completeCctpWithdrawalOnEvm({
     }
   }
 
-  try { db.completeCctpPendingBurn(arcTxHash, destTxHash); } catch {}
-  try { db.completeCrosschainWithdrawal(arcTxHash, { destinationTxHash: destTxHash, deliveredAmount: amountUsdc ? `$${Number(amountUsdc).toFixed(2)} USDC` : null }); } catch {}
+  try { db.completeCctpPendingBurn(arcTxHash, destTxHash); } catch { }
+  try { db.completeCrosschainWithdrawal(arcTxHash, { destinationTxHash: destTxHash, deliveredAmount: amountUsdc ? `$${Number(amountUsdc).toFixed(2)} USDC` : null }); } catch { }
 
   // Notify user via Telegram bot if bot instance and telegramId are available
   if (bot && telegramId) {
@@ -2227,7 +2230,7 @@ async function completeCctpWithdrawalOnEvm({
           status: "Confirmed",
           txHash: destTxHash && destTxHash !== "already_minted" ? destTxHash : arcTxHash,
         });
-      } catch (_) {}
+      } catch (_) { }
 
       if (receiptPath && typeof bot.telegram.sendPhoto === "function") {
         await bot.telegram.sendPhoto(telegramId, { source: receiptPath }, { caption, parse_mode: "HTML" }).catch(async () => {
@@ -2304,7 +2307,7 @@ async function completeIntentWithdrawal({
   });
 
   if (!baseCompletion.success) {
-    try { db.failCrosschainWithdrawal(arcTxHash, `Failed to mint USDC on Base: ${baseCompletion.error}`); } catch (_) {}
+    try { db.failCrosschainWithdrawal(arcTxHash, `Failed to mint USDC on Base: ${baseCompletion.error}`); } catch (_) { }
     throw new Error(`Failed to mint USDC on Base for intent withdrawal: ${baseCompletion.error}`);
   }
 
@@ -2314,7 +2317,7 @@ async function completeIntentWithdrawal({
       mint_tx_hash: baseCompletion.destinationTxHash,
       status: "intent_routing",
     });
-  } catch (_) {}
+  } catch (_) { }
 
   // Step 2: Route through NEAR Intents (1Click)
   const nearLib = require("./near");
@@ -2343,7 +2346,7 @@ async function completeIntentWithdrawal({
 
   const depositAddress = quoteRes?.quote?.depositAddress;
   if (!depositAddress) {
-    try { db.failCrosschainWithdrawal(arcTxHash, "1Click did not return a deposit address"); } catch (_) {}
+    try { db.failCrosschainWithdrawal(arcTxHash, "1Click did not return a deposit address"); } catch (_) { }
     throw new Error(`1Click did not return a deposit address: ${JSON.stringify(quoteRes)}`);
   }
 
@@ -2363,7 +2366,7 @@ async function completeIntentWithdrawal({
       intent_tx_hash: transferReceipt.hash,
       status: "delivering",
     });
-  } catch (_) {}
+  } catch (_) { }
 
   // Notify user that intent has been dispatched to solvers
   if (bot && telegramId) {
@@ -2395,7 +2398,7 @@ async function completeIntentWithdrawal({
         let execStatus;
         try {
           execStatus = await nearLib.getExecutionStatus(depositAddress);
-        } catch (_) {}
+        } catch (_) { }
 
         if (execStatus && (execStatus.status === "SUCCESS" || execStatus.status === "COMPLETED")) {
           const destTx = execStatus.swapDetails?.destinationChainTxHashes?.[0]?.hash || null;
@@ -2407,7 +2410,7 @@ async function completeIntentWithdrawal({
               destinationTxHash: destTx,
               deliveredAmount: actualAmountOut ? `${actualAmountOut} ${chainUpper}` : `${amountUsdc} USDC`,
             });
-          } catch (_) {}
+          } catch (_) { }
 
           let explorerUrl = "";
           if (destTx) {
@@ -2485,13 +2488,13 @@ async function processPendingCrosschainWithdrawals(bot = null) {
         try {
           const walletLib = require("./wallet");
           userPrivateKey = walletLib.decryptSensitiveValue(w.encrypted_private_key);
-        } catch (_) {}
+        } catch (_) { }
       }
       if (!userPrivateKey && w.telegram_id) {
         try {
           const user = db.getUser(w.telegram_id);
           if (user) userPrivateKey = db.getSystemDecryptedPrivateKey(user, w.account_type || "personal");
-        } catch (_) {}
+        } catch (_) { }
       }
       if (!userPrivateKey) {
         userPrivateKey = process.env.RELAYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY;
@@ -2564,7 +2567,7 @@ async function processPendingCrosschainWithdrawals(bot = null) {
                 status: "Confirmed",
                 txHash: destTx || w.arc_tx_hash,
               });
-            } catch (_) {}
+            } catch (_) { }
 
             try {
               if (receiptPath && typeof bot.telegram.sendPhoto === "function") {
@@ -2651,7 +2654,7 @@ async function processPendingCrosschainWithdrawals(bot = null) {
               `<i>Solvers are delivering the funds to your destination address (typically 30–60 seconds). You will receive an arrival alert with the explorer link shortly!</i>`,
               { parse_mode: "HTML" }
             );
-          } catch (_) {}
+          } catch (_) { }
         }
         inFlightCount++;
         continue;
@@ -2682,7 +2685,7 @@ async function processPendingCrosschainWithdrawals(bot = null) {
               ...(w.attestation ? { attestation: w.attestation } : {})
             });
           }
-        } catch (_) {}
+        } catch (_) { }
       }
 
       if (!msgHash) {
@@ -2713,7 +2716,7 @@ async function processPendingCrosschainWithdrawals(bot = null) {
               status: "minting"
             });
           }
-        } catch (_) {}
+        } catch (_) { }
       }
 
       if (!attestation) {
@@ -2783,7 +2786,7 @@ async function processPendingCrosschainWithdrawals(bot = null) {
                   status: "Confirmed",
                   txHash: solResult.solanaTxSignature,
                 });
-              } catch (_) {}
+              } catch (_) { }
 
               if (receiptPath && typeof bot.telegram.sendPhoto === "function") {
                 await bot.telegram.sendPhoto(w.telegram_id, { source: receiptPath }, { caption, parse_mode: "HTML" }).catch(async () => {
@@ -2792,7 +2795,7 @@ async function processPendingCrosschainWithdrawals(bot = null) {
               } else {
                 await bot.telegram.sendMessage(w.telegram_id, caption, { parse_mode: "HTML" });
               }
-            } catch (_) {}
+            } catch (_) { }
           }
         }
       } else {
