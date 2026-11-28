@@ -1,68 +1,287 @@
-// Proxim Mobile App — design tokens (Proxim Forest & Crisp Emerald).
-// Hard, architectural neobank palette: cool mineral mist canvas, solid white cards with 1px
-// hairline borders, deep Proxim Forest hero, hard institutional emerald actions, and Midnight
-// Slate for Business accounts. Zero soft gradients or pastel glows.
+// Proxim Mobile App — hardened dual design tokens (Light & Dark).
+// Light: Cool architectural stone (#ECEFED), crisp white cards (#FFFFFF), hard Proxim Forest
+// (#001A13), deep institutional emerald CTAs (#006E44), and Midnight Navy (#0B1324) for Business.
+// Dark: Deep matte obsidian-pine (#060A08), crisp dark cards (#0E1512) with 1px borders (#22332B),
+// hard Proxim Emerald (#00B86B / #008751), and crisp off-white typography (#F2F7F4).
+// Zero soft gradients, zero AI glow.
 
-export const COLORS = {
-  bg: "#F2F5F3",
-  page: "#F2F5F3", // cool mineral mist; pure white cards sit cleanly on top
+import { ImageStyle, StyleSheet, TextStyle, ViewStyle } from "react-native";
+
+type NamedStyles<T> = { [P in keyof T]: ViewStyle | TextStyle | ImageStyle };
+
+export type ThemePreference = "system" | "light" | "dark";
+export type ResolvedTheme = "light" | "dark";
+
+export const LIGHT_COLORS = {
+  bg: "#ECEFED",
+  page: "#ECEFED",
   surface: "#FFFFFF",
-  surfaceElevated: "#E6EEEA", // solid cool sage-slate sunken fills
-  surfaceSoft: "#F2F5F3",
-  border: "#D8E1DC", // crisp 1px card and divider outlines
-  borderStrong: "#B4C4BC", // inputs, outline buttons, focus anchors
+  surfaceElevated: "#E0E7E3",
+  surfaceSoft: "#ECEFED",
+  border: "#C9D5CE",
+  borderStrong: "#8EA197",
 
-  primary: "#002018", // Proxim Forest: headers, icons, dark buttons (17:1 on white)
-  primaryDark: "#00130E",
-  primaryMuted: "#E5F2EC", // solid light emerald surface
-  primaryBorder: "#0B4A37",
+  primary: "#001A13",
+  primaryDark: "#00100B",
+  primaryMuted: "#DDF0E6",
+  primaryBorder: "#0A4D38",
   onPrimary: "#FFFFFF",
-  forest: "#002018",
-  forest800: "#063527",
-  forest700: "#0F523D",
-  deep: "#DFF2E8", // solid selected pill / card highlight
-  success: "#007A47", // money in & confirmed states (5.4:1 on white)
-  brandGreen: "#009E60", // hard Proxim emerald accent
+  forest: "#001A13",
+  forest800: "#053023",
+  forest700: "#0E4F3A",
+  deep: "#D0ECDD",
+  success: "#006B3E",
+  brandGreen: "#008F55",
 
   // Primary CTA & accent tokens (hard institutional emerald with pure white text)
-  gold: "#007F4F", // solid hard emerald CTA fill (5.1:1 with white text)
-  goldDark: "#005E3A", // deep emerald text on light backgrounds
-  goldSoft: "#DFF2E8", // crisp solid pale emerald for active tab pill & icon badges
+  gold: "#006E44",
+  goldDark: "#004F30",
+  goldSoft: "#D0ECDD",
   onGold: "#FFFFFF",
 
-  // Business account identity: authoritative Midnight Slate
-  business: "#0F172A",
-  businessMuted: "#E8EDF5",
-  businessBorder: "#CBD5E1",
+  // Business account identity: hard corporate Midnight Navy
+  business: "#0B1324",
+  businessMuted: "#E2E8F0",
+  businessBorder: "#94A3B8",
 
   info: "#1D4ED8",
-  infoMuted: "#E5EDFF",
+  infoMuted: "#DBEAFE",
 
-  danger: "#C81E1E",
-  dangerMuted: "#FCE8E8",
-  dangerBorder: "#F3BCBC",
-  dangerText: "#9B1C1C",
-  successText: "#007A47",
-  warningText: "#9A4D00",
-  warningMuted: "#FEF0DC",
+  danger: "#B91C1C",
+  dangerMuted: "#FEE2E2",
+  dangerBorder: "#EF9A9A",
+  dangerText: "#991B1B",
+  successText: "#006B3E",
+  warningText: "#8A4300",
+  warningMuted: "#FDE8C8",
+  warningBorder: "#D9A45B",
 
-  text: "#0B1713", // razor-sharp dark pine ink
-  textSecondary: "#475952", // crisp cool slate-green (7.2:1 on white)
-  textMuted: "#6F8079", // muted labels (4.5:1+ on white)
+  text: "#06110D",
+  textSecondary: "#374841",
+  textMuted: "#5C6E67",
   white: "#FFFFFF",
   black: "#000000",
-} as const;
+};
 
-// The balance header is solid Proxim Forest with crisp emerald accents.
-export const HERO = {
+export const DARK_COLORS: typeof LIGHT_COLORS = {
+  bg: "#060A08",
+  page: "#060A08",
+  surface: "#0E1512",
+  surfaceElevated: "#15201B",
+  surfaceSoft: "#060A08",
+  border: "#22332B",
+  borderStrong: "#375044",
+
+  primary: "#00B86B",
+  primaryDark: "#00D67D",
+  primaryMuted: "#0F261D",
+  primaryBorder: "#1D543E",
+  onPrimary: "#03120C",
+  forest: "#091E16",
+  forest800: "#112D22",
+  forest700: "#1F4B39",
+  deep: "#112E22",
+  success: "#10B981",
+  brandGreen: "#00C476",
+
+  // Primary CTA & accent tokens (hard solid emerald with pure white text)
+  gold: "#008751",
+  goldDark: "#34D399",
+  goldSoft: "#122C21",
+  onGold: "#FFFFFF",
+
+  // Business account identity in Dark Mode: hard corporate Slate Blue
+  business: "#3B82F6",
+  businessMuted: "#101D33",
+  businessBorder: "#253E66",
+
+  info: "#60A5FA",
+  infoMuted: "#101E36",
+
+  danger: "#F87171",
+  dangerMuted: "#291114",
+  dangerBorder: "#63242B",
+  dangerText: "#FCA5A5",
+  successText: "#10B981",
+  warningText: "#FBBF24",
+  warningMuted: "#291D0A",
+  warningBorder: "#6B4E16",
+
+  text: "#F2F7F4",
+  textSecondary: "#9AB0A6",
+  textMuted: "#6C8278",
+  white: "#FFFFFF",
+  black: "#000000",
+};
+
+export const LIGHT_HERO = {
   text: "#FFFFFF",
-  textSecondary: "#A3BCB2", // 8.4:1 on Forest
+  textSecondary: "#A3BCB2",
   accent: "#00C476",
-  chip: "#063527",
-  inset: "#063527",
-  border: "#114E3B",
-} as const;
-export const BALANCE_GRADIENT = { from: "#002018", to: "#002018", border: "#114E3B" } as const;
+  chip: "#053023",
+  inset: "#053023",
+  border: "#0F4D39",
+};
+
+export const DARK_HERO: typeof LIGHT_HERO = {
+  text: "#FFFFFF",
+  textSecondary: "#9BB5AA",
+  accent: "#00D67D",
+  chip: "#112D22",
+  inset: "#112D22",
+  border: "#1F4B39",
+};
+
+export const LIGHT_DEPTH = {
+  card: {
+    borderWidth: 1,
+    borderColor: "#C9D5CE",
+    shadowColor: "#001A13",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  raised: {
+    borderWidth: 1,
+    borderColor: "#BCCAC2",
+    shadowColor: "#001A13",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 5,
+    elevation: 2,
+  },
+  glow: {
+    borderWidth: 0,
+    shadowColor: "#001A13",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.16,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  forest: {
+    borderBottomWidth: 1,
+    borderBottomColor: "#0F4D39",
+    shadowColor: "#001A13",
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+};
+
+export const DARK_DEPTH: typeof LIGHT_DEPTH = {
+  card: {
+    borderWidth: 1,
+    borderColor: "#22332B",
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.28,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  raised: {
+    borderWidth: 1,
+    borderColor: "#2B4036",
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.32,
+    shadowRadius: 5,
+    elevation: 2,
+  },
+  glow: {
+    borderWidth: 0,
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.35,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  forest: {
+    borderBottomWidth: 1,
+    borderBottomColor: "#1F4B39",
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 5,
+  },
+};
+
+// Live mutable theme tokens — updated synchronously whenever the active theme switches.
+export const COLORS: typeof LIGHT_COLORS = { ...LIGHT_COLORS };
+export const HERO: typeof LIGHT_HERO = { ...LIGHT_HERO };
+export const DEPTH: typeof LIGHT_DEPTH = {
+  card: { ...LIGHT_DEPTH.card },
+  raised: { ...LIGHT_DEPTH.raised },
+  glow: { ...LIGHT_DEPTH.glow },
+  forest: { ...LIGHT_DEPTH.forest },
+};
+export const BALANCE_GRADIENT = { from: "#001A13", to: "#001A13", border: "#0F4D39" };
+
+let _resolvedTheme: ResolvedTheme = "light";
+let _themeVersion = 0;
+
+export function getResolvedTheme(): ResolvedTheme {
+  return _resolvedTheme;
+}
+
+export function isDarkTheme(): boolean {
+  return _resolvedTheme === "dark";
+}
+
+export function getThemeVersion(): number {
+  return _themeVersion;
+}
+
+/**
+ * Synchronously switch the live palette tokens (COLORS, HERO, DEPTH) and bump the theme version
+ * so every `createThemeStyles(...)` sheet across the app automatically rebuilds on next render.
+ */
+export function applyResolvedTheme(scheme: ResolvedTheme): void {
+  const next: ResolvedTheme = scheme === "dark" ? "dark" : "light";
+  if (next === _resolvedTheme && _themeVersion > 0) return;
+  _resolvedTheme = next;
+  const isDark = next === "dark";
+  Object.assign(COLORS, isDark ? DARK_COLORS : LIGHT_COLORS);
+  Object.assign(HERO, isDark ? DARK_HERO : LIGHT_HERO);
+  const nextDepth = isDark ? DARK_DEPTH : LIGHT_DEPTH;
+  Object.assign(DEPTH.card, nextDepth.card);
+  Object.assign(DEPTH.raised, nextDepth.raised);
+  Object.assign(DEPTH.glow, nextDepth.glow);
+  Object.assign(DEPTH.forest, nextDepth.forest);
+  BALANCE_GRADIENT.from = COLORS.forest;
+  BALANCE_GRADIENT.to = COLORS.forest;
+  BALANCE_GRADIENT.border = HERO.border;
+  _themeVersion += 1;
+}
+
+/**
+ * Drop-in replacement for `StyleSheet.create(...)` that automatically invalidates and rebuilds
+ * when Light/Dark mode switches, with zero overhead during normal renders.
+ */
+export function createThemeStyles<T extends NamedStyles<T>>(factory: () => T): T {
+  let cachedVersion = -1;
+  let cachedSheet: T | null = null;
+  const resolve = (): T => {
+    if (!cachedSheet || cachedVersion !== _themeVersion) {
+      cachedSheet = StyleSheet.create(factory()) as T;
+      cachedVersion = _themeVersion;
+    }
+    return cachedSheet;
+  };
+  return new Proxy({} as T, {
+    get(_target, prop) {
+      return resolve()[prop as keyof T];
+    },
+    ownKeys() {
+      return Reflect.ownKeys(resolve());
+    },
+    getOwnPropertyDescriptor(_target, prop) {
+      return Object.getOwnPropertyDescriptor(resolve(), prop);
+    },
+  });
+}
 
 // Plus Jakarta Sans, loaded in App.tsx. Custom fonts carry their own weight, so pick the
 // family by weight instead of setting fontWeight.
@@ -109,45 +328,4 @@ export const RADIUS = {
   lg: 20,
   xl: 28,
   pill: 999,
-} as const;
-
-// Clean, crisp architectural elevation — flat 1px hairline borders with restrained shadow.
-export const DEPTH = {
-  card: {
-    borderWidth: 1,
-    borderColor: "#D8E1DC",
-    shadowColor: "#002018",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  raised: {
-    borderWidth: 1,
-    borderColor: "#CFDAD4",
-    shadowColor: "#002018",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 6,
-    elevation: 2,
-  },
-  // Main CTA: crisp solid emerald with tight elevation, zero cartoon bottom lip.
-  glow: {
-    borderWidth: 0,
-    shadowColor: "#002018",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.14,
-    shadowRadius: 6,
-    elevation: 3,
-  },
-  // Forest blocks: crisp architectural edge.
-  forest: {
-    borderBottomWidth: 1,
-    borderBottomColor: "#0F4735",
-    shadowColor: "#002018",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.18,
-    shadowRadius: 12,
-    elevation: 5,
-  },
 } as const;

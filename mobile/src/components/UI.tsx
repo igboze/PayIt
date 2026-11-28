@@ -12,7 +12,7 @@ import {
   ViewStyle,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { COLORS, DEPTH, HERO, RADIUS, SPACING, FONTS, TYPE } from "../theme";
+import { COLORS, DEPTH, HERO, RADIUS, SPACING, FONTS, TYPE, createThemeStyles } from "../theme";
 import { PressableScale } from "./Touch";
 import { CurrencyLogo, currencyInText } from "./CurrencyLogo";
 import { toUserError } from "../utils/errors";
@@ -203,21 +203,21 @@ export function Pill({
       ? COLORS.business
       : tone === "danger"
       ? COLORS.dangerMuted
-      : COLORS.forest
+      : COLORS.primary
     : COLORS.surface;
   const borderColor = active
     ? tone === "business"
       ? COLORS.business
       : tone === "danger"
       ? COLORS.dangerBorder
-      : COLORS.forest
+      : COLORS.primary
     : COLORS.border;
   const textColor = active
     ? tone === "business"
       ? COLORS.white
       : tone === "danger"
-      ? COLORS.danger
-      : COLORS.white
+      ? COLORS.dangerText
+      : COLORS.onPrimary
     : COLORS.text;
 
   const inner = (
@@ -404,10 +404,12 @@ export function ForestHero({
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   hero: {
     backgroundColor: COLORS.forest,
     borderRadius: RADIUS.xl,
+    borderWidth: 1,
+    borderColor: HERO.border,
     paddingHorizontal: 20,
     paddingVertical: 20,
     marginBottom: SPACING.md,
@@ -478,7 +480,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   inputFocused: {
-    borderColor: COLORS.forest,
+    borderColor: COLORS.primary,
   },
   inputSecure: {
     paddingRight: 52,
@@ -584,9 +586,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 10,
-    backgroundColor: "#DDF1E5",
+    backgroundColor: COLORS.primaryMuted,
     borderWidth: 1,
-    borderColor: "#B7E2C9",
+    borderColor: COLORS.primaryBorder,
     borderRadius: RADIUS.md,
     padding: 14,
     marginBottom: SPACING.md,
@@ -656,7 +658,7 @@ const styles = StyleSheet.create({
     textAlign: "right",
     flexShrink: 1,
   },
-});
+}));
 
 /**
  * Lifts content above the on-screen keyboard. Android runs edge to edge, so the window no

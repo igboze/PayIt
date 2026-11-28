@@ -7,7 +7,7 @@ import * as Clipboard from "expo-clipboard";
 import { api } from "../api/client";
 import type { BillHistoryItem } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TYPE } from "../theme";
+import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TYPE, createThemeStyles } from "../theme";
 import { Button, EmptyState, ErrorBanner, formatNgn, Input, KeyValueRow, ScreenHeader, SuccessBanner } from "../components/UI";
 import { BILL_CATEGORIES, BillCat, BillCategoryTile, ProviderLogo, ProviderTile } from "../components/bills";
 import { PressableScale } from "../components/Touch";
@@ -438,7 +438,7 @@ function PlanCard({ name, price, selected, onPress }: { name: string; price?: nu
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   root: { flex: 1, backgroundColor: COLORS.bg },
   content: { padding: SPACING.md, paddingBottom: 48, gap: 10 },
   step: { ...TYPE.headline, color: COLORS.text, marginTop: 6 },
@@ -481,4 +481,4 @@ const styles = StyleSheet.create({
   amountTileOn: { borderColor: COLORS.primary, borderWidth: 2, backgroundColor: COLORS.deep },
   amountText: { ...TYPE.bodyStrong, color: COLORS.text },
   historyCard: { backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, padding: SPACING.md, ...DEPTH.card },
-});
+}));

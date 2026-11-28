@@ -20,7 +20,7 @@ import type {
   StocksOverviewResponse,
 } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TYPE } from "../theme";
+import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TYPE, createThemeStyles } from "../theme";
 import {
   Button,
   ForestHero,
@@ -61,8 +61,8 @@ function MarketBanner({ market }: { market: StockMarketStatus }) {
   return (
     <View style={[styles.marketBanner, open ? styles.marketBannerOpen : styles.marketBannerClosed]}>
       <View style={styles.marketRowTop}>
-        <View style={[styles.marketDot, { backgroundColor: open ? "#007840" : "#8A6410" }]} />
-        <Text style={[styles.marketTitle, { color: open ? "#007840" : "#8A5600" }]}>
+        <View style={[styles.marketDot, { backgroundColor: open ? COLORS.success : COLORS.warningText }]} />
+        <Text style={[styles.marketTitle, { color: open ? COLORS.successText : COLORS.warningText }]}>
           {market.label}
         </Text>
         <Text style={styles.marketEt}>{market.etTimeLabel}</Text>
@@ -429,7 +429,7 @@ export function StocksScreen({ onBack }: { onBack: () => void }) {
 
                 {!detail.configured ? (
                   <View style={styles.warnBox}>
-                    <Ionicons name="information-circle-outline" size={18} color="#8A5600" />
+                    <Ionicons name="information-circle-outline" size={18} color={COLORS.warningText} />
                     <Text style={styles.warnText}>
                       Live price charts are active. Stock order execution is finishing backend activation.
                     </Text>
@@ -438,7 +438,7 @@ export function StocksScreen({ onBack }: { onBack: () => void }) {
 
                 {mkt && !mkt.tradable ? (
                   <View style={styles.warnBox}>
-                    <Ionicons name="time-outline" size={18} color="#8A5600" />
+                    <Ionicons name="time-outline" size={18} color={COLORS.warningText} />
                     <Text style={styles.warnText}>
                       {st.ticker} trading is currently paused ({mkt.blockingReason || mkt.label}). {mkt.nextChangeLabel}.
                     </Text>
@@ -651,7 +651,7 @@ export function StocksScreen({ onBack }: { onBack: () => void }) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   root: { flex: 1, backgroundColor: COLORS.bg },
   content: { padding: SPACING.md, paddingBottom: 48, gap: 12 },
   muted: { fontFamily: FONTS.regular, fontSize: 12, color: COLORS.textSecondary },
@@ -662,12 +662,12 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   marketBannerOpen: {
-    backgroundColor: "#DDF1E5",
-    borderColor: "#B7E2C9",
+    backgroundColor: COLORS.primaryMuted,
+    borderColor: COLORS.primaryBorder,
   },
   marketBannerClosed: {
-    backgroundColor: "#FBF4E2",
-    borderColor: "#E0C27A",
+    backgroundColor: COLORS.warningMuted,
+    borderColor: COLORS.warningBorder,
   },
   marketRowTop: { flexDirection: "row", alignItems: "center", gap: 8 },
   marketDot: { width: 9, height: 9, borderRadius: 5 },
@@ -755,10 +755,10 @@ const styles = StyleSheet.create({
     gap: 8,
     padding: 10,
     borderRadius: RADIUS.sm,
-    backgroundColor: "#FBF4E2",
+    backgroundColor: COLORS.warningMuted,
     borderWidth: 1,
-    borderColor: "#E0C27A",
+    borderColor: COLORS.warningBorder,
     marginBottom: 12,
   },
-  warnText: { flex: 1, fontFamily: FONTS.medium, fontSize: 12, color: "#8A5600" },
-});
+  warnText: { flex: 1, fontFamily: FONTS.medium, fontSize: 12, color: COLORS.warningText },
+}));

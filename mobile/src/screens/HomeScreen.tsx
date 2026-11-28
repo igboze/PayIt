@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -19,7 +19,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "../api/client";
 import type { BusinessHomeResponse, TransactionItem, UnifiedBalance } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, DEPTH, HERO, RADIUS, SPACING, TYPE } from "../theme";
+import { useTheme } from "../state/ThemeContext";
+import { COLORS, DEPTH, HERO, RADIUS, SPACING, TYPE, createThemeStyles } from "../theme";
 import {
   Button,
   EmptyState,
@@ -92,101 +93,103 @@ type PromoBannerItem = {
 };
 
 // Each banner uses a hard, solid surface from Proxim's Forest, Midnight Slate & Emerald family.
-const PROMO_BANNERS: PromoBannerItem[] = [
-  {
-    key: "abroad",
-    badge: "27+ CURRENCIES",
-    title: "Send money abroad",
-    subtitle: "UK, US, EU, Ghana & Kenya",
-    cta: "Send now",
-    artifact: BANNER_ART_ABROAD,
-    logos: [
-      { kind: "currency", code: "USD" },
-      { kind: "currency", code: "GBP" },
-      { kind: "currency", code: "EUR" },
-      { kind: "currency", code: "GHS" },
-      { kind: "currency", code: "KES" },
-    ],
-    bg: COLORS.forest, // Solid Proxim Forest (#002018)
-    border: COLORS.forest700,
-    lip: COLORS.primaryDark,
-    haloBg: "#063527",
-    badgeBg: "#063527",
-    badgeColor: HERO.accent,
-    titleColor: COLORS.white,
-    subColor: HERO.textSecondary,
-    ctaColor: HERO.accent,
-  },
-  {
-    key: "business",
-    badge: "PROXIM BUSINESS",
-    title: "Proxim Business Account",
-    subtitle: "Invoices, links & global payroll",
-    cta: "Explore Business",
-    artifact: BANNER_ART_BUSINESS,
-    logos: [
-      { kind: "currency", code: "USD" },
-      { kind: "currency", code: "GBP" },
-      { kind: "currency", code: "EUR" },
-      { kind: "currency", code: "NGN" },
-    ],
-    bg: "#0F172A", // Solid Midnight Slate
-    border: "#334155",
-    lip: "#090E1A",
-    haloBg: "#1E293B",
-    badgeBg: "#1E293B",
-    badgeColor: HERO.accent,
-    titleColor: COLORS.white,
-    subColor: "#94A3B8",
-    ctaColor: HERO.accent,
-  },
-  {
-    key: "cards",
-    badge: "VIRTUAL USD CARDS",
-    title: "Spend globally online",
-    subtitle: "Netflix, Apple, Amazon & Ads",
-    cta: "Get a card",
-    artifact: BANNER_ART_CARDS,
-    logos: [
-      { kind: "brand", ticker: "NFLX", domain: "netflix.com" },
-      { kind: "brand", ticker: "AAPL", domain: "apple.com" },
-      { kind: "brand", ticker: "AMZN", domain: "amazon.com" },
-      { kind: "brand", ticker: "META", domain: "meta.com" },
-      { kind: "currency", code: "USD" },
-    ],
-    bg: "#044E36", // Solid Deep Institutional Emerald
-    border: "#0B6B4B",
-    lip: "#023826",
-    haloBg: "#065F46",
-    badgeBg: "#002018",
-    badgeColor: "#FFFFFF",
-    titleColor: COLORS.white,
-    subColor: "#C5E8D7",
-    ctaColor: COLORS.white,
-  },
-  {
-    key: "savings",
-    badge: "AUTO-EARN YIELD",
-    title: "Grow dollars daily",
-    subtitle: "Earn on USDC & EURC anytime",
-    cta: "Start saving",
-    artifact: BANNER_ART_SAVINGS,
-    logos: [
-      { kind: "currency", code: "USDC" },
-      { kind: "currency", code: "EURC" },
-      { kind: "currency", code: "MORPHO" },
-    ],
-    bg: COLORS.white, // Crisp White card with hard Emerald accents
-    border: "#C9DBD1",
-    lip: "#C9DBD1",
-    haloBg: "#E6F3EC",
-    badgeBg: "#DFF2E8",
-    badgeColor: COLORS.goldDark,
-    titleColor: COLORS.forest,
-    subColor: COLORS.textSecondary,
-    ctaColor: COLORS.gold,
-  },
-];
+function getPromoBanners(isDark: boolean): PromoBannerItem[] {
+  return [
+    {
+      key: "abroad",
+      badge: "27+ CURRENCIES",
+      title: "Send money abroad",
+      subtitle: "UK, US, EU, Ghana & Kenya",
+      cta: "Send now",
+      artifact: BANNER_ART_ABROAD,
+      logos: [
+        { kind: "currency", code: "USD" },
+        { kind: "currency", code: "GBP" },
+        { kind: "currency", code: "EUR" },
+        { kind: "currency", code: "GHS" },
+        { kind: "currency", code: "KES" },
+      ],
+      bg: COLORS.forest,
+      border: COLORS.forest700,
+      lip: COLORS.forest700,
+      haloBg: COLORS.forest800,
+      badgeBg: COLORS.forest800,
+      badgeColor: HERO.accent,
+      titleColor: COLORS.white,
+      subColor: HERO.textSecondary,
+      ctaColor: HERO.accent,
+    },
+    {
+      key: "business",
+      badge: "PROXIM BUSINESS",
+      title: "Proxim Business Account",
+      subtitle: "Invoices, links & global payroll",
+      cta: "Explore Business",
+      artifact: BANNER_ART_BUSINESS,
+      logos: [
+        { kind: "currency", code: "USD" },
+        { kind: "currency", code: "GBP" },
+        { kind: "currency", code: "EUR" },
+        { kind: "currency", code: "NGN" },
+      ],
+      bg: "#0F172A",
+      border: "#334155",
+      lip: "#334155",
+      haloBg: "#1E293B",
+      badgeBg: "#1E293B",
+      badgeColor: HERO.accent,
+      titleColor: COLORS.white,
+      subColor: "#94A3B8",
+      ctaColor: HERO.accent,
+    },
+    {
+      key: "cards",
+      badge: "VIRTUAL USD CARDS",
+      title: "Spend globally online",
+      subtitle: "Netflix, Apple, Amazon & Ads",
+      cta: "Get a card",
+      artifact: BANNER_ART_CARDS,
+      logos: [
+        { kind: "brand", ticker: "NFLX", domain: "netflix.com" },
+        { kind: "brand", ticker: "AAPL", domain: "apple.com" },
+        { kind: "brand", ticker: "AMZN", domain: "amazon.com" },
+        { kind: "brand", ticker: "META", domain: "meta.com" },
+        { kind: "currency", code: "USD" },
+      ],
+      bg: "#044E36",
+      border: "#0B6B4B",
+      lip: "#0B6B4B",
+      haloBg: "#065F46",
+      badgeBg: "#001A13",
+      badgeColor: "#FFFFFF",
+      titleColor: COLORS.white,
+      subColor: "#C5E8D7",
+      ctaColor: COLORS.white,
+    },
+    {
+      key: "savings",
+      badge: "AUTO-EARN YIELD",
+      title: "Grow dollars daily",
+      subtitle: "Earn on USDC & EURC anytime",
+      cta: "Start saving",
+      artifact: BANNER_ART_SAVINGS,
+      logos: [
+        { kind: "currency", code: "USDC" },
+        { kind: "currency", code: "EURC" },
+        { kind: "currency", code: "MORPHO" },
+      ],
+      bg: isDark ? "#10241C" : COLORS.white,
+      border: isDark ? "#1F4B39" : "#C9D5CE",
+      lip: isDark ? "#1F4B39" : "#C9D5CE",
+      haloBg: isDark ? "#153327" : "#E0EFE7",
+      badgeBg: COLORS.primaryMuted,
+      badgeColor: COLORS.goldDark,
+      titleColor: COLORS.text,
+      subColor: COLORS.textSecondary,
+      ctaColor: isDark ? HERO.accent : COLORS.gold,
+    },
+  ];
+}
 
 function greeting(): string {
   const h = new Date().getHours();
@@ -223,6 +226,8 @@ export function HomeScreen({
     balanceHidden: hidden,
     toggleBalanceHidden,
   } = useApp();
+  const { isDark } = useTheme();
+  const promoBanners = useMemo(() => getPromoBanners(isDark), [isDark]);
   const [savingSettlement, setSavingSettlement] = useState(false);
   const [balance, setBalance] = useState<UnifiedBalance | null>(null);
   const [bizHome, setBizHome] = useState<BusinessHomeResponse | null>(null);
@@ -243,17 +248,17 @@ export function HomeScreen({
     const timer = setInterval(() => {
       if (bannerDraggingRef.current) return;
       setActiveBanner((prev) => {
-        const next = (prev + 1) % PROMO_BANNERS.length;
+        const next = (prev + 1) % promoBanners.length;
         bannerScrollRef.current?.scrollTo({ x: next * (bannerWidth + BANNER_GAP), animated: true });
         return next;
       });
     }, 6000);
     return () => clearInterval(timer);
-  }, [bannerWidth]);
+  }, [bannerWidth, promoBanners.length]);
 
   const handleBannerScrollEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const x = e.nativeEvent.contentOffset.x;
-    const idx = Math.max(0, Math.min(PROMO_BANNERS.length - 1, Math.round(x / (bannerWidth + BANNER_GAP))));
+    const idx = Math.max(0, Math.min(promoBanners.length - 1, Math.round(x / (bannerWidth + BANNER_GAP))));
     setActiveBanner(idx);
   };
 
@@ -264,7 +269,7 @@ export function HomeScreen({
       setError(null);
       try {
         if (isRefresh) {
-          refreshMe().catch(() => {});
+          refreshMe().catch(() => { });
         }
         const [balRes, txRes, rateRes, bizRes] = await Promise.all([
           api.getBalances(activeAccount),
@@ -397,7 +402,7 @@ export function HomeScreen({
           handleBannerScrollEnd(e);
         }}
       >
-        {PROMO_BANNERS.map((b) => {
+        {promoBanners.map((b) => {
           const ctaLabel =
             b.key === "business"
               ? isBiz
@@ -479,7 +484,7 @@ export function HomeScreen({
         })}
       </ScrollView>
       <View style={styles.promoDots}>
-        {PROMO_BANNERS.map((b, i) => (
+        {promoBanners.map((b, i) => (
           <View
             key={b.key}
             style={[styles.promoDot, i === activeBanner && styles.promoDotActive]}
@@ -528,7 +533,7 @@ export function HomeScreen({
               style={[styles.heroSegBtn, !isBiz && styles.heroSegBtnOn]}
               accessibilityLabel="Switch to Personal account"
             >
-              <Ionicons name="person" size={11} color={!isBiz ? COLORS.primary : HERO.textSecondary} />
+              <Ionicons name="person" size={11} color={!isBiz ? "#001A13" : HERO.textSecondary} />
               <Text style={[styles.heroSegText, !isBiz && styles.heroSegTextOn]}>Personal</Text>
             </PressableScale>
             <PressableScale
@@ -689,7 +694,7 @@ export function HomeScreen({
             accessibilityRole="button"
             accessibilityLabel="Send"
           >
-            <Ionicons name="arrow-up" size={18} color={COLORS.primary} style={{ transform: [{ rotate: "45deg" }] }} />
+            <Ionicons name="arrow-up" size={18} color="#001A13" style={{ transform: [{ rotate: "45deg" }] }} />
             <Text style={styles.qaWideLabel}>Send</Text>
           </PressableScale>
         </View>
@@ -700,7 +705,7 @@ export function HomeScreen({
         <SuccessBanner message={copiedMsg} onDismiss={() => setCopiedMsg(null)} />
 
         {((user?.kycTier ?? 0) >= 1 || (user?.personalKycTier ?? 0) >= 1 || (user?.businessKycTier ?? 0) >= 1) &&
-        !user?.depositSettlementChosen ? (
+          !user?.depositSettlementChosen ? (
           <View
             style={{
               backgroundColor: COLORS.forest,
@@ -982,7 +987,7 @@ export function HomeScreen({
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   container: {
     flex: 1,
     backgroundColor: COLORS.page,
@@ -1050,7 +1055,7 @@ const styles = StyleSheet.create({
     color: HERO.textSecondary,
   },
   heroSegTextOn: {
-    color: COLORS.primary,
+    color: "#001A13",
     fontFamily: TYPE.title.fontFamily,
   },
   heroSegTextBizOn: {
@@ -1232,7 +1237,7 @@ const styles = StyleSheet.create({
     color: HERO.textSecondary,
   },
   curChipTextOn: {
-    color: COLORS.forest,
+    color: "#001A13",
   },
   balLoading: {
     flexDirection: "row",
@@ -1341,7 +1346,7 @@ const styles = StyleSheet.create({
     ...TYPE.bodyStrong,
     fontFamily: TYPE.xl.fontFamily,
     fontSize: 14,
-    color: COLORS.primary,
+    color: "#001A13",
   },
   growRow: {
     flexDirection: "row",
@@ -1535,4 +1540,4 @@ const styles = StyleSheet.create({
     ...TYPE.bodyStrong,
     color: COLORS.goldDark,
   },
-});
+}));

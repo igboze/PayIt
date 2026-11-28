@@ -5,7 +5,7 @@ import { ActivityIndicator, Image, Linking, Modal, ScrollView, StyleSheet, Text,
 import { Ionicons } from "@expo/vector-icons";
 import { api, getAccessToken } from "../api/client";
 import type { AccountType, TransactionItem } from "../api/types";
-import { COLORS, DEPTH, RADIUS, SPACING, TYPE } from "../theme";
+import { COLORS, DEPTH, RADIUS, SPACING, TYPE, createThemeStyles } from "../theme";
 import { Button, ErrorBanner, formatRawTxAmount, KeyValueRow, shortAddr } from "./UI";
 import { PressableScale, notifyHaptic } from "./Touch";
 import { getLegacyFileSystem, getSharing } from "../nativeModules";
@@ -13,14 +13,24 @@ import { useApp } from "../state/AppContext";
 
 type IoniconName = keyof typeof Ionicons.glyphMap;
 
-const TONES = {
-  green: ["#007A47", "#DFF2E8"],
-  neutral: ["#002018", "#E6EEEA"],
-  violet: ["#0F172A", "#E8EDF5"],
-  amber: ["#005E3A", "#DFF2E8"],
-  teal: ["#FFFFFF", "#002018"],
-  blue: ["#1D4ED8", "#E5EDFF"],
-} as const;
+type ToneKey = "green" | "neutral" | "violet" | "amber" | "teal" | "blue";
+
+function toneColors(tone: ToneKey): readonly [string, string] {
+  switch (tone) {
+    case "green":
+      return [COLORS.successText, COLORS.primaryMuted];
+    case "neutral":
+      return [COLORS.text, COLORS.surfaceElevated];
+    case "violet":
+      return [COLORS.business, COLORS.businessMuted];
+    case "amber":
+      return [COLORS.goldDark, COLORS.primaryMuted];
+    case "teal":
+      return [COLORS.onGold, COLORS.gold];
+    case "blue":
+      return [COLORS.info, COLORS.infoMuted];
+  }
+}
 
 export function isCreditTx(tx: TransactionItem): boolean {
   return /receive|deposit|onramp|claim|refund|credit|liquidate|unload|yield_withdraw|stock_sell/i.test(tx.type) && !/auto_earn_deposit|savings_deposit/i.test(tx.type);
@@ -158,7 +168,7 @@ export function txKindLabel(rawType: string, tx?: TransactionItem): string {
   return t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) || "Transaction";
 }
 
-function txVisual(tx: TransactionItem): { icon: IoniconName; tone: keyof typeof TONES } {
+function txVisual(tx: TransactionItem): { icon: IoniconName; tone: ToneKey } {
   const t = String(tx.type || "").toLowerCase();
   if (/stock_buy|stock_sell/.test(t)) return { icon: "trending-up-outline", tone: "blue" };
   if (/saving|yield|auto_earn/.test(t)) return { icon: "server-outline", tone: "teal" };
@@ -234,7 +244,7 @@ export function TxRow({ tx, onPress }: { tx: TransactionItem; onPress: () => voi
   const { balanceHidden } = useApp();
   const credit = isCreditTx(tx);
   const vis = txVisual(tx);
-  const [fg, bg] = TONES[vis.tone];
+  const [fg, bg] = toneColors(vis.tone);
   const status = txStatus(tx);
   const display = getTxDisplayAmounts(tx);
   const kind = txKindLabel(tx.type, tx);
@@ -385,7 +395,7 @@ export function SkeletonRows({ count = 4 }: { count?: number }) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   row: {
     flexDirection: "row",
     alignItems: "center",
@@ -421,4 +431,4 @@ const styles = StyleSheet.create({
   receiptBox: { marginTop: 14, borderRadius: RADIUS.md, overflow: "hidden", backgroundColor: COLORS.page },
   receiptImg: { width: "100%", height: 380 },
   actions: { gap: 8, marginTop: 12 },
-});
+}));

@@ -20,7 +20,7 @@ import {
 } from "../api/googleSignIn";
 import * as SecureStore from "expo-secure-store";
 import { RETURNING_USER_KEY, useApp } from "../state/AppContext";
-import { COLORS, DEPTH, RADIUS, SPACING, FONTS } from "../theme";
+import { COLORS, DEPTH, RADIUS, SPACING, FONTS, createThemeStyles } from "../theme";
 import { Button, Card, ErrorBanner, Input } from "../components/UI";
 import { PressableScale } from "../components/Touch";
 import { PoweredBy } from "../components/PoweredBy";
@@ -614,7 +614,7 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   returnWrap: { flex: 1, padding: SPACING.lg, alignItems: "center", justifyContent: "space-between", paddingTop: 48 },
   fingerprint: {
     width: 120,
@@ -662,7 +662,7 @@ const styles = StyleSheet.create({
     maxWidth: 300,
   },
   runtimeWarning: {
-    borderColor: "#F2CFA0",
+    borderColor: COLORS.warningBorder,
     backgroundColor: COLORS.warningMuted,
   },
   warnRow: {
@@ -716,15 +716,15 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 5,
-    backgroundColor: COLORS.goldSoft,
+    backgroundColor: COLORS.primaryMuted,
     borderWidth: 1,
-    borderColor: "#B5DEC8",
+    borderColor: COLORS.primaryBorder,
     borderRadius: RADIUS.pill,
     paddingHorizontal: 10,
     paddingVertical: 5,
   },
   featureChipText: {
-    color: COLORS.forest,
+    color: COLORS.primary,
     fontFamily: FONTS.semibold,
     fontSize: 11.5,
   },
@@ -736,6 +736,8 @@ const styles = StyleSheet.create({
     minHeight: 50,
     borderRadius: RADIUS.md,
     backgroundColor: COLORS.forest,
+    borderWidth: 1,
+    borderColor: COLORS.primaryBorder,
     paddingHorizontal: 16,
     ...DEPTH.forest,
   },
@@ -748,7 +750,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   googleBadgeText: {
-    color: COLORS.forest,
+    color: "#001A13",
     fontFamily: FONTS.extrabold,
     fontSize: 14,
   },
@@ -794,9 +796,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    backgroundColor: "#E8F6EE",
+    backgroundColor: COLORS.primaryMuted,
     borderWidth: 1,
-    borderColor: "#B7E4C7",
+    borderColor: COLORS.primaryBorder,
     borderRadius: RADIUS.sm,
     paddingHorizontal: 10,
     paddingVertical: 7,
@@ -808,4 +810,4 @@ const styles = StyleSheet.create({
     fontSize: 12,
     flex: 1,
   },
-});
+}));

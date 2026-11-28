@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Image, Platform, StyleSheet, Text, View } from "react-native";
-import { FONTS } from "../theme";
+import { FONTS, createThemeStyles } from "../theme";
 
 // The official Proxim card artwork, the same template the Telegram bot renders cards on
 // (src/assets/proxim_card_template.png, 1024 x 682). Only the dynamic fields are drawn on
@@ -94,7 +94,7 @@ export function ProximCardFace({
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   wrap: {
     width: "100%",
     aspectRatio: TEMPLATE_W / TEMPLATE_H,
@@ -124,4 +124,4 @@ const styles = StyleSheet.create({
     fontSize: 18,
     letterSpacing: 1,
   },
-});
+}));

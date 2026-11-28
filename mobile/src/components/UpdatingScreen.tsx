@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Animated, Easing, Image, StyleSheet, Text, View } from "react-native";
-import { COLORS, RADIUS, TYPE } from "../theme";
+import { COLORS, RADIUS, TYPE, createThemeStyles } from "../theme";
 import { Button } from "./UI";
 
 /**
@@ -43,11 +43,11 @@ export function UpdatingScreen({ apply, onCancel }: { apply: () => Promise<void>
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   root: { flex: 1, alignItems: "center", justifyContent: "center", padding: 28, gap: 14, backgroundColor: COLORS.page },
   logo: { width: 80, height: 80, borderRadius: 22, marginBottom: 6 },
   title: { ...TYPE.title, color: COLORS.text, textAlign: "center" },
   body: { ...TYPE.body, color: COLORS.textSecondary, textAlign: "center" },
   track: { alignSelf: "stretch", height: 10, borderRadius: RADIUS.pill, backgroundColor: COLORS.border, overflow: "hidden", marginTop: 8 },
   fill: { height: 10, borderRadius: RADIUS.pill, backgroundColor: COLORS.primary },
-});
+}));

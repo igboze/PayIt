@@ -3,7 +3,7 @@ import { FlatList, RefreshControl, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "../api/client";
 import type { AppNotification } from "../api/types";
-import { COLORS, DEPTH, RADIUS, SPACING, TYPE } from "../theme";
+import { COLORS, DEPTH, RADIUS, SPACING, TYPE, createThemeStyles } from "../theme";
 import { EmptyState, ScreenHeader } from "../components/UI";
 import { SkeletonRows, dayLabel, timeOf } from "../components/Activity";
 
@@ -11,12 +11,12 @@ type IoniconName = keyof typeof Ionicons.glyphMap;
 
 function iconFor(kind: string | null): { icon: IoniconName; fg: string; bg: string } {
   const k = String(kind || "");
-  if (/auto_earn|saving/.test(k)) return { icon: "server-outline", fg: "#FFFFFF", bg: "#002018" };
-  if (/receive|deposit|credit/.test(k)) return { icon: "arrow-down", fg: "#007A47", bg: "#DFF2E8" };
-  if (/device|security|pin/.test(k)) return { icon: "shield-checkmark-outline", fg: "#002018", bg: "#DFF2E8" };
-  if (/card/.test(k)) return { icon: "card-outline", fg: "#0F172A", bg: "#E8EDF5" };
+  if (/auto_earn|saving/.test(k)) return { icon: "server-outline", fg: COLORS.onGold, bg: COLORS.gold };
+  if (/receive|deposit|credit/.test(k)) return { icon: "arrow-down", fg: COLORS.successText, bg: COLORS.primaryMuted };
+  if (/device|security|pin/.test(k)) return { icon: "shield-checkmark-outline", fg: COLORS.primary, bg: COLORS.primaryMuted };
+  if (/card/.test(k)) return { icon: "card-outline", fg: COLORS.business, bg: COLORS.businessMuted };
   if (/fail|error/.test(k)) return { icon: "alert-circle-outline", fg: COLORS.dangerText, bg: COLORS.dangerMuted };
-  return { icon: "notifications-outline", fg: "#002018", bg: "#E6EEEA" };
+  return { icon: "notifications-outline", fg: COLORS.text, bg: COLORS.surfaceElevated };
 }
 
 export function NotificationsScreen({ onBack, onOpened }: { onBack: () => void; onOpened?: () => void }) {
@@ -86,7 +86,7 @@ export function NotificationsScreen({ onBack, onOpened }: { onBack: () => void; 
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   root: { flex: 1, backgroundColor: COLORS.bg },
   list: { padding: SPACING.md, paddingBottom: 32 },
   row: { flexDirection: "row", gap: 14, padding: 14, borderRadius: RADIUS.md, backgroundColor: COLORS.surface, ...DEPTH.card },
@@ -96,4 +96,4 @@ const styles = StyleSheet.create({
   dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.primary },
   body: { ...TYPE.label, color: COLORS.textSecondary },
   when: { ...TYPE.label, fontSize: 12, color: COLORS.textMuted },
-});
+}));

@@ -3,7 +3,7 @@ import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View }
 import { api } from "../api/client";
 import type { SwapPairRate } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING, FONTS } from "../theme";
+import { COLORS, RADIUS, SPACING, FONTS, createThemeStyles } from "../theme";
 import {
   Button,
   Card,
@@ -208,7 +208,7 @@ export function SwapScreen({ onBack }: { onBack: () => void }) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   root: { flex: 1, backgroundColor: COLORS.bg },
   content: { padding: SPACING.md, paddingBottom: 40 },
   rateLoading: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8 },
@@ -223,4 +223,4 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     marginBottom: 14,
   },
-});
+}));

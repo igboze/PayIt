@@ -15,7 +15,7 @@ import type {
   WithdrawalChain,
 } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, DEPTH, RADIUS, SPACING, FONTS } from "../theme";
+import { COLORS, DEPTH, RADIUS, SPACING, FONTS, createThemeStyles } from "../theme";
 import {
   Button,
   Card,
@@ -1245,7 +1245,7 @@ export function SendScreen({
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   root: { flex: 1, backgroundColor: COLORS.bg },
   content: { padding: SPACING.md, paddingBottom: 40 },
   pillRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: SPACING.md },
@@ -1312,4 +1312,4 @@ const styles = StyleSheet.create({
   },
   selectedRailTitle: { color: COLORS.primaryDark, fontSize: 13, fontFamily: FONTS.bold },
   selectedRailSub: { color: COLORS.textSecondary, fontSize: 11, fontFamily: FONTS.medium, marginTop: 1 },
-});
+}));

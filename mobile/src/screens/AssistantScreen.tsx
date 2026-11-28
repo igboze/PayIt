@@ -3,7 +3,7 @@ import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } fr
 import { api } from "../api/client";
 import type { AssistantResponse } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING, FONTS } from "../theme";
+import { COLORS, RADIUS, SPACING, FONTS, createThemeStyles } from "../theme";
 import { Button, Card, ErrorBanner, Input, Pill, ScreenHeader, SuccessBanner } from "../components/UI";
 
 interface ChatMessage {
@@ -155,7 +155,7 @@ export function AssistantScreen({ onBack }: { onBack: () => void }) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   root: { flex: 1, backgroundColor: COLORS.bg },
   chat: { padding: SPACING.md, paddingBottom: 24, flexGrow: 1 },
   hintTitle: { color: COLORS.text, fontSize: 15, fontFamily: FONTS.bold, marginBottom: 6 },
@@ -201,4 +201,4 @@ const styles = StyleSheet.create({
     borderTopColor: COLORS.border,
     backgroundColor: COLORS.surface,
   },
-});
+}));

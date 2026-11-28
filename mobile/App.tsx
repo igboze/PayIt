@@ -5,6 +5,7 @@ import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from "react-native-
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { AppProvider, useApp } from "./src/state/AppContext";
+import { ThemeProvider, useTheme } from "./src/state/ThemeContext";
 import { ApprovalSheet } from "./src/components/ApprovalSheet";
 import { AccountSwitcherBar } from "./src/components/AccountSwitcherBar";
 import { OnboardingScreen } from "./src/screens/OnboardingScreen";
@@ -19,7 +20,7 @@ import { AssistantScreen } from "./src/screens/AssistantScreen";
 import { SavingsScreen } from "./src/screens/SavingsScreen";
 import { StocksScreen } from "./src/screens/StocksScreen";
 import { SwapScreen } from "./src/screens/SwapScreen";
-import { COLORS, FONTS } from "./src/theme";
+import { COLORS, FONTS, createThemeStyles } from "./src/theme";
 import { PressableScale } from "./src/components/Touch";
 import { KeyboardSafe } from "./src/components/UI";
 import { AppErrorBoundary } from "./src/crashReporter";
@@ -45,6 +46,7 @@ type OverlayScreen = "add" | "send" | "bills" | "savings" | "stocks" | "swap" | 
 
 function MainShell() {
   const { user, activeAccount, bootstrapping, bumpDataVersion, locked } = useApp();
+  const { isDark } = useTheme();
   const isBiz = activeAccount === "business";
   const insets = useSafeAreaInsets();
   const ota = useAutoOtaUpdates();
@@ -121,7 +123,7 @@ function MainShell() {
         setTab("profile");
       }
     };
-    Linking.getInitialURL().then(handleUrl).catch(() => {});
+    Linking.getInitialURL().then(handleUrl).catch(() => { });
     const sub = Linking.addEventListener("url", (ev) => handleUrl(ev.url));
     // If Android killed & restarted the Activity while the user was picking a KYC/KYB document in Chrome,
     // automatically restore straight back to Profile -> Verify ID so their upload & draft are immediately visible.
@@ -136,7 +138,7 @@ function MainShell() {
           setTab("profile");
         }
       })
-      .catch(() => {});
+      .catch(() => { });
     return () => sub.remove();
   }, []);
 
@@ -240,8 +242,8 @@ function MainShell() {
     return (
       <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
         <KeyboardSafe>
-        <AddMoneyScreen onBack={() => setOverlay(null)} />
-        <ApprovalSheet />
+          <AddMoneyScreen onBack={() => setOverlay(null)} />
+          <ApprovalSheet />
         </KeyboardSafe>
       </SafeAreaView>
     );
@@ -250,15 +252,15 @@ function MainShell() {
     return (
       <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
         <KeyboardSafe>
-        <SendScreen
-          onBack={() => {
-            setDeepClaimToken("");
-            setOverlay(null);
-          }}
-          initialMode={deepClaimToken ? "user" : "ngn"}
-          initialClaimToken={deepClaimToken}
-        />
-        <ApprovalSheet />
+          <SendScreen
+            onBack={() => {
+              setDeepClaimToken("");
+              setOverlay(null);
+            }}
+            initialMode={deepClaimToken ? "user" : "ngn"}
+            initialClaimToken={deepClaimToken}
+          />
+          <ApprovalSheet />
         </KeyboardSafe>
       </SafeAreaView>
     );
@@ -267,8 +269,8 @@ function MainShell() {
     return (
       <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
         <KeyboardSafe>
-        <BillsScreen onBack={() => setOverlay(null)} initialCategory={billCategory} />
-        <ApprovalSheet />
+          <BillsScreen onBack={() => setOverlay(null)} initialCategory={billCategory} />
+          <ApprovalSheet />
         </KeyboardSafe>
       </SafeAreaView>
     );
@@ -277,8 +279,8 @@ function MainShell() {
     return (
       <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
         <KeyboardSafe>
-        <SavingsScreen onBack={() => setOverlay(null)} />
-        <ApprovalSheet />
+          <SavingsScreen onBack={() => setOverlay(null)} />
+          <ApprovalSheet />
         </KeyboardSafe>
       </SafeAreaView>
     );
@@ -287,8 +289,8 @@ function MainShell() {
     return (
       <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
         <KeyboardSafe>
-        <StocksScreen onBack={() => setOverlay(null)} />
-        <ApprovalSheet />
+          <StocksScreen onBack={() => setOverlay(null)} />
+          <ApprovalSheet />
         </KeyboardSafe>
       </SafeAreaView>
     );
@@ -297,8 +299,8 @@ function MainShell() {
     return (
       <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
         <KeyboardSafe>
-        <SwapScreen onBack={() => setOverlay(null)} />
-        <ApprovalSheet />
+          <SwapScreen onBack={() => setOverlay(null)} />
+          <ApprovalSheet />
         </KeyboardSafe>
       </SafeAreaView>
     );
@@ -316,7 +318,7 @@ function MainShell() {
     return (
       <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
         <KeyboardSafe>
-        <NotificationsScreen onBack={() => setOverlay(null)} onOpened={inbox.markAllRead} />
+          <NotificationsScreen onBack={() => setOverlay(null)} onOpened={inbox.markAllRead} />
         </KeyboardSafe>
       </SafeAreaView>
     );
@@ -325,8 +327,8 @@ function MainShell() {
     return (
       <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
         <KeyboardSafe>
-        <AssistantScreen onBack={() => setOverlay(null)} />
-        <ApprovalSheet />
+          <AssistantScreen onBack={() => setOverlay(null)} />
+          <ApprovalSheet />
         </KeyboardSafe>
       </SafeAreaView>
     );
@@ -339,43 +341,43 @@ function MainShell() {
     { key: "profile", label: "Profile", icon: "person-outline", activeIcon: "person" },
   ];
 
-  // Home draws its dark header right up under the status bar; other tabs sit on the stone page.
+  // Home draws its dark header right up under the status bar; other tabs sit on the page surface.
   const onForest = tab === "home";
-  const topInsetBg = onForest ? (isBiz ? "#1B160C" : COLORS.forest) : COLORS.page;
+  const topInsetBg = onForest ? (isBiz ? "#0F172A" : COLORS.forest) : COLORS.page;
   return (
     <SafeAreaView style={styles.safe} edges={["bottom"]}>
-      <StatusBar style={onForest ? "light" : "dark"} />
+      <StatusBar style={onForest || isDark ? "light" : "dark"} />
       <View style={{ height: insets.top, backgroundColor: topInsetBg }} />
-        <KeyboardSafe>
-      {ota.updateReady ? (
-        <PressableScale onPress={() => setApplyingUpdate(true)} style={styles.otaBanner}>
-          <Ionicons name="cloud-download-outline" size={16} color={COLORS.onPrimary} />
-          <Text style={styles.otaBannerText}>New Proxim update ready · Tap to apply</Text>
-          <Ionicons name="refresh" size={15} color={COLORS.onPrimary} />
-        </PressableScale>
-      ) : null}
-      {tab !== "home" ? <AccountSwitcherBar onOpenAssistant={() => setOverlay("assistant")} /> : null}
-
-      {inbox.banner ? (
-        <PressableScale
-          onPress={() => {
-            inbox.dismissBanner();
-            setOverlay("notifications");
-          }}
-          style={styles.inboxBanner}
-        >
-          <Ionicons name="notifications" size={18} color={COLORS.primary} />
-          <View style={{ flex: 1 }}>
-            <Text style={styles.inboxTitle} numberOfLines={1}>{inbox.banner.title}</Text>
-            <Text style={styles.inboxBody} numberOfLines={2}>{inbox.banner.body}</Text>
-          </View>
-          <PressableScale onPress={inbox.dismissBanner} haptic="none" style={{ padding: 4 }}>
-            <Ionicons name="close" size={18} color={COLORS.textMuted} />
+      <KeyboardSafe>
+        {ota.updateReady ? (
+          <PressableScale onPress={() => setApplyingUpdate(true)} style={styles.otaBanner}>
+            <Ionicons name="cloud-download-outline" size={16} color={COLORS.onPrimary} />
+            <Text style={styles.otaBannerText}>New Proxim update ready · Tap to apply</Text>
+            <Ionicons name="refresh" size={15} color={COLORS.onPrimary} />
           </PressableScale>
-        </PressableScale>
-      ) : null}
-      <View style={styles.body}>
-        {tab === "home" ? <HomeScreen
+        ) : null}
+        {tab !== "home" ? <AccountSwitcherBar onOpenAssistant={() => setOverlay("assistant")} /> : null}
+
+        {inbox.banner ? (
+          <PressableScale
+            onPress={() => {
+              inbox.dismissBanner();
+              setOverlay("notifications");
+            }}
+            style={styles.inboxBanner}
+          >
+            <Ionicons name="notifications" size={18} color={COLORS.primary} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.inboxTitle} numberOfLines={1}>{inbox.banner.title}</Text>
+              <Text style={styles.inboxBody} numberOfLines={2}>{inbox.banner.body}</Text>
+            </View>
+            <PressableScale onPress={inbox.dismissBanner} haptic="none" style={{ padding: 4 }}>
+              <Ionicons name="close" size={18} color={COLORS.textMuted} />
+            </PressableScale>
+          </PressableScale>
+        ) : null}
+        <View style={styles.body}>
+          {tab === "home" ? <HomeScreen
             onNavigate={handleHomeNav}
             onOpenProfile={() => setTab("profile")}
             onOpenBill={(c) => {
@@ -384,46 +386,62 @@ function MainShell() {
             }}
             unread={inbox.unread}
           /> : null}
-        {tab === "accounts" ? <AccountsScreen initialSection={accountsSection} initialBizSubTab={bizSubTab} /> : null}
-        {tab === "cards" ? <CardsScreen /> : null}
-        {tab === "profile" ? <ProfileScreen initialTab={profileSection} initialVerifyMode={profileVerifyMode} /> : null}
-      </View>
+          {tab === "accounts" ? <AccountsScreen initialSection={accountsSection} initialBizSubTab={bizSubTab} /> : null}
+          {tab === "cards" ? <CardsScreen /> : null}
+          {tab === "profile" ? <ProfileScreen initialTab={profileSection} initialVerifyMode={profileVerifyMode} /> : null}
+        </View>
 
-      <View style={styles.tabBar}>
-        {tabs.map((t) => {
-          const active = tab === t.key;
-          return (
-            <PressableScale
-              key={t.key}
-              onPress={() => {
-                if (t.key === "accounts") setAccountsSection(isBiz ? "business" : "accounts");
-                if (t.key === "profile") {
-                  setProfileVerifyMode(null);
-                  setProfileSection("general");
-                }
-                setTab(t.key);
-              }}
-              style={styles.tabItem}
-            >
-              <View style={[styles.tabIcon, active && styles.tabIconActive]}>
-                <Ionicons
-                  name={active ? t.activeIcon : t.icon}
-                  size={22}
-                  color={active ? COLORS.primary : COLORS.textMuted}
-                />
-              </View>
-              <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>
-                {t.label}
-              </Text>
-            </PressableScale>
-          );
-        })}
-      </View>
+        <View style={styles.tabBar}>
+          {tabs.map((t) => {
+            const active = tab === t.key;
+            return (
+              <PressableScale
+                key={t.key}
+                onPress={() => {
+                  if (t.key === "accounts") setAccountsSection(isBiz ? "business" : "accounts");
+                  if (t.key === "profile") {
+                    setProfileVerifyMode(null);
+                    setProfileSection("general");
+                  }
+                  setTab(t.key);
+                }}
+                style={styles.tabItem}
+              >
+                <View style={[styles.tabIcon, active && styles.tabIconActive]}>
+                  <Ionicons
+                    name={active ? t.activeIcon : t.icon}
+                    size={22}
+                    color={active ? COLORS.primary : COLORS.textMuted}
+                  />
+                </View>
+                <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>
+                  {t.label}
+                </Text>
+              </PressableScale>
+            );
+          })}
+        </View>
 
-      <ApprovalSheet />
-        </KeyboardSafe>
+        <ApprovalSheet />
+      </KeyboardSafe>
       {lockOverlay}
     </SafeAreaView>
+  );
+}
+
+function ThemedRoot({ bootKey, onReset }: { bootKey: number; onReset: () => void }) {
+  const { isDark } = useTheme();
+  return (
+    <>
+      <StatusBar style={isDark ? "light" : "dark"} />
+      <AppErrorBoundary onReset={onReset}>
+        <AppProvider key={bootKey}>
+          <View style={{ flex: 1, backgroundColor: COLORS.page }}>
+            <MainShell />
+          </View>
+        </AppProvider>
+      </AppErrorBoundary>
+    </>
   );
 }
 
@@ -447,26 +465,21 @@ export default function App() {
     return (
       <View style={styles.splash}>
         <Image source={require("./assets/icon.png")} style={{ width: 72, height: 72, borderRadius: 20 }} />
-        <ActivityIndicator color={COLORS.primary} />
-        <Text style={{ color: COLORS.textSecondary, fontSize: 14 }}>Starting Proxim…</Text>
+        <ActivityIndicator color="#00C476" style={{ marginTop: 14 }} />
+        <Text style={{ color: "#A3BCB2", fontSize: 14, marginTop: 8 }}>Starting Proxim…</Text>
       </View>
     );
   }
   return (
     <SafeAreaProvider>
-      <StatusBar style="dark" />
-      <AppErrorBoundary onReset={() => setBootKey((k) => k + 1)}>
-        <AppProvider key={bootKey}>
-          <View style={{ flex: 1, backgroundColor: COLORS.page }}>
-            <MainShell />
-          </View>
-        </AppProvider>
-      </AppErrorBoundary>
+      <ThemeProvider>
+        <ThemedRoot bootKey={bootKey} onReset={() => setBootKey((k) => k + 1)} />
+      </ThemeProvider>
     </SafeAreaProvider>
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   safe: { flex: 1, backgroundColor: COLORS.bg },
   lockOverlay: {
     position: "absolute",
@@ -547,4 +560,4 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: FONTS.extrabold,
   },
-});
+}));

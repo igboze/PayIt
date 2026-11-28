@@ -3,7 +3,7 @@ import { ActivityIndicator, Alert, StyleSheet, Text, View } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { api } from "../api/client";
 import type { AccountType, GlobalAccountItem } from "../api/types";
-import { COLORS, DEPTH, RADIUS, SPACING, TYPE } from "../theme";
+import { COLORS, DEPTH, RADIUS, SPACING, TYPE, createThemeStyles } from "../theme";
 import { Button, ErrorBanner, KeyValueRow, SuccessBanner } from "./UI";
 import { CurrencyLogo } from "./CurrencyLogo";
 
@@ -207,7 +207,7 @@ export function GlobalAccountsDeposit({ accountType, onNeedsVerification }: { ac
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   intro: { ...TYPE.label, color: COLORS.textSecondary },
   card: { backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, padding: SPACING.md, gap: 4, ...DEPTH.card },
   head: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 6 },
@@ -216,4 +216,4 @@ const styles = StyleSheet.create({
   statusOk: { color: COLORS.successText },
   statusWait: { color: COLORS.warningText },
   pastDueWarn: { ...TYPE.label, color: COLORS.dangerText, marginTop: 6 },
-});
+}));

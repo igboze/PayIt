@@ -27,8 +27,9 @@ import type {
   ScheduleItem,
 } from "../api/types";
 import { useApp } from "../state/AppContext";
+import { useTheme } from "../state/ThemeContext";
 import { useAutoOtaUpdates } from "../hooks/useAutoOtaUpdates";
-import { COLORS, SPACING, FONTS } from "../theme";
+import { COLORS, SPACING, FONTS, createThemeStyles } from "../theme";
 import {
   Button,
   Card,
@@ -129,6 +130,7 @@ export function ProfileScreen({
   initialVerifyMode?: "kyc" | "kyb" | null;
 } = {}) {
   const { user, activeAccount, dataVersion, refreshMe, signOut, requestApproval, balanceHidden, suspendAutoLock } = useApp();
+  const { preference: themePreference, setPreference: setThemePreference } = useTheme();
   const isBiz = activeAccount === "business";
   const ota = useAutoOtaUpdates();
   const [tab, setTab] = useState<ProfileTab>(initialTab);
@@ -1258,6 +1260,18 @@ export function ProfileScreen({
       {tab === "general" ? (
         <>
           <Card>
+            <SectionHeader title="Appearance" />
+            <Text style={[styles.rowSub, { marginBottom: 10 }]}>
+              Choose Light, Dark, or automatically match your phone's system theme.
+            </Text>
+            <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+              <Pill label="System" active={themePreference === "system"} onPress={() => setThemePreference("system")} />
+              <Pill label="Light" active={themePreference === "light"} onPress={() => setThemePreference("light")} />
+              <Pill label="Dark" active={themePreference === "dark"} onPress={() => setThemePreference("dark")} />
+            </View>
+          </Card>
+
+          <Card>
             <SectionHeader title="Account Profile" />
             <KeyValueRow label="Account ID" value={user?.id || "—"} />
             <KeyValueRow label="Username" value={user?.username ? `@${user.username}` : "Not set"} />
@@ -2096,7 +2110,7 @@ export function ProfileScreen({
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   scroll: { flex: 1, backgroundColor: COLORS.bg },
   content: { padding: SPACING.md, paddingBottom: 40 },
   pillRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 },
@@ -2158,4 +2172,4 @@ const styles = StyleSheet.create({
   },
   keyLabel: { color: COLORS.textMuted, fontSize: 10, fontFamily: FONTS.bold, letterSpacing: 0.6, marginBottom: 4 },
   keyValue: { color: COLORS.text, fontSize: 12, fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace" },
-});
+}));

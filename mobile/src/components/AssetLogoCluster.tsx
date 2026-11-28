@@ -2,7 +2,7 @@
 // Pure React Native — zero native modules, ships instantly over OTA.
 import React from "react";
 import { StyleSheet, Text, View } from "react-native";
-import { COLORS, FONTS } from "../theme";
+import { COLORS, FONTS, createThemeStyles } from "../theme";
 import { CurrencyLogo } from "./CurrencyLogo";
 import { StockLogo } from "./StockLogo";
 
@@ -102,7 +102,7 @@ export function SavingsLogoMerger({ size = 28, showBadge = true }: { size?: numb
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   row: {
     flexDirection: "row",
     alignItems: "center",
@@ -132,7 +132,7 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   countPill: {
-    backgroundColor: "rgba(29, 78, 216, 0.12)",
+    backgroundColor: COLORS.infoMuted,
     borderWidth: 1.5,
     borderColor: COLORS.surface,
     paddingHorizontal: 7,
@@ -142,10 +142,10 @@ const styles = StyleSheet.create({
   countText: {
     fontFamily: FONTS.extrabold,
     fontSize: 10,
-    color: "#1D4ED8",
+    color: COLORS.info,
   },
   apyPill: {
-    backgroundColor: "rgba(15, 118, 110, 0.12)",
+    backgroundColor: COLORS.primaryMuted,
     paddingHorizontal: 7,
     paddingVertical: 3,
     borderRadius: 999,
@@ -153,6 +153,6 @@ const styles = StyleSheet.create({
   apyText: {
     fontFamily: FONTS.extrabold,
     fontSize: 10,
-    color: "#0F766E",
+    color: COLORS.successText,
   },
-});
+}));

@@ -4,7 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "../api/client";
 import type { SavingsOverview } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, DEPTH, FONTS, RADIUS, SPACING } from "../theme";
+import { COLORS, DEPTH, FONTS, RADIUS, SPACING, createThemeStyles } from "../theme";
 import {
   Button,
   Card,
@@ -340,7 +340,7 @@ export function SavingsScreen({ onBack }: { onBack: () => void }) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   root: { flex: 1, backgroundColor: COLORS.bg },
   content: { padding: SPACING.md, paddingBottom: 40, gap: 12 },
   rateChip: {
@@ -414,4 +414,4 @@ const styles = StyleSheet.create({
   },
   chosenLabel: { fontFamily: FONTS.semibold, fontSize: 11, color: COLORS.textMuted, textTransform: "uppercase" },
   chosenVal: { fontFamily: FONTS.bold, fontSize: 13, color: COLORS.text, marginTop: 2 },
-});
+}));

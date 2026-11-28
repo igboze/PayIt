@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Image, StyleProp, StyleSheet, Text, View, ViewStyle } from "react-native";
-import { COLORS, FONTS } from "../theme";
+import { COLORS, FONTS, createThemeStyles } from "../theme";
 
 // Fiat currencies are shown with the issuing country's flag; EUR uses the EU flag.
 const FIAT_COUNTRY: Record<string, string> = {
@@ -127,9 +127,9 @@ export function currencyInText(text: string | null | undefined): string | null {
 
 const KNOWN_TOKENS = new Set(["USDC", "EURC", "USDT", "SOL", "NEAR", "ETH", "BTC", "STRK", "DAI", "BNB", "TRX", "TON", "SUI", "XRP"]);
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   frame: { overflow: "hidden", backgroundColor: COLORS.surfaceElevated, alignItems: "center", justifyContent: "center" },
   fallback: { borderWidth: 1, borderColor: COLORS.primaryBorder, backgroundColor: COLORS.primaryMuted },
   tag: { flexDirection: "row", alignItems: "center", gap: 6 },
   tagText: { fontFamily: FONTS.semibold },
-});
+}));

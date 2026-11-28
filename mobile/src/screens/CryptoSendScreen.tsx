@@ -5,7 +5,7 @@ import { ActivityIndicator, FlatList, Modal, ScrollView, StyleSheet, Text, TextI
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "../api/client";
 import { useApp } from "../state/AppContext";
-import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TYPE } from "../theme";
+import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TYPE, createThemeStyles } from "../theme";
 import { Button, ErrorBanner, Input, KeyboardSafe, ScreenHeader } from "../components/UI";
 import { CurrencyLogo } from "../components/CurrencyLogo";
 import { PressableScale } from "../components/Touch";
@@ -233,7 +233,7 @@ function PickerSheet({
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   root: { flex: 1, backgroundColor: COLORS.bg },
   body: { padding: SPACING.md, gap: 8, paddingBottom: 40 },
   label: { ...TYPE.label, color: COLORS.textSecondary, marginTop: 4 },
@@ -275,4 +275,4 @@ const styles = StyleSheet.create({
   option: { flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 12, paddingHorizontal: 8, borderRadius: 12 },
   optionTitle: { ...TYPE.bodyStrong, color: COLORS.text },
   optionSub: { ...TYPE.label, color: COLORS.textSecondary },
-});
+}));

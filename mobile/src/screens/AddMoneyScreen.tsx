@@ -17,7 +17,7 @@ import type {
   NgnDepositOrder,
 } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING, FONTS } from "../theme";
+import { COLORS, RADIUS, SPACING, FONTS, createThemeStyles } from "../theme";
 import {
   Button,
   Card,
@@ -533,7 +533,7 @@ export function AddMoneyScreen({ onBack }: { onBack: () => void }) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   root: { flex: 1, backgroundColor: COLORS.bg },
   content: { padding: SPACING.md, paddingBottom: 40 },
   methodRow: {
@@ -606,4 +606,4 @@ const styles = StyleSheet.create({
     fontFamily: FONTS.regular, fontSize: 13,
     lineHeight: 19,
   },
-});
+}));

@@ -3,18 +3,18 @@
 import React, { useState } from "react";
 import { Image, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { COLORS, DEPTH, FONTS, RADIUS, TYPE } from "../theme";
+import { COLORS, DEPTH, FONTS, RADIUS, TYPE, createThemeStyles } from "../theme";
 import { PressableScale } from "./Touch";
 
 export type BillCat = "airtime" | "data" | "electricity" | "cable" | "transport" | "betting";
 
 export const BILL_CATEGORIES: Array<{ key: BillCat; label: string; icon: keyof typeof Ionicons.glyphMap; fg: string; bg: string }> = [
-  { key: "airtime", label: "Airtime", icon: "call", fg: "#FFFFFF", bg: "#002018" },
-  { key: "data", label: "Data", icon: "wifi", fg: "#FFFFFF", bg: "#007F4F" },
-  { key: "electricity", label: "Electricity", icon: "flash", fg: "#FFFFFF", bg: "#002018" },
-  { key: "cable", label: "Cable TV", icon: "tv", fg: "#FFFFFF", bg: "#0F172A" },
-  { key: "transport", label: "Transport", icon: "bus", fg: "#FFFFFF", bg: "#007F4F" },
-  { key: "betting", label: "Betting", icon: "football", fg: "#FFFFFF", bg: "#002018" },
+  { key: "airtime", label: "Airtime", icon: "call", fg: "#FFFFFF", bg: "#053023" },
+  { key: "data", label: "Data", icon: "wifi", fg: "#FFFFFF", bg: "#006E44" },
+  { key: "electricity", label: "Electricity", icon: "flash", fg: "#FFFFFF", bg: "#053023" },
+  { key: "cable", label: "Cable TV", icon: "tv", fg: "#FFFFFF", bg: "#1E293B" },
+  { key: "transport", label: "Transport", icon: "bus", fg: "#FFFFFF", bg: "#006E44" },
+  { key: "betting", label: "Betting", icon: "football", fg: "#FFFFFF", bg: "#053023" },
 ];
 
 // Provider name fragment -> website domain, for the logo.
@@ -109,9 +109,9 @@ export function ProviderTile({
 }) {
   const badgeColors =
     badgeTone === "prepaid"
-      ? { bg: "#DDF1E5", fg: "#007840" }
+      ? { bg: COLORS.primaryMuted, fg: COLORS.successText }
       : badgeTone === "postpaid"
-        ? { bg: "#FBEBCB", fg: "#8A5600" }
+        ? { bg: COLORS.warningMuted, fg: COLORS.warningText }
         : { bg: COLORS.surfaceElevated, fg: COLORS.textSecondary };
   return (
     <PressableScale
@@ -165,7 +165,7 @@ export function BillCategoryTile({ cat, selected, onPress, compact }: { cat: (ty
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   logoFrame: { backgroundColor: "#FFFFFF", alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: COLORS.border, overflow: "hidden" },
   tile: {
     flexBasis: "30%",
@@ -214,6 +214,6 @@ const styles = StyleSheet.create({
     ...DEPTH.raised,
   },
   catTileCompact: { paddingVertical: 12 },
-  catIcon: { width: 48, height: 48, borderRadius: 16, alignItems: "center", justifyContent: "center" },
+  catIcon: { width: 48, height: 48, borderRadius: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.12)", alignItems: "center", justifyContent: "center" },
   catLabel: { ...TYPE.label, fontFamily: FONTS.semibold, color: COLORS.text, textAlign: "center" },
-});
+}));

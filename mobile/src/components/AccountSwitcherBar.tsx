@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { ActivityIndicator, Alert, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING, FONTS } from "../theme";
+import { COLORS, RADIUS, SPACING, FONTS, createThemeStyles } from "../theme";
 import { formatUsdc } from "./UI";
 import { PressableScale } from "./Touch";
 import { toUserError } from "../utils/errors";
@@ -111,7 +111,7 @@ export function AccountSwitcherBar({ onOpenAssistant }: { onOpenAssistant?: () =
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   bar: {
     flexDirection: "row",
     alignItems: "center",
@@ -182,4 +182,4 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-});
+}));

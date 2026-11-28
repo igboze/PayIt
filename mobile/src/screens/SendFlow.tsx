@@ -19,7 +19,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "../api/client";
 import type { BankItem, ContactItem, ResolvedBankAccount } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TYPE } from "../theme";
+import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TYPE, createThemeStyles } from "../theme";
 import { Button, ErrorBanner, formatUsdc, ScreenHeader } from "../components/UI";
 import { CurrencyLogo } from "../components/CurrencyLogo";
 import { PressableScale, tap } from "../components/Touch";
@@ -32,13 +32,15 @@ type Recipient =
   | { kind: "user"; name: string; handle: string; query: string };
 
 // Initials avatars use solid brand pairs only (text, fill).
-const AVATAR_TONES = [
-  ["#FFFFFF", "#002018"],
-  ["#FFFFFF", "#007F4F"],
-  ["#FFFFFF", "#0F172A"],
-  ["#002018", "#DFF2E8"],
-  ["#002018", "#E6EEEA"],
-] as const;
+function getAvatarTones(): ReadonlyArray<readonly [string, string]> {
+  return [
+    ["#FFFFFF", "#053023"],
+    ["#FFFFFF", "#006E44"],
+    ["#FFFFFF", "#1E293B"],
+    [COLORS.successText, COLORS.primaryMuted],
+    [COLORS.text, COLORS.surfaceElevated],
+  ];
+}
 
 function initials(name: string): string {
   const parts = name.replace(/^@/, "").trim().split(/\s+/).filter(Boolean);
@@ -48,7 +50,8 @@ function initials(name: string): string {
 
 function Avatar({ name, size = 44 }: { name: string; size?: number }) {
   const txt = initials(name);
-  const [fg, bg] = AVATAR_TONES[[...txt].reduce((a, c) => a + c.charCodeAt(0), 0) % AVATAR_TONES.length];
+  const tones = getAvatarTones();
+  const [fg, bg] = tones[[...txt].reduce((a, c) => a + c.charCodeAt(0), 0) % tones.length];
   return (
     <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: bg, alignItems: "center", justifyContent: "center" }}>
       <Text style={{ ...TYPE.bodyStrong, color: fg }}>{txt}</Text>
@@ -776,7 +779,7 @@ function BankPicker({ visible, onClose, onPick }: { visible: boolean; onClose: (
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   root: { flex: 1, backgroundColor: COLORS.bg },
   pickBody: { padding: SPACING.md, paddingTop: 4, gap: 12, paddingBottom: 32 },
   segment: {
@@ -943,4 +946,4 @@ const styles = StyleSheet.create({
   sheetHandle: { alignSelf: "center", width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.borderStrong, marginBottom: 12 },
   sheetTitle: { ...TYPE.title, color: COLORS.text, marginBottom: 12 },
   bankRow: { flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 12, paddingHorizontal: 8, borderRadius: 12 },
-});
+}));

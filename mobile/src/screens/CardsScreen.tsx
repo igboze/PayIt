@@ -15,7 +15,7 @@ import { api } from "../api/client";
 import type { CardItem } from "../api/types";
 import { useApp } from "../state/AppContext";
 import { ProximCardFace } from "../components/ProximCardFace";
-import { COLORS, RADIUS, SPACING, FONTS } from "../theme";
+import { COLORS, RADIUS, SPACING, FONTS, createThemeStyles } from "../theme";
 import {
   Button,
   Card,
@@ -307,7 +307,7 @@ export function CardsScreen() {
                 ).map(([icon, label, fn, main]) => (
                   <PressableScale key={label} onPress={fn} depth={0.92} haptic="light" style={styles.roundItem} accessibilityRole="button" accessibilityLabel={label}>
                     <View style={[styles.roundBtn, main && styles.roundBtnMain]}>
-                      <Ionicons name={icon} size={20} color={main ? COLORS.white : COLORS.primary} />
+                      <Ionicons name={icon} size={20} color={main ? COLORS.onGold : COLORS.primary} />
                     </View>
                     <Text style={styles.roundLabel}>{label}</Text>
                   </PressableScale>
@@ -395,7 +395,7 @@ export function CardsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   scroll: { flex: 1, backgroundColor: COLORS.bg },
   content: { padding: SPACING.md, paddingBottom: 32 },
   pillRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 14 },
@@ -428,7 +428,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  roundBtnMain: { backgroundColor: COLORS.forest, borderColor: COLORS.forest },
+  roundBtnMain: { backgroundColor: COLORS.gold, borderColor: COLORS.gold },
   roundLabel: { fontFamily: FONTS.semibold, fontSize: 11.5, color: COLORS.text },
   deleteLink: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 14, minHeight: 40 },
   deleteText: { fontFamily: FONTS.semibold, fontSize: 13, color: COLORS.dangerText },
@@ -444,4 +444,4 @@ const styles = StyleSheet.create({
     padding: SPACING.lg,
   },
   modalTitle: { color: COLORS.text, fontSize: 18, fontFamily: FONTS.bold, marginBottom: 14 },
-});
+}));

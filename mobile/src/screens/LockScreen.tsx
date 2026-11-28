@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Image, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useApp } from "../state/AppContext";
-import { COLORS, SPACING, TYPE } from "../theme";
+import { COLORS, SPACING, TYPE, createThemeStyles } from "../theme";
 import { Button, ErrorBanner } from "../components/UI";
 import { notifyHaptic } from "../components/Touch";
 import { PoweredBy } from "../components/PoweredBy";
@@ -64,7 +64,7 @@ export function LockScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   root: { flex: 1, backgroundColor: COLORS.bg, padding: SPACING.lg, justifyContent: "space-between" },
   top: { alignItems: "center", gap: 10, marginTop: 48 },
   logo: { width: 72, height: 72, borderRadius: 20, marginBottom: 8 },
@@ -80,4 +80,4 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   bottom: { gap: 8 },
-});
+}));

@@ -3,20 +3,22 @@ import { ActivityIndicator, Alert, Image, Linking, Platform, StyleSheet, Text, V
 import { Ionicons } from "@expo/vector-icons";
 import { api, getAccessToken } from "../api/client";
 import { useApp } from "../state/AppContext";
-import { COLORS, TYPE } from "../theme";
+import { COLORS, TYPE, createThemeStyles } from "../theme";
 import { PressableScale } from "./Touch";
 import { getImagePicker, getLegacyFileSystem } from "../nativeModules";
 import { toUserError } from "../utils/errors";
 
 const LATEST_APK_URL = "https://github.com/igboze/PayIt/releases/download/android-latest/Proxim.apk";
 
-const TONES = [
-  ["#FFFFFF", "#002018"],
-  ["#FFFFFF", "#007F4F"],
-  ["#FFFFFF", "#0F172A"],
-  ["#002018", "#DFF2E8"],
-  ["#002018", "#E6EEEA"],
-] as const;
+function getAvatarTones(): ReadonlyArray<readonly [string, string]> {
+  return [
+    ["#FFFFFF", "#053023"],
+    ["#FFFFFF", "#006E44"],
+    ["#FFFFFF", "#1E293B"],
+    [COLORS.successText, COLORS.primaryMuted],
+    [COLORS.text, COLORS.surfaceElevated],
+  ];
+}
 
 function initialsOf(name: string): string {
   const parts = name.replace(/^@/, "").trim().split(/\s+/).filter(Boolean);
@@ -35,7 +37,8 @@ export function UserAvatar({ size = 44, name }: { size?: number; name?: string |
   }, [version]);
   const label = name || user?.senderName || user?.username || "Proxim";
   const txt = initialsOf(label);
-  const [fg, bg] = TONES[[...txt].reduce((a, c) => a + c.charCodeAt(0), 0) % TONES.length];
+  const tones = getAvatarTones();
+  const [fg, bg] = tones[[...txt].reduce((a, c) => a + c.charCodeAt(0), 0) % tones.length];
   const box = { width: size, height: size, borderRadius: size / 2 };
 
   if (version && token && !failed) {
@@ -154,7 +157,7 @@ export function EditableAvatar({ size = 96 }: { size?: number }) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   photo: { backgroundColor: COLORS.surfaceElevated, borderWidth: 2, borderColor: COLORS.surface },
   busy: { position: "absolute", top: 0, left: 0, backgroundColor: "rgba(14, 21, 18, 0.45)", alignItems: "center", justifyContent: "center" },
   cameraBadge: {
@@ -170,4 +173,4 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-});
+}));

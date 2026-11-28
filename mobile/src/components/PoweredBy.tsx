@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Image, StyleSheet, Text, View } from "react-native";
-import { COLORS, DEPTH, FONTS, RADIUS, TYPE } from "../theme";
+import { COLORS, DEPTH, FONTS, RADIUS, TYPE, createThemeStyles } from "../theme";
 
 // The licensed partners that hold and move the money, shown where people decide to trust us.
 const PARTNERS = [
@@ -50,7 +50,7 @@ export function PoweredBy() {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   wrap: { alignItems: "center", gap: 10, marginTop: 18 },
   title: { ...TYPE.overline, color: COLORS.textSecondary },
   row: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 10 },
@@ -69,4 +69,4 @@ const styles = StyleSheet.create({
   logoLetter: { fontFamily: FONTS.bold, fontSize: 16, color: COLORS.text },
   name: { ...TYPE.bodyStrong, color: COLORS.text },
   role: { ...TYPE.label, fontSize: 12, color: COLORS.textSecondary },
-});
+}));

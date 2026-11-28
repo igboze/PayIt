@@ -3,7 +3,7 @@
 // official website favicon, and finally falls back to a styled ticker emblem if offline.
 import React, { useEffect, useState } from "react";
 import { Image, StyleSheet, Text, View } from "react-native";
-import { COLORS, FONTS } from "../theme";
+import { COLORS, FONTS, createThemeStyles } from "../theme";
 
 const TICKER_TINTS: Record<string, { bg: string; fg: string }> = {
   AAPL: { bg: "#111827", fg: "#FFFFFF" },
@@ -67,7 +67,7 @@ export function StockLogo({
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   frame: {
     backgroundColor: "#FFFFFF",
     borderWidth: 1,
@@ -86,4 +86,4 @@ const styles = StyleSheet.create({
     fontFamily: FONTS.extrabold,
     letterSpacing: -0.3,
   },
-});
+}));

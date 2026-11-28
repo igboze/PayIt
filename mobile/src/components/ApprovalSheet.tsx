@@ -5,7 +5,7 @@ import * as Clipboard from "expo-clipboard";
 import { api } from "../api/client";
 import { assertPasskey } from "../api/passkey";
 import { useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING, FONTS, TYPE } from "../theme";
+import { COLORS, RADIUS, SPACING, FONTS, TYPE, createThemeStyles } from "../theme";
 import type { ActionConfirmResponse, ActionIntentResponse } from "../api/types";
 import { Button, ErrorBanner, Input, KeyboardSafe, KeyValueRow, shortAddr } from "./UI";
 import { notifyHaptic } from "./Touch";
@@ -241,7 +241,7 @@ export function ApprovalSheet() {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   successTop: {
     alignItems: "center",
     gap: 6,
@@ -252,7 +252,7 @@ const styles = StyleSheet.create({
     width: 104,
     height: 104,
     borderRadius: 52,
-    backgroundColor: "#D6F2E3",
+    backgroundColor: COLORS.primaryMuted,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 12,
@@ -376,4 +376,4 @@ const styles = StyleSheet.create({
   footer: {
     paddingTop: 4,
   },
-});
+}));

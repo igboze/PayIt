@@ -4,7 +4,7 @@
 import React, { useMemo, useState } from "react";
 import { LayoutChangeEvent, Pressable, StyleSheet, Text, View } from "react-native";
 import type { StockChartPoint } from "../api/types";
-import { COLORS, FONTS, RADIUS } from "../theme";
+import { COLORS, FONTS, RADIUS, createThemeStyles } from "../theme";
 
 function formatShortDate(ms: number, range: string): string {
   const d = new Date(ms);
@@ -74,8 +74,8 @@ export function StockChart({
     const firstPrice = points[0].price;
     const lastPrice = points[points.length - 1].price;
     const isUp = lastPrice >= firstPrice;
-    const lineColor = isUp ? "#007840" : "#DC2626";
-    const fillColor = isUp ? "rgba(5, 150, 105, 0.10)" : "rgba(220, 38, 38, 0.10)";
+    const lineColor = isUp ? COLORS.success : COLORS.danger;
+    const fillColor = isUp ? "rgba(16, 185, 129, 0.14)" : "rgba(239, 68, 68, 0.14)";
 
     const segments = [];
     for (let i = 0; i < coords.length - 1; i++) {
@@ -316,7 +316,7 @@ export function StockChart({
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemeStyles(() => ({
   canvas: {
     width: "100%",
     backgroundColor: COLORS.page,
@@ -347,20 +347,21 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: 1,
-    backgroundColor: "rgba(14, 21, 18, 0.06)",
+    backgroundColor: COLORS.border,
+    opacity: 0.45,
   },
   buyLine: {
     position: "absolute",
     height: 0,
     borderTopWidth: 1.5,
     borderStyle: "dashed",
-    borderColor: "#0F172A",
+    borderColor: COLORS.textSecondary,
   },
   buyTag: {
     position: "absolute",
-    backgroundColor: "#E8EDF5",
+    backgroundColor: COLORS.surfaceElevated,
     borderWidth: 1,
-    borderColor: "#94A3B8",
+    borderColor: COLORS.borderStrong,
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 6,
@@ -368,14 +369,14 @@ const styles = StyleSheet.create({
   buyTagText: {
     fontFamily: FONTS.bold,
     fontSize: 10,
-    color: "#0F172A",
+    color: COLORS.text,
   },
   entryDotOuter: {
     position: "absolute",
     width: 14,
     height: 14,
     borderRadius: 7,
-    backgroundColor: "#CBD5E1",
+    backgroundColor: COLORS.borderStrong,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -383,9 +384,9 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: "#0F172A",
+    backgroundColor: COLORS.text,
     borderWidth: 1.5,
-    borderColor: "#FFFFFF",
+    borderColor: COLORS.surface,
   },
   liveDotOuter: {
     position: "absolute",
@@ -400,19 +401,19 @@ const styles = StyleSheet.create({
     height: 8,
     borderRadius: 4,
     borderWidth: 1.5,
-    borderColor: "#FFFFFF",
+    borderColor: COLORS.surface,
   },
   crosshair: {
     position: "absolute",
     width: 1,
-    backgroundColor: "rgba(14, 21, 18, 0.28)",
+    backgroundColor: COLORS.borderStrong,
   },
   activeDot: {
     position: "absolute",
     width: 12,
     height: 12,
     borderRadius: 6,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: COLORS.surface,
     borderWidth: 3,
   },
   axisLabel: {
@@ -420,7 +421,7 @@ const styles = StyleSheet.create({
     fontFamily: FONTS.semibold,
     fontSize: 10,
     color: COLORS.textMuted,
-    backgroundColor: "rgba(255,255,255,0.75)",
+    backgroundColor: COLORS.surface,
     paddingHorizontal: 4,
     borderRadius: 4,
   },
@@ -446,4 +447,4 @@ const styles = StyleSheet.create({
   },
   timeTick: { fontFamily: FONTS.medium, fontSize: 11, color: COLORS.textMuted },
   hintTick: { fontFamily: FONTS.medium, fontSize: 11, color: COLORS.textMuted },
-});
+}));
