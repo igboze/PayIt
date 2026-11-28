@@ -3,9 +3,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { PressableScale } from "../components/Touch";
 import {
   ActivityIndicator,
-  Alert,
+  Modal,
   RefreshControl,
   ScrollView,
+  StyleSheet,
   Text,
   View,
 } from "react-native";
@@ -14,20 +15,18 @@ import { api } from "../api/client";
 import type { CardItem } from "../api/types";
 import { useApp } from "../state/AppContext";
 import { ProximCardFace } from "../components/ProximCardFace";
-import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TABULAR_NUMS, TYPE, createThemeStyles } from "../theme";
+import { COLORS, RADIUS, SPACING, FONTS, createThemeStyles } from "../theme";
 import {
-  BottomSheet,
   Button,
   Card,
   EmptyState,
   ErrorBanner,
   formatUsdc,
   Input,
+  KeyboardSafe,
   KeyValueRow,
   Pill,
   SectionHeader,
-  SkeletonCard,
-  StatusBadge,
   SuccessBanner,
 } from "../components/UI";
 
@@ -40,28 +39,26 @@ export function CardsScreen() {
   const isBiz = activeAccount === "business";
 
   const [cards, setCards] = useState<CardItem[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // Issue card sheet
+  // Issue card form
   const [showIssue, setShowIssue] = useState(false);
   const [cardType, setCardType] = useState<"virtual" | "disposable" | "team">("virtual");
   const [cardName, setCardName] = useState("");
   const [loadAmount, setLoadAmount] = useState("10");
 
-  // Top-up sheet
+  // Top-up modal
   const [topupCardId, setTopupCardId] = useState<string | null>(null);
   const [topupAmount, setTopupAmount] = useState("");
 
-  // Ephemeral revealed PAN/CVV (never persisted)
+  // Ephemeral revealed PAN/CVV (never persisted, auto-clears)
   const [revealed, setRevealed] = useState<Record<string, unknown> | null>(null);
 
-  // Inline card activity for the active card
-  const [cardTxs, setCardTxs] = useState<Array<Record<string, unknown>>>([]);
-  const [txsLoading, setTxsLoading] = useState(false);
+  // Card transactions modal
+  const [cardTxs, setCardTxs] = useState<Array<Record<string, unknown>> | null>(null);
 
   const loadCards = useCallback(
     async (isRefresh = false) => {
@@ -70,12 +67,7 @@ export function CardsScreen() {
       setError(null);
       try {
         const res = await api.listCards(activeAccount);
-        const list = res.cards || [];
-        setCards(list);
-        setSelectedId((prev) => {
-          if (prev && list.some((c) => cardIdOf(c) === prev)) return prev;
-          return list.length > 0 ? cardIdOf(list[0]) : null;
-        });
+        setCards(res.cards || []);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Could not load cards.");
       } finally {
@@ -89,26 +81,6 @@ export function CardsScreen() {
   useEffect(() => {
     loadCards(false);
   }, [loadCards, dataVersion]);
-
-  const activeCard = cards.find((c) => cardIdOf(c) === selectedId) || cards[0] || null;
-  const activeCardId = activeCard ? cardIdOf(activeCard) : null;
-
-  const loadInlineActivity = useCallback(async (id: string) => {
-    setTxsLoading(true);
-    try {
-      const res = await api.listCardTransactions(id);
-      setCardTxs(res.transactions || []);
-    } catch {
-      setCardTxs([]);
-    } finally {
-      setTxsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (activeCardId) loadInlineActivity(activeCardId);
-    else setCardTxs([]);
-  }, [activeCardId, loadInlineActivity]);
 
   const handleIssueCard = async () => {
     setError(null);
@@ -155,7 +127,9 @@ export function CardsScreen() {
         accountType: activeAccount,
         cardId: id,
       });
-      if (res.card) setRevealed(res.card);
+      if (res.card) {
+        setRevealed(res.card);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Could not reveal card details.";
       if (!/cancel/i.test(msg)) setError(msg);
@@ -185,7 +159,7 @@ export function CardsScreen() {
         accountType: activeAccount,
         cardId: id,
       });
-      setNotice(res.notice || "Card balance returned to your balance.");
+      setNotice(res.notice || "Card balance returned to wallet.");
       loadCards(true);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Could not unload card.";
@@ -193,34 +167,30 @@ export function CardsScreen() {
     }
   };
 
-  const handleDelete = (id: string) => {
-    Alert.alert("Delete virtual card", "Permanently close this card? Any remaining funds should be unloaded first.", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete card",
-        style: "destructive",
-        onPress: async () => {
-          setError(null);
-          try {
-            const res = await requestApproval("card.delete", {
-              accountType: activeAccount,
-              cardId: id,
-            });
-            setNotice(res.notice || "Card deleted.");
-            loadCards(true);
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : "Could not delete card.";
-            if (!/cancel/i.test(msg)) setError(msg);
-          }
-        },
-      },
-    ]);
+  const handleDelete = async (id: string) => {
+    setError(null);
+    try {
+      const res = await requestApproval("card.delete", {
+        accountType: activeAccount,
+        cardId: id,
+      });
+      setNotice(res.notice || "Card deleted.");
+      loadCards(true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Could not delete card.";
+      if (!/cancel/i.test(msg)) setError(msg);
+    }
   };
 
-  const isFrozen = activeCard
-    ? Boolean(activeCard.frozen || String(activeCard.status || "").toLowerCase() === "frozen")
-    : false;
-  const activeBal = activeCard ? activeCard.balanceUsd ?? activeCard.balance : undefined;
+  const handleViewTransactions = async (id: string) => {
+    setError(null);
+    try {
+      const res = await api.listCardTransactions(id);
+      setCardTxs(res.transactions || []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load card transactions.");
+    }
+  };
 
   return (
     <ScrollView
@@ -231,13 +201,12 @@ export function CardsScreen() {
       }
     >
       <SectionHeader
-        title={`${isBiz ? "Team" : "Virtual"} USD Cards`}
+        title={`${isBiz ? "Business" : "Personal"} Dollar Cards`}
         right={
           <Pill
-            label="+ New Card"
+            label={showIssue ? "Close" : "+ New Card"}
             active
-            tone={isBiz ? "business" : "primary"}
-            onPress={() => setShowIssue(true)}
+            onPress={() => setShowIssue((v) => !v)}
           />
         }
       />
@@ -245,299 +214,236 @@ export function CardsScreen() {
       <ErrorBanner message={error} onDismiss={() => setError(null)} />
       <SuccessBanner message={notice} onDismiss={() => setNotice(null)} />
 
+      {showIssue ? (
+        <Card>
+          <SectionHeader title="Issue Global Neobank USD Card" />
+          <View style={styles.pillRow}>
+            <Pill label="Virtual" active={cardType === "virtual"} onPress={() => setCardType("virtual")} />
+            <Pill label="Disposable" active={cardType === "disposable"} onPress={() => setCardType("disposable")} />
+            {isBiz ? (
+              <Pill label="Team" active={cardType === "team"} tone="business" onPress={() => setCardType("team")} />
+            ) : null}
+          </View>
+          <Input
+            label="Card nickname (optional)"
+            placeholder="e.g. Cloud Hosting, Ads, Shopping"
+            value={cardName}
+            onChangeText={setCardName}
+          />
+          <Input
+            label="Initial Load Amount (USD)"
+            placeholder="e.g. 25"
+            value={loadAmount}
+            onChangeText={setLoadAmount}
+            keyboardType="decimal-pad"
+          />
+          <Button title="Quote & issue card" onPress={handleIssueCard} />
+        </Card>
+      ) : null}
+
       {loading && cards.length === 0 ? (
-        <SkeletonCard rows={3} />
+        <View style={{ paddingVertical: 40, alignItems: "center" }}>
+          <ActivityIndicator color={COLORS.primary} />
+        </View>
       ) : cards.length === 0 ? (
         <Card>
           <EmptyState
             icon="card-outline"
-            title="No virtual USD cards yet"
-            subtitle={`Issue an instant virtual or disposable USD card funded from your ${isBiz ? "Business" : "Personal"} balance for Apple, Netflix, AWS, Ads, and global checkout.`}
+            title="No cards yet"
+            subtitle={`Issue a virtual or disposable USD card funded from your ${isBiz ? "Business" : "Personal"} wallet.`}
           />
           <Button title="Create your first card" onPress={() => setShowIssue(true)} />
         </Card>
-      ) : activeCard && activeCardId ? (
-        <>
-          {/* Multi-card switcher pills */}
-          {cards.length > 1 ? (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
-              <View style={{ flexDirection: "row", gap: 8 }}>
-                {cards.map((c) => {
-                  const id = cardIdOf(c);
-                  const tail = c.last4 ? `•••• ${c.last4}` : "Card";
-                  return (
-                    <Pill
-                      key={id}
-                      label={`${c.name || c.card_name || "Card"} · ${tail}`}
-                      active={id === activeCardId}
-                      onPress={() => setSelectedId(id)}
-                    />
-                  );
-                })}
-              </View>
-            </ScrollView>
-          ) : null}
-
-          {/* Full-bleed Apple Wallet style Card Hero */}
-          <View style={styles.cardHeroWrap}>
-            <ProximCardFace
-              last4={activeCard.last4}
-              expiryMonth={activeCard.expiryMonth}
-              expiryYear={activeCard.expiryYear}
-              holderName={(isBiz ? user?.bizSenderName : user?.senderName) || user?.senderName}
-              frozen={isFrozen}
-            />
-          </View>
-
-          {/* Clean balance + status bar */}
-          <View style={styles.balanceStrip}>
-            <View>
-              <Text style={styles.cardMetaOverline}>
-                {activeCard.name || activeCard.card_name || "Proxim Virtual Card"}
-              </Text>
-              <Text style={styles.cardHeroBal}>
-                {balanceHidden ? "$••••" : activeBal !== undefined ? formatUsdc(activeBal) : "—"}
-              </Text>
-            </View>
-            <StatusBadge
-              label={isFrozen ? "Frozen" : String(activeCard.status || "Active")}
-              icon={isFrozen ? "snow" : "checkmark-circle"}
-              tone={isFrozen ? "danger" : "success"}
-            />
-          </View>
-
-          {/* 4 circular primary controls right beneath the card */}
-          <View style={styles.roundRow}>
-            {(
-              [
-                ["add", "Top up", () => setTopupCardId(activeCardId), true],
-                ["eye-outline", "Details", () => handleReveal(activeCardId), false],
-                [
-                  isFrozen ? "sunny-outline" : "snow-outline",
-                  isFrozen ? "Unfreeze" : "Freeze",
-                  () => handleFreezeToggle(activeCardId, isFrozen),
-                  false,
-                ],
-                ["arrow-undo-outline", "Unload", () => handleUnload(activeCardId), false],
-              ] as Array<[keyof typeof Ionicons.glyphMap, string, () => void, boolean]>
-            ).map(([icon, label, fn, main]) => (
-              <PressableScale
-                key={label}
-                onPress={fn}
-                depth={0.92}
-                haptic="light"
-                style={styles.roundItem}
-                accessibilityRole="button"
-                accessibilityLabel={label}
-              >
-                <View style={[styles.roundBtn, main && styles.roundBtnMain]}>
-                  <Ionicons name={icon} size={20} color={main ? COLORS.onGold : COLORS.primary} />
-                </View>
-                <Text style={styles.roundLabel}>{label}</Text>
-              </PressableScale>
-            ))}
-          </View>
-
-          {/* Inline Card Activity */}
-          <Card style={{ marginTop: 16 }}>
-            <SectionHeader
-              title="Card Activity"
-              right={
-                <PressableScale
-                  onPress={() => loadInlineActivity(activeCardId)}
-                  haptic="selection"
-                  style={{ padding: 4 }}
-                >
-                  <Ionicons name="refresh" size={16} color={COLORS.textSecondary} />
-                </PressableScale>
-              }
-            />
-            {txsLoading ? (
-              <View style={{ paddingVertical: 18, alignItems: "center" }}>
-                <ActivityIndicator color={COLORS.primary} size="small" />
-              </View>
-            ) : cardTxs.length > 0 ? (
-              cardTxs.slice(0, 12).map((t, i) => (
-                <KeyValueRow
-                  key={i}
-                  currency={String(t.currency || "USD")}
-                  label={String(t.merchant || t.description || t.type || `Card tx #${i + 1}`)}
-                  value={`${t.amount ?? ""} ${t.currency || "USD"}`}
-                />
-              ))
-            ) : (
-              <EmptyState
-                icon="receipt-outline"
-                title="No card spend yet"
-                subtitle="Online purchases on this card appear here automatically."
+      ) : (
+        cards.map((c) => {
+          const id = cardIdOf(c);
+          const isFrozen = Boolean(c.frozen || String(c.status || "").toLowerCase() === "frozen");
+          const bal = c.balanceUsd ?? c.balance;
+          return (
+            <Card key={id} style={styles.cardVisual}>
+              <ProximCardFace
+                last4={c.last4}
+                expiryMonth={c.expiryMonth}
+                expiryYear={c.expiryYear}
+                holderName={(isBiz ? user?.bizSenderName : user?.senderName) || user?.senderName}
+                frozen={isFrozen}
               />
-            )}
-          </Card>
-
-          <PressableScale
-            onPress={() => handleDelete(activeCardId)}
-            haptic="light"
-            style={styles.deleteLink}
-            accessibilityRole="button"
-          >
-            <Ionicons name="trash-outline" size={15} color={COLORS.dangerText} />
-            <Text style={styles.deleteText}>Close &amp; delete card</Text>
-          </PressableScale>
-        </>
-      ) : null}
-
-      {/* Issue Card Bottom Sheet */}
-      <BottomSheet
-        visible={showIssue}
-        onClose={() => setShowIssue(false)}
-        title="New Virtual USD Card"
-        subtitle={`Funded from your ${isBiz ? "Business" : "Personal"} balance.`}
-      >
-        <View style={styles.pillRow}>
-          <Pill label="Virtual" active={cardType === "virtual"} onPress={() => setCardType("virtual")} />
-          <Pill label="Disposable" active={cardType === "disposable"} onPress={() => setCardType("disposable")} />
-          {isBiz ? (
-            <Pill label="Team" active={cardType === "team"} tone="business" onPress={() => setCardType("team")} />
-          ) : null}
-        </View>
-        <Input
-          label="Card nickname (optional)"
-          placeholder="e.g. Cloud Hosting, Ads, Shopping"
-          value={cardName}
-          onChangeText={setCardName}
-        />
-        <Input
-          label="Initial Load Amount (USD)"
-          placeholder="e.g. 25"
-          value={loadAmount}
-          onChangeText={setLoadAmount}
-          keyboardType="decimal-pad"
-        />
-        <Button title="Review & issue card" onPress={handleIssueCard} />
-        <Button title="Cancel" variant="ghost" onPress={() => setShowIssue(false)} style={{ marginTop: 6 }} />
-      </BottomSheet>
-
-      {/* Top-up Bottom Sheet */}
-      <BottomSheet
-        visible={Boolean(topupCardId)}
-        onClose={() => setTopupCardId(null)}
-        title="Top Up Card"
-        subtitle="Funds transfer instantly from your Proxim balance."
-      >
-        <View style={styles.presetRow}>
-          {[10, 25, 50, 100].map((v) => (
-            <PressableScale
-              key={v}
-              onPress={() => setTopupAmount(String(v))}
-              haptic="selection"
-              style={[styles.presetChip, Number(topupAmount) === v && styles.presetChipOn]}
-            >
-              <Text style={[styles.presetText, Number(topupAmount) === v && { color: COLORS.primary }]}>${v}</Text>
-            </PressableScale>
-          ))}
-        </View>
-        <Input
-          label="Amount (USD)"
-          placeholder="e.g. 20"
-          value={topupAmount}
-          onChangeText={setTopupAmount}
-          keyboardType="decimal-pad"
-        />
-        <Button title="Review & top up" onPress={handleTopup} />
-        <Button title="Cancel" variant="ghost" onPress={() => setTopupCardId(null)} style={{ marginTop: 6 }} />
-      </BottomSheet>
-
-      {/* Revealed Card Details Bottom Sheet */}
-      <BottomSheet
-        visible={Boolean(revealed)}
-        onClose={() => setRevealed(null)}
-        title="Card Details"
-        subtitle="Keep your card number and CVV private."
-      >
-        {revealed ? (
-          <ScrollView style={{ maxHeight: 340 }}>
-            {Object.entries(revealed)
-              .filter(([, v]) => v !== null && v !== undefined && typeof v !== "object")
-              .map(([k, v]) => (
-                <KeyValueRow
-                  key={k}
-                  label={k}
-                  currency={false}
-                  value={String(v)}
-                  onCopy={() => {
-                    Clipboard.setStringAsync(String(v));
-                    setNotice(`${k} copied`);
-                  }}
+              <View style={styles.cardTop}>
+                <View>
+                  <Text style={styles.cardTitle}>{c.name || c.card_name || "Proxim Card"}</Text>
+                  <Text style={styles.cardLabel}>{String(c.brand || "Virtual USD card")}</Text>
+                </View>
+                <Pill
+                  label={isFrozen ? "Frozen" : String(c.status || "Active")}
+                  active
+                  tone={isFrozen ? "danger" : "primary"}
                 />
-              ))}
-          </ScrollView>
-        ) : null}
-        <Button title="Hide details" onPress={() => setRevealed(null)} style={{ marginTop: 14 }} />
-      </BottomSheet>
+              </View>
+
+              <View style={styles.cardFooter}>
+                <View>
+                  <Text style={styles.cardLabel}>Balance</Text>
+                  <Text style={styles.cardBal}>{balanceHidden ? "$••••" : bal !== undefined ? formatUsdc(bal) : "—"}</Text>
+                </View>
+                {c.expiryMonth && c.expiryYear ? (
+                  <View>
+                    <Text style={styles.cardLabel}>Expires</Text>
+                    <Text style={styles.cardBal}>
+                      {String(c.expiryMonth).padStart(2, "0")}/{String(c.expiryYear).slice(-2)}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+
+              <View style={styles.roundRow}>
+                {(
+                  [
+                    ["add", "Top up", () => setTopupCardId(id), true],
+                    ["eye-outline", "Details", () => handleReveal(id), false],
+                    [isFrozen ? "sunny-outline" : "snow-outline", isFrozen ? "Unfreeze" : "Freeze", () => handleFreezeToggle(id, isFrozen), false],
+                    ["receipt-outline", "Activity", () => handleViewTransactions(id), false],
+                    ["arrow-undo-outline", "Unload", () => handleUnload(id), false],
+                  ] as Array<[keyof typeof Ionicons.glyphMap, string, () => void, boolean]>
+                ).map(([icon, label, fn, main]) => (
+                  <PressableScale key={label} onPress={fn} depth={0.92} haptic="light" style={styles.roundItem} accessibilityRole="button" accessibilityLabel={label}>
+                    <View style={[styles.roundBtn, main && styles.roundBtnMain]}>
+                      <Ionicons name={icon} size={20} color={main ? COLORS.gold : COLORS.primary} />
+                    </View>
+                    <Text style={styles.roundLabel}>{label}</Text>
+                  </PressableScale>
+                ))}
+              </View>
+              <PressableScale onPress={() => handleDelete(id)} haptic="light" style={styles.deleteLink} accessibilityRole="button">
+                <Ionicons name="trash-outline" size={15} color={COLORS.dangerText} />
+                <Text style={styles.deleteText}>Delete card</Text>
+              </PressableScale>
+            </Card>
+          );
+        })
+      )}
+
+      {/* Top-up Modal */}
+      <Modal visible={Boolean(topupCardId)} transparent animationType="slide" onRequestClose={() => setTopupCardId(null)}>
+        <KeyboardSafe style={styles.modalBackdrop}>
+          <View style={styles.modalSheet}>
+            <Text style={styles.modalTitle}>Top Up Card</Text>
+            <Input
+              label="Amount (USD)"
+              placeholder="e.g. 20"
+              value={topupAmount}
+              onChangeText={setTopupAmount}
+              keyboardType="decimal-pad"
+            />
+            <Button title="Quote & approve top-up" onPress={handleTopup} />
+            <Button title="Cancel" variant="ghost" onPress={() => setTopupCardId(null)} style={{ marginTop: 8 }} />
+          </View>
+        </KeyboardSafe>
+      </Modal>
+
+      {/* Revealed Card Details Modal */}
+      <Modal visible={Boolean(revealed)} transparent animationType="fade" onRequestClose={() => setRevealed(null)}>
+        <KeyboardSafe style={styles.modalBackdrop}>
+          <View style={styles.modalSheet}>
+            <Text style={styles.modalTitle}>Sensitive Card Details</Text>
+            {revealed ? (
+              <>
+                {Object.entries(revealed)
+                  .filter(([, v]) => v !== null && v !== undefined && typeof v !== "object")
+                  .map(([k, v]) => (
+                    <KeyValueRow
+                      key={k}
+                      label={k}
+                      currency={false}
+                      value={String(v)}
+                      onCopy={() => {
+                        Clipboard.setStringAsync(String(v));
+                        setNotice(`${k} copied`);
+                      }}
+                    />
+                  ))}
+              </>
+            ) : null}
+            <Button title="Hide details" onPress={() => setRevealed(null)} style={{ marginTop: 14 }} />
+          </View>
+        </KeyboardSafe>
+      </Modal>
+
+      {/* Card Transactions Modal */}
+      <Modal visible={cardTxs !== null} transparent animationType="slide" onRequestClose={() => setCardTxs(null)}>
+        <KeyboardSafe style={styles.modalBackdrop}>
+          <View style={styles.modalSheet}>
+            <Text style={styles.modalTitle}>Card Activity</Text>
+            <ScrollView style={{ maxHeight: 360 }}>
+              {cardTxs && cardTxs.length > 0 ? (
+                cardTxs.map((t, i) => (
+                  <KeyValueRow
+                    key={i}
+                    currency={String(t.currency || "USD")}
+                    label={String(t.merchant || t.description || t.type || `Tx #${i + 1}`)}
+                    value={`${t.amount ?? ""} ${t.currency || "USD"}`}
+                  />
+                ))
+              ) : (
+                <EmptyState icon="receipt-outline" title="No card transactions yet" />
+              )}
+            </ScrollView>
+            <Button title="Close" variant="ghost" onPress={() => setCardTxs(null)} style={{ marginTop: 10 }} />
+          </View>
+        </KeyboardSafe>
+      </Modal>
     </ScrollView>
   );
 }
 
 const styles = createThemeStyles(() => ({
   scroll: { flex: 1, backgroundColor: COLORS.bg },
-  content: { padding: SPACING.md, paddingBottom: 36 },
+  content: { padding: SPACING.md, paddingBottom: 32 },
   pillRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 14 },
-  cardHeroWrap: {
-    marginBottom: 14,
+  cardVisual: {
+    gap: 4,
   },
-  balanceStrip: {
+  cardTop: {
     flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 4,
+    alignItems: "center",
+    marginTop: 8,
+    marginBottom: 12,
+  },
+  cardTitle: { color: COLORS.text, fontSize: 17, fontFamily: FONTS.bold, marginTop: 2 },
+  cardFooter: {
+    flexDirection: "row",
+    justifyContent: "space-between",
     marginBottom: 14,
   },
-  cardMetaOverline: {
-    ...TYPE.overline,
-    fontSize: 10.5,
-    color: COLORS.textSecondary,
-  },
-  cardHeroBal: {
-    ...TYPE.display,
-    ...TABULAR_NUMS,
-    color: COLORS.text,
-    marginTop: 2,
-  },
-  roundRow: { flexDirection: "row", justifyContent: "space-between", gap: 8 },
+  cardLabel: { color: COLORS.textMuted, fontFamily: FONTS.regular, fontSize: 11 },
+  roundRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 14 },
   roundItem: { alignItems: "center", gap: 6, flex: 1 },
   roundBtn: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: COLORS.surface,
-    ...DEPTH.card,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  roundBtnMain: { backgroundColor: COLORS.gold, borderColor: COLORS.gold },
-  roundLabel: { fontFamily: FONTS.semibold, fontSize: 12, color: COLORS.text },
-  deleteLink: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    marginTop: 6,
-    minHeight: 40,
-  },
-  deleteText: { fontFamily: FONTS.semibold, fontSize: 13, color: COLORS.dangerText },
-  presetRow: { flexDirection: "row", gap: 8, marginBottom: 12 },
-  presetChip: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: RADIUS.sm,
-    backgroundColor: COLORS.page,
     borderWidth: 1,
     borderColor: COLORS.border,
+    borderBottomWidth: 2,
+    borderBottomColor: COLORS.borderStrong,
     alignItems: "center",
+    justifyContent: "center",
   },
-  presetChipOn: {
-    backgroundColor: COLORS.primaryMuted,
-    borderColor: COLORS.primary,
+  roundBtnMain: { backgroundColor: COLORS.forest, borderColor: COLORS.forest, borderBottomColor: COLORS.primaryDark },
+  roundLabel: { fontFamily: FONTS.semibold, fontSize: 11.5, color: COLORS.text },
+  deleteLink: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 14, minHeight: 40 },
+  deleteText: { fontFamily: FONTS.semibold, fontSize: 13, color: COLORS.dangerText },
+  cardBal: { color: COLORS.text, fontSize: 16, fontFamily: FONTS.bold, marginTop: 2 },
+  actionsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  modalBackdrop: { flex: 1, backgroundColor: "rgba(0, 20, 15, 0.72)", justifyContent: "flex-end" },
+  modalSheet: {
+    backgroundColor: COLORS.surface,
+    borderTopLeftRadius: RADIUS.xl,
+    borderTopRightRadius: RADIUS.xl,
+    borderTopWidth: 1,
+    borderColor: COLORS.borderStrong,
+    padding: SPACING.lg,
   },
-  presetText: { fontFamily: FONTS.bold, fontSize: 13, ...TABULAR_NUMS, color: COLORS.text },
+  modalTitle: { color: COLORS.text, fontSize: 18, fontFamily: FONTS.bold, marginBottom: 14 },
 }));

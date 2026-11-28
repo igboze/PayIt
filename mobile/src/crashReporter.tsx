@@ -27,7 +27,7 @@ export function reportError(err: unknown, where: string, fatal = false) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: e.message, stack: String(e.stack || "").slice(0, 2000), where, fatal, updateId }),
-    }).catch(() => {});
+    }).catch(() => { });
   } catch (_) {
     // never let reporting itself crash the app
   }
@@ -70,16 +70,46 @@ export class AppErrorBoundary extends React.Component<{ children: React.ReactNod
     this.props.onReset?.();
   };
 
+  reloadUpdate = async () => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const Updates = require("expo-updates") as {
+        isEnabled?: boolean;
+        checkForUpdateAsync?: () => Promise<{ isAvailable?: boolean }>;
+        fetchUpdateAsync?: () => Promise<unknown>;
+        reloadAsync?: () => Promise<void>;
+      };
+      if (Updates?.isEnabled) {
+        try {
+          const check = await Updates.checkForUpdateAsync?.();
+          if (check?.isAvailable) await Updates.fetchUpdateAsync?.();
+        } catch (_) {
+          // ignore network check failure and reload anyway
+        }
+        await Updates.reloadAsync?.();
+        return;
+      }
+    } catch (_) {
+      // fallback to React reset
+    }
+    this.reset();
+  };
+
   render() {
     if (!this.state.error) return this.props.children;
+    const msg = String(this.state.error?.message || "").slice(0, 140);
     return (
       <View style={styles.root}>
         <Image source={require("../assets/icon.png")} style={styles.logo} />
         <Text style={styles.title}>Something went wrong</Text>
-        <Text style={styles.body}>We've been told about it. Your money is safe. Try again, and if it keeps happening, close and reopen Proxim.</Text>
+        <Text style={styles.body}>We've been told about it. Your money is safe. Try again, and if it keeps happening, tap Check for update.</Text>
         <Text onPress={this.reset} style={styles.button} accessibilityRole="button">
           Try again
         </Text>
+        <Text onPress={this.reloadUpdate} style={styles.link} accessibilityRole="button">
+          Check for update &amp; restart
+        </Text>
+        {msg ? <Text style={styles.diag}>{msg}</Text> : null}
       </View>
     );
   }
@@ -100,5 +130,19 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     paddingHorizontal: 40,
     borderRadius: 16,
+  },
+  link: {
+    marginTop: 4,
+    color: "#002018",
+    fontSize: 14,
+    fontWeight: "600",
+    textDecorationLine: "underline",
+    paddingVertical: 8,
+  },
+  diag: {
+    marginTop: 8,
+    fontSize: 11,
+    color: "#776F5F",
+    textAlign: "center",
   },
 });

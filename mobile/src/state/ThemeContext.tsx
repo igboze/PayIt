@@ -14,13 +14,13 @@ interface ThemeContextValue {
 }
 
 const ThemeContext = createContext<ThemeContextValue>({
-  preference: "system",
+  preference: "light",
   resolved: "light",
   isDark: false,
   setPreference: () => {},
 });
 
-let _cachedPreference: ThemePreference = "system";
+let _cachedPreference: ThemePreference = "light";
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const systemScheme = useColorScheme();

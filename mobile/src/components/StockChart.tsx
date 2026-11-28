@@ -74,8 +74,8 @@ export function StockChart({
     const firstPrice = points[0].price;
     const lastPrice = points[points.length - 1].price;
     const isUp = lastPrice >= firstPrice;
-    const lineColor = isUp ? COLORS.success : COLORS.danger;
-    const fillColor = isUp ? "rgba(16, 185, 129, 0.14)" : "rgba(239, 68, 68, 0.14)";
+    const lineColor = isUp ? "#007840" : "#DC2626";
+    const fillColor = isUp ? "rgba(5, 150, 105, 0.10)" : "rgba(220, 38, 38, 0.10)";
 
     const segments = [];
     for (let i = 0; i < coords.length - 1; i++) {
@@ -355,13 +355,13 @@ const styles = createThemeStyles(() => ({
     height: 0,
     borderTopWidth: 1.5,
     borderStyle: "dashed",
-    borderColor: COLORS.textSecondary,
+    borderColor: COLORS.goldDark,
   },
   buyTag: {
     position: "absolute",
-    backgroundColor: COLORS.surfaceElevated,
+    backgroundColor: COLORS.goldSoft,
     borderWidth: 1,
-    borderColor: COLORS.borderStrong,
+    borderColor: COLORS.gold,
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 6,
@@ -369,14 +369,14 @@ const styles = createThemeStyles(() => ({
   buyTagText: {
     fontFamily: FONTS.bold,
     fontSize: 10,
-    color: COLORS.text,
+    color: COLORS.warningText,
   },
   entryDotOuter: {
     position: "absolute",
     width: 14,
     height: 14,
     borderRadius: 7,
-    backgroundColor: COLORS.borderStrong,
+    backgroundColor: "rgba(217, 119, 6, 0.28)",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -384,7 +384,7 @@ const styles = createThemeStyles(() => ({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: COLORS.text,
+    backgroundColor: COLORS.gold,
     borderWidth: 1.5,
     borderColor: COLORS.surface,
   },

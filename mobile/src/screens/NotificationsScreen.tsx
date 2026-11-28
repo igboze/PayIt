@@ -11,10 +11,10 @@ type IoniconName = keyof typeof Ionicons.glyphMap;
 
 function iconFor(kind: string | null): { icon: IoniconName; fg: string; bg: string } {
   const k = String(kind || "");
-  if (/auto_earn|saving/.test(k)) return { icon: "server-outline", fg: COLORS.onGold, bg: COLORS.gold };
+  if (/auto_earn|saving/.test(k)) return { icon: "server-outline", fg: COLORS.gold, bg: COLORS.forest };
   if (/receive|deposit|credit/.test(k)) return { icon: "arrow-down", fg: COLORS.successText, bg: COLORS.primaryMuted };
-  if (/device|security|pin/.test(k)) return { icon: "shield-checkmark-outline", fg: COLORS.primary, bg: COLORS.primaryMuted };
-  if (/card/.test(k)) return { icon: "card-outline", fg: COLORS.business, bg: COLORS.businessMuted };
+  if (/device|security|pin/.test(k)) return { icon: "shield-checkmark-outline", fg: COLORS.primary, bg: COLORS.goldSoft };
+  if (/card/.test(k)) return { icon: "card-outline", fg: COLORS.text, bg: COLORS.surfaceElevated };
   if (/fail|error/.test(k)) return { icon: "alert-circle-outline", fg: COLORS.dangerText, bg: COLORS.dangerMuted };
   return { icon: "notifications-outline", fg: COLORS.text, bg: COLORS.surfaceElevated };
 }

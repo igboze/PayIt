@@ -12,7 +12,7 @@
     },
     "orientation": "portrait",
     "scheme": "proxim",
-    "userInterfaceStyle": "dark",
+    "userInterfaceStyle": "automatic",
     "backgroundColor": "#002018",
     "icon": "./assets/icon.png",
     "splash": {

@@ -24,7 +24,7 @@ import type {
   PaymentLinkItem,
 } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TABULAR_NUMS, createThemeStyles } from "../theme";
+import { COLORS, DEPTH, FONTS, RADIUS, SPACING, createThemeStyles } from "../theme";
 import {
   Button,
   Card,
@@ -36,9 +36,7 @@ import {
   KeyValueRow,
   Pill,
   SectionHeader,
-  SegmentedControl,
   shortAddr,
-  SkeletonCard,
   SuccessBanner,
 } from "../components/UI";
 import { CurrencyLogo } from "../components/CurrencyLogo";
@@ -274,7 +272,7 @@ export function AccountsScreen({
         accountType: activeAccount,
       });
       if (res.paymentUrl) {
-        Share.share({ message: res.paymentUrl }).catch(() => { });
+        Share.share({ message: res.paymentUrl }).catch(() => {});
         setNotice(`Payment link created: ${res.paymentUrl}`);
       } else {
         setNotice("Global payment link created.");
@@ -566,20 +564,27 @@ export function AccountsScreen({
       }
       keyboardShouldPersistTaps="handled"
     >
-      <SegmentedControl<AccountsSection>
-        value={section}
-        onChange={setSection}
-        options={[
-          { value: "accounts", label: "Balances" },
-          { value: "global", label: "Global Bank" },
-          { value: "business", label: isBiz ? "Business" : "Invoices" },
-        ]}
-      />
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 14 }}>
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <Pill label="Balances" active={section === "accounts"} onPress={() => setSection("accounts")} />
+          <Pill label="Global Bank" active={section === "global"} onPress={() => setSection("global")} />
+          <Pill
+            label={isBiz ? "Business Tools" : "Invoices"}
+            active={section === "business"}
+            tone={isBiz ? "business" : "primary"}
+            onPress={() => setSection("business")}
+          />
+        </View>
+      </ScrollView>
 
       <ErrorBanner message={error} onDismiss={() => setError(null)} />
       <SuccessBanner message={notice} onDismiss={() => setNotice(null)} />
 
-      {loading && !refreshing ? <SkeletonCard rows={2} /> : null}
+      {loading && !refreshing ? (
+        <View style={{ paddingVertical: 16, alignItems: "center" }}>
+          <ActivityIndicator color={COLORS.primary} />
+        </View>
+      ) : null}
 
       {/* 1. PERSONAL & BUSINESS WALLETS */}
       {section === "accounts" ? (
@@ -630,9 +635,9 @@ export function AccountsScreen({
                   label="Verification"
                   value={
                     a.kycTier >= 1 || a.kycStatus === "approved"
-                      ? "Verified"
+                      ? "VERIFIED ✅"
                       : a.kycStatus === "pending" || a.kycStatus === "incomplete"
-                        ? "Under Review"
+                        ? "Under Review ⏳"
                         : biz
                           ? "Verify KYB"
                           : "Verify KYC"
@@ -803,371 +808,371 @@ export function AccountsScreen({
           ) : null}
 
           {!isBiz || bizSubTab === "invoices" ? (
-            <Card>
-              <SectionHeader title={isBiz ? "Create Business Invoice" : "Create Personal Invoice"} />
-              <Input label="Client Name" placeholder="Client or Company" value={invClient} onChangeText={setInvClient} />
-              <Input
-                label="Client Email (optional)"
-                placeholder="client@company.com"
-                value={invClientEmail}
-                onChangeText={setInvClientEmail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-              />
+          <Card>
+            <SectionHeader title={isBiz ? "Create Business Invoice" : "Create Personal Invoice"} />
+            <Input label="Client Name" placeholder="Client or Company" value={invClient} onChangeText={setInvClient} />
+            <Input
+              label="Client Email (optional)"
+              placeholder="client@company.com"
+              value={invClientEmail}
+              onChangeText={setInvClientEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
 
-              {/* Step 1: Payment Method (identical to Telegram bot: Fiat / Crypto / Both) */}
-              <Text style={styles.invStepLabel}>How should your client pay?</Text>
-              <View style={styles.pillWrap}>
-                <Pill label="Bank Transfer (Fiat)" active={invPayMode === "fiat"} onPress={() => setInvPayMode("fiat")} />
-                <Pill label="Crypto (NEAR Intents)" active={invPayMode === "crypto"} onPress={() => setInvPayMode("crypto")} />
-                <Pill label="Both (Fiat + Crypto)" active={invPayMode === "both"} onPress={() => setInvPayMode("both")} />
-              </View>
+            {/* Step 1: Payment Method (identical to Telegram bot: Fiat / Crypto / Both) */}
+            <Text style={styles.invStepLabel}>How should your client pay?</Text>
+            <View style={styles.pillWrap}>
+              <Pill label="Bank Transfer (Fiat)" active={invPayMode === "fiat"} onPress={() => setInvPayMode("fiat")} />
+              <Pill label="Crypto (NEAR Intents)" active={invPayMode === "crypto"} onPress={() => setInvPayMode("crypto")} />
+              <Pill label="Both (Fiat + Crypto)" active={invPayMode === "both"} onPress={() => setInvPayMode("both")} />
+            </View>
 
-              {/* Fiat currency grid (Global Neobank / Nuvion currencies + instant NGN) */}
-              {invPayMode === "fiat" || invPayMode === "both" ? (
-                <View style={styles.invMethodBox}>
-                  <Text style={styles.invMethodTitle}>Select Fiat Currency</Text>
-                  <Text style={styles.muted}>
-                    {invoiceOptions?.globalBankEnabled
-                      ? "Your Global Neobank receiving details for the chosen currency will be provisioned directly on the invoice."
-                      : "Naira instant bank account is ready now. Complete ID verification in Profile to receive GBP, EUR, USD & more."}
-                  </Text>
-                  <View style={styles.fiatGrid}>
-                    {(
-                      invoiceOptions?.fiatCurrencies || [
-                        { currency: "NGN", label: "Nigerian Naira", provider: "naira_instant", provisioned: true },
-                        { currency: "USD", label: "US Dollar", provider: "global_bank", provisioned: false },
-                        { currency: "GBP", label: "British Pound", provider: "global_bank", provisioned: false },
-                        { currency: "EUR", label: "Euro", provider: "global_bank", provisioned: false },
-                      ]
-                    ).map((fc) => {
-                      const active = invFiatCurrency === fc.currency;
-                      return (
-                        <PressableScale
-                          key={fc.currency}
-                          onPress={() => setInvFiatCurrency(fc.currency)}
-                          style={[styles.fiatTile, active && styles.fiatTileOn]}
-                        >
-                          <CurrencyLogo code={fc.currency} size={24} />
-                          <View style={{ flex: 1, minWidth: 0 }}>
-                            <Text style={styles.fiatCode}>{fc.currency}</Text>
-                            <Text style={styles.fiatName} numberOfLines={1}>
-                              {fc.label}
-                            </Text>
-                          </View>
-                          {active ? <Ionicons name="checkmark-circle" size={16} color={COLORS.primary} /> : null}
-                        </PressableScale>
-                      );
-                    })}
-                  </View>
-                </View>
-              ) : null}
-
-              {/* Crypto chain & token picker (NEAR Intents + Direct USDC) */}
-              {invPayMode === "crypto" || invPayMode === "both" ? (
-                <View style={styles.invMethodBox}>
-                  <Text style={styles.invMethodTitle}>Select Crypto Network & Token</Text>
-                  <Text style={styles.muted}>
-                    Exact payment address for your selected network & token is automatically generated on the invoice.
-                  </Text>
-                  <View style={styles.pillWrap}>
-                    {(invoiceOptions?.cryptoChains || []).slice(0, 14).map((ch) => (
-                      <Pill
-                        key={ch.key}
-                        label={ch.name}
-                        active={invCryptoChain === ch.key}
-                        onPress={() => setInvCryptoChain(ch.key)}
-                      />
-                    ))}
-                  </View>
-                  {(invoiceOptions?.cryptoTokensByChain?.[invCryptoChain] || []).length > 0 ? (
-                    <>
-                      <Text style={[styles.invMethodTitle, { marginTop: 4 }]}>Token</Text>
-                      <View style={styles.pillWrap}>
-                        {(invoiceOptions?.cryptoTokensByChain?.[invCryptoChain] || []).slice(0, 12).map((tk) => {
-                          const active = invCryptoToken?.assetId === tk.assetId;
-                          return (
-                            <PressableScale
-                              key={tk.assetId}
-                              onPress={() => setInvCryptoToken(tk)}
-                              style={[styles.tokenChip, active && styles.tokenChipOn]}
-                            >
-                              {tk.logoUrl ? (
-                                <Image source={{ uri: tk.logoUrl }} style={styles.tokenLogo} resizeMode="contain" />
-                              ) : null}
-                              <Text style={[styles.tokenChipText, active && { color: COLORS.primaryDark }]}>
-                                {tk.symbol}
-                              </Text>
-                            </PressableScale>
-                          );
-                        })}
-                      </View>
-                    </>
-                  ) : null}
-                </View>
-              ) : null}
-
-              <Input
-                label={`Amount (${invPayMode === "crypto" ? "USD" : invFiatCurrency})`}
-                placeholder={invPayMode !== "crypto" && invFiatCurrency === "NGN" ? "e.g. 250000" : "e.g. 250"}
-                value={invAmount}
-                onChangeText={(t) => setInvAmount(t.replace(/[^\d.]/g, ""))}
-                keyboardType="decimal-pad"
-                currency={invPayMode === "crypto" ? "USD" : invFiatCurrency}
-              />
-              <Input label="Due Date (optional)" placeholder="YYYY-MM-DD" value={invDueDate} onChangeText={setInvDueDate} />
-              <Input label="Item / Notes (optional)" placeholder="Design sprint or invoice description" value={invNotes} onChangeText={setInvNotes} />
-              <Button title="Create & Provision Invoice" onPress={handleCreateInvoice} loading={loading} style={{ marginBottom: 14 }} />
-
-              {/* Provisioned details card for freshly created invoice */}
-              {createdPaymentDetails ? (
-                <View style={[styles.subCard, { borderColor: COLORS.primaryBorder, backgroundColor: COLORS.deep }]}>
-                  <SectionHeader
-                    title={`Provisioned · ${createdPaymentDetails.invoiceNumber}`}
-                    right={
-                      <PressableScale onPress={() => setCreatedPaymentDetails(null)}>
-                        <Ionicons name="close" size={18} color={COLORS.textMuted} />
+            {/* Fiat currency grid (Global Neobank / Nuvion currencies + instant NGN) */}
+            {invPayMode === "fiat" || invPayMode === "both" ? (
+              <View style={styles.invMethodBox}>
+                <Text style={styles.invMethodTitle}>Select Fiat Currency</Text>
+                <Text style={styles.muted}>
+                  {invoiceOptions?.globalBankEnabled
+                    ? "Your Global Neobank receiving details for the chosen currency will be provisioned directly on the invoice."
+                    : "Naira instant bank account is ready now. Complete ID verification in Profile to receive GBP, EUR, USD & more."}
+                </Text>
+                <View style={styles.fiatGrid}>
+                  {(
+                    invoiceOptions?.fiatCurrencies || [
+                      { currency: "NGN", label: "Nigerian Naira", provider: "naira_instant", provisioned: true },
+                      { currency: "USD", label: "US Dollar", provider: "global_bank", provisioned: false },
+                      { currency: "GBP", label: "British Pound", provider: "global_bank", provisioned: false },
+                      { currency: "EUR", label: "Euro", provider: "global_bank", provisioned: false },
+                    ]
+                  ).map((fc) => {
+                    const active = invFiatCurrency === fc.currency;
+                    return (
+                      <PressableScale
+                        key={fc.currency}
+                        onPress={() => setInvFiatCurrency(fc.currency)}
+                        style={[styles.fiatTile, active && styles.fiatTileOn]}
+                      >
+                        <CurrencyLogo code={fc.currency} size={24} />
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text style={styles.fiatCode}>{fc.currency}</Text>
+                          <Text style={styles.fiatName} numberOfLines={1}>
+                            {fc.label}
+                          </Text>
+                        </View>
+                        {active ? <Ionicons name="checkmark-circle" size={16} color={COLORS.primary} /> : null}
                       </PressableScale>
-                    }
-                  />
-                  {createdPaymentDetails.fiat ? (
-                    <>
+                    );
+                  })}
+                </View>
+              </View>
+            ) : null}
+
+            {/* Crypto chain & token picker (NEAR Intents + Direct USDC) */}
+            {invPayMode === "crypto" || invPayMode === "both" ? (
+              <View style={styles.invMethodBox}>
+                <Text style={styles.invMethodTitle}>Select Crypto Network & Token</Text>
+                <Text style={styles.muted}>
+                  Exact payment address for your selected network & token is automatically generated on the invoice.
+                </Text>
+                <View style={styles.pillWrap}>
+                  {(invoiceOptions?.cryptoChains || []).slice(0, 14).map((ch) => (
+                    <Pill
+                      key={ch.key}
+                      label={ch.name}
+                      active={invCryptoChain === ch.key}
+                      onPress={() => setInvCryptoChain(ch.key)}
+                    />
+                  ))}
+                </View>
+                {(invoiceOptions?.cryptoTokensByChain?.[invCryptoChain] || []).length > 0 ? (
+                  <>
+                    <Text style={[styles.invMethodTitle, { marginTop: 4 }]}>Token</Text>
+                    <View style={styles.pillWrap}>
+                      {(invoiceOptions?.cryptoTokensByChain?.[invCryptoChain] || []).slice(0, 12).map((tk) => {
+                        const active = invCryptoToken?.assetId === tk.assetId;
+                        return (
+                          <PressableScale
+                            key={tk.assetId}
+                            onPress={() => setInvCryptoToken(tk)}
+                            style={[styles.tokenChip, active && styles.tokenChipOn]}
+                          >
+                            {tk.logoUrl ? (
+                              <Image source={{ uri: tk.logoUrl }} style={styles.tokenLogo} resizeMode="contain" />
+                            ) : null}
+                            <Text style={[styles.tokenChipText, active && { color: COLORS.primaryDark }]}>
+                              {tk.symbol}
+                            </Text>
+                          </PressableScale>
+                        );
+                      })}
+                    </View>
+                  </>
+                ) : null}
+              </View>
+            ) : null}
+
+            <Input
+              label={`Amount (${invPayMode === "crypto" ? "USD" : invFiatCurrency})`}
+              placeholder={invPayMode !== "crypto" && invFiatCurrency === "NGN" ? "e.g. 250000" : "e.g. 250"}
+              value={invAmount}
+              onChangeText={(t) => setInvAmount(t.replace(/[^\d.]/g, ""))}
+              keyboardType="decimal-pad"
+              currency={invPayMode === "crypto" ? "USD" : invFiatCurrency}
+            />
+            <Input label="Due Date (optional)" placeholder="YYYY-MM-DD" value={invDueDate} onChangeText={setInvDueDate} />
+            <Input label="Item / Notes (optional)" placeholder="Design sprint or invoice description" value={invNotes} onChangeText={setInvNotes} />
+            <Button title="Create & Provision Invoice" onPress={handleCreateInvoice} loading={loading} style={{ marginBottom: 14 }} />
+
+            {/* Provisioned details card for freshly created invoice */}
+            {createdPaymentDetails ? (
+              <View style={[styles.subCard, { borderColor: COLORS.primaryBorder, backgroundColor: COLORS.deep }]}>
+                <SectionHeader
+                  title={`Provisioned · ${createdPaymentDetails.invoiceNumber}`}
+                  right={
+                    <PressableScale onPress={() => setCreatedPaymentDetails(null)}>
+                      <Ionicons name="close" size={18} color={COLORS.textMuted} />
+                    </PressableScale>
+                  }
+                />
+                {createdPaymentDetails.fiat ? (
+                  <>
+                    <KeyValueRow
+                      label="Bank"
+                      value={String(createdPaymentDetails.fiat.bankName || "Partner Bank")}
+                    />
+                    {createdPaymentDetails.fiat.accountNumber || createdPaymentDetails.fiat.iban ? (
                       <KeyValueRow
-                        label="Bank"
-                        value={String(createdPaymentDetails.fiat.bankName || "Partner Bank")}
+                        label={createdPaymentDetails.fiat.iban ? "IBAN / Account" : "Account No."}
+                        value={String(createdPaymentDetails.fiat.accountNumber || createdPaymentDetails.fiat.iban)}
+                        onCopy={() =>
+                          copy(
+                            "Invoice account",
+                            String(createdPaymentDetails.fiat?.accountNumber || createdPaymentDetails.fiat?.iban || "")
+                          )
+                        }
                       />
-                      {createdPaymentDetails.fiat.accountNumber || createdPaymentDetails.fiat.iban ? (
-                        <KeyValueRow
-                          label={createdPaymentDetails.fiat.iban ? "IBAN / Account" : "Account No."}
-                          value={String(createdPaymentDetails.fiat.accountNumber || createdPaymentDetails.fiat.iban)}
-                          onCopy={() =>
-                            copy(
-                              "Invoice account",
-                              String(createdPaymentDetails.fiat?.accountNumber || createdPaymentDetails.fiat?.iban || "")
-                            )
-                          }
-                        />
-                      ) : null}
-                      {createdPaymentDetails.fiat.accountName ? (
-                        <KeyValueRow label="Account Name" value={String(createdPaymentDetails.fiat.accountName)} />
-                      ) : null}
-                    </>
-                  ) : createdPaymentDetails.fiatPendingCurrency ? (
-                    <Text style={styles.muted}>
-                      {createdPaymentDetails.fiatPendingCurrency} global bank details are pending activation. Complete ID verification or check Global Bank tab.
-                    </Text>
+                    ) : null}
+                    {createdPaymentDetails.fiat.accountName ? (
+                      <KeyValueRow label="Account Name" value={String(createdPaymentDetails.fiat.accountName)} />
+                    ) : null}
+                  </>
+                ) : createdPaymentDetails.fiatPendingCurrency ? (
+                  <Text style={styles.muted}>
+                    {createdPaymentDetails.fiatPendingCurrency} global bank details are pending activation. Complete ID verification or check Global Bank tab.
+                  </Text>
+                ) : null}
+                {createdPaymentDetails.crypto && createdPaymentDetails.crypto.depositAddress ? (
+                  <>
+                    <KeyValueRow
+                      label="Crypto Method"
+                      value={`${String(createdPaymentDetails.crypto.chainLabel || "Crypto")} · ${String(createdPaymentDetails.crypto.tokenSymbol || "USDC")}`}
+                    />
+                    <KeyValueRow
+                      label="Deposit Address"
+                      value={shortAddr(String(createdPaymentDetails.crypto.depositAddress), 10, 8)}
+                      onCopy={() => copy("Crypto address", String(createdPaymentDetails.crypto?.depositAddress || ""))}
+                    />
+                  </>
+                ) : null}
+                <View style={{ flexDirection: "row", gap: 8, marginTop: 8 }}>
+                  {createdPaymentDetails.invoiceId ? (
+                    <View style={{ flex: 1 }}>
+                      <Button
+                        title="Download PNG"
+                        onPress={() =>
+                          handleDownloadInvoice(createdPaymentDetails.invoiceId!, createdPaymentDetails.invoiceNumber)
+                        }
+                        loading={downloadingInvoiceId === createdPaymentDetails.invoiceId}
+                      />
+                    </View>
                   ) : null}
-                  {createdPaymentDetails.crypto && createdPaymentDetails.crypto.depositAddress ? (
-                    <>
-                      <KeyValueRow
-                        label="Crypto Method"
-                        value={`${String(createdPaymentDetails.crypto.chainLabel || "Crypto")} · ${String(createdPaymentDetails.crypto.tokenSymbol || "USDC")}`}
+                  {createdPaymentDetails.clientCopyText ? (
+                    <View style={{ flex: 1 }}>
+                      <Button
+                        title="Copy Details"
+                        variant="secondary"
+                        onPress={() => copy("Invoice payment details", createdPaymentDetails.clientCopyText!)}
                       />
-                      <KeyValueRow
-                        label="Deposit Address"
-                        value={shortAddr(String(createdPaymentDetails.crypto.depositAddress), 10, 8)}
-                        onCopy={() => copy("Crypto address", String(createdPaymentDetails.crypto?.depositAddress || ""))}
-                      />
-                    </>
+                    </View>
                   ) : null}
-                  <View style={{ flexDirection: "row", gap: 8, marginTop: 8 }}>
-                    {createdPaymentDetails.invoiceId ? (
-                      <View style={{ flex: 1 }}>
-                        <Button
-                          title="Download PNG"
-                          onPress={() =>
-                            handleDownloadInvoice(createdPaymentDetails.invoiceId!, createdPaymentDetails.invoiceNumber)
-                          }
-                          loading={downloadingInvoiceId === createdPaymentDetails.invoiceId}
+                </View>
+              </View>
+            ) : null}
+
+            <SectionHeader title={isBiz ? "Your Business Invoices" : "Your Personal Invoices"} />
+            {invoices.length === 0 ? (
+              <EmptyState icon="document-text-outline" title="No invoices yet" />
+            ) : (
+              invoices.map((inv) => {
+                const token = getAccessToken();
+                const scope = isBiz ? "business" : "personal";
+                const showingPreview = previewInvoiceId === inv.id;
+                return (
+                  <View key={inv.id} style={styles.subCard}>
+                    <KeyValueRow
+                      label={`${inv.invoiceNumber} · ${inv.clientName}`}
+                      value={`${formatUsdc(inv.totalUsdc)} (${inv.status})`}
+                    />
+                    {inv.fiatAccountNumber ? (
+                      <KeyValueRow
+                        label={inv.fiatBankName ? `Bank (${inv.fiatBankName})` : "Bank Account"}
+                        value={inv.fiatAccountNumber}
+                        onCopy={() => copy("Invoice bank account", inv.fiatAccountNumber!)}
+                      />
+                    ) : null}
+                    {inv.paymentAddress ? (
+                      <KeyValueRow
+                        label="Crypto Address"
+                        value={shortAddr(inv.paymentAddress, 8, 6)}
+                        onCopy={() => copy("Invoice address", inv.paymentAddress!)}
+                      />
+                    ) : null}
+                    {showingPreview && token ? (
+                      <View style={styles.invoicePreviewBox}>
+                        <Image
+                          source={{
+                            uri: api.getInvoiceDownloadUrl(inv.id, scope),
+                            headers: { Authorization: `Bearer ${token}`, "X-Proxim-Account": activeAccount },
+                          }}
+                          style={styles.invoicePreviewImg}
+                          resizeMode="contain"
                         />
                       </View>
                     ) : null}
-                    {createdPaymentDetails.clientCopyText ? (
+                    <View style={styles.invActionRow}>
                       <View style={{ flex: 1 }}>
                         <Button
-                          title="Copy Details"
-                          variant="secondary"
-                          onPress={() => copy("Invoice payment details", createdPaymentDetails.clientCopyText!)}
+                          title="Download / Share"
+                          onPress={() => handleDownloadInvoice(inv.id, inv.invoiceNumber)}
+                          loading={downloadingInvoiceId === inv.id}
+                          style={{ height: 38 }}
                         />
                       </View>
+                      <View style={{ flex: 1 }}>
+                        <Button
+                          title={showingPreview ? "Hide Preview" : "Preview"}
+                          variant="secondary"
+                          onPress={() => setPreviewInvoiceId(showingPreview ? null : inv.id)}
+                          style={{ height: 38 }}
+                        />
+                      </View>
+                    </View>
+                    {inv.status !== "paid" ? (
+                      <Button
+                        title="Mark Paid"
+                        variant="ghost"
+                        onPress={() => handleMarkInvoicePaid(inv.id)}
+                        style={{ height: 34, marginTop: 4 }}
+                      />
                     ) : null}
                   </View>
-                </View>
-              ) : null}
-
-              <SectionHeader title={isBiz ? "Your Business Invoices" : "Your Personal Invoices"} />
-              {invoices.length === 0 ? (
-                <EmptyState icon="document-text-outline" title="No invoices yet" />
-              ) : (
-                invoices.map((inv) => {
-                  const token = getAccessToken();
-                  const scope = isBiz ? "business" : "personal";
-                  const showingPreview = previewInvoiceId === inv.id;
-                  return (
-                    <View key={inv.id} style={styles.subCard}>
-                      <KeyValueRow
-                        label={`${inv.invoiceNumber} · ${inv.clientName}`}
-                        value={`${formatUsdc(inv.totalUsdc)} (${inv.status})`}
-                      />
-                      {inv.fiatAccountNumber ? (
-                        <KeyValueRow
-                          label={inv.fiatBankName ? `Bank (${inv.fiatBankName})` : "Bank Account"}
-                          value={inv.fiatAccountNumber}
-                          onCopy={() => copy("Invoice bank account", inv.fiatAccountNumber!)}
-                        />
-                      ) : null}
-                      {inv.paymentAddress ? (
-                        <KeyValueRow
-                          label="Crypto Address"
-                          value={shortAddr(inv.paymentAddress, 8, 6)}
-                          onCopy={() => copy("Invoice address", inv.paymentAddress!)}
-                        />
-                      ) : null}
-                      {showingPreview && token ? (
-                        <View style={styles.invoicePreviewBox}>
-                          <Image
-                            source={{
-                              uri: api.getInvoiceDownloadUrl(inv.id, scope),
-                              headers: { Authorization: `Bearer ${token}`, "X-Proxim-Account": activeAccount },
-                            }}
-                            style={styles.invoicePreviewImg}
-                            resizeMode="contain"
-                          />
-                        </View>
-                      ) : null}
-                      <View style={styles.invActionRow}>
-                        <View style={{ flex: 1 }}>
-                          <Button
-                            title="Download / Share"
-                            onPress={() => handleDownloadInvoice(inv.id, inv.invoiceNumber)}
-                            loading={downloadingInvoiceId === inv.id}
-                            style={{ height: 38 }}
-                          />
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Button
-                            title={showingPreview ? "Hide Preview" : "Preview"}
-                            variant="secondary"
-                            onPress={() => setPreviewInvoiceId(showingPreview ? null : inv.id)}
-                            style={{ height: 38 }}
-                          />
-                        </View>
-                      </View>
-                      {inv.status !== "paid" ? (
-                        <Button
-                          title="Mark Paid"
-                          variant="ghost"
-                          onPress={() => handleMarkInvoicePaid(inv.id)}
-                          style={{ height: 34, marginTop: 4 }}
-                        />
-                      ) : null}
-                    </View>
-                  );
-                })
-              )}
-            </Card>
+                );
+              })
+            )}
+          </Card>
           ) : null}
 
           {isBiz && bizSubTab === "links" ? (
-            <Card>
-              <SectionHeader title="Payment Links" />
-              <Input label="Title" placeholder="Consulting Retainer" value={linkTitle} onChangeText={setLinkTitle} />
-              <Input label="Amount USD (optional)" placeholder="Leave blank for open amount" value={linkAmt} onChangeText={setLinkAmt} keyboardType="decimal-pad" />
-              <Button title="Create Payment Link" onPress={handleCreateBizLink} loading={loading} style={{ marginBottom: 12 }} />
-              {paymentLinks.map((pl) => (
-                <View key={pl.linkId} style={styles.subCard}>
-                  <KeyValueRow
-                    label={`${pl.title}${pl.active ? "" : " (inactive)"}`}
-                    value={pl.url}
-                    onCopy={() => copy("Payment link", pl.url)}
-                  />
-                  {pl.active ? (
-                    <Button
-                      title="Deactivate Link"
-                      variant="danger"
-                      onPress={() => handleDeactivateLink(pl.linkId)}
-                      style={{ height: 34, marginTop: 8 }}
+              <Card>
+                <SectionHeader title="Payment Links" />
+                <Input label="Title" placeholder="Consulting Retainer" value={linkTitle} onChangeText={setLinkTitle} />
+                <Input label="Amount USD (optional)" placeholder="Leave blank for open amount" value={linkAmt} onChangeText={setLinkAmt} keyboardType="decimal-pad" />
+                <Button title="Create Payment Link" onPress={handleCreateBizLink} loading={loading} style={{ marginBottom: 12 }} />
+                {paymentLinks.map((pl) => (
+                  <View key={pl.linkId} style={styles.subCard}>
+                    <KeyValueRow
+                      label={`${pl.title}${pl.active ? "" : " (inactive)"}`}
+                      value={pl.url}
+                      onCopy={() => copy("Payment link", pl.url)}
                     />
-                  ) : null}
-                </View>
-              ))}
-            </Card>
+                    {pl.active ? (
+                      <Button
+                        title="Deactivate Link"
+                        variant="danger"
+                        onPress={() => handleDeactivateLink(pl.linkId)}
+                        style={{ height: 34, marginTop: 8 }}
+                      />
+                    ) : null}
+                  </View>
+                ))}
+              </Card>
           ) : null}
 
           {isBiz && bizSubTab === "profile" ? (
-            <Card>
-              <SectionHeader title="Company Logo, Profile & Reserve" />
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 14 }}>
-                {bizHome?.profile?.logoDataUri ? (
-                  <Image
-                    source={{ uri: bizHome.profile.logoDataUri }}
-                    style={{ width: 56, height: 56, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
-                    resizeMode="contain"
-                  />
-                ) : (
-                  <View
-                    style={{
-                      width: 56,
-                      height: 56,
-                      borderRadius: 12,
-                      backgroundColor: COLORS.businessMuted,
-                      borderWidth: 1,
-                      borderColor: COLORS.businessBorder,
-                      alignItems: "center",
-                      justifyContent: "center",
-                    }}
-                  >
-                    <Ionicons name="business-outline" size={24} color={COLORS.business} />
+              <Card>
+                <SectionHeader title="Company Logo, Profile & Reserve" />
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 14 }}>
+                  {bizHome?.profile?.logoDataUri ? (
+                    <Image
+                      source={{ uri: bizHome.profile.logoDataUri }}
+                      style={{ width: 56, height: 56, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
+                      resizeMode="contain"
+                    />
+                  ) : (
+                    <View
+                      style={{
+                        width: 56,
+                        height: 56,
+                        borderRadius: 12,
+                        backgroundColor: COLORS.businessMuted,
+                        borderWidth: 1,
+                        borderColor: COLORS.businessBorder,
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      <Ionicons name="business-outline" size={24} color={COLORS.business} />
+                    </View>
+                  )}
+                  <View style={{ flex: 1 }}>
+                    <Button
+                      title={bizHome?.profile?.logoDataUri ? "Change Company Logo" : "Upload Company Logo"}
+                      variant="secondary"
+                      onPress={handleUploadBizLogo}
+                      loading={uploadingLogo}
+                      style={{ height: 40 }}
+                    />
                   </View>
-                )}
-                <View style={{ flex: 1 }}>
-                  <Button
-                    title={bizHome?.profile?.logoDataUri ? "Change Company Logo" : "Upload Company Logo"}
-                    variant="secondary"
-                    onPress={handleUploadBizLogo}
-                    loading={uploadingLogo}
-                    style={{ height: 40 }}
-                  />
                 </View>
-              </View>
-              <Input label="Business Name" value={bizProfName} onChangeText={setBizProfName} />
-              <Input label="Business Email" value={bizProfEmail} onChangeText={setBizProfEmail} keyboardType="email-address" autoCapitalize="none" />
-              <Input label="Phone" value={bizProfPhone} onChangeText={setBizProfPhone} keyboardType="phone-pad" />
-              <Input label="Address" value={bizProfAddr} onChangeText={setBizProfAddr} />
-              <Button title="Save Business Profile" variant="secondary" onPress={handleSaveBizProfile} loading={loading} style={{ marginBottom: 14 }} />
-              <Input label="Auto-Reserve Savings Goal (%)" placeholder="0-90" value={goalPct} onChangeText={setGoalPct} keyboardType="number-pad" />
-              <Input label="Goal Label" value={goalLabel} onChangeText={setGoalLabel} />
-              <Button title="Save Savings Goal" variant="secondary" onPress={handleSaveGoal} loading={loading} />
-            </Card>
+                <Input label="Business Name" value={bizProfName} onChangeText={setBizProfName} />
+                <Input label="Business Email" value={bizProfEmail} onChangeText={setBizProfEmail} keyboardType="email-address" autoCapitalize="none" />
+                <Input label="Phone" value={bizProfPhone} onChangeText={setBizProfPhone} keyboardType="phone-pad" />
+                <Input label="Address" value={bizProfAddr} onChangeText={setBizProfAddr} />
+                <Button title="Save Business Profile" variant="secondary" onPress={handleSaveBizProfile} loading={loading} style={{ marginBottom: 14 }} />
+                <Input label="Auto-Reserve Savings Goal (%)" placeholder="0-90" value={goalPct} onChangeText={setGoalPct} keyboardType="number-pad" />
+                <Input label="Goal Label" value={goalLabel} onChangeText={setGoalLabel} />
+                <Button title="Save Savings Goal" variant="secondary" onPress={handleSaveGoal} loading={loading} />
+              </Card>
           ) : null}
 
           {isBiz && bizSubTab === "expenses" ? (
-            <Card>
-              <SectionHeader title="Expenses" />
-              <Input label="Description" placeholder="Server hosting" value={expDesc} onChangeText={setExpDesc} />
-              <Input label="Amount (USD)" placeholder="e.g. 45" value={expAmt} onChangeText={setExpAmt} keyboardType="decimal-pad" />
-              <Button title="Log Expense" variant="secondary" onPress={handleLogExpense} loading={loading} style={{ marginBottom: 12 }} />
-              {expenses.map((e) => (
-                <KeyValueRow key={e.id} currency={e.currency || false} label={`${e.description} (${e.category})`} value={`${e.amount} ${e.currency}`} />
-              ))}
-            </Card>
+              <Card>
+                <SectionHeader title="Expenses" />
+                <Input label="Description" placeholder="Server hosting" value={expDesc} onChangeText={setExpDesc} />
+                <Input label="Amount (USD)" placeholder="e.g. 45" value={expAmt} onChangeText={setExpAmt} keyboardType="decimal-pad" />
+                <Button title="Log Expense" variant="secondary" onPress={handleLogExpense} loading={loading} style={{ marginBottom: 12 }} />
+                {expenses.map((e) => (
+                  <KeyValueRow key={e.id} currency={e.currency || false} label={`${e.description} (${e.category})`} value={`${e.amount} ${e.currency}`} />
+                ))}
+              </Card>
           ) : null}
 
           {isBiz && bizSubTab === "payroll" ? (
-            <Card>
-              <SectionHeader title="Global Payroll (CSV)" />
-              <Text style={styles.muted}>
-                Pay staff and contractors across 27+ currencies in one batch. Format: name,currency,amount,bank_name,account_number
-              </Text>
-              <Input
-                label="Paste Payroll CSV"
-                placeholder="name,currency,amount,..."
-                value={payrollCsv}
-                onChangeText={setPayrollCsv}
-                multiline
-              />
-              <Button title="Quote & Approve Payroll Batch" onPress={handleRunPayroll} />
-            </Card>
+              <Card>
+                <SectionHeader title="Global Payroll (CSV)" />
+                <Text style={styles.muted}>
+                  Pay staff and contractors across 27+ currencies in one batch. Format: name,currency,amount,bank_name,account_number
+                </Text>
+                <Input
+                  label="Paste Payroll CSV"
+                  placeholder="name,currency,amount,..."
+                  value={payrollCsv}
+                  onChangeText={setPayrollCsv}
+                  multiline
+                />
+                <Button title="Quote & Approve Payroll Batch" onPress={handleRunPayroll} />
+              </Card>
           ) : null}
         </>
       ) : null}
@@ -1180,9 +1185,9 @@ const styles = createThemeStyles(() => ({
   content: { padding: SPACING.md, paddingBottom: 36 },
   balDualBlock: { marginBottom: 10, gap: 4 },
   balRow: { flexDirection: "row", alignItems: "center", gap: 7 },
-  bigVal: { color: COLORS.text, fontSize: 28, fontFamily: FONTS.extrabold, ...TABULAR_NUMS },
+  bigVal: { color: COLORS.text, fontSize: 28, fontFamily: FONTS.extrabold },
   balCode: { color: COLORS.textMuted, fontSize: 12, fontFamily: FONTS.bold, marginTop: 3 },
-  ngnVal: { color: COLORS.primary, fontSize: 16, fontFamily: FONTS.bold, ...TABULAR_NUMS },
+  ngnVal: { color: COLORS.primary, fontSize: 16, fontFamily: FONTS.bold },
   ngnCode: { color: COLORS.textMuted, fontSize: 11, fontFamily: FONTS.bold, marginTop: 1 },
   muted: { color: COLORS.textSecondary, fontFamily: FONTS.regular, fontSize: 12, lineHeight: 18, marginBottom: 10 },
   pillWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 },

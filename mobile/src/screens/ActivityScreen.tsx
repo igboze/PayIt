@@ -115,7 +115,7 @@ const styles = createThemeStyles(() => ({
     justifyContent: "center",
     ...DEPTH.raised,
   },
-  chipOn: { backgroundColor: COLORS.primary, borderColor: COLORS.primary, borderBottomColor: COLORS.primary },
+  chipOn: { backgroundColor: COLORS.primary, borderColor: COLORS.primary, borderBottomColor: "#00140F" },
   chipText: { ...TYPE.label, color: COLORS.text },
   chipTextOn: { color: COLORS.onPrimary, fontFamily: TYPE.bodyStrong.fontFamily },
   list: { paddingHorizontal: SPACING.md, paddingBottom: 32 },

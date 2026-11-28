@@ -39,7 +39,7 @@ function SuccessView({ intent, res, onDone }: { intent: ActionIntentResponse; re
       <View style={styles.successTop}>
         <View style={styles.successRing}>
           <View style={styles.successDot}>
-            <Ionicons name="checkmark" size={40} color={COLORS.onPrimary} />
+            <Ionicons name="checkmark" size={40} color={COLORS.forest} />
           </View>
         </View>
         <Text style={styles.successHeading}>{successHeading(intent.actionType)}</Text>
@@ -252,7 +252,7 @@ const styles = createThemeStyles(() => ({
     width: 104,
     height: 104,
     borderRadius: 52,
-    backgroundColor: COLORS.primaryMuted,
+    backgroundColor: "#D6F2E3",
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 12,

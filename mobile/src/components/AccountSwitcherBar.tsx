@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { ActivityIndicator, Alert, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useApp } from "../state/AppContext";
-import { COLORS, RADIUS, SPACING, FONTS, TABULAR_NUMS, createThemeStyles } from "../theme";
+import { COLORS, RADIUS, SPACING, FONTS, createThemeStyles } from "../theme";
 import { formatUsdc } from "./UI";
 import { PressableScale } from "./Touch";
 import { toUserError } from "../utils/errors";
@@ -28,11 +28,11 @@ export function AccountSwitcherBar({ onOpenAssistant }: { onOpenAssistant?: () =
     if (target === "business" && !user.hasBusinessAccount) {
       Alert.alert(
         "Create Business Account",
-        "Set up a dedicated Business balance separated from your Personal account?",
+        "Set up a dedicated Business USDC wallet separated from your Personal wallet?",
         [
           { text: "Cancel", style: "cancel" },
           {
-            text: "Create Business Account",
+            text: "Create Business Wallet",
             onPress: async () => {
               setBusySetup(true);
               try {
@@ -117,9 +117,9 @@ const styles = createThemeStyles(() => ({
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: SPACING.md,
-    paddingVertical: 7,
+    paddingVertical: 10,
     backgroundColor: COLORS.bg,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   segment: {
@@ -171,7 +171,6 @@ const styles = createThemeStyles(() => ({
     color: COLORS.textSecondary,
     fontSize: 11,
     fontFamily: FONTS.semibold,
-    ...TABULAR_NUMS,
   },
   aiBtn: {
     width: 34,

@@ -393,7 +393,7 @@ export function ProfileScreen({
         if (d.officerNin) setOfficerNin((prev) => prev || d.officerNin);
         if (d.officerSsn) setOfficerSsn((prev) => prev || d.officerSsn);
       })
-      .catch(() => {});
+      .catch(() => { });
     syncStagedServerDocs();
   }, [tab, syncStagedServerDocs]);
 
@@ -408,7 +408,7 @@ export function ProfileScreen({
           name: status.name || target.label,
         });
         setPendingUpload(null);
-        SecureStore.deleteItemAsync(KYC_PENDING_UPLOAD_KEY).catch(() => {});
+        SecureStore.deleteItemAsync(KYC_PENDING_UPLOAD_KEY).catch(() => { });
         setNotice(`${target.label} attached!`);
         setError(null);
       }
@@ -427,10 +427,10 @@ export function ProfileScreen({
           setPendingUpload((prev) => prev || { sessionId: p.sessionId, slot: p.slot, label: p.label || p.slot });
           checkPendingUpload({ sessionId: p.sessionId, slot: p.slot, label: p.label || p.slot });
         } else {
-          SecureStore.deleteItemAsync(KYC_PENDING_UPLOAD_KEY).catch(() => {});
+          SecureStore.deleteItemAsync(KYC_PENDING_UPLOAD_KEY).catch(() => { });
         }
       })
-      .catch(() => {});
+      .catch(() => { });
     const sub = AppState.addEventListener("change", (nextState) => {
       if (nextState === "active") {
         if (pendingUpload) checkPendingUpload(pendingUpload);
@@ -439,8 +439,8 @@ export function ProfileScreen({
     });
     const timer = pendingUpload
       ? setInterval(() => {
-          checkPendingUpload(pendingUpload);
-        }, 3000)
+        checkPendingUpload(pendingUpload);
+      }, 3000)
       : null;
     return () => {
       sub.remove();
@@ -457,7 +457,7 @@ export function ProfileScreen({
       const sess = await api.createKycUploadSession(slot, label);
       const pending = { sessionId: sess.sessionId, slot, label };
       setPendingUpload(pending);
-      SecureStore.setItemAsync(KYC_PENDING_UPLOAD_KEY, JSON.stringify({ ...pending, ts: Date.now() })).catch(() => {});
+      SecureStore.setItemAsync(KYC_PENDING_UPLOAD_KEY, JSON.stringify({ ...pending, ts: Date.now() })).catch(() => { });
       await Linking.openURL(sess.uploadUrl);
       setNotice(`Secure uploader opened for "${label}". Upload your file there and switch back to Proxim.`);
     } catch (err) {
@@ -581,14 +581,14 @@ export function ProfileScreen({
     }
     const mimes = allowDocs
       ? [
-          "application/pdf",
-          "application/msword",
-          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-          "image/jpeg",
-          "image/jpg",
-          "image/png",
-          "image/webp",
-        ]
+        "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "image/jpeg",
+        "image/jpg",
+        "image/png",
+        "image/webp",
+      ]
       : ["application/pdf", "image/jpeg", "image/jpg", "image/png", "image/webp"];
     Alert.alert(title, allowDocs ? "Choose how to attach this document (PDF, DOCX, or Photo):" : "Choose how to attach this document (PDF, JPG, or PNG):", [
       { text: "Cancel", style: "cancel" },
@@ -666,7 +666,7 @@ export function ProfileScreen({
         } else if (tab === "kyc") {
           const kycRes = await api.getKycStatus();
           setKyc(kycRes);
-          refreshMe().catch(() => {});
+          refreshMe().catch(() => { });
         } else if (tab === "security") {
           const r = await api.listDevices();
           setDevices(r.devices || []);
@@ -854,7 +854,7 @@ export function ProfileScreen({
       });
       setNotice(`Personal KYC submitted! (Status: ${res.status.toUpperCase()}).`);
       setKycFormOpen(false);
-      SecureStore.deleteItemAsync(KYC_DRAFT_STORE_KEY).catch(() => {});
+      SecureStore.deleteItemAsync(KYC_DRAFT_STORE_KEY).catch(() => { });
       loadTab(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Verification submission failed.");
@@ -1034,7 +1034,7 @@ export function ProfileScreen({
       });
       setNotice(`Business KYB submitted! (Status: ${res.status.toUpperCase()}).`);
       setKybFormOpen(false);
-      SecureStore.deleteItemAsync(KYC_DRAFT_STORE_KEY).catch(() => {});
+      SecureStore.deleteItemAsync(KYC_DRAFT_STORE_KEY).catch(() => { });
       loadTab(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Business verification submission failed.");
@@ -1422,6 +1422,18 @@ export function ProfileScreen({
       {/* GENERAL */}
       {tab === "general" ? (
         <>
+          <Card>
+            <SectionHeader title="Appearance" />
+            <Text style={[styles.rowSub, { marginBottom: 10 }]}>
+              Switch between Light, Dark, or your phone's System theme.
+            </Text>
+            <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+              <Pill label="Light" active={themePreference === "light"} onPress={() => setThemePreference("light")} />
+              <Pill label="Dark" active={themePreference === "dark"} onPress={() => setThemePreference("dark")} />
+              <Pill label="System" active={themePreference === "system"} onPress={() => setThemePreference("system")} />
+            </View>
+          </Card>
+
           <Card>
             <SectionHeader title="Account Profile" />
             <KeyValueRow label="Account ID" value={user?.id || "—"} />

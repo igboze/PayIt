@@ -132,7 +132,7 @@ const styles = createThemeStyles(() => ({
     elevation: 2,
   },
   countPill: {
-    backgroundColor: COLORS.infoMuted,
+    backgroundColor: "rgba(29, 78, 216, 0.12)",
     borderWidth: 1.5,
     borderColor: COLORS.surface,
     paddingHorizontal: 7,
@@ -142,10 +142,10 @@ const styles = createThemeStyles(() => ({
   countText: {
     fontFamily: FONTS.extrabold,
     fontSize: 10,
-    color: COLORS.info,
+    color: "#1D4ED8",
   },
   apyPill: {
-    backgroundColor: COLORS.primaryMuted,
+    backgroundColor: "rgba(15, 118, 110, 0.12)",
     paddingHorizontal: 7,
     paddingVertical: 3,
     borderRadius: 999,
@@ -153,6 +153,6 @@ const styles = createThemeStyles(() => ({
   apyText: {
     fontFamily: FONTS.extrabold,
     fontSize: 10,
-    color: COLORS.successText,
+    color: "#0F766E",
   },
 }));

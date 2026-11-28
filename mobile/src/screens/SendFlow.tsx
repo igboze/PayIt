@@ -32,15 +32,13 @@ type Recipient =
   | { kind: "user"; name: string; handle: string; query: string };
 
 // Initials avatars use solid brand pairs only (text, fill).
-function getAvatarTones(): ReadonlyArray<readonly [string, string]> {
-  return [
-    ["#FFFFFF", "#053023"],
-    ["#FFFFFF", "#006E44"],
-    ["#FFFFFF", "#1E293B"],
-    [COLORS.successText, COLORS.primaryMuted],
-    [COLORS.text, COLORS.surfaceElevated],
-  ];
-}
+const AVATAR_TONES = [
+  ["#002018", "#E0A82E"],
+  ["#E0A82E", "#002018"],
+  ["#002018", "#F6E7BF"],
+  ["#002018", "#EDE7DA"],
+  ["#FFFFFF", "#007840"],
+] as const;
 
 function initials(name: string): string {
   const parts = name.replace(/^@/, "").trim().split(/\s+/).filter(Boolean);
@@ -50,8 +48,7 @@ function initials(name: string): string {
 
 function Avatar({ name, size = 44 }: { name: string; size?: number }) {
   const txt = initials(name);
-  const tones = getAvatarTones();
-  const [fg, bg] = tones[[...txt].reduce((a, c) => a + c.charCodeAt(0), 0) % tones.length];
+  const [fg, bg] = AVATAR_TONES[[...txt].reduce((a, c) => a + c.charCodeAt(0), 0) % AVATAR_TONES.length];
   return (
     <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: bg, alignItems: "center", justifyContent: "center" }}>
       <Text style={{ ...TYPE.bodyStrong, color: fg }}>{txt}</Text>

@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Animated, BackHandler, Image, Linking, StyleSheet, Text, View } from "react-native";
+import React, { useEffect, useState } from "react";
+import { ActivityIndicator, BackHandler, Image, Linking, StyleSheet, Text, View } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -63,18 +63,6 @@ function MainShell() {
   const [deepClaimToken, setDeepClaimToken] = useState("");
   const [billCategory, setBillCategory] = useState<BillCat>("airtime");
   const [applyingUpdate, setApplyingUpdate] = useState(false);
-  const overlayAnim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    if (overlay) {
-      overlayAnim.setValue(0);
-      Animated.timing(overlayAnim, {
-        toValue: 1,
-        duration: 180,
-        useNativeDriver: true,
-      }).start();
-    }
-  }, [overlay, overlayAnim]);
 
   // Tapping a Proxim notification in the phone tray opens the Notifications screen.
   const signedInAndUnlocked = Boolean(user) && !locked;
@@ -135,7 +123,7 @@ function MainShell() {
         setTab("profile");
       }
     };
-    Linking.getInitialURL().then(handleUrl).catch(() => { });
+    Linking.getInitialURL().then(handleUrl).catch(() => {});
     const sub = Linking.addEventListener("url", (ev) => handleUrl(ev.url));
     // If Android killed & restarted the Activity while the user was picking a KYC/KYB document in Chrome,
     // automatically restore straight back to Profile -> Verify ID so their upload & draft are immediately visible.
@@ -150,7 +138,7 @@ function MainShell() {
           setTab("profile");
         }
       })
-      .catch(() => { });
+      .catch(() => {});
     return () => sub.remove();
   }, []);
 
@@ -250,49 +238,101 @@ function MainShell() {
     }
   };
 
-  const overlayView = overlay ? (
-    <Animated.View
-      style={[
-        styles.overlaySheet,
-        {
-          opacity: overlayAnim,
-          transform: [
-            {
-              translateY: overlayAnim.interpolate({
-                inputRange: [0, 1],
-                outputRange: [22, 0],
-              }),
-            },
-          ],
-        },
-      ]}
-    >
+  if (overlay === "add") {
+    return (
       <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
         <KeyboardSafe>
-          {overlay === "add" ? <AddMoneyScreen onBack={() => setOverlay(null)} /> : null}
-          {overlay === "send" ? (
-            <SendScreen
-              onBack={() => {
-                setDeepClaimToken("");
-                setOverlay(null);
-              }}
-              initialMode={deepClaimToken ? "user" : "ngn"}
-              initialClaimToken={deepClaimToken}
-            />
-          ) : null}
-          {overlay === "bills" ? <BillsScreen onBack={() => setOverlay(null)} initialCategory={billCategory} /> : null}
-          {overlay === "savings" ? <SavingsScreen onBack={() => setOverlay(null)} /> : null}
-          {overlay === "stocks" ? <StocksScreen onBack={() => setOverlay(null)} /> : null}
-          {overlay === "swap" ? <SwapScreen onBack={() => setOverlay(null)} /> : null}
-          {overlay === "activity" ? <ActivityScreen onBack={() => setOverlay(null)} /> : null}
-          {overlay === "notifications" ? (
-            <NotificationsScreen onBack={() => setOverlay(null)} onOpened={inbox.markAllRead} />
-          ) : null}
-          {overlay === "assistant" ? <AssistantScreen onBack={() => setOverlay(null)} /> : null}
+        <AddMoneyScreen onBack={() => setOverlay(null)} />
+        <ApprovalSheet />
         </KeyboardSafe>
       </SafeAreaView>
-    </Animated.View>
-  ) : null;
+    );
+  }
+  if (overlay === "send") {
+    return (
+      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+        <KeyboardSafe>
+        <SendScreen
+          onBack={() => {
+            setDeepClaimToken("");
+            setOverlay(null);
+          }}
+          initialMode={deepClaimToken ? "user" : "ngn"}
+          initialClaimToken={deepClaimToken}
+        />
+        <ApprovalSheet />
+        </KeyboardSafe>
+      </SafeAreaView>
+    );
+  }
+  if (overlay === "bills") {
+    return (
+      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+        <KeyboardSafe>
+        <BillsScreen onBack={() => setOverlay(null)} initialCategory={billCategory} />
+        <ApprovalSheet />
+        </KeyboardSafe>
+      </SafeAreaView>
+    );
+  }
+  if (overlay === "savings") {
+    return (
+      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+        <KeyboardSafe>
+        <SavingsScreen onBack={() => setOverlay(null)} />
+        <ApprovalSheet />
+        </KeyboardSafe>
+      </SafeAreaView>
+    );
+  }
+  if (overlay === "stocks") {
+    return (
+      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+        <KeyboardSafe>
+        <StocksScreen onBack={() => setOverlay(null)} />
+        <ApprovalSheet />
+        </KeyboardSafe>
+      </SafeAreaView>
+    );
+  }
+  if (overlay === "swap") {
+    return (
+      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+        <KeyboardSafe>
+        <SwapScreen onBack={() => setOverlay(null)} />
+        <ApprovalSheet />
+        </KeyboardSafe>
+      </SafeAreaView>
+    );
+  }
+  if (overlay === "activity") {
+    return (
+      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+        <KeyboardSafe>
+          <ActivityScreen onBack={() => setOverlay(null)} />
+        </KeyboardSafe>
+      </SafeAreaView>
+    );
+  }
+  if (overlay === "notifications") {
+    return (
+      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+        <KeyboardSafe>
+        <NotificationsScreen onBack={() => setOverlay(null)} onOpened={inbox.markAllRead} />
+        </KeyboardSafe>
+      </SafeAreaView>
+    );
+  }
+  if (overlay === "assistant") {
+    return (
+      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+        <KeyboardSafe>
+        <AssistantScreen onBack={() => setOverlay(null)} />
+        <ApprovalSheet />
+        </KeyboardSafe>
+      </SafeAreaView>
+    );
+  }
 
   const tabs: Array<{ key: MainTab; label: string; icon: keyof typeof Ionicons.glyphMap; activeIcon: keyof typeof Ionicons.glyphMap }> = [
     { key: "home", label: isBiz ? "Business" : "Home", icon: isBiz ? "briefcase-outline" : "home-outline", activeIcon: isBiz ? "briefcase" : "home" },
@@ -301,93 +341,91 @@ function MainShell() {
     { key: "profile", label: "Profile", icon: "person-outline", activeIcon: "person" },
   ];
 
-  // Home draws its dark header right up under the status bar; other tabs sit on the page surface.
-  const onForest = tab === "home" && !overlay;
-  const topInsetBg = onForest ? (isBiz ? "#0F172A" : COLORS.forest) : COLORS.page;
+  // Home draws its dark header right up under the status bar; other tabs sit on the stone page.
+  const onForest = tab === "home";
+  const topInsetBg = onForest ? (isBiz ? "#1B160C" : COLORS.forest) : COLORS.page;
   return (
-    <View style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={["bottom"]}>
       <StatusBar style={onForest || isDark ? "light" : "dark"} />
-      <SafeAreaView style={styles.safe} edges={["bottom"]}>
-        <View style={{ height: insets.top, backgroundColor: topInsetBg }} />
+      <View style={{ height: insets.top, backgroundColor: topInsetBg }} />
         <KeyboardSafe>
-          {ota.updateReady ? (
-            <PressableScale onPress={() => setApplyingUpdate(true)} style={styles.otaBanner}>
-              <Ionicons name="cloud-download-outline" size={16} color={COLORS.onPrimary} />
-              <Text style={styles.otaBannerText}>New Proxim update ready · Tap to apply</Text>
-              <Ionicons name="refresh" size={15} color={COLORS.onPrimary} />
-            </PressableScale>
-          ) : null}
-          {tab !== "home" ? <AccountSwitcherBar onOpenAssistant={() => setOverlay("assistant")} /> : null}
+      {ota.updateReady ? (
+        <PressableScale onPress={() => setApplyingUpdate(true)} style={styles.otaBanner}>
+          <Ionicons name="cloud-download-outline" size={16} color={COLORS.onPrimary} />
+          <Text style={styles.otaBannerText}>New Proxim update ready · Tap to apply</Text>
+          <Ionicons name="refresh" size={15} color={COLORS.onPrimary} />
+        </PressableScale>
+      ) : null}
+      {tab !== "home" ? <AccountSwitcherBar onOpenAssistant={() => setOverlay("assistant")} /> : null}
 
-          {inbox.banner ? (
+      {inbox.banner ? (
+        <PressableScale
+          onPress={() => {
+            inbox.dismissBanner();
+            setOverlay("notifications");
+          }}
+          style={styles.inboxBanner}
+        >
+          <Ionicons name="notifications" size={18} color={COLORS.primary} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.inboxTitle} numberOfLines={1}>{inbox.banner.title}</Text>
+            <Text style={styles.inboxBody} numberOfLines={2}>{inbox.banner.body}</Text>
+          </View>
+          <PressableScale onPress={inbox.dismissBanner} haptic="none" style={{ padding: 4 }}>
+            <Ionicons name="close" size={18} color={COLORS.textMuted} />
+          </PressableScale>
+        </PressableScale>
+      ) : null}
+      <View style={styles.body}>
+        {tab === "home" ? <HomeScreen
+            onNavigate={handleHomeNav}
+            onOpenProfile={() => setTab("profile")}
+            onOpenBill={(c) => {
+              setBillCategory(c);
+              setOverlay("bills");
+            }}
+            unread={inbox.unread}
+          /> : null}
+        {tab === "accounts" ? <AccountsScreen initialSection={accountsSection} initialBizSubTab={bizSubTab} /> : null}
+        {tab === "cards" ? <CardsScreen /> : null}
+        {tab === "profile" ? <ProfileScreen initialTab={profileSection} initialVerifyMode={profileVerifyMode} /> : null}
+      </View>
+
+      <View style={styles.tabBar}>
+        {tabs.map((t) => {
+          const active = tab === t.key;
+          return (
             <PressableScale
+              key={t.key}
               onPress={() => {
-                inbox.dismissBanner();
-                setOverlay("notifications");
+                if (t.key === "accounts") setAccountsSection(isBiz ? "business" : "accounts");
+                if (t.key === "profile") {
+                  setProfileVerifyMode(null);
+                  setProfileSection("general");
+                }
+                setTab(t.key);
               }}
-              style={styles.inboxBanner}
+              style={styles.tabItem}
             >
-              <Ionicons name="notifications" size={18} color={COLORS.primary} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.inboxTitle} numberOfLines={1}>{inbox.banner.title}</Text>
-                <Text style={styles.inboxBody} numberOfLines={2}>{inbox.banner.body}</Text>
+              <View style={[styles.tabIcon, active && styles.tabIconActive]}>
+                <Ionicons
+                  name={active ? t.activeIcon : t.icon}
+                  size={22}
+                  color={active ? COLORS.primary : COLORS.textMuted}
+                />
               </View>
-              <PressableScale onPress={inbox.dismissBanner} haptic="none" style={{ padding: 4 }}>
-                <Ionicons name="close" size={18} color={COLORS.textMuted} />
-              </PressableScale>
+              <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>
+                {t.label}
+              </Text>
             </PressableScale>
-          ) : null}
-          <View style={styles.body}>
-            {tab === "home" ? <HomeScreen
-              onNavigate={handleHomeNav}
-              onOpenProfile={() => setTab("profile")}
-              onOpenBill={(c) => {
-                setBillCategory(c);
-                setOverlay("bills");
-              }}
-              unread={inbox.unread}
-            /> : null}
-            {tab === "accounts" ? <AccountsScreen initialSection={accountsSection} initialBizSubTab={bizSubTab} /> : null}
-            {tab === "cards" ? <CardsScreen /> : null}
-            {tab === "profile" ? <ProfileScreen initialTab={profileSection} initialVerifyMode={profileVerifyMode} /> : null}
-          </View>
+          );
+        })}
+      </View>
 
-          <View style={styles.tabBar}>
-            {tabs.map((t) => {
-              const active = tab === t.key;
-              return (
-                <PressableScale
-                  key={t.key}
-                  onPress={() => {
-                    if (t.key === "accounts") setAccountsSection(isBiz ? "business" : "accounts");
-                    if (t.key === "profile") {
-                      setProfileVerifyMode(null);
-                      setProfileSection("general");
-                    }
-                    setTab(t.key);
-                  }}
-                  style={styles.tabItem}
-                >
-                  <View style={[styles.tabIcon, active && styles.tabIconActive]}>
-                    <Ionicons
-                      name={active ? t.activeIcon : t.icon}
-                      size={20}
-                      color={active ? COLORS.primary : COLORS.textMuted}
-                    />
-                  </View>
-                  <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>
-                    {t.label}
-                  </Text>
-                </PressableScale>
-              );
-            })}
-          </View>
-        </KeyboardSafe>
-      </SafeAreaView>
-      {overlayView}
       <ApprovalSheet />
+        </KeyboardSafe>
       {lockOverlay}
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -427,8 +465,8 @@ export default function App() {
     return (
       <View style={styles.splash}>
         <Image source={require("./assets/icon.png")} style={{ width: 72, height: 72, borderRadius: 20 }} />
-        <ActivityIndicator color="#00C476" style={{ marginTop: 14 }} />
-        <Text style={{ color: "#A3BCB2", fontSize: 14, marginTop: 8 }}>Starting Proxim…</Text>
+        <ActivityIndicator color="#E0A82E" style={{ marginTop: 14 }} />
+        <Text style={{ color: "#A8BDB3", fontSize: 14, marginTop: 8 }}>Starting Proxim…</Text>
       </View>
     );
   }
@@ -465,39 +503,29 @@ const styles = createThemeStyles(() => ({
     borderRadius: 24,
   },
   body: { flex: 1 },
-  overlaySheet: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 50,
-    elevation: 50,
-    backgroundColor: COLORS.bg,
-  },
   tabBar: {
     flexDirection: "row",
-    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopWidth: 1,
     borderTopColor: COLORS.border,
     backgroundColor: COLORS.surface,
-    paddingTop: 7,
-    paddingBottom: 8,
-    paddingHorizontal: 10,
+    paddingTop: 10,
+    paddingBottom: 12,
+    paddingHorizontal: 12,
   },
   tabItem: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 3,
+    gap: 4,
   },
   tabLabel: {
     color: COLORS.textMuted,
     fontFamily: FONTS.medium,
-    fontSize: 11,
-    lineHeight: 14,
+    fontSize: 12,
+    lineHeight: 16,
   },
   tabLabelActive: { color: COLORS.primary, fontFamily: FONTS.bold },
-  tabIcon: { width: 48, height: 28, borderRadius: 14, alignItems: "center", justifyContent: "center" },
+  tabIcon: { width: 56, height: 30, borderRadius: 15, alignItems: "center", justifyContent: "center" },
   tabIconActive: { backgroundColor: COLORS.goldSoft },
   inboxBanner: {
     flexDirection: "row",

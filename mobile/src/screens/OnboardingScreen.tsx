@@ -361,7 +361,7 @@ export function OnboardingScreen({ initialLinkCode = "" }: { initialLinkCode?: s
           {!passkeyAvailable ? (
             <Card style={styles.runtimeWarning}>
               <View style={styles.warnRow}>
-                <Ionicons name="warning" size={18} color={COLORS.warningText} />
+                <Ionicons name="warning" size={18} color={COLORS.business} />
                 <Text style={styles.warnText}>
                   Passkeys aren&apos;t available on this device. Install the latest Proxim app to sign in securely.
                 </Text>
@@ -662,8 +662,8 @@ const styles = createThemeStyles(() => ({
     maxWidth: 300,
   },
   runtimeWarning: {
-    borderColor: COLORS.warningBorder,
-    backgroundColor: COLORS.warningMuted,
+    borderColor: COLORS.businessBorder,
+    backgroundColor: COLORS.businessMuted,
   },
   warnRow: {
     flexDirection: "row",
@@ -716,9 +716,9 @@ const styles = createThemeStyles(() => ({
     flexDirection: "row",
     alignItems: "center",
     gap: 5,
-    backgroundColor: COLORS.primaryMuted,
+    backgroundColor: COLORS.goldSoft,
     borderWidth: 1,
-    borderColor: COLORS.primaryBorder,
+    borderColor: COLORS.businessBorder,
     borderRadius: RADIUS.pill,
     paddingHorizontal: 10,
     paddingVertical: 5,
@@ -737,7 +737,7 @@ const styles = createThemeStyles(() => ({
     borderRadius: RADIUS.md,
     backgroundColor: COLORS.forest,
     borderWidth: 1,
-    borderColor: COLORS.primaryBorder,
+    borderColor: COLORS.forest700,
     paddingHorizontal: 16,
     ...DEPTH.forest,
   },
@@ -750,7 +750,7 @@ const styles = createThemeStyles(() => ({
     justifyContent: "center",
   },
   googleBadgeText: {
-    color: "#001A13",
+    color: "#002018",
     fontFamily: FONTS.extrabold,
     fontSize: 14,
   },
@@ -796,9 +796,9 @@ const styles = createThemeStyles(() => ({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    backgroundColor: COLORS.primaryMuted,
+    backgroundColor: "#E8F6EE",
     borderWidth: 1,
-    borderColor: COLORS.primaryBorder,
+    borderColor: "#B7E4C7",
     borderRadius: RADIUS.sm,
     paddingHorizontal: 10,
     paddingVertical: 7,

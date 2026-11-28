@@ -9,12 +9,12 @@ import { PressableScale } from "./Touch";
 export type BillCat = "airtime" | "data" | "electricity" | "cable" | "transport" | "betting";
 
 export const BILL_CATEGORIES: Array<{ key: BillCat; label: string; icon: keyof typeof Ionicons.glyphMap; fg: string; bg: string }> = [
-  { key: "airtime", label: "Airtime", icon: "call", fg: "#FFFFFF", bg: "#053023" },
-  { key: "data", label: "Data", icon: "wifi", fg: "#FFFFFF", bg: "#006E44" },
-  { key: "electricity", label: "Electricity", icon: "flash", fg: "#FFFFFF", bg: "#053023" },
-  { key: "cable", label: "Cable TV", icon: "tv", fg: "#FFFFFF", bg: "#1E293B" },
-  { key: "transport", label: "Transport", icon: "bus", fg: "#FFFFFF", bg: "#006E44" },
-  { key: "betting", label: "Betting", icon: "football", fg: "#FFFFFF", bg: "#053023" },
+  { key: "airtime", label: "Airtime", icon: "call", fg: "#E0A82E", bg: "#002018" },
+  { key: "data", label: "Data", icon: "wifi", fg: "#E0A82E", bg: "#002018" },
+  { key: "electricity", label: "Electricity", icon: "flash", fg: "#E0A82E", bg: "#002018" },
+  { key: "cable", label: "Cable TV", icon: "tv", fg: "#E0A82E", bg: "#002018" },
+  { key: "transport", label: "Transport", icon: "bus", fg: "#E0A82E", bg: "#002018" },
+  { key: "betting", label: "Betting", icon: "football", fg: "#E0A82E", bg: "#002018" },
 ];
 
 // Provider name fragment -> website domain, for the logo.
@@ -185,7 +185,7 @@ const styles = createThemeStyles(() => ({
     paddingVertical: 12,
     paddingHorizontal: 10,
   },
-  tileOn: { borderColor: COLORS.primary, borderWidth: 2, backgroundColor: COLORS.deep },
+  tileOn: { borderColor: COLORS.primary, borderWidth: 2, borderBottomWidth: 4, borderBottomColor: COLORS.primaryDark, backgroundColor: COLORS.deep },
   tileName: { fontSize: 13, lineHeight: 17, fontFamily: FONTS.semibold, color: COLORS.text, textAlign: "center" },
   tileNameCompact: { fontSize: 12, lineHeight: 16, fontFamily: FONTS.semibold, color: COLORS.text, textAlign: "center" },
   badgePill: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: RADIUS.pill },
@@ -214,6 +214,6 @@ const styles = createThemeStyles(() => ({
     ...DEPTH.raised,
   },
   catTileCompact: { paddingVertical: 12 },
-  catIcon: { width: 48, height: 48, borderRadius: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.12)", alignItems: "center", justifyContent: "center" },
+  catIcon: { width: 48, height: 48, borderRadius: 16, alignItems: "center", justifyContent: "center" },
   catLabel: { ...TYPE.label, fontFamily: FONTS.semibold, color: COLORS.text, textAlign: "center" },
 }));

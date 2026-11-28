@@ -10,15 +10,13 @@ import { toUserError } from "../utils/errors";
 
 const LATEST_APK_URL = "https://github.com/igboze/PayIt/releases/download/android-latest/Proxim.apk";
 
-function getAvatarTones(): ReadonlyArray<readonly [string, string]> {
-  return [
-    ["#FFFFFF", "#053023"],
-    ["#FFFFFF", "#006E44"],
-    ["#FFFFFF", "#1E293B"],
-    [COLORS.successText, COLORS.primaryMuted],
-    [COLORS.text, COLORS.surfaceElevated],
-  ];
-}
+const TONES = [
+  ["#002018", "#E0A82E"],
+  ["#E0A82E", "#002018"],
+  ["#002018", "#F6E7BF"],
+  ["#002018", "#EDE7DA"],
+  ["#FFFFFF", "#007840"],
+] as const;
 
 function initialsOf(name: string): string {
   const parts = name.replace(/^@/, "").trim().split(/\s+/).filter(Boolean);
@@ -37,8 +35,7 @@ export function UserAvatar({ size = 44, name }: { size?: number; name?: string |
   }, [version]);
   const label = name || user?.senderName || user?.username || "Proxim";
   const txt = initialsOf(label);
-  const tones = getAvatarTones();
-  const [fg, bg] = tones[[...txt].reduce((a, c) => a + c.charCodeAt(0), 0) % tones.length];
+  const [fg, bg] = TONES[[...txt].reduce((a, c) => a + c.charCodeAt(0), 0) % TONES.length];
   const box = { width: size, height: size, borderRadius: size / 2 };
 
   if (version && token && !failed) {
