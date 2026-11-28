@@ -69,14 +69,14 @@ async function getLiveUsdNgnRate() {
     let rate = null;
     try {
       const r = await dep("paj").getRates("NGN");
-      rate = Number(r?.offRampRate?.rate || r?.onRampRate?.rate || 0) || null;
+      rate = Number(r?.offRampRate?.rate || r?.onRampRate?.rawRate || r?.onRampRate?.rate || 0) || null;
     } catch (_) { }
     if (!rate) {
       try {
         rate = Number(await dep("fx").getUsdToNgnRate()) || null;
       } catch (_) { }
     }
-    return rate && Number.isFinite(rate) && rate > 0 ? rate : null;
+    return rate && Number.isFinite(rate) && rate > 0 ? Number(rate.toFixed(2)) : null;
   };
   try {
     const rate = await Promise.race([

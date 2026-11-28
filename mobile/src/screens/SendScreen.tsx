@@ -670,7 +670,9 @@ export function SendScreen({
               title="Cash out to Nigerian Bank"
               right={
                 rates?.offRampRate ? (
-                  <Text style={styles.rateTag}>$1 = ₦{rates.offRampRate.toLocaleString("en-NG")}</Text>
+                  <Text style={styles.rateTag}>
+            $1 = ₦{Number(rates.offRampRate).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </Text>
                 ) : null
               }
             />
@@ -745,7 +747,9 @@ export function SendScreen({
                 title="Send to @username or phone"
                 right={
                   rates?.offRampRate ? (
-                    <Text style={styles.rateTag}>$1 = ₦{rates.offRampRate.toLocaleString("en-NG")}</Text>
+                    <Text style={styles.rateTag}>
+            $1 = ₦{Number(rates.offRampRate).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </Text>
                   ) : null
                 }
               />

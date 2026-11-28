@@ -361,8 +361,8 @@ export function SendFlow({
                     : `They get ${fmtNgn(amountNgn)} · Fee ${fmtNgn(heldNgnFee)} · Total ${fmtNgn(heldNgnTotal)} (NGN balance)`
                   : usdCost !== null
                     ? isBankSend
-                      ? `${formatUsdc(totalUsdDebit ?? usdCost)} total (incl. ${formatUsdc(bankFeeUsd)} 1% fee)${rate ? ` · $1 = ₦${Math.round(rate).toLocaleString("en-NG")}` : ""}`
-                      : `${formatUsdc(usdCost)} from your balance (Free)${rate ? ` · $1 = ₦${Math.round(rate).toLocaleString("en-NG")}` : ""}`
+                      ? `${formatUsdc(totalUsdDebit ?? usdCost)} total (incl. ${formatUsdc(bankFeeUsd)} 1% fee)${rate ? ` · $1 = ₦${Number(rate).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ""}`
+                      : `${formatUsdc(usdCost)} from your balance (Free)${rate ? ` · $1 = ₦${Number(rate).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ""}`
                     : " "
                 : balanceHidden
                   ? "Balance hidden"

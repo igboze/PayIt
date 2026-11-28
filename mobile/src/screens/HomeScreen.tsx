@@ -588,7 +588,7 @@ export function HomeScreen({
         {balance ? (
           <Text style={styles.subLine}>
             {hidden ? "Balance hidden" : subText}
-            {ngnRate ? `  ·  $1 = ₦${Math.round(ngnRate).toLocaleString("en-NG")}` : ""}
+            {ngnRate ? `  ·  $1 = ₦${Number(ngnRate).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ""}
           </Text>
         ) : null}
         {!hidden && (balance?.fiatBalances?.length ?? 0) > 0 ? (

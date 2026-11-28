@@ -425,7 +425,7 @@ const ACTIONS = {
             ["To", label],
             ["Amount", `₦${amountNgn.toLocaleString("en-NG")}`],
             ["From your balance", `≈ $${fmt(amountUsdc)}`],
-            ["Rate", `$1 = ₦${rate.toLocaleString("en-NG")}`],
+            ["Rate", `$1 = ₦${Number(rate).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
             ["Fee", "Free"],
           ],
         }
@@ -521,7 +521,7 @@ const ACTIONS = {
             ["Recipient", `@${targetHandle}`],
             ["Amount", `₦${amountNgn.toLocaleString("en-NG")}`],
             ["From your balance", `≈ $${fmt(amountUsdc)}`],
-            ["Rate", `$1 = ₦${rate.toLocaleString("en-NG")}`],
+            ["Rate", `$1 = ₦${Number(rate).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
             ["Expires in", `${expiresHours} hours`],
           ],
         }
@@ -871,7 +871,7 @@ const ACTIONS = {
             ["They get", `₦${amountNgn.toLocaleString("en-NG")}`],
             ["From your balance", `≈ $${fmt(estTotalUsd)}`],
             ["Fee (1%)", `≈ $${fmt(estFeeUsdc)}`],
-            ["Rate", `$1 = ₦${rate.toLocaleString("en-NG")}`],
+            ["Rate", `$1 = ₦${Number(rate).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
           ],
         }
         : {

@@ -1117,7 +1117,7 @@ async function showBalance(ctx) {
 
     const cardLine = hasCardsLoaded ? `\n• <b>Cards Loaded:</b> $${cardLoadedUsd.toFixed(2)}` : "";
     const netWorthNaira = rate
-      ? `≈ ${fx.formatNaira(effectiveTotalUsdc * rate)} at ₦${Math.round(rate).toLocaleString()}/$`
+      ? `≈ ${fx.formatNaira(effectiveTotalUsdc * rate)} at ${fx.formatNairaRate(rate)}/$`
       : "";
 
     const balanceHeader = (hasSavings || hasCardsLoaded)
@@ -1255,7 +1255,7 @@ async function showBizBalance(ctx) {
     }
 
     const bizCardLine = hasBizCardsLoaded ? `\n• <b>Cards Loaded:</b> $${bizCardLoadedUsd.toFixed(2)}` : "";
-    const netWorthNaira = rate ? `≈ ${fx.formatNaira(effectiveTotalUsdc * rate)} at ₦${Math.round(rate).toLocaleString()}/$` : "";
+    const netWorthNaira = rate ? `≈ ${fx.formatNaira(effectiveTotalUsdc * rate)} at ${fx.formatNairaRate(rate)}/$` : "";
 
     const balanceHeader = (hasSavings || hasBizCardsLoaded)
       ? `💼 <b>Business Balance: $${effectiveTotalUsdc.toFixed(2)}</b>\n${netWorthNaira}\n──────────────────────────\n• <b>Available:</b> $${totalUsdc.toFixed(2)}${bizCardLine}${eurcLine}`
@@ -3910,7 +3910,7 @@ function promptForWithdrawConfirmation(ctx, userId, withdrawData, context) {
     ? `🇳🇬 <b>Recipient Receives:</b> <b>₦${Math.round(displayNgn).toLocaleString("en-NG")}</b>\n`
     : `💵 <b>Amount to Bank:</b> $${netUsdc.toFixed(2)} USDC\n`;
   const usdcDetail = displayNgn
-    ? `💵 <b>Amount Sent:</b> $${netUsdc.toFixed(2)} USDC${displayRate ? ` (rate: ₦${Math.round(displayRate).toLocaleString()}/$)` : ""}\n`
+    ? `💵 <b>Amount Sent:</b> $${netUsdc.toFixed(2)} USDC${displayRate ? ` (rate: ${fx.formatNairaRate(displayRate)}/$)` : ""}\n`
     : "";
 
   return safeReplyHtml(ctx,
@@ -3970,7 +3970,7 @@ async function promptForWithdrawBank(ctx, userId, amountUsdc, rail, context, ngn
     ? `🇳🇬 <b>Recipient Gets:</b> ~<b>₦${Math.round(ngnPayout).toLocaleString("en-NG")}</b> ($${netAmountUsdc.toFixed(2)} USDC)\n` +
     `🏷️ <b>Platform Fee (1%):</b> +$${feeUsdc.toFixed(2)}${feeNgn ? ` (~₦${feeNgn.toLocaleString("en-NG")})` : ""} <i>(from balance)</i>\n` +
     `💳 <b>Total Deducted:</b> $${totalDebitUsdc.toFixed(2)} USDC${totalNgn ? ` (~₦${totalNgn.toLocaleString("en-NG")})` : ""}\n` +
-    (liveRate ? `📈 <b>Rate:</b> ₦${Math.round(liveRate).toLocaleString()}/$\n` : "")
+    (liveRate ? `📈 <b>Rate:</b> ${fx.formatNairaRate(liveRate)}/$\n` : "")
     : `💵 <b>Amount:</b> $${netAmountUsdc.toFixed(2)} · Fee (1%): +$${feeUsdc.toFixed(2)} · Total Deducted: $${totalDebitUsdc.toFixed(2)}\n`;
 
   // Look up saved bank payees for this user
@@ -4245,7 +4245,7 @@ async function handleCashOutNgn(ctx, userId, ngnAmount, context) {
     }, context);
     return ctx.reply(
       `🇳🇬 <b>Cash Out ₦${Math.round(ngnAmount).toLocaleString("en-NG")} to Naira</b>\n──────────────────────────\n` +
-      `Send: $${amountUsdc.toFixed(2)} + 1% Fee: $${feeUsdc.toFixed(2)} = <b>$${totalRequiredUsdc.toFixed(2)} USDC</b> (at ₦${Math.round(rate).toLocaleString()}/$)\n\n` +
+      `Send: $${amountUsdc.toFixed(2)} + 1% Fee: $${feeUsdc.toFixed(2)} = <b>$${totalRequiredUsdc.toFixed(2)} USDC</b> (at ${fx.formatNairaRate(rate)}/$)\n\n` +
       `You have funds on both chains:\n` +
       `⚡ <b>Arc:</b> $${arcUsdc.toFixed(2)} — fastest (~1s on-chain)\n` +
       `☀️ <b>Solana:</b> $${solUsdc.toFixed(2)}\n\n` +
@@ -4323,7 +4323,7 @@ bot.action("action_withdraw_menu", async (ctx) => {
   let rateInfo = "";
   try {
     const rate = await fx.getUsdToNgnRate();
-    if (rate) rateInfo = `\n📈 <b>Live Rate:</b> ₦${Math.round(rate).toLocaleString()}/$\n`;
+    if (rate) rateInfo = `\n📈 <b>Live Rate:</b> ${fx.formatNairaRate(rate)}/$\n`;
   } catch (_) { }
 
   convState.setState(ctx.from.id, "await_withdraw_ngn_amount", {}, getContext(ctx.from.id));
@@ -6791,7 +6791,7 @@ bot.hears(["🇳🇬 Cash Out to Naira", /cash\s*out\s*to\s*naira/i], async (ctx
   let rateInfo = "";
   try {
     const rate = await fx.getUsdToNgnRate();
-    if (rate) rateInfo = `\n📈 <b>Live Rate:</b> ₦${Math.round(rate).toLocaleString()}/$\n`;
+    if (rate) rateInfo = `\n📈 <b>Live Rate:</b> ${fx.formatNairaRate(rate)}/$\n`;
   } catch (_) { }
 
   convState.setState(ctx.from.id, "await_withdraw_ngn_amount", {}, getContext(ctx.from.id));

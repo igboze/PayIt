@@ -7,7 +7,18 @@ import { COLORS, DEPTH, RADIUS, SPACING, TYPE } from "../theme";
 import { Button, ErrorBanner, KeyValueRow, SuccessBanner } from "./UI";
 import { CurrencyLogo } from "./CurrencyLogo";
 
-const CURRENCY_NAMES: Record<string, string> = { USD: "US dollar", GBP: "British pound", EUR: "Euro", CAD: "Canadian dollar" };
+const CURRENCY_NAMES: Record<string, string> = {
+  USD: "US Dollar",
+  GBP: "British Pound",
+  EUR: "Euro",
+  CAD: "Canadian Dollar",
+  NGN: "Nigerian Naira",
+  AED: "UAE Dirham",
+  KES: "Kenyan Shilling",
+  GHS: "Ghanaian Cedi",
+  TZS: "Tanzanian Shilling",
+  MXN: "Mexican Peso",
+};
 
 /**
  * Receive money from a bank abroad: the user's own USD / GBP / EUR receiving accounts,
@@ -62,7 +73,9 @@ export function GlobalAccountsDeposit({ accountType, onNeedsVerification }: { ac
   };
 
   const have = new Set(accounts.map((a) => a.currency.toUpperCase()));
-  const canOpen = (supported.length ? supported : ["USD", "GBP", "EUR"]).filter((c) => !have.has(c.toUpperCase()));
+  const canOpen = (supported.length ? supported : ["USD", "GBP", "EUR", "CAD", "NGN", "AED", "KES", "GHS", "TZS", "MXN"]).filter(
+    (c) => !have.has(c.toUpperCase())
+  );
 
   return (
     <View style={{ gap: 12 }}>
@@ -86,6 +99,7 @@ export function GlobalAccountsDeposit({ accountType, onNeedsVerification }: { ac
             </View>
             {a.beneficiaryName ? <KeyValueRow currency={false} label="Account name" value={a.beneficiaryName} onCopy={() => copy("Account name", a.beneficiaryName!)} /> : null}
             {a.bankName ? <KeyValueRow currency={false} label="Bank" value={a.bankName} onCopy={() => copy("Bank", a.bankName!)} /> : null}
+            {a.bankCode ? <KeyValueRow currency={false} label="Bank code" value={a.bankCode} onCopy={() => copy("Bank code", a.bankCode!)} /> : null}
             {a.accountNumber ? <KeyValueRow currency={false} label="Account number" value={a.accountNumber} onCopy={() => copy("Account number", a.accountNumber!)} /> : null}
             {a.routingNumber ? <KeyValueRow currency={false} label="Routing number" value={a.routingNumber} onCopy={() => copy("Routing number", a.routingNumber!)} /> : null}
             {a.sortCode ? <KeyValueRow currency={false} label="Sort code" value={a.sortCode} onCopy={() => copy("Sort code", a.sortCode!)} /> : null}
