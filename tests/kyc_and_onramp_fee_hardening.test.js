@@ -1473,6 +1473,23 @@ test("Counterparty capture (Nuvion/Paj credits & debits), receipt SVG rendering,
   assert.ok(debSvg.includes("Zenith Bank"), "Debit receipt must include recipient bank");
   assert.ok(debSvg.includes("1012345678"), "Debit receipt must include recipient account");
 
+  // 3b. International EUR Cash Out receipt renders EUR (€500.00 EUR), NEVER Naira (₦)
+  const eurDebSvg = receiptGen.buildReceiptSvg({
+    receiptId: "PAY-EUR-001",
+    senderName: "Statement User",
+    recipientName: "HANS MULLER",
+    bankName: "Deutsche Bank",
+    recipientAddress: "DE89370400440532013000",
+    amountUsdc: 540,
+    displayCurrency: "EUR",
+    fiatAmountDisplay: "€500.00 ($540.00)",
+    type: "Cash Out",
+    status: "Confirmed",
+  });
+  assert.ok(eurDebSvg.includes("€500.00"), "EUR Cash Out receipt must render €500.00");
+  assert.ok(eurDebSvg.includes("EUR"), "EUR Cash Out receipt must render EUR currency code");
+  assert.ok(!eurDebSvg.includes("₦540"), "EUR Cash Out receipt must NEVER format USD/EUR as Naira");
+
   // 4. Full Account Statement includes BOTH Fiat & Crypto deposits & withdrawals with counterparty & direction
   const built = statement.buildAccountStatement({ db, telegramId: stmtTg, limit: 50 });
   assert.equal(built.summary.fiatDepositsCount, 1);
@@ -1482,7 +1499,7 @@ test("Counterparty capture (Nuvion/Paj credits & debits), receipt SVG rendering,
   assert.ok(built.csv.includes("CREDIT,Fiat,Naira Bank Deposit,NGN,150000"), "CSV must show Fiat CREDIT with NGN amount");
   assert.ok(built.csv.includes("ADAORA EZE,GTBank,0123456789"), "CSV must show deposit sender bank & account");
   assert.ok(built.csv.includes("DEBIT,Fiat,Naira Bank Withdrawal,NGN,75000,-50,LAGOS LOGISTICS LTD,Zenith Bank,1012345678"), "CSV must show Fiat DEBIT with recipient details");
-  assert.ok(built.csv.includes("CREDIT,Crypto,Cross-Chain Crypto Deposit,USDC,200,200,,Base,0x1111111111111111111111111111111111111111"), "CSV must show Crypto CREDIT");
+  assert.ok(built.csv.includes("CREDIT,Crypto,Cross-Chain Crypto Deposit,,,200,,Base,0x1111111111111111111111111111111111111111"), "CSV must show Crypto CREDIT without leaking USDC into fiat_currency");
   assert.ok(built.csv.includes("DEBIT,Crypto,Cross-Chain Crypto Withdrawal,,,-40,,SOLANA,4BPnUzFDibVcWQ5zzixGodRUHwqDxHYpUPdPYus3Bn56"), "CSV must show Crypto DEBIT");
 
   // 5. Mobile getTransactionReceipt renders PNG cleanly for deposit with sender info

@@ -174,27 +174,32 @@ function buildReceiptSvg(opts = {}) {
     typeLower.includes("cable") ||
     typeLower.includes("betting") ||
     typeLower.includes("transport");
+  const rawRecipClean = String(recipientAddress || "").trim();
+  const recipAlreadyHasBank = Boolean(detectedBank && rawRecipClean.toLowerCase().includes(detectedBank.toLowerCase()));
   const isBankPayout = !isBill && !isDeposit && (
     isCashOut ||
     isWithdrawal ||
     Boolean(detectedBank) ||
-    /^\d{6,16}$/.test(String(recipientAddress || "").trim()) ||
-    /^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/i.test(String(recipientAddress || "").trim())
+    /^\d{6,16}$/.test(rawRecipClean) ||
+    /^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/i.test(rawRecipClean)
   );
   let shortRecip = "";
-  if (recipientAddress) {
-    const rawRecip = String(recipientAddress).trim();
-    if (isBankPayout) {
-      shortRecip = rawRecip.length > 22 ? `${rawRecip.slice(0, 10)}...${rawRecip.slice(-6)}` : `Acct: ${rawRecip}`;
-    } else if (rawRecip.length > 18) {
-      shortRecip = `${rawRecip.slice(0, 6)}...${rawRecip.slice(-4)}`;
+  if (rawRecipClean) {
+    if (recipAlreadyHasBank) {
+      shortRecip = rawRecipClean.length > 34 ? `${rawRecipClean.slice(0, 31)}...` : rawRecipClean;
+    } else if (isBankPayout) {
+      shortRecip = rawRecipClean.length > 22 ? `${rawRecipClean.slice(0, 10)}...${rawRecipClean.slice(-6)}` : `Acct: ${rawRecipClean}`;
+    } else if (rawRecipClean.length > 18) {
+      shortRecip = `${rawRecipClean.slice(0, 6)}...${rawRecipClean.slice(-4)}`;
     } else {
-      shortRecip = rawRecip;
+      shortRecip = rawRecipClean;
     }
   }
 
   let destSubinfo = "";
-  if (detectedBank && shortRecip) {
+  if (recipAlreadyHasBank) {
+    destSubinfo = shortRecip;
+  } else if (detectedBank && shortRecip) {
     destSubinfo = `${detectedBank} · ${shortRecip}`;
   } else if (detectedBank) {
     destSubinfo = detectedBank;
@@ -210,8 +215,8 @@ function buildReceiptSvg(opts = {}) {
   const rawNairaInput = (nairaEquiv !== null && nairaEquiv !== undefined && nairaEquiv !== "")
     ? nairaEquiv
     : (opts.amountNgn !== null && opts.amountNgn !== undefined && opts.amountNgn !== ""
-        ? opts.amountNgn
-        : (fiatAmountDisplay && String(fiatAmountDisplay).includes("₦") ? fiatAmountDisplay : null));
+      ? opts.amountNgn
+      : (fiatAmountDisplay && String(fiatAmountDisplay).includes("₦") ? fiatAmountDisplay : null));
   if (rawNairaInput !== null) {
     if (typeof rawNairaInput === "number") {
       cleanNaira = `₦${rawNairaInput.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -224,7 +229,11 @@ function buildReceiptSvg(opts = {}) {
   }
 
   const normalizedDispCur = displayCurrency ? String(displayCurrency).toUpperCase() : null;
-  const isNairaTx = Boolean(
+  const isExplicitNonNgn = Boolean(
+    (normalizedDispCur && normalizedDispCur !== "NGN" && normalizedDispCur !== "USDC" && normalizedDispCur !== "EURC") ||
+    (fiatAmountDisplay && String(fiatAmountDisplay).trim() && !String(fiatAmountDisplay).includes("₦"))
+  );
+  const isNairaTx = !isExplicitNonNgn && Boolean(
     cleanNaira ||
     normalizedDispCur === "NGN" ||
     String(token).toUpperCase() === "NGN" ||
@@ -288,10 +297,10 @@ function buildReceiptSvg(opts = {}) {
   const destSubtitle = isDeposit
     ? "Credited Account"
     : (isSavingsWithdraw
-        ? "Returned to Account"
-        : ((isCashOut || isWithdrawal)
-            ? (isBankPayout ? "Destination Account" : "Destination Wallet")
-            : "Recipient"));
+      ? "Returned to Account"
+      : ((isCashOut || isWithdrawal)
+        ? (isBankPayout ? "Destination Account" : "Destination Wallet")
+        : "Recipient"));
   const initials = getInitials(cleanRecipientName || senderName);
 
   const rows = [];
@@ -434,21 +443,20 @@ function buildReceiptSvg(opts = {}) {
 
   <!-- Tick Badge Circle -->
   <circle cx="${heroMidX}" cy="${tickY}" r="${tickR}" fill="${isConfirmed ? '#10B981' : (isFailed ? '#DC2626' : '#F59E0B')}"/>
-  ${
-    isConfirmed
+  ${isConfirmed
       ? `<!-- Checkmark -->
   <path d="M ${heroMidX - 7} ${tickY} L ${heroMidX - 2} ${tickY + 5} L ${heroMidX + 8} ${tickY - 5}" 
         fill="none" stroke="#FFFFFF" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>`
       : (isFailed
-          ? `<!-- Cross / Failed Icon -->
+        ? `<!-- Cross / Failed Icon -->
   <path d="M ${heroMidX - 5} ${tickY - 5} L ${heroMidX + 5} ${tickY + 5} M ${heroMidX + 5} ${tickY - 5} L ${heroMidX - 5} ${tickY + 5}" 
         fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round"/>`
-          : `<!-- Clock / Pending Icon -->
+        : `<!-- Clock / Pending Icon -->
   <circle cx="${heroMidX}" cy="${tickY}" r="7" fill="none" stroke="#FFFFFF" stroke-width="2.6"/>
   <path d="M ${heroMidX} ${tickY - 4} L ${heroMidX} ${tickY} L ${heroMidX + 3} ${tickY + 2}" 
         fill="none" stroke="#FFFFFF" stroke-width="2.6" stroke-linecap="round"/>`
-        )
-  }
+      )
+    }
 
   <!-- Hero Label -->
   <text x="${heroMidX}" y="${labelY}" font-size="13.5" font-weight="700" fill="#D1FAE5" text-anchor="middle">${escape(heroLabel)}</text>

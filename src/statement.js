@@ -455,8 +455,9 @@ function enrichTransactionRow(db, telegramId, tx) {
   let counterpartyName = cleanStr(tx.counterparty_name);
   let counterpartyBank = cleanStr(tx.counterparty_bank);
   let counterpartyAccount = cleanStr(tx.counterparty_account);
-  let fiatCurrency = tx.source_currency ? String(tx.source_currency).toUpperCase() : null;
-  let fiatAmount = tx.source_amount != null && Number(tx.source_amount) > 0 ? Number(tx.source_amount) : null;
+  const rawSrcCur = tx.source_currency ? String(tx.source_currency).toUpperCase() : null;
+  let fiatCurrency = rawSrcCur && !CRYPTO_CODES.has(rawSrcCur) ? rawSrcCur : null;
+  let fiatAmount = fiatCurrency && tx.source_amount != null && Number(tx.source_amount) > 0 ? Number(tx.source_amount) : null;
   let payoutStatus = null;
   let payoutUpdatedAt = null;
   let offrampOrderId = null;

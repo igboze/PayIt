@@ -3980,7 +3980,9 @@ async function getTransactionReceipt(auth, rawId, opts = {}) {
     receiptOpts.senderAddress = ownerAddr || "";
     receiptOpts.recipientName = enriched.counterpartyName || tx.narration || enriched.typeLabel || "Recipient";
     receiptOpts.bankName = enriched.counterpartyBank || "";
-    receiptOpts.recipientAddress = enriched.counterpartyAccount || (tx.tx_hash || "");
+    receiptOpts.recipientAddress = enriched.counterpartyBank && enriched.counterpartyAccount
+      ? `${enriched.counterpartyBank} · ${enriched.counterpartyAccount}`
+      : (enriched.counterpartyAccount || enriched.counterpartyBank || tx.tx_hash || "");
   }
 
   const outPath = await dep("receiptGenerator").generateReceiptPNG(receiptOpts);
