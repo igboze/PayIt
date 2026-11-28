@@ -20,7 +20,7 @@ import type {
   StocksOverviewResponse,
 } from "../api/types";
 import { useApp } from "../state/AppContext";
-import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TABULAR_NUMS, TYPE, createThemeStyles } from "../theme";
+import { COLORS, DEPTH, FONTS, RADIUS, SPACING, TYPE, createThemeStyles } from "../theme";
 import {
   Button,
   ForestHero,
@@ -34,7 +34,6 @@ import {
   Pill,
   ScreenHeader,
   SectionHeader,
-  SkeletonCard,
   SuccessBanner,
 } from "../components/UI";
 import { PressableScale } from "../components/Touch";
@@ -430,7 +429,7 @@ export function StocksScreen({ onBack }: { onBack: () => void }) {
 
                 {!detail.configured ? (
                   <View style={styles.warnBox}>
-                    <Ionicons name="information-circle-outline" size={18} color={COLORS.warningText} />
+                    <Ionicons name="information-circle-outline" size={18} color="#8A5600" />
                     <Text style={styles.warnText}>
                       Live price charts are active. Stock order execution is finishing backend activation.
                     </Text>
@@ -439,7 +438,7 @@ export function StocksScreen({ onBack }: { onBack: () => void }) {
 
                 {mkt && !mkt.tradable ? (
                   <View style={styles.warnBox}>
-                    <Ionicons name="time-outline" size={18} color={COLORS.warningText} />
+                    <Ionicons name="time-outline" size={18} color="#8A5600" />
                     <Text style={styles.warnText}>
                       {st.ticker} trading is currently paused ({mkt.blockingReason || mkt.label}). {mkt.nextChangeLabel}.
                     </Text>
@@ -524,60 +523,60 @@ export function StocksScreen({ onBack }: { onBack: () => void }) {
         {/* Portfolio Summary Card */}
         {portfolio && holdings.length > 0 ? (
           <>
-            <ForestHero
-              overline="Your stock portfolio"
-              amount={
-                balanceHidden
-                  ? portfolio.totalValueNgn != null
-                    ? "₦••••"
-                    : "$••••"
-                  : portfolio.totalValueNgn != null
-                    ? formatNgn(portfolio.totalValueNgn)
-                    : formatUsdc(portfolio.totalValueUsd)
-              }
-              sub={balanceHidden ? "Balance hidden" : portfolio.totalValueNgn != null ? `≈ ${formatUsdc(portfolio.totalValueUsd)}` : null}
-            >
-              <Text style={[styles.portPnl, { color: portfolio.totalPnlUsd >= 0 ? COLORS.brandGreen : "#FF8A7A" }]}>
-                {balanceHidden
-                  ? "•••• all time"
-                  : `${portfolio.totalPnlUsd >= 0 ? "▲ +" : "▼ "}${formatUsdc(portfolio.totalPnlUsd)} (${portfolio.totalPnlPct >= 0 ? "+" : ""}${portfolio.totalPnlPct.toFixed(2)}%) all time`}
-              </Text>
-            </ForestHero>
-            <Card>
-              <SectionHeader title="Your holdings" />
+          <ForestHero
+            overline="Your stock portfolio"
+            amount={
+              balanceHidden
+                ? portfolio.totalValueNgn != null
+                  ? "₦••••"
+                  : "$••••"
+                : portfolio.totalValueNgn != null
+                  ? formatNgn(portfolio.totalValueNgn)
+                  : formatUsdc(portfolio.totalValueUsd)
+            }
+            sub={balanceHidden ? "Balance hidden" : portfolio.totalValueNgn != null ? `≈ ${formatUsdc(portfolio.totalValueUsd)}` : null}
+          >
+            <Text style={[styles.portPnl, { color: portfolio.totalPnlUsd >= 0 ? COLORS.brandGreen : "#FF8A7A" }]}>
+              {balanceHidden
+                ? "•••• all time"
+                : `${portfolio.totalPnlUsd >= 0 ? "▲ +" : "▼ "}${formatUsdc(portfolio.totalPnlUsd)} (${portfolio.totalPnlPct >= 0 ? "+" : ""}${portfolio.totalPnlPct.toFixed(2)}%) all time`}
+            </Text>
+          </ForestHero>
+          <Card>
+            <SectionHeader title="Your holdings" />
 
-              <View style={{ marginTop: 12, gap: 8 }}>
-                {holdings.map((h) => {
-                  const up = h.pnlUsd >= 0;
-                  return (
-                    <PressableScale key={h.ticker} onPress={() => openStock(h.ticker)} style={styles.stockRow}>
-                      <StockLogo
-                        ticker={h.ticker}
-                        logoUrl={h.logoUrl}
-                        fallbackLogoUrl={h.fallbackLogoUrl}
-                        size={40}
-                      />
-                      <View style={{ flex: 1, minWidth: 0 }}>
-                        <Text style={styles.stockTicker} numberOfLines={1}>
-                          {h.ticker} · {balanceHidden ? "••••" : h.shares > 0 ? `${h.shares.toFixed(4)} sh` : "Pending"}
-                        </Text>
-                        <Text style={styles.stockName} numberOfLines={1}>
-                          Bought {h.avgBuyPrice ? `@ $${h.avgBuyPrice.toFixed(2)}` : "recently"}
-                        </Text>
-                      </View>
-                      <View style={{ alignItems: "flex-end" }}>
-                        <Text style={styles.stockPrice}>
-                          {balanceHidden ? "••••" : h.currentValueNgn ? formatNgn(h.currentValueNgn) : formatUsdc(h.currentValueUsd)}
-                        </Text>
-                        <Text style={[styles.stockChange, { color: up ? COLORS.successText : COLORS.dangerText }]}>
-                          {balanceHidden ? "••••" : `${up ? "+" : ""}${h.pnlPct.toFixed(2)}%`}
-                        </Text>
-                      </View>
-                    </PressableScale>
-                  );
-                })}
-              </View>
-            </Card>
+            <View style={{ marginTop: 12, gap: 8 }}>
+              {holdings.map((h) => {
+                const up = h.pnlUsd >= 0;
+                return (
+                  <PressableScale key={h.ticker} onPress={() => openStock(h.ticker)} style={styles.stockRow}>
+                    <StockLogo
+                      ticker={h.ticker}
+                      logoUrl={h.logoUrl}
+                      fallbackLogoUrl={h.fallbackLogoUrl}
+                      size={40}
+                    />
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={styles.stockTicker} numberOfLines={1}>
+                        {h.ticker} · {balanceHidden ? "••••" : h.shares > 0 ? `${h.shares.toFixed(4)} sh` : "Pending"}
+                      </Text>
+                      <Text style={styles.stockName} numberOfLines={1}>
+                        Bought {h.avgBuyPrice ? `@ $${h.avgBuyPrice.toFixed(2)}` : "recently"}
+                      </Text>
+                    </View>
+                    <View style={{ alignItems: "flex-end" }}>
+                      <Text style={styles.stockPrice}>
+                        {balanceHidden ? "••••" : h.currentValueNgn ? formatNgn(h.currentValueNgn) : formatUsdc(h.currentValueUsd)}
+                      </Text>
+                      <Text style={[styles.stockChange, { color: up ? COLORS.successText : COLORS.dangerText }]}>
+                        {balanceHidden ? "••••" : `${up ? "+" : ""}${h.pnlPct.toFixed(2)}%`}
+                      </Text>
+                    </View>
+                  </PressableScale>
+                );
+              })}
+            </View>
+          </Card>
           </>
         ) : null}
 
@@ -594,7 +593,10 @@ export function StocksScreen({ onBack }: { onBack: () => void }) {
           />
 
           {loading && !overview ? (
-            <SkeletonCard rows={4} />
+            <View style={{ paddingVertical: 28, alignItems: "center", gap: 8 }}>
+              <ActivityIndicator color={COLORS.primary} />
+              <Text style={styles.muted}>Loading live US stock prices…</Text>
+            </View>
           ) : stocks.length === 0 ? (
             <EmptyState
               icon="trending-up-outline"
@@ -689,8 +691,8 @@ const styles = createThemeStyles(() => ({
   },
   stockTicker: { fontFamily: FONTS.extrabold, fontSize: 15, color: COLORS.text },
   stockName: { fontFamily: FONTS.regular, fontSize: 12, color: COLORS.textSecondary, marginTop: 1 },
-  stockPrice: { fontFamily: FONTS.bold, fontSize: 14, color: COLORS.text, ...TABULAR_NUMS },
-  stockChange: { fontFamily: FONTS.semibold, fontSize: 12, marginTop: 1, ...TABULAR_NUMS },
+  stockPrice: { fontFamily: FONTS.bold, fontSize: 14, color: COLORS.text },
+  stockChange: { fontFamily: FONTS.semibold, fontSize: 12, marginTop: 1 },
   ownedBadge: {
     backgroundColor: COLORS.primaryMuted,
     paddingHorizontal: 6,
@@ -703,8 +705,8 @@ const styles = createThemeStyles(() => ({
   detailMeta: { fontFamily: FONTS.medium, fontSize: 12, color: COLORS.textSecondary },
   changePill: { borderRadius: RADIUS.pill, paddingHorizontal: 10, paddingVertical: 4 },
   changePillText: { fontFamily: FONTS.bold, fontSize: 12 },
-  heroPrice: { fontFamily: FONTS.extrabold, fontSize: 34, color: COLORS.text, letterSpacing: -0.8, ...TABULAR_NUMS },
-  heroPriceNgn: { fontFamily: FONTS.semibold, fontSize: 14, color: COLORS.textSecondary, marginTop: 2, ...TABULAR_NUMS },
+  heroPrice: { fontFamily: FONTS.extrabold, fontSize: 34, color: COLORS.text, letterSpacing: -0.8 },
+  heroPriceNgn: { fontFamily: FONTS.semibold, fontSize: 14, color: COLORS.textSecondary, marginTop: 2 },
   rangeRow: { flexDirection: "row", gap: 8, marginTop: 12 },
   rangeChip: {
     flex: 1,

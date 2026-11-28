@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   AppState,
-  BackHandler,
   Linking,
   Modal,
   Platform,
@@ -16,7 +15,6 @@ import {
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import * as SecureStore from "expo-secure-store";
-import { Ionicons } from "@expo/vector-icons";
 import { api } from "../api/client";
 import { getDocumentPicker, getImagePicker, getLegacyFileSystem } from "../nativeModules";
 import { toUserError } from "../utils/errors";
@@ -31,7 +29,7 @@ import type {
 import { useApp } from "../state/AppContext";
 import { useTheme } from "../state/ThemeContext";
 import { useAutoOtaUpdates } from "../hooks/useAutoOtaUpdates";
-import { COLORS, RADIUS, SPACING, FONTS, TABULAR_NUMS, TYPE, createThemeStyles } from "../theme";
+import { COLORS, SPACING, FONTS, createThemeStyles } from "../theme";
 import {
   Button,
   Card,
@@ -40,14 +38,10 @@ import {
   formatUsdc,
   Input,
   KeyValueRow,
-  ListRow,
   Pill,
   SectionHeader,
-  SegmentedControl,
-  StatusBadge,
   SuccessBanner,
 } from "../components/UI";
-import { PressableScale } from "../components/Touch";
 import { EditableAvatar } from "../components/Avatar";
 
 type ProfileTab = "general" | "kyc" | "security" | "contacts" | "schedules" | "rewards";
@@ -140,29 +134,9 @@ export function ProfileScreen({
   const isBiz = activeAccount === "business";
   const ota = useAutoOtaUpdates();
   const [tab, setTab] = useState<ProfileTab>(initialTab);
-  const [viewMode, setViewMode] = useState<"menu" | ProfileTab>(
-    initialVerifyMode || initialTab !== "general" ? initialTab : "menu"
-  );
   useEffect(() => {
     setTab(initialTab);
-    if (initialVerifyMode || initialTab !== "general") {
-      setViewMode(initialTab);
-    } else {
-      setViewMode("menu");
-    }
-  }, [initialTab, initialVerifyMode]);
-  const openSection = (next: ProfileTab) => {
-    setTab(next);
-    setViewMode(next);
-  };
-  useEffect(() => {
-    if (viewMode === "menu") return;
-    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
-      setViewMode("menu");
-      return true;
-    });
-    return () => sub.remove();
-  }, [viewMode]);
+  }, [initialTab]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -393,7 +367,7 @@ export function ProfileScreen({
         if (d.officerNin) setOfficerNin((prev) => prev || d.officerNin);
         if (d.officerSsn) setOfficerSsn((prev) => prev || d.officerSsn);
       })
-      .catch(() => { });
+      .catch(() => {});
     syncStagedServerDocs();
   }, [tab, syncStagedServerDocs]);
 
@@ -408,7 +382,7 @@ export function ProfileScreen({
           name: status.name || target.label,
         });
         setPendingUpload(null);
-        SecureStore.deleteItemAsync(KYC_PENDING_UPLOAD_KEY).catch(() => { });
+        SecureStore.deleteItemAsync(KYC_PENDING_UPLOAD_KEY).catch(() => {});
         setNotice(`${target.label} attached!`);
         setError(null);
       }
@@ -427,10 +401,10 @@ export function ProfileScreen({
           setPendingUpload((prev) => prev || { sessionId: p.sessionId, slot: p.slot, label: p.label || p.slot });
           checkPendingUpload({ sessionId: p.sessionId, slot: p.slot, label: p.label || p.slot });
         } else {
-          SecureStore.deleteItemAsync(KYC_PENDING_UPLOAD_KEY).catch(() => { });
+          SecureStore.deleteItemAsync(KYC_PENDING_UPLOAD_KEY).catch(() => {});
         }
       })
-      .catch(() => { });
+      .catch(() => {});
     const sub = AppState.addEventListener("change", (nextState) => {
       if (nextState === "active") {
         if (pendingUpload) checkPendingUpload(pendingUpload);
@@ -439,8 +413,8 @@ export function ProfileScreen({
     });
     const timer = pendingUpload
       ? setInterval(() => {
-        checkPendingUpload(pendingUpload);
-      }, 3000)
+          checkPendingUpload(pendingUpload);
+        }, 3000)
       : null;
     return () => {
       sub.remove();
@@ -457,7 +431,7 @@ export function ProfileScreen({
       const sess = await api.createKycUploadSession(slot, label);
       const pending = { sessionId: sess.sessionId, slot, label };
       setPendingUpload(pending);
-      SecureStore.setItemAsync(KYC_PENDING_UPLOAD_KEY, JSON.stringify({ ...pending, ts: Date.now() })).catch(() => { });
+      SecureStore.setItemAsync(KYC_PENDING_UPLOAD_KEY, JSON.stringify({ ...pending, ts: Date.now() })).catch(() => {});
       await Linking.openURL(sess.uploadUrl);
       setNotice(`Secure uploader opened for "${label}". Upload your file there and switch back to Proxim.`);
     } catch (err) {
@@ -581,14 +555,14 @@ export function ProfileScreen({
     }
     const mimes = allowDocs
       ? [
-        "application/pdf",
-        "application/msword",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "image/jpeg",
-        "image/jpg",
-        "image/png",
-        "image/webp",
-      ]
+          "application/pdf",
+          "application/msword",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "image/jpeg",
+          "image/jpg",
+          "image/png",
+          "image/webp",
+        ]
       : ["application/pdf", "image/jpeg", "image/jpg", "image/png", "image/webp"];
     Alert.alert(title, allowDocs ? "Choose how to attach this document (PDF, DOCX, or Photo):" : "Choose how to attach this document (PDF, JPG, or PNG):", [
       { text: "Cancel", style: "cancel" },
@@ -612,7 +586,7 @@ export function ProfileScreen({
           {title} {opts?.required ? "*" : "(optional)"}
         </Text>
         <Text style={[styles.rowSub, picked ? { color: COLORS.primary } : null]} numberOfLines={2}>
-          {picked ? `Attached: ${picked.name}` : hint}
+          {picked ? `✅ Attached: ${picked.name}` : hint}
         </Text>
       </View>
       <View style={{ flexDirection: "row", gap: 6 }}>
@@ -666,7 +640,7 @@ export function ProfileScreen({
         } else if (tab === "kyc") {
           const kycRes = await api.getKycStatus();
           setKyc(kycRes);
-          refreshMe().catch(() => { });
+          refreshMe().catch(() => {});
         } else if (tab === "security") {
           const r = await api.listDevices();
           setDevices(r.devices || []);
@@ -854,7 +828,7 @@ export function ProfileScreen({
       });
       setNotice(`Personal KYC submitted! (Status: ${res.status.toUpperCase()}).`);
       setKycFormOpen(false);
-      SecureStore.deleteItemAsync(KYC_DRAFT_STORE_KEY).catch(() => { });
+      SecureStore.deleteItemAsync(KYC_DRAFT_STORE_KEY).catch(() => {});
       loadTab(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Verification submission failed.");
@@ -1034,7 +1008,7 @@ export function ProfileScreen({
       });
       setNotice(`Business KYB submitted! (Status: ${res.status.toUpperCase()}).`);
       setKybFormOpen(false);
-      SecureStore.deleteItemAsync(KYC_DRAFT_STORE_KEY).catch(() => { });
+      SecureStore.deleteItemAsync(KYC_DRAFT_STORE_KEY).catch(() => {});
       loadTab(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Business verification submission failed.");
@@ -1227,149 +1201,6 @@ export function ProfileScreen({
     }
   };
 
-  const isVerified = isBiz
-    ? Number(user?.businessKycTier ?? 0) >= 1
-    : Number(user?.personalKycTier ?? user?.kycTier ?? 0) >= 1;
-
-  const sectionMeta: Record<ProfileTab, string> = {
-    general: "Account & Preferences",
-    kyc: "Identity Verification",
-    security: "Security & Passkeys",
-    contacts: "Saved Recipients",
-    schedules: "Scheduled Payments",
-    rewards: "Rewards & Referrals",
-  };
-
-  if (viewMode === "menu") {
-    return (
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.content}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={() => loadTab(true)} tintColor={COLORS.primary} />
-        }
-        keyboardShouldPersistTaps="handled"
-      >
-        <View style={styles.profileHero}>
-          <EditableAvatar size={84} />
-          <Text style={styles.profileHeroName}>
-            {isBiz
-              ? user?.bizSenderName || "Business Account"
-              : user?.senderName || (user?.username ? `@${user.username}` : "Your profile")}
-          </Text>
-          <View style={styles.profileHeroMeta}>
-            {user?.username ? <Text style={styles.profileHandle}>@{user.username}</Text> : null}
-            <StatusBadge
-              label={isVerified ? "Verified" : "Unverified"}
-              icon={isVerified ? "checkmark-circle" : "shield-outline"}
-              tone={isVerified ? "success" : "warning"}
-            />
-          </View>
-        </View>
-
-        <ErrorBanner message={error} onDismiss={() => setError(null)} />
-        <SuccessBanner message={notice} onDismiss={() => setNotice(null)} />
-
-        {/* 1-tap Appearance Switcher */}
-        <Text style={styles.menuGroupLabel}>Appearance</Text>
-        <SegmentedControl<"system" | "light" | "dark">
-          value={themePreference}
-          onChange={setThemePreference}
-          options={[
-            { value: "system", label: "System", icon: "phone-portrait-outline" },
-            { value: "light", label: "Light", icon: "sunny-outline" },
-            { value: "dark", label: "Dark", icon: "moon-outline" },
-          ]}
-        />
-
-        {/* Account & Security Group */}
-        <Text style={styles.menuGroupLabel}>Account</Text>
-        <Card style={styles.menuCard}>
-          <ListRow
-            icon="person-outline"
-            title="Account & Preferences"
-            subtitle="Username, payout names, Auto-Save & settlement"
-            onPress={() => openSection("general")}
-          />
-          <ListRow
-            icon="shield-checkmark-outline"
-            title="Identity Verification"
-            subtitle={isBiz ? "Personal KYC & Business KYB limits" : "Unlock USD, GBP, EUR accounts & cards"}
-            right={
-              <StatusBadge
-                label={isVerified ? "Verified" : "Action"}
-                tone={isVerified ? "success" : "warning"}
-              />
-            }
-            onPress={() => openSection("kyc")}
-          />
-          <ListRow
-            icon="lock-closed-outline"
-            title="Security & Passkeys"
-            subtitle="Transaction PIN, devices & recovery key"
-            onPress={() => openSection("security")}
-            last
-          />
-        </Card>
-
-        {/* Payments & Rewards Group */}
-        <Text style={styles.menuGroupLabel}>Payments &amp; Perks</Text>
-        <Card style={styles.menuCard}>
-          <ListRow
-            icon="people-outline"
-            title="Saved Recipients"
-            subtitle="Bank accounts & Proxim contacts"
-            onPress={() => openSection("contacts")}
-          />
-          <ListRow
-            icon="calendar-outline"
-            title="Scheduled Payments"
-            subtitle="Recurring transfers & automation"
-            onPress={() => openSection("schedules")}
-          />
-          <ListRow
-            icon="gift-outline"
-            title="Rewards & Referrals"
-            subtitle="Invite friends & redeem points"
-            onPress={() => openSection("rewards")}
-            last
-          />
-        </Card>
-
-        {/* Quick Actions Group */}
-        <Text style={styles.menuGroupLabel}>Support &amp; Session</Text>
-        <Card style={styles.menuCard}>
-          <ListRow
-            icon="document-text-outline"
-            title={`Export ${isBiz ? "Business" : "Personal"} Statement`}
-            subtitle="Download CSV transaction history"
-            onPress={handleExportCsv}
-          />
-          <ListRow
-            icon="mail-outline"
-            title="Contact Support"
-            subtitle="info@proximfi.xyz · Telegram @payeetbot"
-            onPress={() => Linking.openURL("mailto:info@proximfi.xyz?subject=Proxim%20Support")}
-          />
-          <ListRow
-            icon="log-out-outline"
-            title="Sign Out"
-            subtitle="Sign out on this device"
-            danger
-            showChevron={false}
-            onPress={() =>
-              Alert.alert("Sign Out", "Sign out of Proxim on this device?", [
-                { text: "Cancel", style: "cancel" },
-                { text: "Sign Out", style: "destructive", onPress: () => signOut() },
-              ])
-            }
-            last
-          />
-        </Card>
-      </ScrollView>
-    );
-  }
-
   return (
     <ScrollView
       style={styles.scroll}
@@ -1379,21 +1210,27 @@ export function ProfileScreen({
       }
       keyboardShouldPersistTaps="handled"
     >
-      <View style={styles.subViewBar}>
-        <PressableScale
-          onPress={() => setViewMode("menu")}
-          haptic="selection"
-          style={styles.subBackBtn}
-          accessibilityRole="button"
-          accessibilityLabel="Back to settings"
-        >
-          <Ionicons name="chevron-back" size={18} color={COLORS.text} />
-          <Text style={styles.subBackText}>Settings</Text>
-        </PressableScale>
-        <Text style={styles.subViewTitle} numberOfLines={1}>
-          {sectionMeta[tab]}
+      <View style={{ alignItems: "center", gap: 6, marginBottom: 16 }}>
+        <EditableAvatar size={96} />
+        <Text style={{ fontFamily: FONTS.bold, fontSize: 20, color: COLORS.text, marginTop: 6 }}>
+          {isBiz
+            ? user?.bizSenderName || "Business Account"
+            : user?.senderName || (user?.username ? `@${user.username}` : "Your profile")}
+        </Text>
+        <Text style={{ fontFamily: FONTS.medium, fontSize: 13, color: isBiz ? COLORS.business : COLORS.textSecondary }}>
+          {isBiz ? "Business Workspace · Tap photo to change" : "Personal Account · Tap photo to change"}
         </Text>
       </View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 14 }}>
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <Pill label="Profile" active={tab === "general"} onPress={() => setTab("general")} />
+          <Pill label="Verify ID" active={tab === "kyc"} onPress={() => setTab("kyc")} />
+          <Pill label="Security" active={tab === "security"} onPress={() => setTab("security")} />
+          <Pill label="Contacts" active={tab === "contacts"} onPress={() => setTab("contacts")} />
+          <Pill label="Schedules" active={tab === "schedules"} onPress={() => setTab("schedules")} />
+          <Pill label="Rewards" active={tab === "rewards"} onPress={() => setTab("rewards")} />
+        </View>
+      </ScrollView>
 
       <ErrorBanner message={error} onDismiss={() => setError(null)} />
       <SuccessBanner message={notice} onDismiss={() => setNotice(null)} />
@@ -1456,7 +1293,7 @@ export function ProfileScreen({
             <View style={{ marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: COLORS.border }}>
               <Text style={styles.rowTitle}>Verified Deposit Settlement</Text>
               <Text style={[styles.rowSub, { marginBottom: 8 }]}>
-                Choose whether incoming bank deposits remain in their local currency or auto-convert to USD (0% deposit fee).
+                Choose whether verified local currency deposits stay in their currency or auto-convert to USDC (0% deposit fee).
               </Text>
               <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
                 <Pill
@@ -1465,7 +1302,7 @@ export function ProfileScreen({
                   onPress={() => handleChangeSettlementMode("local")}
                 />
                 <Pill
-                  label="Auto-settle in USD"
+                  label="Auto-settle in USDC"
                   active={user?.depositSettlementMode === "usdc"}
                   onPress={() => handleChangeSettlementMode("usdc")}
                 />
@@ -1612,7 +1449,7 @@ export function ProfileScreen({
                   label="Personal KYC Status"
                   value={
                     kyc.personal.status === "approved" || kyc.personal.tier >= 1
-                      ? "Verified"
+                      ? "VERIFIED ✅"
                       : kyc.personal.status === "pending" || kyc.personal.status === "incomplete"
                         ? "UNDER REVIEW ⏳"
                         : kyc.personal.status === "rejected" || kyc.personal.status === "failed"
@@ -1625,7 +1462,7 @@ export function ProfileScreen({
                   value={
                     user?.hasBusinessAccount
                       ? kyc.business.status === "approved" || kyc.business.tier >= 1
-                        ? "Verified"
+                        ? "VERIFIED ✅"
                         : kyc.business.status === "pending" || kyc.business.status === "incomplete"
                           ? "UNDER REVIEW ⏳"
                           : kyc.business.status === "rejected" || kyc.business.status === "failed"
@@ -1671,7 +1508,7 @@ export function ProfileScreen({
                   <Text style={[styles.rowSub, { color: COLORS.business, fontFamily: FONTS.bold }]}>
                     {kyc
                       ? kyc.business.status === "approved" || kyc.business.tier >= 1
-                        ? "Verified"
+                        ? "VERIFIED ✅"
                         : kyc.business.status === "pending" || kyc.business.status === "incomplete"
                           ? "Under Review ⏳"
                           : "Verify KYB"
@@ -1807,7 +1644,7 @@ export function ProfileScreen({
                 <Text style={[styles.rowSub, { color: COLORS.primary, fontFamily: FONTS.bold }]}>
                   {kyc
                     ? kyc.personal.status === "approved" || kyc.personal.tier >= 1
-                      ? "Verified"
+                      ? "VERIFIED ✅"
                       : kyc.personal.status === "pending" || kyc.personal.status === "incomplete"
                         ? "Under Review ⏳"
                         : "Verify KYC"
@@ -1907,7 +1744,7 @@ export function ProfileScreen({
                   <Text style={[styles.rowSub, { color: COLORS.business, fontFamily: FONTS.bold }]}>
                     {kyc
                       ? kyc.business.status === "approved" || kyc.business.tier >= 1
-                        ? "Verified"
+                        ? "VERIFIED ✅"
                         : kyc.business.status === "pending" || kyc.business.status === "incomplete"
                           ? "Under Review ⏳"
                           : "Verify KYB"
@@ -2309,65 +2146,7 @@ const styles = createThemeStyles(() => ({
   rowTitle: { color: COLORS.text, fontSize: 14, fontFamily: FONTS.semibold },
   rowSub: { color: COLORS.textSecondary, fontFamily: FONTS.regular, fontSize: 12, marginTop: 2 },
   sectionSubHead: { color: COLORS.text, fontSize: 13, fontFamily: FONTS.bold, marginTop: 12, marginBottom: 8 },
-  pointsHero: { color: COLORS.primary, fontSize: 32, fontFamily: FONTS.extrabold, ...TABULAR_NUMS },
-  profileHero: {
-    alignItems: "center",
-    gap: 6,
-    marginBottom: 16,
-    paddingTop: 4,
-  },
-  profileHeroName: {
-    ...TYPE.title,
-    color: COLORS.text,
-    marginTop: 4,
-  },
-  profileHeroMeta: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  profileHandle: {
-    ...TYPE.label,
-    color: COLORS.textSecondary,
-  },
-  menuGroupLabel: {
-    ...TYPE.overline,
-    color: COLORS.textMuted,
-    marginBottom: 8,
-    marginTop: 4,
-    paddingHorizontal: 2,
-  },
-  menuCard: {
-    padding: 0,
-  },
-  subViewBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    marginBottom: 14,
-  },
-  subBackBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 3,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: RADIUS.pill,
-    backgroundColor: COLORS.surface,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  subBackText: {
-    ...TYPE.label,
-    fontFamily: FONTS.bold,
-    color: COLORS.text,
-  },
-  subViewTitle: {
-    ...TYPE.headline,
-    fontFamily: FONTS.extrabold,
-    color: COLORS.text,
-    flex: 1,
-  },
+  pointsHero: { color: COLORS.primary, fontSize: 32, fontFamily: FONTS.extrabold },
   modalBackdrop: {
     flex: 1,
     backgroundColor: "rgba(15, 23, 42, 0.72)",
