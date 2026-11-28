@@ -150,10 +150,89 @@ function firstNonEmpty(values, max = 140) {
   return null;
 }
 
+const NIBSS_BANK_NAMES = {
+  "000001": "Sterling Bank",
+  "000002": "Keystone Bank",
+  "000003": "FCMB",
+  "000004": "UBA",
+  "000005": "Access Bank (Diamond)",
+  "000006": "Jaiz Bank",
+  "000007": "Fidelity Bank",
+  "000008": "Polaris Bank",
+  "000009": "Citi Bank",
+  "000010": "Ecobank",
+  "000011": "Unity Bank",
+  "000012": "Stanbic IBTC Bank",
+  "000013": "GTBank",
+  "000014": "Access Bank",
+  "000015": "Zenith Bank",
+  "000016": "First Bank",
+  "000017": "Wema Bank",
+  "000018": "Union Bank",
+  "000019": "Enterprise Bank",
+  "000020": "Heritage Bank",
+  "000021": "Standard Chartered",
+  "000022": "SunTrust Bank",
+  "000023": "Providus Bank",
+  "000024": "Rand Merchant Bank",
+  "000025": "Titan Trust Bank",
+  "000026": "Taj Bank",
+  "000027": "Globus Bank",
+  "000029": "Lotus Bank",
+  "000030": "Parallex Bank",
+  "000031": "PremiumTrust Bank",
+  "000034": "Signature Bank",
+  "000036": "Optimus Bank",
+  "090110": "VFD MFB",
+  "090175": "Rubies MFB",
+  "090177": "Carbon",
+  "090267": "Kuda Bank",
+  "090286": "SafeHaven MFB",
+  "090325": "Sparkle",
+  "090405": "Moniepoint MFB",
+  "090409": "FCMB Easy Account",
+  "090551": "FairMoney MFB",
+  "090701": "Dot MFB",
+  "100002": "Paga",
+  "100004": "OPay",
+  "100022": "GoMoney",
+  "100033": "PalmPay",
+  "100039": "Paystack-Titan",
+  "110007": "Carbon",
+};
+
+function decodeNibssBankFromReference(ref) {
+  const s = cleanStr(ref, 64);
+  if (!s) return null;
+  // Standard Nigerian NIP Session ID is 30 digits: first 6 digits = originating bank NIBSS code
+  const m = s.match(/^(\d{6})\d{14,30}$/);
+  if (!m) return null;
+  return NIBSS_BANK_NAMES[m[1]] || null;
+}
+
+function extractSenderNameFromNarration(narration) {
+  const raw = cleanStr(narration, 120);
+  if (!raw) return null;
+  // Ignore generic system / invoice / fee narrations
+  if (/^(ngn|usd|gbp|eur|cad|aed|ghs|kes|tzs)\s+deposit/i.test(raw)) return null;
+  if (/^(proxim|fx\s+spread|outstanding|monthly|deposit|transfer|payment|payout|bill|card|swap|auto[- ]?save|held\s+in|inv-[a-z0-9]+)/i.test(raw)) return null;
+  // Common Nigerian NIP narration formats: "NIP/ADAORA EZE/...", "TRF FROM CHINEDU OKAFOR", or plain sender full name ("Igboze Iboh Igboze")
+  const nipSlash = raw.match(/^NIP\/([^/]{3,60})/i);
+  if (nipSlash && nipSlash[1]) return cleanStr(nipSlash[1], 80);
+  const fromMatch = raw.match(/^(?:TRF\s+FROM|TRANSFER\s+FROM|FROM|BY)\s+([A-Za-z][A-Za-z0-9 .,'&-]{2,60})$/i);
+  if (fromMatch && fromMatch[1]) return cleanStr(fromMatch[1], 80);
+  // Plain sender full name (2-5 alphabetic/company words, no digits/URLs/codes)
+  if (/^[A-Za-z][A-Za-z .,'&-]{2,60}$/.test(raw) && raw.split(/\s+/).length >= 2 && raw.split(/\s+/).length <= 6) {
+    return raw;
+  }
+  return null;
+}
+
 /**
  * Extract structured sender / originator bank details from any Nuvion or Paj inbound
  * transfer payload (handles top-level fields, nested sender/originator/source/debtor/
- * payer/counterparty/meta/supplementary_data objects across NIP, ACH, FPS, SEPA, Wire, MoMo).
+ * payer/counterparty/meta/supplementary_data objects across NIP, ACH, FPS, SEPA, Wire, MoMo,
+ * PLUS live Nigerian NIBSS NIP Session ID bank decoding and sender-name narration fallback).
  */
 function extractInboundSenderDetails(payload) {
   if (!payload || typeof payload !== "object") {
@@ -335,7 +414,24 @@ function extractInboundSenderDetails(payload) {
     ])),
   ]);
 
-  return { name, bank, account };
+  let finalBank = bank;
+  if (!finalBank) {
+    finalBank = firstNonEmpty([
+      decodeNibssBankFromReference(payload.unique_reference),
+      decodeNibssBankFromReference(meta.provider_reference),
+      decodeNibssBankFromReference(payload.provider_reference),
+      decodeNibssBankFromReference(payload.reference),
+      decodeNibssBankFromReference(payload.session_id),
+      decodeNibssBankFromReference(payload.sessionId),
+    ]);
+  }
+
+  let finalName = name;
+  if (!finalName && payload.narration) {
+    finalName = extractSenderNameFromNarration(payload.narration);
+  }
+
+  return { name: finalName, bank: finalBank, account };
 }
 
 /**

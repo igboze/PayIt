@@ -1323,6 +1323,35 @@ test("Counterparty capture (Nuvion/Paj credits & debits), receipt SVG rendering,
   assert.equal(fromPaj.bank, "Access Bank");
   assert.equal(fromPaj.account, "0098765432");
 
+  // 1b. Live Nuvion Nigerian NIP inflow format: sender name in narration + 6-digit NIBSS bank code in unique_reference
+  const fromLiveNuvionOpay = statement.extractInboundSenderDetails({
+    id: "01M8BR7N6V1H5ANC7R6V29CG6T",
+    currency: "NGN",
+    amount: 160000,
+    narration: "Samson Igboze",
+    unique_reference: "100004261126110043178698924913",
+    meta: { provider_reference: "100004261126110043178698924913" },
+  });
+  assert.equal(fromLiveNuvionOpay.name, "Samson Igboze");
+  assert.equal(fromLiveNuvionOpay.bank, "OPay");
+
+  const fromLiveNuvionMoniepoint = statement.extractInboundSenderDetails({
+    id: "01M89PG8CYKDGB8008E4H38P0B",
+    currency: "NGN",
+    amount: 146500,
+    narration: "Igboze Iboh Igboze",
+    unique_reference: "090405261125165159328246406647",
+  });
+  assert.equal(fromLiveNuvionMoniepoint.name, "Igboze Iboh Igboze");
+  assert.equal(fromLiveNuvionMoniepoint.bank, "Moniepoint MFB");
+
+  const genericNarration = statement.extractInboundSenderDetails({
+    id: "01M_GENERIC",
+    currency: "NGN",
+    narration: "NGN deposit (held in NGN)",
+  });
+  assert.equal(genericNarration.name, null, "Generic system narration must not be mistaken for sender name");
+
   // 2. End-to-end Nuvion local-currency deposit persists sender bank/account on transactions & receipt
   const { ethers } = require("ethers");
   const stmtTg = 777444222;

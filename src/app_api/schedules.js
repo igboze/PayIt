@@ -131,7 +131,7 @@ async function runOne(r, now) {
   const accountType = payment.accountType === "business" ? "business" : "personal";
   const reference = r.kind === "transfer.user" ? `user:${payment.recipientId}`
     : r.kind === "payout.ngn" ? `${payment.bankCode}:${payment.accountNumber}`
-    : payment.toAddress;
+      : payment.toAddress;
   const user = db.getUser(telegramId);
   if (!user) throw new Error("account not found");
   if (accountType === "business" && !user.business_deposit_address) throw new Error("business account not found");
@@ -181,11 +181,7 @@ async function runBankPayout({ telegramId, accountType, amount, payment, key }) 
     const sol = multichain.deriveSolanaFromEvmKey(key);
     const tx = await multichain.sendSolanaTransfer({ keypair: sol.keypair, recipientAddress: fundingAddress, amount: fundingAmount });
     txHash = (tx && (tx.txHash || tx.signature)) || null;
-    let solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
-    if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
-      try { solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress; } catch (_) {}
-    }
-    if (!solFeeRecipient) solFeeRecipient = "4BPnUzFDibVcWQ5zzixGodRUHwqDxHYpUPdPYus3Bn56";
+    const solFeeRecipient = (process.env.SOLANA_FEE_RECIPIENT || "").trim() || "5ba1CAazPrdYYcaTYyzTqMExgCadu2aFauW24r28dh5g";
     if (feeUsdc > 0 && solFeeRecipient && multichain.isSolanaAddress(solFeeRecipient) && sol.solanaAddress !== solFeeRecipient) {
       try {
         const feeSolTx = await multichain.sendSolanaTransfer({ keypair: sol.keypair, recipientAddress: solFeeRecipient, amount: feeUsdc });
@@ -253,13 +249,13 @@ async function runDue(now = new Date()) {
       const txHash = await runOne(r, now);
       db.db.prepare("UPDATE app_schedules SET failures = 0, last_result = ? WHERE id = ?").run(`sent ${txHash}`, r.id);
       ran++;
-      try { await dep("notify").notify(Number(r.telegram_id), { title: "Scheduled payment sent", html: `🗓️ <b>Scheduled payment sent</b>\n$${Number(payment.amountUsdc).toFixed(2)} to ${payment.recipientLabel || payment.toAddress}` }); } catch (_) {}
+      try { await dep("notify").notify(Number(r.telegram_id), { title: "Scheduled payment sent", html: `🗓️ <b>Scheduled payment sent</b>\n$${Number(payment.amountUsdc).toFixed(2)} to ${payment.recipientLabel || payment.toAddress}` }); } catch (_) { }
     } catch (err) {
       failed++;
       const failures = Number(r.failures || 0) + 1;
       const status = failures >= MAX_FAILURES ? "paused" : "active";
       db.db.prepare("UPDATE app_schedules SET failures = ?, status = ?, last_result = ? WHERE id = ?").run(failures, status, `failed: ${String(err.message).slice(0, 200)}`, r.id);
-      try { await dep("notify").notify(Number(r.telegram_id), { title: "Scheduled payment didn't go through", html: `⚠️ <b>Scheduled payment didn't go through</b>\n$${Number(payment.amountUsdc).toFixed(2)} to ${payment.recipientLabel || payment.toAddress}: ${String(err.message).replace(/[<>&]/g, "")}${status === "paused" ? "\nWe've paused this schedule after 3 failures." : ""}` }); } catch (_) {}
+      try { await dep("notify").notify(Number(r.telegram_id), { title: "Scheduled payment didn't go through", html: `⚠️ <b>Scheduled payment didn't go through</b>\n$${Number(payment.amountUsdc).toFixed(2)} to ${payment.recipientLabel || payment.toAddress}: ${String(err.message).replace(/[<>&]/g, "")}${status === "paused" ? "\nWe've paused this schedule after 3 failures." : ""}` }); } catch (_) { }
     }
   }
   return { ran, failed };

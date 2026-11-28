@@ -5113,13 +5113,7 @@ bot.action(/^action_check_paj_onramp(?:_(.+))?$/, async (ctx) => {
           console.warn("[bot:action_check_paj_onramp_fee_note]", feeErr.message);
         }
       } else if (claimedFeeRight && !isSettledOnArc && user && feeUsdc > 0.0001) {
-        let solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
-        if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
-          try {
-            solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress;
-          } catch { }
-        }
-        if (!solFeeRecipient) solFeeRecipient = "4BPnUzFDibVcWQ5zzixGodRUHwqDxHYpUPdPYus3Bn56";
+        const solFeeRecipient = (process.env.SOLANA_FEE_RECIPIENT || "").trim() || "5ba1CAazPrdYYcaTYyzTqMExgCadu2aFauW24r28dh5g";
         if (solFeeRecipient && multichain.isSolanaAddress(solFeeRecipient)) {
           try {
             const encryptedKey = isBiz

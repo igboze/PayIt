@@ -500,69 +500,66 @@ async function executeOfframp(userWallet, amountUsdc, bankDetails, telegramId, l
         throw new Error(`Solana transfer could not be completed${detail}`);
       }
 
-      // Route 1% fee on Solana if a Solana fee recipient is configured or derive from deployer key
-      let solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
-      if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
-        try {
-          solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress;
-        } catch {}
-      }
-      if (!solFeeRecipient) solFeeRecipient = "4BPnUzFDibVcWQ5zzixGodRUHwqDxHYpUPdPYus3Bn56";
-      if (solFeeRecipient && feeUsdc > 0 && multichain.isSolanaAddress(solFeeRecipient)) {
-        try {
-          const feeSolTx = await multichain.sendSolanaTransfer({
-            keypair: solData.keypair,
-            recipientAddress: solFeeRecipient,
-            amount: feeUsdc,
-          });
-          if (feeSolTx && feeSolTx.success !== false && (feeSolTx.txHash || feeSolTx.signature)) {
-            feeTxHash = feeSolTx.txHash || feeSolTx.signature;
-            console.log(`[executor:offramp:solana] Routed 1% fee on Solana ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
-          } else {
-            console.warn("[executor:offramp:solana_fee_error]", feeSolTx?.error || "Transfer failed");
+      // Route 1% fee on Solana to unified Solana treasury wallet
+      const solFeeRecipient = (process.env.SOLANA_FEE_RECIPIENT || "").trim() || "5ba1CAazPrdYYcaTYyzTqMExgCadu2aFauW24r28dh5g";
+      if (solFeeRecipient && feeUsdc > 0 && multichain.isSolanaAddress(solFeeRecipient) && solData.solanaAddress !== solFeeRecipient) {
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          try {
+            const feeSolTx = await multichain.sendSolanaTransfer({
+              keypair: solData.keypair,
+              recipientAddress: solFeeRecipient,
+              amount: feeUsdc,
+            });
+            if (feeSolTx && feeSolTx.success !== false && (feeSolTx.txHash || feeSolTx.signature)) {
+              feeTxHash = feeSolTx.txHash || feeSolTx.signature;
+              console.log(`[executor:offramp:solana] Routed 1% fee on Solana ($${feeUsdc} USDC) -> ${solFeeRecipient} (tx: ${feeTxHash})`);
+              break;
+            }
+            console.error(`[executor:offramp:solana_fee_error] attempt ${attempt}/2:`, feeSolTx?.error || "Transfer failed");
+          } catch (feeErr) {
+            console.error(`[executor:offramp:solana_fee_error] attempt ${attempt}/2:`, feeErr.message);
           }
-        } catch (feeErr) {
-          console.warn("[executor:offramp:solana_fee_note]", feeErr.message);
+          if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
         }
       }
 
     } else {
-      // Arc rail: plain native-USDC transfer of exact Paj order amount (or netMicro) to Paj order address
+      // Arc rail: plain native-USDC transfer of exact Paj order amount (or netMicro) to Paj order address.
+      // CRITICAL: Wait for confirmation on payout tx BEFORE sending fee tx so nonces & post-tx balances never race on Arc!
       const effectiveArcSendUsdc = (result && Number(result.amount) > 0) ? Number(result.amount) : netAmountUsdc;
       const effectiveArcSendMicro = walletLib.parseToMicro(effectiveArcSendUsdc.toFixed(6));
-      let baseNonce = null;
-      try {
-        if (typeof userWallet.getNonce === "function") {
-          baseNonce = await userWallet.getNonce("latest");
-        }
-      } catch {}
 
       txHash = await walletLib.sendFromWallet(userWallet, targetAddress, effectiveArcSendMicro, {
-        nonce: baseNonce != null ? baseNonce : undefined,
+        waitForConfirmation: true,
       });
 
-      // Route 1% platform fee directly to APP_FEE_RECIPIENT_ADDRESS
+      // Route 1% platform fee directly to APP_FEE_RECIPIENT_ADDRESS with fresh confirmed balance & nonce
       if (feeMicro > 0n && feeRecipient && walletLib.isValidAddress(feeRecipient) && userWallet.address.toLowerCase() !== feeRecipient.toLowerCase()) {
-        try {
-          let actualFeeMicro = feeMicro;
+        const maxAttempts = process.env.NODE_ENV === "test" ? 1 : 2;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
           try {
-            const currentBalMicro = await walletLib.getNativeBalanceMicro(userWallet.address);
-            // Real Arc gas buffer: 0.002 USDC (2e15 wei in 18 decimals) to ensure intrinsic gas fee can be paid
-            const minGasBufferMicro = walletLib.parseToMicro("0.002");
-            if (currentBalMicro < actualFeeMicro + minGasBufferMicro) {
-              actualFeeMicro = currentBalMicro > minGasBufferMicro ? currentBalMicro - minGasBufferMicro : 0n;
-            }
-          } catch {}
+            let actualFeeMicro = feeMicro;
+            try {
+              const currentBalMicro = await walletLib.getNativeBalanceMicro(userWallet.address);
+              const minGasBufferMicro = walletLib.parseToMicro("0.002");
+              if (currentBalMicro < actualFeeMicro + minGasBufferMicro) {
+                actualFeeMicro = currentBalMicro > minGasBufferMicro ? currentBalMicro - minGasBufferMicro : 0n;
+              }
+            } catch {}
 
-          if (actualFeeMicro > 0n) {
-            const nextNonce = baseNonce != null ? baseNonce + 1 : undefined;
-            feeTxHash = await walletLib.sendFromWallet(userWallet, feeRecipient, actualFeeMicro, {
-              nonce: nextNonce,
-            });
-            console.log(`[executor:offramp] Collected $${walletLib.formatMicro(actualFeeMicro)} (1% trade fee) -> ${feeRecipient} (tx: ${feeTxHash})`);
+            if (actualFeeMicro > 0n) {
+              feeTxHash = await walletLib.sendFromWallet(userWallet, feeRecipient, actualFeeMicro, {
+                waitForConfirmation: true,
+              });
+              console.log(`[executor:offramp] Collected $${walletLib.formatMicro(actualFeeMicro)} (1% trade fee) -> ${feeRecipient} (tx: ${feeTxHash})`);
+            } else {
+              console.error(`[executor:offramp_fee_skipped] Post-payout Arc balance too low for $${walletLib.formatMicro(feeMicro)} fee on ${userWallet.address}`);
+            }
+            break;
+          } catch (feeErr) {
+            console.error(`[executor:offramp_fee_error] attempt ${attempt}/${maxAttempts}:`, feeErr.message);
+            if (attempt < maxAttempts) await new Promise((r) => setTimeout(r, 1500));
           }
-        } catch (feeErr) {
-          console.warn("[executor:offramp_fee_note]", feeErr.message);
         }
       }
     }

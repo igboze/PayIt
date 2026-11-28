@@ -85,7 +85,7 @@ async function pollPendingOnrampOrders(bot) {
       const status = String(orderData.status || "").toLowerCase();
       if (status === "completed" || status === "successful" || status === "paid" || status === "settled") {
         const txHash = orderData.txHash || orderData.signature || orderData.hash || `paj-settle-${order.order_id}`;
-        
+
         // 0.2% platform fee inside trade amount
         const amountUsdc = Number(orderData.amount || order.amount_usdc || 0);
         const feeUsdc = Number((amountUsdc * ONRAMP_PLATFORM_FEE_RATE).toFixed(4));
@@ -122,12 +122,7 @@ async function pollPendingOnrampOrders(bot) {
             }
           }
         } else if (!isArcOrder && user && feeUsdc >= 0.0001) {
-          let solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
-          if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY) {
-            try {
-              solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress;
-            } catch {}
-          }
+          const solFeeRecipient = (process.env.SOLANA_FEE_RECIPIENT || "").trim() || "5ba1CAazPrdYYcaTYyzTqMExgCadu2aFauW24r28dh5g";
           if (solFeeRecipient && multichain.isSolanaAddress(solFeeRecipient)) {
             const encryptedKey = isBiz
               ? (user.biz_system_encrypted_key || user.system_encrypted_key)
@@ -467,7 +462,7 @@ function watchOfframpOrder(orderId, bot, telegramId) {
             `Your funds are confirmed on-chain. The interbank network (NIBSS) is currently routing the Naira payout to your bank account.\n\n` +
             `<i>Ref: <code>${escapeHtml(orderId)}</code> · You will receive the delivery receipt once credited.</i>`,
             { parse_mode: "HTML" }
-          ).catch(() => {});
+          ).catch(() => { });
         }
 
         scheduleNext();
@@ -594,7 +589,7 @@ function startSettlementDaemon({ bot = null, tasks = null, tickMs = DEFAULT_TICK
     // Periodic ledger pruning (~every hour at 5s ticks)
     if (++_runsSincePrune >= 720) {
       _runsSincePrune = 0;
-      try { db.pruneSettlementRuns(500); } catch (_) {}
+      try { db.pruneSettlementRuns(500); } catch (_) { }
     }
   }, _tickMs);
   if (_timer.unref) _timer.unref();

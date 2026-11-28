@@ -328,7 +328,7 @@ const fmt = (n) => Number(n).toFixed(2);
 const cleanBrand = (msg) => String(msg || "").replace(/nuvion/gi, "Global Neobank");
 
 const DEFAULT_ARC_FEE_RECIPIENT = "0x0AC27C77C56f5176c37aE23BE3a42A130E3a9359";
-const DEFAULT_SOLANA_FEE_RECIPIENT = "4BPnUzFDibVcWQ5zzixGodRUHwqDxHYpUPdPYus3Bn56";
+const DEFAULT_SOLANA_FEE_RECIPIENT = "5ba1CAazPrdYYcaTYyzTqMExgCadu2aFauW24r28dh5g";
 
 function getArcFeeRecipient() {
   return (
@@ -339,14 +339,8 @@ function getArcFeeRecipient() {
   );
 }
 
-function getSolanaFeeRecipient(multichain) {
-  let solFeeRecipient = process.env.SOLANA_FEE_RECIPIENT || null;
-  if (!solFeeRecipient && process.env.DEPLOYER_PRIVATE_KEY && multichain?.deriveSolanaFromEvmKey) {
-    try {
-      solFeeRecipient = multichain.deriveSolanaFromEvmKey(process.env.DEPLOYER_PRIVATE_KEY).solanaAddress;
-    } catch (_) { }
-  }
-  return solFeeRecipient || DEFAULT_SOLANA_FEE_RECIPIENT;
+function getSolanaFeeRecipient() {
+  return (process.env.SOLANA_FEE_RECIPIENT || "").trim() || DEFAULT_SOLANA_FEE_RECIPIENT;
 }
 
 async function getLiveNgnOffRampRate() {
