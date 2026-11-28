@@ -63,6 +63,18 @@ function MainShell() {
   const [deepClaimToken, setDeepClaimToken] = useState("");
   const [billCategory, setBillCategory] = useState<BillCat>("airtime");
   const [applyingUpdate, setApplyingUpdate] = useState(false);
+  const overlayAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (overlay) {
+      overlayAnim.setValue(0);
+      Animated.timing(overlayAnim, {
+        toValue: 1,
+        duration: 180,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [overlay, overlayAnim]);
 
   // Tapping a Proxim notification in the phone tray opens the Notifications screen.
   const signedInAndUnlocked = Boolean(user) && !locked;
@@ -237,18 +249,6 @@ function MainShell() {
       setTab("profile");
     }
   };
-
-  const overlayAnim = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    if (overlay) {
-      overlayAnim.setValue(0);
-      Animated.timing(overlayAnim, {
-        toValue: 1,
-        duration: 180,
-        useNativeDriver: true,
-      }).start();
-    }
-  }, [overlay, overlayAnim]);
 
   const overlayView = overlay ? (
     <Animated.View

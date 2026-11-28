@@ -274,11 +274,15 @@ export function createThemeStyles<T extends NamedStyles<T>>(factory: () => T): T
     get(_target, prop) {
       return resolve()[prop as keyof T];
     },
+    has(_target, prop) {
+      return prop in resolve();
+    },
     ownKeys() {
       return Reflect.ownKeys(resolve());
     },
     getOwnPropertyDescriptor(_target, prop) {
-      return Object.getOwnPropertyDescriptor(resolve(), prop);
+      const desc = Object.getOwnPropertyDescriptor(resolve(), prop);
+      return desc ? { ...desc, configurable: true } : undefined;
     },
   });
 }
