@@ -33,11 +33,11 @@ type Recipient =
 
 // Initials avatars use solid brand pairs only (text, fill).
 const AVATAR_TONES = [
-  ["#002018", "#E0A82E"],
-  ["#E0A82E", "#002018"],
-  ["#002018", "#F6E7BF"],
-  ["#002018", "#EDE7DA"],
-  ["#FFFFFF", "#007840"],
+  ["#FFFFFF", "#002018"],
+  ["#FFFFFF", "#007F4F"],
+  ["#FFFFFF", "#0F172A"],
+  ["#002018", "#DFF2E8"],
+  ["#002018", "#E6EEEA"],
 ] as const;
 
 function initials(name: string): string {

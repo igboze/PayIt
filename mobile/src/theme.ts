@@ -1,66 +1,68 @@
-// Proxim Mobile App — design tokens (Forest & Gold). Warm stone page, white cards, a solid
-// Proxim Forest balance header and gold main actions; type, radii and spacing follow the canvas.
+// Proxim Mobile App — design tokens (Proxim Forest & Crisp Emerald).
+// Hard, architectural neobank palette: cool mineral mist canvas, solid white cards with 1px
+// hairline borders, deep Proxim Forest hero, hard institutional emerald actions, and Midnight
+// Slate for Business accounts. Zero soft gradients or pastel glows.
 
 export const COLORS = {
-  // Forest & Gold: warm stone page, solid white cards, Proxim Forest for structure and
-  // text accents, Gold for the one main action per screen. All values are solid colours.
-  bg: "#F5F1E8",
-  page: "#F5F1E8", // warm stone; cards are pure white on top of it
+  bg: "#F2F5F3",
+  page: "#F2F5F3", // cool mineral mist; pure white cards sit cleanly on top
   surface: "#FFFFFF",
-  surfaceElevated: "#EDE7DA", // sunken fills: segments, neutral icon tiles
-  surfaceSoft: "#F5F1E8",
-  border: "#DCD3C1", // card and field outlines
-  borderStrong: "#BDB29C", // inputs, outline buttons, bottom lip
+  surfaceElevated: "#E6EEEA", // solid cool sage-slate sunken fills
+  surfaceSoft: "#F2F5F3",
+  border: "#D8E1DC", // crisp 1px card and divider outlines
+  borderStrong: "#B4C4BC", // inputs, outline buttons, focus anchors
 
-  primary: "#002018", // Proxim Forest: active states, links, icons, dark buttons (17:1 on white)
-  primaryDark: "#00140F",
-  primaryMuted: "#EDE7DA",
+  primary: "#002018", // Proxim Forest: headers, icons, dark buttons (17:1 on white)
+  primaryDark: "#00130E",
+  primaryMuted: "#E5F2EC", // solid light emerald surface
   primaryBorder: "#0B4A37",
   onPrimary: "#FFFFFF",
   forest: "#002018",
-  forest800: "#003526",
-  forest700: "#0B4A37",
-  deep: "#F6E7BF", // selected pill / chip background (gold 100)
-  success: "#007840", // money in (5.6:1 on white)
-  brandGreen: "#00B060", // logo green: success fills only, with Forest text
+  forest800: "#063527",
+  forest700: "#0F523D",
+  deep: "#DFF2E8", // solid selected pill / card highlight
+  success: "#007A47", // money in & confirmed states (5.4:1 on white)
+  brandGreen: "#009E60", // hard Proxim emerald accent
 
-  gold: "#E0A82E", // main action fill; on Forest it is 8:1
-  goldDark: "#8A6410", // gold text on light backgrounds (5.4:1), button lip
-  goldSoft: "#F6E7BF",
-  onGold: "#002018",
+  // Primary CTA & accent tokens (hard institutional emerald with pure white text)
+  gold: "#007F4F", // solid hard emerald CTA fill (5.1:1 with white text)
+  goldDark: "#005E3A", // deep emerald text on light backgrounds
+  goldSoft: "#DFF2E8", // crisp solid pale emerald for active tab pill & icon badges
+  onGold: "#FFFFFF",
 
-  business: "#8A6410",
-  businessMuted: "#F6E7BF",
-  businessBorder: "#E0C27A",
+  // Business account identity: authoritative Midnight Slate
+  business: "#0F172A",
+  businessMuted: "#E8EDF5",
+  businessBorder: "#CBD5E1",
 
-  info: "#1F5F8B",
-  infoMuted: "#DCEAF4",
+  info: "#1D4ED8",
+  infoMuted: "#E5EDFF",
 
-  danger: "#C8321E",
-  dangerMuted: "#FBE1DC",
-  dangerBorder: "#F0B6AB",
-  dangerText: "#A32816",
-  successText: "#007840",
-  warningText: "#8A5600",
-  warningMuted: "#FBEBCB",
+  danger: "#C81E1E",
+  dangerMuted: "#FCE8E8",
+  dangerBorder: "#F3BCBC",
+  dangerText: "#9B1C1C",
+  successText: "#007A47",
+  warningText: "#9A4D00",
+  warningMuted: "#FEF0DC",
 
-  text: "#13110C",
-  textSecondary: "#5C5546", // 7.4:1 on white
-  textMuted: "#776F5F", // 4.9:1 on white
+  text: "#0B1713", // razor-sharp dark pine ink
+  textSecondary: "#475952", // crisp cool slate-green (7.2:1 on white)
+  textMuted: "#6F8079", // muted labels (4.5:1+ on white)
   white: "#FFFFFF",
   black: "#000000",
 } as const;
 
-// The balance header is solid Proxim Forest with gold accents.
+// The balance header is solid Proxim Forest with crisp emerald accents.
 export const HERO = {
   text: "#FFFFFF",
-  textSecondary: "#A8BDB3", // 8.7:1 on Forest
-  accent: "#E0A82E",
-  chip: "#003526",
-  inset: "#003526",
-  border: "#0B4A37",
+  textSecondary: "#A3BCB2", // 8.4:1 on Forest
+  accent: "#00C476",
+  chip: "#063527",
+  inset: "#063527",
+  border: "#114E3B",
 } as const;
-export const BALANCE_GRADIENT = { from: "#002018", to: "#002018", border: "#0B4A37" } as const;
+export const BALANCE_GRADIENT = { from: "#002018", to: "#002018", border: "#114E3B" } as const;
 
 // Plus Jakarta Sans, loaded in App.tsx. Custom fonts carry their own weight, so pick the
 // family by weight instead of setting fontWeight.
@@ -109,50 +111,43 @@ export const RADIUS = {
   pill: 999,
 } as const;
 
-// Depth: every raised surface gets a visible edge, a thicker darker bottom "lip" and a real
-// shadow, so it reads as something you can press, even for people with low vision.
+// Clean, crisp architectural elevation — flat 1px hairline borders with restrained shadow.
 export const DEPTH = {
   card: {
     borderWidth: 1,
-    borderColor: "#DCD3C1",
-    borderBottomWidth: 2,
-    borderBottomColor: "#CFC5B0",
-    shadowColor: "#13110C",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 3,
+    borderColor: "#D8E1DC",
+    shadowColor: "#002018",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
   },
   raised: {
     borderWidth: 1,
-    borderColor: "#DCD3C1",
-    borderBottomWidth: 2,
-    borderBottomColor: "#BDB29C",
-    shadowColor: "#13110C",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
+    borderColor: "#CFDAD4",
+    shadowColor: "#002018",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
+    elevation: 2,
   },
-  // Main action: gold with a darker gold lip.
+  // Main CTA: crisp solid emerald with tight elevation, zero cartoon bottom lip.
   glow: {
     borderWidth: 0,
-    borderBottomWidth: 3,
-    borderBottomColor: "#8A6410",
-    shadowColor: "#8A6410",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 10,
-    elevation: 5,
-  },
-  // Forest blocks: a near-black lip.
-  forest: {
-    borderBottomWidth: 3,
-    borderBottomColor: "#00140F",
     shadowColor: "#002018",
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.3,
-    shadowRadius: 16,
-    elevation: 6,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.14,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  // Forest blocks: crisp architectural edge.
+  forest: {
+    borderBottomWidth: 1,
+    borderBottomColor: "#0F4735",
+    shadowColor: "#002018",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    elevation: 5,
   },
 } as const;

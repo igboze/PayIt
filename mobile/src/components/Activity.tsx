@@ -14,12 +14,12 @@ import { useApp } from "../state/AppContext";
 type IoniconName = keyof typeof Ionicons.glyphMap;
 
 const TONES = {
-  green: ["#007840", "#DDF1E5"],
-  neutral: ["#002018", "#EDE7DA"],
-  violet: ["#002018", "#F6E7BF"],
-  amber: ["#8A6410", "#F6E7BF"],
-  teal: ["#E0A82E", "#002018"],
-  blue: ["#002018", "#EDE7DA"],
+  green: ["#007A47", "#DFF2E8"],
+  neutral: ["#002018", "#E6EEEA"],
+  violet: ["#0F172A", "#E8EDF5"],
+  amber: ["#005E3A", "#DFF2E8"],
+  teal: ["#FFFFFF", "#002018"],
+  blue: ["#1D4ED8", "#E5EDFF"],
 } as const;
 
 export function isCreditTx(tx: TransactionItem): boolean {

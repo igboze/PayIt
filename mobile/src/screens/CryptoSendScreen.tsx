@@ -268,7 +268,7 @@ const styles = StyleSheet.create({
     borderRadius: RADIUS.md,
     backgroundColor: COLORS.surface,
     borderWidth: 1.5,
-    borderColor: "#A69B84",
+    borderColor: COLORS.borderStrong,
     marginBottom: 8,
   },
   searchInput: { flex: 1, fontFamily: FONTS.medium, fontSize: 16, color: COLORS.text },

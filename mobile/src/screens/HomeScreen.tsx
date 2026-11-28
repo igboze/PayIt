@@ -91,7 +91,7 @@ type PromoBannerItem = {
   ctaColor: string;
 };
 
-// Each banner showcases a distinct primary color from Proxim's Forest & Gold brand palette.
+// Each banner uses a hard, solid surface from Proxim's Forest, Midnight Slate & Emerald family.
 const PROMO_BANNERS: PromoBannerItem[] = [
   {
     key: "abroad",
@@ -107,15 +107,15 @@ const PROMO_BANNERS: PromoBannerItem[] = [
       { kind: "currency", code: "GHS" },
       { kind: "currency", code: "KES" },
     ],
-    bg: COLORS.forest, // Primary: Proxim Forest (#002018)
+    bg: COLORS.forest, // Solid Proxim Forest (#002018)
     border: COLORS.forest700,
     lip: COLORS.primaryDark,
-    haloBg: "rgba(0, 176, 96, 0.18)",
-    badgeBg: "rgba(224, 168, 46, 0.22)",
-    badgeColor: COLORS.gold,
+    haloBg: "#063527",
+    badgeBg: "#063527",
+    badgeColor: HERO.accent,
     titleColor: COLORS.white,
     subColor: HERO.textSecondary,
-    ctaColor: COLORS.gold,
+    ctaColor: HERO.accent,
   },
   {
     key: "business",
@@ -130,15 +130,15 @@ const PROMO_BANNERS: PromoBannerItem[] = [
       { kind: "currency", code: "EUR" },
       { kind: "currency", code: "NGN" },
     ],
-    bg: COLORS.gold, // Primary: Proxim Gold (#E0A82E)
-    border: "#C9921F",
-    lip: COLORS.goldDark,
-    haloBg: "rgba(255, 255, 255, 0.26)",
-    badgeBg: "rgba(0, 32, 24, 0.14)",
-    badgeColor: COLORS.forest,
-    titleColor: COLORS.forest,
-    subColor: "#3A2C0A",
-    ctaColor: COLORS.forest,
+    bg: "#0F172A", // Solid Midnight Slate
+    border: "#334155",
+    lip: "#090E1A",
+    haloBg: "#1E293B",
+    badgeBg: "#1E293B",
+    badgeColor: HERO.accent,
+    titleColor: COLORS.white,
+    subColor: "#94A3B8",
+    ctaColor: HERO.accent,
   },
   {
     key: "cards",
@@ -154,15 +154,15 @@ const PROMO_BANNERS: PromoBannerItem[] = [
       { kind: "brand", ticker: "META", domain: "meta.com" },
       { kind: "currency", code: "USD" },
     ],
-    bg: COLORS.goldSoft, // Primary: Proxim Warm Champagne (#F6E7BF)
-    border: COLORS.businessBorder,
-    lip: "#C8A455",
-    haloBg: "rgba(255, 255, 255, 0.55)",
-    badgeBg: "rgba(0, 32, 24, 0.10)",
-    badgeColor: COLORS.forest,
-    titleColor: COLORS.forest,
-    subColor: COLORS.textSecondary,
-    ctaColor: COLORS.goldDark,
+    bg: "#044E36", // Solid Deep Institutional Emerald
+    border: "#0B6B4B",
+    lip: "#023826",
+    haloBg: "#065F46",
+    badgeBg: "#002018",
+    badgeColor: "#FFFFFF",
+    titleColor: COLORS.white,
+    subColor: "#C5E8D7",
+    ctaColor: COLORS.white,
   },
   {
     key: "savings",
@@ -176,15 +176,15 @@ const PROMO_BANNERS: PromoBannerItem[] = [
       { kind: "currency", code: "EURC" },
       { kind: "currency", code: "MORPHO" },
     ],
-    bg: COLORS.success, // Primary: Proxim Emerald (#007840)
-    border: COLORS.brandGreen,
-    lip: "#004D29",
-    haloBg: "rgba(246, 231, 191, 0.20)",
-    badgeBg: "rgba(0, 32, 24, 0.26)",
-    badgeColor: COLORS.goldSoft,
-    titleColor: COLORS.white,
-    subColor: "#D3F3E2",
-    ctaColor: COLORS.goldSoft,
+    bg: COLORS.white, // Crisp White card with hard Emerald accents
+    border: "#C9DBD1",
+    lip: "#C9DBD1",
+    haloBg: "#E6F3EC",
+    badgeBg: "#DFF2E8",
+    badgeColor: COLORS.goldDark,
+    titleColor: COLORS.forest,
+    subColor: COLORS.textSecondary,
+    ctaColor: COLORS.gold,
   },
 ];
 
@@ -1008,13 +1008,13 @@ const styles = StyleSheet.create({
     ...DEPTH.forest,
   },
   heroBiz: {
-    backgroundColor: "#1B160C",
-    borderBottomWidth: 2,
-    borderBottomColor: COLORS.goldDark,
+    backgroundColor: "#0F172A",
+    borderBottomWidth: 1,
+    borderBottomColor: "#334155",
   },
   iconBtnBiz: {
-    backgroundColor: "#2C2415",
-    borderColor: "#4A3B1E",
+    backgroundColor: "#1E293B",
+    borderColor: "#334155",
   },
   heroSeg: {
     flexDirection: "row",
@@ -1027,8 +1027,8 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   heroSegBiz: {
-    backgroundColor: "#2C2415",
-    borderColor: "#4A3B1E",
+    backgroundColor: "#1E293B",
+    borderColor: "#334155",
   },
   heroSegBtn: {
     flexDirection: "row",
@@ -1058,12 +1058,12 @@ const styles = StyleSheet.create({
     fontFamily: TYPE.title.fontFamily,
   },
   curChipBiz: {
-    backgroundColor: "#2C2415",
-    borderColor: "#4A3B1E",
+    backgroundColor: "#1E293B",
+    borderColor: "#334155",
   },
   ngnRowBiz: {
-    backgroundColor: "#2C2415",
-    borderColor: "#4A3B1E",
+    backgroundColor: "#1E293B",
+    borderColor: "#334155",
   },
   bizSummaryCard: {
     backgroundColor: COLORS.surface,

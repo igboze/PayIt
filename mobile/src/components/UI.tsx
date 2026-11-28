@@ -200,21 +200,21 @@ export function Pill({
 }) {
   const bg = active
     ? tone === "business"
-      ? COLORS.gold
+      ? COLORS.business
       : tone === "danger"
       ? COLORS.dangerMuted
       : COLORS.forest
     : COLORS.surface;
   const borderColor = active
     ? tone === "business"
-      ? COLORS.gold
+      ? COLORS.business
       : tone === "danger"
       ? COLORS.dangerBorder
       : COLORS.forest
     : COLORS.border;
   const textColor = active
     ? tone === "business"
-      ? COLORS.onGold
+      ? COLORS.white
       : tone === "danger"
       ? COLORS.danger
       : COLORS.white
@@ -469,7 +469,7 @@ const styles = StyleSheet.create({
     minHeight: 56,
     backgroundColor: COLORS.surface,
     borderWidth: 1.5,
-    borderColor: "#A69B84", // ~3:1 against white so field edges are visible
+    borderColor: COLORS.borderStrong,
     borderRadius: RADIUS.md,
     paddingHorizontal: 16,
     paddingVertical: 14,
@@ -479,10 +479,6 @@ const styles = StyleSheet.create({
   },
   inputFocused: {
     borderColor: COLORS.forest,
-    shadowColor: COLORS.gold,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.35,
-    shadowRadius: 6,
   },
   inputSecure: {
     paddingRight: 52,

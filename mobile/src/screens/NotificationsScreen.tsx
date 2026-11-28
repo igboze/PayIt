@@ -11,12 +11,12 @@ type IoniconName = keyof typeof Ionicons.glyphMap;
 
 function iconFor(kind: string | null): { icon: IoniconName; fg: string; bg: string } {
   const k = String(kind || "");
-  if (/auto_earn|saving/.test(k)) return { icon: "server-outline", fg: "#E0A82E", bg: "#002018" };
-  if (/receive|deposit|credit/.test(k)) return { icon: "arrow-down", fg: "#007840", bg: "#DDF1E5" };
-  if (/device|security|pin/.test(k)) return { icon: "shield-checkmark-outline", fg: "#002018", bg: "#F6E7BF" };
-  if (/card/.test(k)) return { icon: "card-outline", fg: "#002018", bg: "#EDE7DA" };
+  if (/auto_earn|saving/.test(k)) return { icon: "server-outline", fg: "#FFFFFF", bg: "#002018" };
+  if (/receive|deposit|credit/.test(k)) return { icon: "arrow-down", fg: "#007A47", bg: "#DFF2E8" };
+  if (/device|security|pin/.test(k)) return { icon: "shield-checkmark-outline", fg: "#002018", bg: "#DFF2E8" };
+  if (/card/.test(k)) return { icon: "card-outline", fg: "#0F172A", bg: "#E8EDF5" };
   if (/fail|error/.test(k)) return { icon: "alert-circle-outline", fg: COLORS.dangerText, bg: COLORS.dangerMuted };
-  return { icon: "notifications-outline", fg: "#002018", bg: "#EDE7DA" };
+  return { icon: "notifications-outline", fg: "#002018", bg: "#E6EEEA" };
 }
 
 export function NotificationsScreen({ onBack, onOpened }: { onBack: () => void; onOpened?: () => void }) {
