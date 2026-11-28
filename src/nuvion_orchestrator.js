@@ -221,7 +221,13 @@ async function provisionGlobalReceivingAccount(telegramId, accountType = "person
     try {
       const listed = await nuvion.listAccounts({ entityId, currency: code, limit: 20 });
       const rows = listed?.data || [];
-      remoteAcc = rows.find((a) => a.currency === code && a.type === "checking" && a.meta?.purpose !== "card") || null;
+      remoteAcc = rows.find((a) =>
+        a.currency === code &&
+        a.type === "checking" &&
+        a.meta?.purpose !== "card" &&
+        (!a.deleted || Number(a.deleted) === 0) &&
+        String(a.status || "active").toLowerCase() !== "closed"
+      ) || null;
     } catch (_) { }
 
     if (!remoteAcc) {

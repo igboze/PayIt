@@ -1,7 +1,20 @@
 // tests/savings_earn.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
+const tmpDb = path.join(os.tmpdir(), `savings_earn_${process.pid}_${Date.now()}.db`);
+process.env.PAYIT_DB_PATH = tmpDb;
+
 const savings = require("../src/savings");
+
+test.after(() => {
+  for (const f of [tmpDb, `${tmpDb}-wal`, `${tmpDb}-shm`]) {
+    try { fs.unlinkSync(f); } catch (_) { }
+  }
+});
 
 test("Savings: getYieldPools returns valid Arc vaults", async () => {
   const pools = await savings.getYieldPools();

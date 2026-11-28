@@ -579,6 +579,7 @@ const TX_ALERT_LABELS = {
   stock_buy: { label: "US Stock Purchase", credit: false },
   stock_sell: { label: "US Stock Sale", credit: true },
   monthly_maintenance_fee: { label: "Monthly Account & Alert Fee", credit: false },
+  global_account_maintenance_fee: { label: "Global Account Maintenance Fee", credit: false },
 };
 
 const CRYPTO_ALERT_TX_TYPES = new Set([

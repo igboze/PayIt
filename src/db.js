@@ -3792,6 +3792,10 @@ function markNuvionAccountClosed(accountId) {
   db.prepare(
     "UPDATE nuvion_account_details SET status = 'closed', updated_at = datetime('now') WHERE account_id = ?"
   ).run(id);
+  // Stop any pending grace-period reminders/auto-close jobs for an already-closed account
+  db.prepare(
+    "UPDATE global_account_maintenance_fees SET status = 'closed_unpaid', closed_at = COALESCE(closed_at, datetime('now')), updated_at = datetime('now') WHERE account_id = ? AND status = 'past_due'"
+  ).run(id);
   return db.prepare("SELECT * FROM nuvion_accounts WHERE account_id = ?").get(id) || null;
 }
 

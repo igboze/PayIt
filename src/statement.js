@@ -69,6 +69,7 @@ const TX_HUMAN_LABELS = {
   stock_buy: "US Stock Purchase",
   stock_sell: "US Stock Sale",
   monthly_maintenance_fee: "Monthly Account & Alert Fee",
+  global_account_maintenance_fee: "Global Account Maintenance Fee",
 };
 
 const CRYPTO_CODES = new Set(["USDC", "USDT", "EURC", "USC", "USDG", "ETH", "SOL", "BTC", "NEAR", "MATIC", "AVAX", "BNB", "TRX", "TON", "XRP"]);
@@ -96,7 +97,7 @@ function classifyCategory(tx) {
 
   if (t.startsWith("bill_")) return "Fiat (Bills)";
   if (/^card_/.test(t)) return "Fiat (Card)";
-  if (t === "monthly_maintenance_fee") return "Account Fee";
+  if (t === "monthly_maintenance_fee" || t === "global_account_maintenance_fee") return "Account Fee";
   if (/stock_/.test(t)) return "Investments";
   if (/yield_|savings_|auto_earn/.test(t)) return "Savings";
   if (/^swap/.test(t)) return "FX Swap";
