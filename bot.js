@@ -3907,7 +3907,7 @@ function promptForWithdrawConfirmation(ctx, userId, withdrawData, context) {
 
   // Show Naira as the primary figure if we have it, USDC as the technical detail.
   const ngnLine = displayNgn
-    ? `🇳🇬 <b>Recipient Receives:</b> <b>₦${Math.round(displayNgn).toLocaleString("en-NG")}</b>\n`
+    ? `🇳🇬 <b>Recipient Receives:</b> <b>${fx.formatNairaExact(displayNgn)}</b>\n`
     : `💵 <b>Amount to Bank:</b> $${netUsdc.toFixed(2)} USDC\n`;
   const usdcDetail = displayNgn
     ? `💵 <b>Amount Sent:</b> $${netUsdc.toFixed(2)} USDC${displayRate ? ` (rate: ${fx.formatNairaRate(displayRate)}/$)` : ""}\n`
@@ -3960,14 +3960,14 @@ async function promptForWithdrawBank(ctx, userId, amountUsdc, rail, context, ngn
     netAmountUsdc,
     totalDebitUsdc,
     rail,
-    ngnAmount: ngnPayout ? Math.round(ngnPayout) : null,
+    ngnAmount: ngnPayout ? Number(Number(ngnPayout).toFixed(2)) : null,
     ngnRate: liveRate,
   }, context);
 
   const feeNgn = liveRate ? Math.ceil(feeUsdc * liveRate) : null;
-  const totalNgn = ngnPayout && feeNgn != null ? Math.round(ngnPayout) + feeNgn : null;
+  const totalNgn = ngnPayout && feeNgn != null ? Number((Number(ngnPayout) + feeNgn).toFixed(2)) : null;
   const nairaLine = ngnPayout
-    ? `🇳🇬 <b>Recipient Gets:</b> ~<b>₦${Math.round(ngnPayout).toLocaleString("en-NG")}</b> ($${netAmountUsdc.toFixed(2)} USDC)\n` +
+    ? `🇳🇬 <b>Recipient Gets:</b> ~<b>${fx.formatNairaExact(ngnPayout)}</b> ($${netAmountUsdc.toFixed(2)} USDC)\n` +
     `🏷️ <b>Platform Fee (1%):</b> +$${feeUsdc.toFixed(2)}${feeNgn ? ` (~₦${feeNgn.toLocaleString("en-NG")})` : ""} <i>(from balance)</i>\n` +
     `💳 <b>Total Deducted:</b> $${totalDebitUsdc.toFixed(2)} USDC${totalNgn ? ` (~₦${totalNgn.toLocaleString("en-NG")})` : ""}\n` +
     (liveRate ? `📈 <b>Rate:</b> ${fx.formatNairaRate(liveRate)}/$\n` : "")
@@ -4166,11 +4166,12 @@ async function handleCashOutNgn(ctx, userId, ngnAmount, context) {
     return ctx.reply("⚠️ Could not fetch live rate. Please try again in a moment.", backToMenu);
   }
 
-  const amountUsdc = ngnAmount / rate;
+  const exactNgnAmount = Number(Number(ngnAmount).toFixed(2));
+  const amountUsdc = exactNgnAmount / rate;
   const feeUsdc = Number((amountUsdc * 0.01).toFixed(4));
   const totalRequiredUsdc = Number((amountUsdc + feeUsdc).toFixed(4));
-  const feeNgn = Math.ceil(ngnAmount * 0.01);
-  const totalNeededNgn = Math.round(ngnAmount) + feeNgn;
+  const feeNgn = Number((exactNgnAmount * 0.01).toFixed(2));
+  const totalNeededNgn = Number((exactNgnAmount + feeNgn).toFixed(2));
 
   const unified = await chains.getUnifiedBalance(user, context || "personal");
   const arcUsdc = unified.arc.usdc;
@@ -4240,11 +4241,11 @@ async function handleCashOutNgn(ctx, userId, ngnAmount, context) {
       totalRequiredUsdc,
       arcUsdc,
       solUsdc,
-      ngnAmount: Math.round(ngnAmount),
+      ngnAmount: exactNgnAmount,
       ngnRate: rate,
     }, context);
     return ctx.reply(
-      `🇳🇬 <b>Cash Out ₦${Math.round(ngnAmount).toLocaleString("en-NG")} to Naira</b>\n──────────────────────────\n` +
+      `🇳🇬 <b>Cash Out ${fx.formatNairaExact(exactNgnAmount)} to Naira</b>\n──────────────────────────\n` +
       `Send: $${amountUsdc.toFixed(2)} + 1% Fee: $${feeUsdc.toFixed(2)} = <b>$${totalRequiredUsdc.toFixed(2)} USDC</b> (at ${fx.formatNairaRate(rate)}/$)\n\n` +
       `You have funds on both chains:\n` +
       `⚡ <b>Arc:</b> $${arcUsdc.toFixed(2)} — fastest (~1s on-chain)\n` +
@@ -4272,7 +4273,7 @@ async function handleCashOutNgn(ctx, userId, ngnAmount, context) {
       arcUsdc,
       solUsdc,
       context,
-      ngnAmount: Math.round(ngnAmount),
+      ngnAmount: exactNgnAmount,
     });
     if (cons.consolidated) {
       rail = "arc";
@@ -4297,7 +4298,7 @@ async function handleCashOutNgn(ctx, userId, ngnAmount, context) {
     );
   }
 
-  return promptForWithdrawBank(ctx, userId, amountUsdc, rail, context, Math.round(ngnAmount));
+  return promptForWithdrawBank(ctx, userId, amountUsdc, rail, context, exactNgnAmount);
 }
 
 async function showUnifiedWithdrawMenu(ctx) {
@@ -4414,7 +4415,7 @@ bot.action(/^use_saved_bank_(\d+)$/, async (ctx) => {
       senderName: resolvedSenderName,
     };
     if (state.data.ngnAmount && Number(state.data.ngnAmount) > 0) {
-      orderPayload.fiatAmount = Math.round(Number(state.data.ngnAmount));
+      orderPayload.fiatAmount = Number(Number(state.data.ngnAmount).toFixed(2));
     } else {
       orderPayload.amount = netAmountUsdc;
     }
@@ -9090,7 +9091,7 @@ bot.on("text", async (ctx) => {
           senderName: resolvedSenderName,
         };
         if (state.data.ngnAmount && Number(state.data.ngnAmount) > 0) {
-          orderPayload.fiatAmount = Math.round(Number(state.data.ngnAmount));
+          orderPayload.fiatAmount = Number(Number(state.data.ngnAmount).toFixed(2));
         } else {
           orderPayload.amount = netAmountUsdc;
         }

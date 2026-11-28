@@ -350,11 +350,20 @@ async function getLiveNgnOffRampRate() {
   return rate && Number.isFinite(rate) && rate > 0 ? rate : null;
 }
 
+function fmtNgnExact(n) {
+  const safe = Number.isFinite(Number(n)) ? Number(Number(n).toFixed(2)) : 0;
+  const hasKobo = Math.round(safe * 100) % 100 !== 0;
+  return `₦${safe.toLocaleString("en-NG", {
+    minimumFractionDigits: hasKobo ? 2 : 0,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
 async function resolveUsdcOrNgn(body, { minUsdc = 0.01, minNgn = 100, maxNgn = 50_000_000 } = {}) {
   const hasNgn = body?.amountNgn !== undefined && body?.amountNgn !== null && body?.amountNgn !== "";
   const hasUsdc = body?.amountUsdc !== undefined && body?.amountUsdc !== null && body?.amountUsdc !== "";
   if (hasNgn && !hasUsdc) {
-    const amountNgn = Math.round(money(body, "amountNgn", { min: minNgn, max: maxNgn }));
+    const amountNgn = Number(money(body, "amountNgn", { min: minNgn, max: maxNgn }).toFixed(2));
     const rate = await getLiveNgnOffRampRate();
     if (!rate) throw new ActionError(503, "rate_unavailable", "Live NGN exchange rate is unavailable right now. Please try again.");
     const amountUsdc = Number((amountNgn / rate).toFixed(6));
@@ -419,11 +428,11 @@ const ACTIONS = {
       };
       const summary = amountNgn
         ? {
-          title: `Send ₦${amountNgn.toLocaleString("en-NG")} to ${label}`,
+          title: `Send ${fmtNgnExact(amountNgn)} to ${label}`,
           lines: [
             ...accountTagLines(ctx, accountType),
             ["To", label],
-            ["Amount", `₦${amountNgn.toLocaleString("en-NG")}`],
+            ["Amount", fmtNgnExact(amountNgn)],
             ["From your balance", `≈ $${fmt(amountUsdc)}`],
             ["Rate", `$1 = ₦${Number(rate).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
             ["Fee", "Free"],
@@ -754,7 +763,7 @@ const ACTIONS = {
       let amountUsdc = null;
       let amountNgn = null;
       if (hasNgn && !hasUsdc) {
-        amountNgn = Math.round(money(body, "amountNgn", { min: 500, max: 50_000_000 }));
+        amountNgn = Number(money(body, "amountNgn", { min: 500, max: 50_000_000 }).toFixed(2));
         if (rate) amountUsdc = Number((amountNgn / rate).toFixed(6));
       } else {
         amountUsdc = money(body, "amountUsdc", { min: 1 });
@@ -772,7 +781,7 @@ const ACTIONS = {
         const nuvionPayouts = dep("nuvionPayouts");
         const ent = dep("db").getNuvionEntityByUser?.(ctx.telegramId, accountType);
         const isVerified = ent && String(ent.status || "").toLowerCase() === "approved";
-        const targetNgn = amountNgn || (rate && amountUsdc ? Math.round(amountUsdc * rate) : 0);
+        const targetNgn = amountNgn || (rate && amountUsdc ? Number((amountUsdc * rate).toFixed(2)) : 0);
         if (isVerified && nuvion.isNuvionConfigured() && nuvion.isLocalFiatHoldEnabled() && targetNgn >= 500 && fundingSource !== "usdc") {
           const fiatBalances = await orchestrator.getEntityFiatBalances(ctx.telegramId, accountType);
           const ngnPocket = fiatBalances.find((b) => b.currency === "NGN" && b.availableMinor > 0);
@@ -790,14 +799,14 @@ const ACTIONS = {
               heldNgnQuote = q;
             } else if (fundingSource === "local_ngn") {
               const maxHint = q.maxSendableMajor > 0
-                ? ` Max you can send is ₦${Math.round(q.maxSendableMajor).toLocaleString("en-NG")} (plus ₦${Math.round(q.maxSendableFeeMajor).toLocaleString("en-NG")} fee).`
+                ? ` Max you can send is ${fmtNgnExact(q.maxSendableMajor)} (plus ${fmtNgnExact(q.maxSendableFeeMajor)} fee).`
                 : "";
               throw new ActionError(
                 400,
                 "insufficient_balance",
-                `Insufficient NGN balance. You need ₦${Math.round(q.totalDeductedMajor).toLocaleString("en-NG")} ` +
-                `(₦${targetNgn.toLocaleString("en-NG")} + ₦${Math.round(q.proximFeeMajor).toLocaleString("en-NG")} Proxim fee), ` +
-                `but your NGN balance is ₦${Math.round(q.availableMajor).toLocaleString("en-NG")}.${maxHint}`
+                `Insufficient NGN balance. You need ${fmtNgnExact(q.totalDeductedMajor)} ` +
+                `(${fmtNgnExact(targetNgn)} + ${fmtNgnExact(q.proximFeeMajor)} Proxim fee), ` +
+                `but your NGN balance is ${fmtNgnExact(q.availableMajor)}.${maxHint}`
               );
             }
           }
@@ -807,9 +816,9 @@ const ACTIONS = {
       }
 
       if (heldNgnQuote) {
-        const feeNgn = Math.round(heldNgnQuote.proximFeeMajor);
-        const totalNgn = Math.round(heldNgnQuote.totalDeductedMajor);
-        const sendNgn = Math.round(heldNgnQuote.targetAmountMajor);
+        const feeNgn = Number(Number(heldNgnQuote.proximFeeMajor || 0).toFixed(2));
+        const totalNgn = Number(Number(heldNgnQuote.totalDeductedMajor || 0).toFixed(2));
+        const sendNgn = Number(Number(heldNgnQuote.targetAmountMajor || 0).toFixed(2));
         await precheck(ctx, heldNgnQuote.userTotalUsd, `${bankCode}:${accountNumber}`, "app_offramp_ngn_held", accountType);
         const feeDesc = sendNgn < 100000 ? "Proxim fee (1%, max ₦500)" : "Proxim fee (1%)";
         const action = {
@@ -831,13 +840,13 @@ const ACTIONS = {
           amountUsd: heldNgnQuote.userTotalUsd,
           action,
           summary: {
-            title: `Send ₦${sendNgn.toLocaleString("en-NG")} to ${accountName || accountNumber}`,
+            title: `Send ${fmtNgnExact(sendNgn)} to ${accountName || accountNumber}`,
             lines: [
               ...accountTagLines(ctx, accountType),
               ["To", `${accountName || "Account"} · ••${accountNumber.slice(-2)}`],
-              ["They get", `₦${sendNgn.toLocaleString("en-NG")}`],
-              [feeDesc, `₦${feeNgn.toLocaleString("en-NG")}`],
-              ["Total deducted", `₦${totalNgn.toLocaleString("en-NG")} (NGN balance)`],
+              ["They get", fmtNgnExact(sendNgn)],
+              [feeDesc, fmtNgnExact(feeNgn)],
+              ["Total deducted", `${fmtNgnExact(totalNgn)} (NGN balance)`],
             ],
           },
         };
@@ -864,11 +873,11 @@ const ACTIONS = {
       };
       const summary = amountNgn
         ? {
-          title: `Send ₦${amountNgn.toLocaleString("en-NG")} to ${accountName || accountNumber}`,
+          title: `Send ${fmtNgnExact(amountNgn)} to ${accountName || accountNumber}`,
           lines: [
             ...accountTagLines(ctx, accountType),
             ["To", `${accountName || "Account"} · ••${accountNumber.slice(-2)}`],
-            ["They get", `₦${amountNgn.toLocaleString("en-NG")}`],
+            ["They get", fmtNgnExact(amountNgn)],
             ["From your balance", `≈ $${fmt(estTotalUsd)}`],
             ["Fee (1%)", `≈ $${fmt(estFeeUsdc)}`],
             ["Rate", `$1 = ₦${Number(rate).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
@@ -925,7 +934,7 @@ const ACTIONS = {
           accountType,
           status: "submitted",
           amountNgn: sendNgn,
-          notice: `Sent ₦${sendNgn.toLocaleString("en-NG")} to ${a.accountName || "the bank account"}`,
+          notice: `Sent ${fmtNgnExact(sendNgn)} to ${a.accountName || "the bank account"}`,
         };
       }
 
@@ -1133,7 +1142,7 @@ const ACTIONS = {
       );
       const displayNgn = resolvedFiat || (a.amountNgn ? Number(a.amountNgn) : null);
       const notice = displayNgn
-        ? `Sending ₦${Math.round(displayNgn).toLocaleString("en-NG")} to ${order.accountName || a.accountName || "the bank account"}`
+        ? `Sending ${fmtNgnExact(displayNgn)} to ${order.accountName || a.accountName || "the bank account"}`
         : `Sending transfer to ${order.accountName || a.accountName || "the bank account"}`;
       return { orderId, txHash, feeUsdc, feeTxHash, rail, accountType, status: "submitted", ...(resolvedFiat ? { amountNgn: resolvedFiat } : {}), amountUsdc: fundingAmount, notice };
     },

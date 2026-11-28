@@ -366,7 +366,7 @@ export function SendScreen({
       const res = await requestApproval("transfer.user", {
         accountType: activeAccount,
         recipient: recipientQuery.trim(),
-        amountNgn: Math.round(amtNgn),
+        amountNgn: Number(amtNgn.toFixed(2)),
         narration: userNote.trim() || undefined,
       });
       setNotice(res.notice || "Transfer completed!");
@@ -397,7 +397,7 @@ export function SendScreen({
       const res = await requestApproval("gift.create", {
         accountType: activeAccount,
         targetUsername: recipientQuery.trim(),
-        amountNgn: Math.round(amtNgn),
+        amountNgn: Number(amtNgn.toFixed(2)),
       });
       setNotice(res.notice || "Gift link created!");
       setUserAmount("");
@@ -498,7 +498,7 @@ export function SendScreen({
     try {
       const res = await requestApproval("payout.ngn", {
         accountType: activeAccount,
-        amountNgn: Math.round(amtNgn),
+        amountNgn: Number(amtNgn.toFixed(2)),
         bankCode: selectedBank.code,
         accountNumber: acctNumber.trim(),
         accountName: resolvedAcct?.accountName || undefined,

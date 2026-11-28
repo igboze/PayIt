@@ -91,10 +91,19 @@ function formatNaira(amount) {
   return `₦${Math.round(amount).toLocaleString("en-NG")}`;
 }
 
+function formatNairaExact(amount) {
+  const safe = Number.isFinite(Number(amount)) ? Number(Number(amount).toFixed(2)) : 0;
+  const hasKobo = Math.round(safe * 100) % 100 !== 0;
+  return `₦${safe.toLocaleString("en-NG", {
+    minimumFractionDigits: hasKobo ? 2 : 0,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
 function formatNairaRate(rate) {
   const n = Number(rate);
   if (!Number.isFinite(n) || n <= 0) return "₦0.00";
   return `₦${n.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-module.exports = { getUsdToNgnRate, getUsdToNgnRateDetails, clearRateCache, formatNaira, formatNairaRate };
+module.exports = { getUsdToNgnRate, getUsdToNgnRateDetails, clearRateCache, formatNaira, formatNairaExact, formatNairaRate };

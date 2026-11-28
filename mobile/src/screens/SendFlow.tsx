@@ -60,7 +60,23 @@ function titleCase(s: string): string {
   return s.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-const fmtNgn = (n: number) => `₦${Math.round(n).toLocaleString("en-NG")}`;
+const fmtNgn = (n: number) => {
+  const safe = Number.isFinite(n) ? Number(n.toFixed(2)) : 0;
+  const hasKobo = Math.round(safe * 100) % 100 !== 0;
+  return `₦${safe.toLocaleString("en-NG", {
+    minimumFractionDigits: hasKobo ? 2 : 0,
+    maximumFractionDigits: 2,
+  })}`;
+};
+
+const fmtTypedNgn = (raw: string) => {
+  if (!raw) return "₦0";
+  const hasDot = raw.includes(".");
+  const [intRaw, decRaw = ""] = raw.split(".");
+  const intNum = Number(intRaw || "0");
+  const intFormatted = Number.isFinite(intNum) ? intNum.toLocaleString("en-NG") : "0";
+  return hasDot ? `₦${intFormatted}.${decRaw}` : `₦${intFormatted}`;
+};
 
 export function SendFlow({
   onBack,
@@ -213,39 +229,41 @@ export function SendFlow({
 
   const calcTieredNgnFee = (ngn: number): number => {
     if (ngn <= 0) return 0;
-    const pct = Math.floor(ngn * 0.01);
+    const pct = Math.round(ngn * 0.01 * 100) / 100;
     return ngn < 100000 ? Math.min(pct, 500) : pct;
   };
 
   const calcMaxSendableNgn = (availNgn: number): number => {
-    const avail = Math.floor(Math.max(0, availNgn));
-    if (avail <= 0) return 0;
+    const availKobo = Math.floor(Math.max(0, availNgn) * 100);
+    if (availKobo <= 0) return 0;
     let lo = 0;
-    let hi = avail;
+    let hi = availKobo;
     while (lo < hi) {
       const mid = Math.ceil((lo + hi) / 2);
-      if (mid + calcTieredNgnFee(mid) <= avail) lo = mid;
+      const midMajor = mid / 100;
+      const feeKobo = Math.round(calcTieredNgnFee(midMajor) * 100);
+      if (mid + feeKobo <= availKobo) lo = mid;
       else hi = mid - 1;
     }
-    return lo;
+    return Number((lo / 100).toFixed(2));
   };
 
-  const amountNgn = Number(amount || 0);
+  const amountNgn = Number((Number(amount || 0) || 0).toFixed(2));
   const usdCost = rate ? amountNgn / rate : null;
   const isBankSend = recipient?.kind === "bank";
   const usingHeldNgn = isBankSend && heldNgn > 0 && (heldNgn >= amountNgn + calcTieredNgnFee(amountNgn) || (balanceUsd ?? 0) < 1);
   const heldNgnFee = usingHeldNgn ? calcTieredNgnFee(amountNgn) : 0;
-  const heldNgnTotal = usingHeldNgn ? amountNgn + heldNgnFee : 0;
+  const heldNgnTotal = usingHeldNgn ? Number((amountNgn + heldNgnFee).toFixed(2)) : 0;
   const bankFeeUsd = isBankSend && !usingHeldNgn && usdCost !== null ? Number((usdCost * 0.01).toFixed(4)) : 0;
   const totalUsdDebit = usdCost !== null ? usdCost + bankFeeUsd : null;
   const minNgn = recipient?.kind === "user" ? 100 : 500;
   const maxSendableNgn = usingHeldNgn
     ? calcMaxSendableNgn(heldNgn)
     : balanceUsd !== null && rate
-      ? Math.floor((isBankSend ? balanceUsd / 1.01 : balanceUsd) * rate)
+      ? Math.floor(((isBankSend ? balanceUsd / 1.01 : balanceUsd) * rate) * 100) / 100
       : 0;
   const overBalance = usingHeldNgn
-    ? heldNgnTotal > heldNgn + 0.01
+    ? heldNgnTotal > heldNgn + 0.005
     : totalUsdDebit !== null && balanceUsd !== null && totalUsdDebit > balanceUsd + 1e-9;
 
   const pressKey = (k: string) => {
@@ -253,9 +271,18 @@ export function SendFlow({
     setError(null);
     setAmount((cur) => {
       if (k === "del") return cur.slice(0, -1);
-      if (k === "00") return cur ? (cur + "00").slice(0, 9) : cur;
+      if (k === ".") {
+        if (cur.includes(".")) return cur;
+        return cur ? `${cur}.` : "0.";
+      }
+      if (cur.includes(".")) {
+        const [intPart, decPart = ""] = cur.split(".");
+        if (decPart.length >= 2) return cur; // max 2 decimal places (kobo)
+        return `${intPart}.${decPart}${k}`;
+      }
       if (cur === "0") return k;
-      return (cur + k).slice(0, 9);
+      if (cur.length >= 8) return cur; // up to ₦99,999,999.99
+      return cur + k;
     });
   };
 
@@ -272,10 +299,11 @@ export function SendFlow({
     setError(null);
     setSending(true);
     try {
+      const exactNgn = Number(amountNgn.toFixed(2));
       if (recipient.kind === "bank") {
         await requestApproval("payout.ngn", {
           accountType: activeAccount,
-          amountNgn: Math.round(amountNgn),
+          amountNgn: exactNgn,
           bankCode: recipient.bankCode,
           bankName: recipient.bankName,
           accountNumber: recipient.accountNumber,
@@ -297,7 +325,7 @@ export function SendFlow({
         await requestApproval("transfer.user", {
           accountType: activeAccount,
           recipient: recipient.query,
-          amountNgn: Math.round(amountNgn),
+          amountNgn: exactNgn,
           narration: note.trim() || undefined,
         });
       }
@@ -351,7 +379,7 @@ export function SendFlow({
           <View style={styles.amountBlock}>
             <Text style={styles.overline}>You send</Text>
             <Text style={[styles.bigAmount, !amount && { color: COLORS.textMuted }]} numberOfLines={1} adjustsFontSizeToFit>
-              {fmtNgn(amountNgn)}
+              {fmtTypedNgn(amount)}
             </Text>
             <Text style={[styles.amountHint, overBalance && { color: COLORS.dangerText }]}>
               {amountNgn > 0
@@ -482,8 +510,8 @@ export function SendFlow({
           <ErrorBanner message={error} onDismiss={() => setError(null)} />
 
           <View style={styles.keypad}>
-            {["1", "2", "3", "4", "5", "6", "7", "8", "9", "00", "0", "del"].map((k) => (
-              <PressableScale key={k} onPress={() => pressKey(k)} haptic="none" depth={0.9} style={styles.key} accessibilityLabel={k === "del" ? "Delete" : k}>
+            {["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "del"].map((k) => (
+              <PressableScale key={k} onPress={() => pressKey(k)} haptic="none" depth={0.9} style={styles.key} accessibilityLabel={k === "del" ? "Delete" : k === "." ? "Decimal point" : k}>
                 {k === "del" ? (
                   <Ionicons name="backspace-outline" size={26} color={COLORS.text} />
                 ) : (
